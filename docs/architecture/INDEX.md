@@ -1,0 +1,12 @@
+# Architecture Specs
+
+- `SYSTEM_OVERVIEW.md`
+- `DESKTOP_APP.md`
+- `DATA_MODEL.md`
+- `GIT_ENGINE.md`
+- `JOB_ENGINE.md`
+- `HOSTED_AGENT.md`
+- `CLOUD_BACKEND.md`
+- `AWS_STACK_DECISION.md`
+- `SECURITY_PRIVACY.md`
+- `CONFIGURATION.md`

@@ -1,0 +1,20 @@
+# Feature Specs
+
+Each file in this folder is a feature spec with planned behavior and development checklists.
+
+- `UI_SPEC_LOCKED.md`
+- `UI_COMPONENT_INVENTORY.md`
+- `NAVIGATION_AND_LAYOUT.md`
+- `LANES.md`
+- `STACKS_AND_RESTACK.md`
+- `TERMINALS_AND_SESSIONS.md`
+- `TERMINAL_COMMAND_CENTER.md`
+- `PROCESSES_AND_TESTS.md`
+- `PACKS.md`
+- `CONFLICT_RADAR.md`
+- `CONFLICT_RESOLUTION.md`
+- `PULL_REQUESTS_GITHUB.md`
+- `HISTORY_GRAPH.md`
+- `AUTOMATIONS_ACTIONS.md`
+- `FILE_VIEWER_DIFF_QUICK_EDIT.md`
+- `ONBOARDING_TRUST.md`
