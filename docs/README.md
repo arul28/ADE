@@ -19,7 +19,3 @@ UI source of truth:
 ## Architecture Specs
 
 See `architecture/INDEX.md`.
-
-## Legacy Drafts
-
-Prior drafts are kept in `_legacy/` for reference.
