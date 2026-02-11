@@ -14,7 +14,8 @@ Lanes make parallel work safe and visible. Each lane is a real workspace (git wo
   - actions: create, rename, archive, open folder, open terminal, sync, run tests
 - Lane detail:
   - file tree + diffs
-  - terminals/processes
+  - terminals (lane inspector -> Terminals)
+  - processes/tests context (read-only pointers; full controls live in Projects/Home)
   - lane pack
 
 ## 3. Functional Requirements
@@ -72,4 +73,3 @@ Testing:
 
 - [ ] Integration tests with repos that have non-standard default branch
 - [ ] Lane creation/archival leaves repo in consistent state
-

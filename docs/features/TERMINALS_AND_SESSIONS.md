@@ -8,7 +8,7 @@ Embedded terminals let users run any agent tool and project commands in a lane-s
 
 ## 2. UX Surface
 
-- Per-lane terminal tabs (multiple sessions).
+- Per-lane terminal tabs (multiple sessions), shown inside the **Lanes** tab (lane inspector -> Terminals).
 - Terminal grid view (command center).
 - Session metadata:
   - title/label
@@ -73,4 +73,3 @@ MVP:
 Testing:
 
 - [ ] Spawn multiple concurrent PTYs; ensure no cross-lane cwd/env leaks
-

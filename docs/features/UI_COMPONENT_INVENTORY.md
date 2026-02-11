@@ -17,9 +17,9 @@ UI tech stack for these components is locked in `UI_SPEC_LOCKED.md` (routing, pa
 In `/Users/arul/ADE/apps/desktop/src/renderer/components/`:
 
 - `app/` app shell and routing
+- `project/` project home (project management + processes + tests)
 - `lanes/` lane list, lane detail, stack graph
 - `terminals/` session list, terminal view wrappers, filters
-- `processes/` process cards, logs, test buttons
 - `conflicts/` conflict list/detail, proposal UI, patch viewer
 - `prs/` PR lists, PR detail, checks/review badges
 - `history/` timeline, event detail, graph (V1)
@@ -74,8 +74,11 @@ These are required early to match the locked 3-pane cockpit.
 - `TerminalPreviewFrame` (lightweight preview for non-focused sessions)
 - `SessionDeltaCard` (rendered in packs and in terminal detail)
 
-## 6. Processes + Tests UI (SoloTerm-like)
+## 6. Project Home UI (Project Management + Processes + Tests)
 
+- `ProjectHome` (tab container)
+- `ProjectHeader` (repo/path/base branch + stack profile selector + start/stop all)
+- `ProjectActions` (open/change repo, open `.ade/` folder, export config)
 - `StackProfileSelector`
 - `ProcessList`
 - `ProcessCard`

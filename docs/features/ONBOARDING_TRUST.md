@@ -13,6 +13,7 @@ Make users comfortable letting ADE operate on their repos by:
 ## 2. Onboarding Flow (MVP)
 
 1. Select a repo folder.
+   - Entry point: **Projects (Home)** tab.
 2. ADE detects:
    - default base branch
    - existing run/test commands (best-effort)
@@ -50,4 +51,3 @@ V1:
 
 - [ ] Lane repair tools
 - [ ] Better error explanations and recovery flows
-

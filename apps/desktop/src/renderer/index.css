@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* HSL triplets, used via hsl(var(--token)) */
+  /* Paper + ink */
+  --bg: 48 33% 96%;
+  --fg: 30 22% 12%;
+
+  --card: 48 40% 98%;
+  --card-fg: 30 22% 12%;
+
+  --muted: 48 18% 92%;
+  --muted-fg: 30 10% 38%;
+
+  --border: 40 14% 82%;
+
+  /* Sepia accent (used sparingly) */
+  --accent: 26 46% 38%;
+  --accent-fg: 48 40% 98%;
+
+  --radius-xl: 18px;
+  --radius-lg: 14px;
+  --radius-md: 10px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: hsl(var(--fg));
+  /* E-reader paper: subtle speckle + gentle vignette */
+  background:
+    radial-gradient(1400px 900px at 50% -10%, rgba(0, 0, 0, 0.05), transparent 60%),
+    radial-gradient(circle at 1px 1px, rgba(0, 0, 0, 0.018) 1px, transparent 0) 0 0 / 22px 22px,
+    linear-gradient(to bottom, hsl(var(--bg)), hsl(var(--bg)));
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+/* Make the resize separators easier to grab without looking like a scrollbar. */
+[data-separator] {
+  background: transparent;
+  position: relative;
+}
+[data-separator]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: hsl(var(--border));
+  opacity: 0.7;
+}
+[data-separator]:hover::before {
+  opacity: 1;
+}

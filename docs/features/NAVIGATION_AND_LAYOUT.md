@@ -8,9 +8,9 @@ This spec locks the top-level UI structure (tabs) and how features "overlap" acr
 
 Top-level tabs (left-to-right):
 
+- **Projects (Home)** (project-global)
 - **Lanes** (primary)
 - **Terminals**
-- **Processes** (project-global)
 - **Conflicts**
 - **PRs** (GitHub)
 - **History**
@@ -22,17 +22,18 @@ Design rule: most actions should also be reachable from the Lanes tab to avoid f
 
 - Lanes tab is the main cockpit:
   - start terminals for a lane
-  - view lane terminals inline
+  - view lane terminals inline (lane inspector -> Terminals tab)
   - see conflict badges and open conflict window
   - see PR status and open PR panel
+- Projects (Home) tab is global:
+  - project management (open/change repo, base branch, escape hatches)
+  - show current project stack status (dev server/db/worker/etc.)
+  - run tests from buttons
+  - edit process/test definitions
 - Terminals tab is the global command center:
   - view all terminals across lanes
   - filter/pin/search
   - jump to the owning lane
-- Processes tab is global:
-  - show current project stack status (dev server/db/worker/etc.)
-  - run tests from buttons
-  - edit process/test definitions
 - Conflicts tab aggregates across lanes:
   - predicted and active conflicts across the project
   - jump into a lane’s conflict pack + proposal flow
@@ -78,9 +79,9 @@ The terminals tab provides:
 
 See `TERMINAL_COMMAND_CENTER.md` for details.
 
-## 5. Processes Tab Layout (Project Stack)
+## 5. Projects (Home) Tab Layout (Project Stack)
 
-The processes tab provides:
+The Projects (Home) tab provides:
 
 - Project overview header:
   - repo name/path
@@ -146,7 +147,6 @@ MVP:
 - [ ] Lanes tab 3-pane layout with resizable panels
 - [ ] Lane side panel with sub-tabs (Terminals/Packs/Conflicts/PR)
 - [ ] Terminals tab global list view with jump-to-lane
-- [ ] Processes tab global view with test buttons
+- [ ] Projects (Home) tab global view with processes + test buttons
 - [ ] Conflicts tab aggregate view
 - [ ] History tab placeholder wired to operations DB table
-

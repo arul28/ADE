@@ -15,6 +15,8 @@ UI source of truth:
 
 ## Phase -1: Repo + Desktop Scaffold (Start From Nothing)
 
+Status: DONE (2026-02-10)
+
 References:
 
 - Desktop structure: `architecture/DESKTOP_APP.md`
@@ -55,13 +57,19 @@ Exit criteria:
 
 Checklist:
 
-- [ ] Scaffold `apps/desktop` with dev scripts (`dev`, `build`, `typecheck`)
-- [ ] Install UI stack deps per `UI_SPEC_LOCKED.md` (routing/state/panes/primitives/icons)
-- [ ] Implement `AppShell`, `TopBar`, `TabNav`
-- [ ] Implement split pane primitives and persist sizes per project
-- [ ] Create component folder structure per `UI_COMPONENT_INVENTORY.md`
-- [ ] Preload bridge with `app.ping() -> "pong"`
-- [ ] Settings tab placeholder (shows versions + environment)
+- [x] Scaffold `apps/desktop` with dev scripts (`dev`, `build`, `typecheck`)
+- [x] Install UI stack deps per `UI_SPEC_LOCKED.md` (routing/state/panes/primitives/icons)
+- [x] Implement `AppShell`, `TopBar`, `TabNav`
+- [x] Implement split pane primitives and persist sizes per project
+- [x] Create component folder structure per `UI_COMPONENT_INVENTORY.md`
+- [x] Preload bridge with `app.ping() -> "pong"`
+- [x] Settings tab placeholder (shows versions + environment)
+
+Verification:
+
+- `cd apps/desktop && npm run dev`
+- Open **Lanes**, resize the 3 panes, quit/relaunch, confirm layout persists.
+- Open **Settings**, confirm versions/environment render.
 
 ## Phase 0: Terminals + Session Tracking (Gating)
 
@@ -89,6 +97,21 @@ Desktop core (main process):
   - store session metadata (start/end, exit code, tool type, label/goal)
   - capture transcript to `.ade/transcripts/` (local-only by default)
 
+IPC (typed):
+
+- `pty.create({ laneId, cols, rows, title }) -> { ptyId }`
+- `pty.write({ ptyId, data }) -> void`
+- `pty.resize({ ptyId, cols, rows }) -> void`
+- `pty.dispose({ ptyId }) -> void`
+- Event: `pty.data({ ptyId, data })`
+- Event: `pty.exit({ ptyId, exitCode })`
+
+Security defaults (Phase 0):
+
+- Renderer cannot read files or spawn processes directly.
+- Preload exposes only explicit terminal/session APIs (strict allowlist).
+- Transcripts remain local unless the user explicitly enables uploads/redaction. See `architecture/SECURITY_PRIVACY.md`.
+
 Renderer UI:
 
 - Implement `TerminalView` (xterm wrapper) and connect it to PTY IPC.
@@ -97,6 +120,7 @@ Renderer UI:
   - jump-to-lane behavior (navigates to Lanes tab and focuses session)
 - Implement Lanes inspector Terminals tab:
   - lane-scoped session tabs
+  - only render an active xterm for the focused session (others show lightweight preview)
 
 Exit criteria:
 
@@ -108,6 +132,7 @@ Checklist:
 - [ ] IPC channels for PTY streaming are implemented and typed
 - [ ] `TerminalSessionRow` list renders 50+ sessions without UI lag (virtualize if needed)
 - [ ] Transcript capture and basic redaction toggle exists (default off for uploads)
+- [ ] Lane-scoped session list works in the Lanes inspector Terminals tab
 
 ## Phase 1: Project Onboarding + Lanes Cockpit + Diffs
 
@@ -165,7 +190,7 @@ Checklist:
 - [ ] Lane inspector exists with sub-tabs (Terminals/Packs/Conflicts/PR)
 - [ ] Diff viewer for working tree + staged
 
-## Phase 2: Processes + Test Buttons (SoloTerm-like)
+## Phase 2: Project Home (Processes + Test Buttons) (SoloTerm-like)
 
 References:
 
@@ -189,7 +214,7 @@ Desktop core:
 
 Renderer UI:
 
-- Processes tab:
+- Projects (Home) tab:
   - managed process list + log viewer
   - stack profile selector (even if single default)
   - “Start all / Stop all”
@@ -204,7 +229,7 @@ Exit criteria:
 
 Checklist:
 
-- [ ] Processes tab matches locked UI layout
+- [ ] Projects (Home) tab matches locked UI layout
 - [ ] Test buttons exist and persist across restart
 - [ ] Logs viewer supports search
 

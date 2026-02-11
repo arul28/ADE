@@ -7,7 +7,7 @@ This is the single source of truth for ADE’s UI structure. It locks:
 - the app shell layout and tab structure
 - the default Lanes “cockpit” layout (GitButler-like conflict visibility)
 - the Terminals command center layout (scales to many sessions)
-- global Processes/test buttons layout (SoloTerm-like)
+- Project Home (processes + test buttons + project management) layout (SoloTerm-like)
 - Conflicts/PRs/History layouts and cross-links
 - keyboard shortcuts (MVP set)
 
@@ -32,6 +32,18 @@ Implementation note: reusable UI components are inventoried in `UI_COMPONENT_INV
 - Icons: Lucide
 - Styling: Tailwind + CSS variables for theme tokens
 
+## 0.1 Visual Direction (MVP)
+
+Locked aesthetic direction for MVP: **old white e-reader**.
+
+Guidelines:
+
+- Off-white / paper backgrounds (avoid pure white).
+- Low-saturation ink colors; emphasize hierarchy with spacing and typography more than color.
+- Borders/separators should feel like thin graphite lines (not “app chrome”).
+- One accent color max (used sparingly for primary actions and active states).
+- Prefer readability over density: generous line-height, clear titles, minimal icon noise.
+
 ## 1. App Shell
 
 ### 1.1 Main Regions
@@ -48,9 +60,9 @@ Implementation note: reusable UI components are inventoried in `UI_COMPONENT_INV
     - Create lane
     - Start terminal (in selected lane)
 - **Left nav** (tabs)
+  - Projects (Home)
   - Lanes
   - Terminals
-  - Processes
   - Conflicts
   - PRs
   - History
@@ -170,13 +182,17 @@ Rule:
 
 See `TERMINAL_COMMAND_CENTER.md` for session model specifics.
 
-## 4. Processes Tab (Project-Global)
+## 4. Project Home Tab (Project-Global)
 
-This tab is the “SoloTerm-like” project control plane.
+This tab is the “SoloTerm-like” project control plane and the default home for project-wide operations.
 
 ### 4.1 Header
 
 - project summary (repo name/path)
+- project management actions:
+  - change/open repo (onboarding flow)
+  - base branch selection (V1 if needed; MVP can be read-only)
+  - open `.ade/` folder (escape hatch)
 - stack profile selector (dev/test/e2e) (if multiple)
 - “Start all” / “Stop all”
 
@@ -285,6 +301,6 @@ Default shortcuts (macOS uses Cmd, others Ctrl):
 - [ ] Lanes tab defaults to 3-pane layout with inspector tabs
 - [ ] Conflict badges appear in lane rows (predicted/active/blocked)
 - [ ] Terminals tab has global list with filters and jump-to-lane
-- [ ] Processes tab has managed processes + test buttons
+- [ ] Project Home tab has managed processes + test buttons + basic project management
 - [ ] Conflicts tab can run proposal flow and show diff/apply
 - [ ] History tab shows timeline from operations table

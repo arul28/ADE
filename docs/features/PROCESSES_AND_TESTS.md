@@ -8,8 +8,11 @@ Make "run the stack" and "run tests" consistent and fast for humans and agents.
 
 ## 2. UX Surface
 
-- Processes tab (project-global):
+- Projects (Home) tab (project-global):
   - project overview (repo, base branch, stack profile)
+  - project management:
+    - open/change repo (onboarding)
+    - show `.ade/` state location and “open folder” escape hatch
   - managed processes list:
     - start/stop/restart
     - status + last exit code
