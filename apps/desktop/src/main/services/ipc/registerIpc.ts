@@ -1,9 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../../../shared/ipc";
 import type {
+  BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictOverlap,
+  ConflictStatus,
   CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
@@ -36,15 +39,19 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   LaneSummary,
   ListOperationsArgs,
+  ListOverlapsArgs,
   ListLanesArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  MergeSimulationArgs,
+  MergeSimulationResult,
   OperationRecord,
   PackSummary,
   ProcessActionArgs,
@@ -62,6 +69,8 @@ import type {
   RenameLaneArgs,
   RestackArgs,
   RestackResult,
+  RiskMatrixEntry,
+  RunConflictPredictionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -85,6 +94,8 @@ import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createPackService } from "../packs/packService";
 import type { createOperationService } from "../history/operationService";
+import type { createConflictService } from "../conflicts/conflictService";
+import type { createJobEngine } from "../jobs/jobEngine";
 
 export type AppContext = {
   db: AdeDb;
@@ -99,6 +110,8 @@ export type AppContext = {
   fileService: ReturnType<typeof createFileService>;
   operationService: ReturnType<typeof createOperationService>;
   gitService: ReturnType<typeof createGitOperationsService>;
+  conflictService: ReturnType<typeof createConflictService>;
+  jobEngine: ReturnType<typeof createJobEngine>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -443,6 +456,36 @@ export function registerIpc({
   ipcMain.handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.push(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.getLaneStatus(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsListOverlaps, async (_event, arg: ListOverlapsArgs): Promise<ConflictOverlap[]> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.listOverlaps(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsGetRiskMatrix, async (): Promise<RiskMatrixEntry[]> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.getRiskMatrix();
+  });
+
+  ipcMain.handle(IPC.conflictsSimulateMerge, async (_event, arg: MergeSimulationArgs): Promise<MergeSimulationResult> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.simulateMerge(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.runPrediction(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsGetBatchAssessment, async (): Promise<BatchAssessmentResult> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.getBatchAssessment();
   });
 
   ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {

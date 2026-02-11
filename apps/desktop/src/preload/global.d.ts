@@ -1,7 +1,11 @@
 import type {
+  BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictEventPayload,
+  ConflictOverlap,
+  ConflictStatus,
   CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
@@ -25,6 +29,7 @@ import type {
   FilesWatchArgs,
   FilesWorkspace,
   FilesWriteTextArgs,
+  GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
@@ -40,7 +45,10 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  ListOverlapsArgs,
   LaneSummary,
+  MergeSimulationArgs,
+  MergeSimulationResult,
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
@@ -66,7 +74,9 @@ import type {
   RenameLaneArgs,
   RestackArgs,
   RestackResult,
+  RiskMatrixEntry,
   RunTestSuiteArgs,
+  RunConflictPredictionArgs,
   SessionDeltaSummary,
   StackChainItem,
   StopTestRunArgs,
@@ -156,6 +166,15 @@ declare global {
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
+      };
+      conflicts: {
+        getLaneStatus: (args: GetLaneConflictStatusArgs) => Promise<ConflictStatus>;
+        listOverlaps: (args: ListOverlapsArgs) => Promise<ConflictOverlap[]>;
+        getRiskMatrix: () => Promise<RiskMatrixEntry[]>;
+        simulateMerge: (args: MergeSimulationArgs) => Promise<MergeSimulationResult>;
+        runPrediction: (args?: RunConflictPredictionArgs) => Promise<BatchAssessmentResult>;
+        getBatchAssessment: () => Promise<BatchAssessmentResult>;
+        onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
       packs: {
         getProjectPack: () => Promise<PackSummary>;

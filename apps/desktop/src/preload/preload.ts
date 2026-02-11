@@ -1,9 +1,13 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
+  BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictEventPayload,
+  ConflictOverlap,
+  ConflictStatus,
   CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
@@ -39,14 +43,18 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GetDiffChangesArgs,
+  GetLaneConflictStatusArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   LaneSummary,
+  ListOverlapsArgs,
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  MergeSimulationArgs,
+  MergeSimulationResult,
   OperationRecord,
   PackSummary,
   ProcessActionArgs,
@@ -64,6 +72,8 @@ import type {
   PtyCreateResult,
   PtyDataEvent,
   PtyExitEvent,
+  RiskMatrixEntry,
+  RunConflictPredictionArgs,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   RestackArgs,
@@ -177,6 +187,23 @@ contextBridge.exposeInMainWorld("ade", {
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),
     push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args)
+  },
+  conflicts: {
+    getLaneStatus: async (args: GetLaneConflictStatusArgs): Promise<ConflictStatus> =>
+      ipcRenderer.invoke(IPC.conflictsGetLaneStatus, args),
+    listOverlaps: async (args: ListOverlapsArgs): Promise<ConflictOverlap[]> =>
+      ipcRenderer.invoke(IPC.conflictsListOverlaps, args),
+    getRiskMatrix: async (): Promise<RiskMatrixEntry[]> => ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
+    simulateMerge: async (args: MergeSimulationArgs): Promise<MergeSimulationResult> =>
+      ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
+    runPrediction: async (args: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> =>
+      ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
+    getBatchAssessment: async (): Promise<BatchAssessmentResult> => ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
+    onEvent: (cb: (ev: ConflictEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ConflictEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.conflictsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.conflictsEvent, listener);
+    }
   },
   packs: {
     getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),

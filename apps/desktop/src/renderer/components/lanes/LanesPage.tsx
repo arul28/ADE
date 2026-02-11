@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -9,7 +9,7 @@ import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
-import type { DeleteLaneArgs, LaneSummary } from "../../../shared/types";
+import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary } from "../../../shared/types";
 
 function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lanes: T[]): T[] {
   return [...lanes].sort((a, b) => {
@@ -144,6 +144,18 @@ function laneMatchesFilter(lane: LaneSummary, isPinned: boolean, query: string):
   return tokens.every((token) => matchesLaneFilterToken(lane, isPinned, token));
 }
 
+function conflictDotClass(status: ConflictStatus["status"] | undefined): string {
+  if (status === "conflict-active") return "bg-red-600";
+  if (status === "conflict-predicted") return "bg-orange-500";
+  if (status === "behind-base") return "bg-amber-500";
+  if (status === "merge-ready") return "bg-emerald-500";
+  return "bg-muted-fg";
+}
+
+function chipLabel(kind: ConflictChip["kind"]): string {
+  return kind === "high-risk" ? "high risk" : "new overlap";
+}
+
 export function LanesPage() {
   const [params] = useSearchParams();
   const selectLane = useAppStore((s) => s.selectLane);
@@ -162,6 +174,9 @@ export function LanesPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
+  const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
+  const chipTimersRef = useRef<Map<string, number>>(new Map());
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
@@ -173,12 +188,86 @@ export function LanesPage() {
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
 
+  const loadConflictStatuses = useCallback(async () => {
+    try {
+      const assessment = await window.ade.conflicts.getBatchAssessment();
+      const next: Record<string, ConflictStatus> = {};
+      for (const status of assessment.lanes) {
+        next[status.laneId] = status;
+      }
+      setConflictStatusByLane(next);
+    } catch {
+      // best effort: lane rendering should still work without conflict data
+    }
+  }, []);
+
+  const pushConflictChips = useCallback((chips: ConflictChip[]) => {
+    if (chips.length === 0) return;
+    const now = Date.now();
+    setConflictChipsByLane((prev) => {
+      const next: Record<string, ConflictChip[]> = { ...prev };
+      for (const chip of chips) {
+        const laneList = next[chip.laneId] ? [...next[chip.laneId]!] : [];
+        laneList.unshift(chip);
+        next[chip.laneId] = laneList.slice(0, 3);
+      }
+      return next;
+    });
+
+    for (const chip of chips) {
+      const key = `${chip.laneId}:${chip.peerId ?? "base"}:${chip.kind}`;
+      const existing = chipTimersRef.current.get(key);
+      if (existing) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        setConflictChipsByLane((prev) => {
+          const laneChips = prev[chip.laneId] ?? [];
+          const filtered = laneChips.filter((entry) => {
+            return !(
+              entry.kind === chip.kind &&
+              entry.peerId === chip.peerId &&
+              entry.overlapCount === chip.overlapCount
+            );
+          });
+          if (filtered.length === laneChips.length) return prev;
+          return {
+            ...prev,
+            [chip.laneId]: filtered
+          };
+        });
+        chipTimersRef.current.delete(key);
+      }, Math.max(8_000, 12_000 - (Date.now() - now)));
+      chipTimersRef.current.set(key, timer);
+    }
+  }, []);
+
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
     if (laneId) selectLane(laneId);
     if (sessionId) focusSession(sessionId);
   }, [params, selectLane, focusSession]);
+
+  useEffect(() => {
+    void loadConflictStatuses();
+  }, [loadConflictStatuses, lanes.length]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade.conflicts.onEvent((event) => {
+      if (event.type !== "prediction-complete") return;
+      void loadConflictStatuses();
+      pushConflictChips(event.chips);
+    });
+    return unsubscribe;
+  }, [loadConflictStatuses, pushConflictChips]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of chipTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      chipTimersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     setPinnedLaneIds((prev) => {
@@ -489,6 +578,8 @@ export function LanesPage() {
           const isPrimary = lane.laneType === "primary";
           const isPinned = pinnedLaneIds.has(lane.id);
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
+          const conflictStatus = conflictStatusByLane[lane.id];
+          const chips = conflictChipsByLane[lane.id] ?? [];
 
           return (
             <button
@@ -511,9 +602,24 @@ export function LanesPage() {
               title={isPrimary ? "Primary lane (home workspace)" : "Lane"}
             >
               {isPrimary ? <Home className="h-3.5 w-3.5 text-emerald-700" /> : <Pin className={cn("h-3.5 w-3.5", isPinned ? "text-amber-700" : "text-muted-fg/60")} />}
+              <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
               <span className="truncate">{lane.name}</span>
               {isPrimary ? <span className="rounded border border-emerald-400 px-1 text-[10px] text-emerald-700">HOME</span> : null}
               {!isPrimary && isPinned ? <span className="rounded border border-amber-400 px-1 text-[10px] text-amber-800">PINNED</span> : null}
+              {chips.slice(0, 1).map((chip, index) => (
+                <span
+                  key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
+                  className={cn(
+                    "rounded border px-1 text-[10px] uppercase",
+                    chip.kind === "high-risk"
+                      ? "border-red-500/70 bg-red-900/30 text-red-200"
+                      : "border-amber-500/70 bg-amber-900/30 text-amber-200"
+                  )}
+                  title={chip.peerId ? `${chipLabel(chip.kind)} with ${chip.peerId}` : chipLabel(chip.kind)}
+                >
+                  {chipLabel(chip.kind)}
+                </span>
+              ))}
 
               {!isPrimary ? (
                 <span
