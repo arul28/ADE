@@ -27,6 +27,7 @@ export function TopBar({
 
   const [createOpen, setCreateOpen] = useState(false);
   const [laneName, setLaneName] = useState("");
+  const [parentLaneId, setParentLaneId] = useState<string>("");
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
@@ -38,6 +39,7 @@ export function TopBar({
     () => lanes.find((l) => l.id === selectedLaneId)?.name ?? null,
     [lanes, selectedLaneId]
   );
+  const selectableParentLanes = useMemo(() => lanes, [lanes]);
 
   return (
     <header className="flex h-[52px] items-center justify-between border-b border-border bg-card/60 px-3 backdrop-blur">
@@ -100,6 +102,21 @@ export function TopBar({
                   className="h-10 w-full rounded-lg border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
                   autoFocus
                 />
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-fg">Parent lane (optional)</div>
+                  <select
+                    value={parentLaneId}
+                    onChange={(event) => setParentLaneId(event.target.value)}
+                    className="h-10 w-full rounded-lg border border-border bg-card/70 px-3 text-sm outline-none"
+                  >
+                    <option value="">None (base: {baseRef ?? "main"})</option>
+                    {selectableParentLanes.map((lane) => (
+                      <option key={lane.id} value={lane.id}>
+                        {lane.name} ({lane.branchRef})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="mt-3 flex items-center justify-end gap-2">
@@ -108,6 +125,7 @@ export function TopBar({
                   onClick={() => {
                     setCreateOpen(false);
                     setLaneName("");
+                    setParentLaneId("");
                   }}
                 >
                   Cancel
@@ -117,12 +135,16 @@ export function TopBar({
                   disabled={!laneName.trim().length}
                   onClick={() => {
                     const name = laneName.trim();
-                    window.ade.lanes
-                      .create({ name })
+                    const selectedParentLaneId = parentLaneId || null;
+                    const createPromise = selectedParentLaneId
+                      ? window.ade.lanes.createChild({ name, parentLaneId: selectedParentLaneId })
+                      : window.ade.lanes.create({ name });
+                    createPromise
                       .then(async (lane) => {
                         await refreshLanes();
                         setCreateOpen(false);
                         setLaneName("");
+                        setParentLaneId("");
                         navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
                       })
                       .catch(() => {
@@ -130,7 +152,7 @@ export function TopBar({
                       });
                   }}
                 >
-                  Create
+                  {parentLaneId ? "Create child lane" : "Create"}
                 </Button>
               </div>
             </Dialog.Content>

@@ -5,6 +5,7 @@ import type {
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
+  CreateChildLaneArgs,
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
@@ -65,8 +66,11 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  RestackArgs,
+  RestackResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -89,10 +93,15 @@ contextBridge.exposeInMainWorld("ade", {
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
+    createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
     archive: async (args: ArchiveLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesArchive, args),
     delete: async (args: DeleteLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesDelete, args),
+    getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
+      ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
+    getChildren: async (laneId: string): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
+    restack: async (args: RestackArgs): Promise<RestackResult> => ipcRenderer.invoke(IPC.lanesRestack, args),
     openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
   },
   sessions: {

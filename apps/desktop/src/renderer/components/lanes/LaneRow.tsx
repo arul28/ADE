@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, Archive, ExternalLink, GitBranch, Pencil, TerminalSquare, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, ExternalLink, GitBranch, Layers3, Pencil, TerminalSquare, Trash2 } from "lucide-react";
 import type { LaneSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -33,6 +33,8 @@ export function LaneRow({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const isPrimaryLane = lane.laneType === "primary";
+  const stackIndentPx = lane.stackDepth * 16;
+  const connectorLeft = 9 + stackIndentPx;
 
   const confirmationPhrase = `delete ${lane.name}`;
 
@@ -43,6 +45,7 @@ export function LaneRow({
         primary && "border-accent ring-1 ring-accent bg-accent/8",
         selected && !primary && "border-accent/50 bg-accent/5"
       )}
+      style={{ paddingLeft: `${12 + stackIndentPx}px` }}
       onClick={(event) => onSelect({ extend: event.shiftKey })}
       role="button"
       tabIndex={0}
@@ -50,12 +53,30 @@ export function LaneRow({
         if (e.key === "Enter" || e.key === " ") onSelect({ extend: e.shiftKey });
       }}
     >
+      {lane.parentLaneId ? (
+        <>
+          <div
+            className="pointer-events-none absolute w-px bg-border/70"
+            style={{ left: `${connectorLeft}px`, top: "0px", bottom: "50%" }}
+          />
+          <div
+            className="pointer-events-none absolute h-px bg-border/70"
+            style={{ left: `${connectorLeft}px`, top: "20px", width: "10px" }}
+          />
+        </>
+      ) : null}
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <GitBranch className={cn("h-3.5 w-3.5", selected ? "text-accent" : "text-muted-fg")} />
             <span className="truncate font-serif text-base font-semibold tracking-tight text-fg">{lane.name}</span>
             <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-fg">{lane.laneType}</span>
+            {lane.parentLaneId ? (
+              <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-fg">
+                <Layers3 className="h-3 w-3" />
+                d{lane.stackDepth}
+              </span>
+            ) : null}
             {isPrimaryLane ? <span className="rounded border border-emerald-400 px-1.5 py-0.5 text-[10px] uppercase text-emerald-700">home</span> : null}
           </div>
           {lane.description ? (
@@ -322,7 +343,7 @@ export function LaneRow({
 
       <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border pt-2 text-[10px] font-mono uppercase tracking-wider text-muted-fg">
         <div className="flex flex-col">
-          <span className="opacity-50">Sync</span>
+          <span className="opacity-50">{lane.parentLaneId ? "Vs Parent" : "Sync"}</span>
           <span className={cn("font-bold", lane.status.ahead > 0 || lane.status.behind > 0 ? "text-accent" : "text-fg")}>
             {lane.status.ahead}↑ {lane.status.behind}↓
           </span>

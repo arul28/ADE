@@ -5,6 +5,56 @@ import { PaneHeader } from "../ui/PaneHeader";
 import { Button } from "../ui/Button";
 import { RefreshCw } from "lucide-react";
 import { EmptyState } from "../ui/EmptyState";
+import { cn } from "../ui/cn";
+import type { LaneSummary } from "../../../shared/types";
+
+function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  const childrenByParent = new Map<string, LaneSummary[]>();
+  const roots: LaneSummary[] = [];
+
+  for (const lane of lanes) {
+    if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) {
+      roots.push(lane);
+      continue;
+    }
+    const children = childrenByParent.get(lane.parentLaneId) ?? [];
+    children.push(lane);
+    childrenByParent.set(lane.parentLaneId, children);
+  }
+
+  const byCreatedAsc = (a: LaneSummary, b: LaneSummary) => {
+    const aTs = Date.parse(a.createdAt);
+    const bTs = Date.parse(b.createdAt);
+    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
+    return a.name.localeCompare(b.name);
+  };
+
+  const orderedRoots = [...roots].sort((a, b) => {
+    const aPrimary = a.laneType === "primary" ? 1 : 0;
+    const bPrimary = b.laneType === "primary" ? 1 : 0;
+    if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+    return byCreatedAsc(a, b);
+  });
+  for (const [parentId, children] of childrenByParent.entries()) {
+    childrenByParent.set(parentId, [...children].sort(byCreatedAsc));
+  }
+
+  const out: LaneSummary[] = [];
+  const visit = (lane: LaneSummary) => {
+    out.push(lane);
+    for (const child of childrenByParent.get(lane.id) ?? []) {
+      visit(child);
+    }
+  };
+  for (const root of orderedRoots) {
+    visit(root);
+  }
+
+  const seen = new Set(out.map((lane) => lane.id));
+  const dangling = lanes.filter((lane) => !seen.has(lane.id)).sort(byCreatedAsc);
+  return out.concat(dangling);
+}
 
 export function LaneList({
   selectedLaneIds,
@@ -29,17 +79,18 @@ export function LaneList({
   const selectedIdSet = new Set(activeIds);
   const effectivePrimaryId = primaryLaneId ?? storeSelectedLaneId;
   const effectiveFilter = filterQuery ?? localFilter;
+  const stackOrderedLanes = useMemo(() => sortLanesForStackGraph(lanes), [lanes]);
 
   const visibleLanes = useMemo(() => {
     const needle = effectiveFilter.trim().toLowerCase();
-    if (!needle) return lanes;
-    return lanes.filter((lane) => {
+    if (!needle) return stackOrderedLanes;
+    return stackOrderedLanes.filter((lane) => {
       const name = lane.name.toLowerCase();
       const branch = lane.branchRef.toLowerCase();
       const type = lane.laneType.toLowerCase();
       return name.includes(needle) || branch.includes(needle) || type.includes(needle);
     });
-  }, [lanes, effectiveFilter]);
+  }, [stackOrderedLanes, effectiveFilter]);
 
   return (
     <div className="flex h-full flex-col">
@@ -103,8 +154,44 @@ export function LaneList({
             ))}
           </div>
         )}
-        <div className="mt-3 rounded-lg border border-border bg-card/60 p-3 text-xs text-muted-fg">
-          Stack graph (placeholder)
+        <div className="mt-3 rounded-lg border border-border bg-card/60 p-2">
+          <div className="mb-1 px-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack Graph</div>
+          <div className="space-y-0.5">
+            {visibleLanes.map((lane) => (
+              <button
+                key={`stack:${lane.id}`}
+                type="button"
+                className={cn(
+                  "relative flex w-full items-center justify-between rounded px-1 py-1 text-left text-[11px] transition-colors",
+                  selectedIdSet.has(lane.id) ? "bg-accent/15 text-fg" : "text-muted-fg hover:bg-muted/50 hover:text-fg"
+                )}
+                onClick={() => {
+                  if (onLaneSelect) onLaneSelect(lane.id, { extend: false });
+                  else selectLane(lane.id);
+                }}
+                title={lane.parentLaneId ? "Child lane" : "Stack root"}
+              >
+                <span className="relative inline-flex items-center gap-1.5 truncate" style={{ paddingLeft: `${2 + lane.stackDepth * 16}px` }}>
+                  {lane.parentLaneId ? (
+                    <span
+                      className="pointer-events-none absolute h-px bg-border/70"
+                      style={{ left: `${lane.stackDepth * 16 - 8}px`, width: "8px" }}
+                    />
+                  ) : null}
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full",
+                      lane.laneType === "primary" ? "bg-emerald-500" : lane.status.dirty ? "bg-amber-500" : "bg-sky-500"
+                    )}
+                  />
+                  <span className="truncate">{lane.name}</span>
+                </span>
+                <span className="ml-2 shrink-0 font-mono text-[10px]">
+                  {lane.status.ahead}↑ {lane.status.behind}↓
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>

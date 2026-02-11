@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ArrowRight, Columns, GitMerge, MoreHorizontal, RefreshCw, Save, Undo2, Upload } from "lucide-react";
+import { ArrowDownToLine, ArrowRight, Columns, GitMerge, Layers3, MoreHorizontal, RefreshCw, Save, Undo2, Upload } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { useAppStore } from "../../state/appStore";
@@ -36,9 +36,28 @@ export function LaneDetail({
   const laneId = overrideLaneId ?? globalLaneId;
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const selectLane = useAppStore((s) => s.selectLane);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const laneName = lane?.name ?? null;
+  const parentLane = useMemo(
+    () => (lane?.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null),
+    [lane, lanes]
+  );
+  const childLanes = useMemo(
+    () =>
+      lane
+        ? lanes
+          .filter((entry) => entry.parentLaneId === lane.id)
+          .sort((a, b) => {
+            const aTs = Date.parse(a.createdAt);
+            const bTs = Date.parse(b.createdAt);
+            if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
+            return a.name.localeCompare(b.name);
+          })
+        : [],
+    [lane, lanes]
+  );
 
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
@@ -227,6 +246,27 @@ export function LaneDetail({
             <Button variant="ghost" size="sm" onClick={() => refreshAll().catch(() => { })} title="Refresh">
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             </Button>
+            {lane?.parentLaneId ? (
+              <>
+                <div className="h-4 w-px bg-border mx-1" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    runAction("restack", async () => {
+                      const result = await window.ade.lanes.restack({ laneId, recursive: true });
+                      if (result.error) {
+                        throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
+                      }
+                    });
+                  }}
+                >
+                  <Layers3 className="h-3.5 w-3.5 mr-1.5" /> Restack
+                </Button>
+              </>
+            ) : null}
             <div className="h-4 w-px bg-border mx-1" />
             <Button
               variant="outline"
@@ -274,6 +314,42 @@ export function LaneDetail({
           </div>
         }
       />
+
+      {lane && (parentLane || childLanes.length > 0) ? (
+        <div className="border-b border-border bg-card/25 px-3 py-1.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            {parentLane ? (
+              <>
+                <span className="font-semibold text-muted-fg">Parent:</span>
+                <button
+                  type="button"
+                  className="rounded border border-border bg-card/60 px-1.5 py-0.5 text-fg hover:border-accent"
+                  onClick={() => selectLane(parentLane.id)}
+                >
+                  {parentLane.name}
+                </button>
+              </>
+            ) : (
+              <span className="text-muted-fg">Stack root</span>
+            )}
+            {childLanes.length > 0 ? (
+              <>
+                <span className="ml-2 font-semibold text-muted-fg">Children:</span>
+                {childLanes.map((child) => (
+                  <button
+                    key={child.id}
+                    type="button"
+                    className="rounded border border-border bg-card/60 px-1.5 py-0.5 text-fg hover:border-accent"
+                    onClick={() => selectLane(child.id)}
+                  >
+                    {child.name}
+                  </button>
+                ))}
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex-1 flex flex-col min-h-0">
         {/* Top Section: 2 Columns for Staging */}

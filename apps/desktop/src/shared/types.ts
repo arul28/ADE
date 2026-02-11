@@ -40,6 +40,10 @@ export type LaneSummary = {
   branchRef: string;
   worktreePath: string;
   attachedRootPath?: string | null;
+  parentLaneId: string | null;
+  childCount: number;
+  stackDepth: number;
+  parentStatus: LaneStatus | null;
   isEditProtected: boolean;
   status: LaneStatus;
   createdAt: string;
@@ -113,6 +117,13 @@ export type ListLanesArgs = {
 export type CreateLaneArgs = {
   name: string;
   description?: string;
+  parentLaneId?: string;
+};
+
+export type CreateChildLaneArgs = {
+  parentLaneId: string;
+  name: string;
+  description?: string;
 };
 
 export type AttachLaneArgs = {
@@ -136,6 +147,26 @@ export type DeleteLaneArgs = {
   deleteRemoteBranch?: boolean;
   remoteName?: string;
   force?: boolean;
+};
+
+export type StackChainItem = {
+  laneId: string;
+  laneName: string;
+  branchRef: string;
+  depth: number;
+  parentLaneId: string | null;
+  status: LaneStatus;
+};
+
+export type RestackArgs = {
+  laneId: string;
+  recursive?: boolean;
+};
+
+export type RestackResult = {
+  restackedLanes: string[];
+  failedLaneId: string | null;
+  error: string | null;
 };
 
 export type OpenLaneFolderArgs = {
@@ -380,11 +411,43 @@ export type ConfigTestSuiteDefinition = {
   tags?: TestSuiteTag[];
 };
 
+export type LaneOverlayMatch = {
+  laneIds?: string[];
+  laneTypes?: LaneType[];
+  namePattern?: string;
+  branchPattern?: string;
+  tags?: string[];
+};
+
+export type LaneOverlayOverrides = {
+  env?: Record<string, string>;
+  cwd?: string;
+  processIds?: string[];
+  testSuiteIds?: string[];
+};
+
+export type LaneOverlayPolicy = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  match: LaneOverlayMatch;
+  overrides: LaneOverlayOverrides;
+};
+
+export type ConfigLaneOverlayPolicy = {
+  id: string;
+  name?: string;
+  enabled?: boolean;
+  match?: LaneOverlayMatch;
+  overrides?: LaneOverlayOverrides;
+};
+
 export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
+  laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
   providers?: Record<string, unknown>;
 };
 
@@ -398,6 +461,7 @@ export type EffectiveProjectConfig = {
   processes: ProcessDefinition[];
   stackButtons: StackButtonDefinition[];
   testSuites: TestSuiteDefinition[];
+  laneOverlayPolicies: LaneOverlayPolicy[];
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
 };

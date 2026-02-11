@@ -5,6 +5,7 @@ import type {
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
+  CreateChildLaneArgs,
   DeleteLaneArgs,
   DockLayout,
   FileChangeEvent,
@@ -59,8 +60,11 @@ import type {
   PtyCreateArgs,
   PtyCreateResult,
   RenameLaneArgs,
+  RestackArgs,
+  RestackResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -182,7 +186,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.create({ name: arg.name, description: arg.description });
+    return await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
+  });
+
+  ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    return await ctx.laneService.createChild(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
@@ -203,6 +212,21 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.laneService.delete(arg);
+  });
+
+  ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
+    const ctx = getCtx();
+    return await ctx.laneService.getStackChain(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesGetChildren, async (_event, arg: { laneId: string }): Promise<LaneSummary[]> => {
+    const ctx = getCtx();
+    return await ctx.laneService.getChildren(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesRestack, async (_event, arg: RestackArgs): Promise<RestackResult> => {
+    const ctx = getCtx();
+    return await ctx.laneService.restack(arg);
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {

@@ -125,12 +125,18 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
 
+    const operationService = createOperationService({ db, projectId });
+    let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
       projectId,
       defaultBaseRef: baseRef,
-      worktreesDir: adePaths.worktreesDir
+      worktreesDir: adePaths.worktreesDir,
+      operationService,
+      onHeadChanged: ({ laneId, reason }) => {
+        jobEngine?.onHeadChanged({ laneId, reason });
+      }
     });
     await laneService.ensurePrimaryLane();
     const sessionService = createSessionService({ db });
@@ -144,8 +150,6 @@ app.whenReady().then(async () => {
       logger
     });
 
-    const operationService = createOperationService({ db, projectId });
-
     const packService = createPackService({
       db,
       logger,
@@ -158,7 +162,7 @@ app.whenReady().then(async () => {
       operationService
     });
 
-    const jobEngine = createJobEngine({
+    jobEngine = createJobEngine({
       logger,
       packService
     });

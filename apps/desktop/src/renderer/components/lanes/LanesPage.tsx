@@ -26,6 +26,48 @@ function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lan
   });
 }
 
+function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  const childrenByParent = new Map<string, LaneSummary[]>();
+  const roots: LaneSummary[] = [];
+
+  for (const lane of lanes) {
+    if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) {
+      roots.push(lane);
+      continue;
+    }
+    const children = childrenByParent.get(lane.parentLaneId) ?? [];
+    children.push(lane);
+    childrenByParent.set(lane.parentLaneId, children);
+  }
+
+  const byCreatedAsc = (a: LaneSummary, b: LaneSummary) => {
+    const aTs = Date.parse(a.createdAt);
+    const bTs = Date.parse(b.createdAt);
+    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
+    return a.name.localeCompare(b.name);
+  };
+  roots.sort((a, b) => {
+    const aPrimary = a.laneType === "primary" ? 1 : 0;
+    const bPrimary = b.laneType === "primary" ? 1 : 0;
+    if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+    return byCreatedAsc(a, b);
+  });
+  for (const [parentId, children] of childrenByParent.entries()) {
+    childrenByParent.set(parentId, [...children].sort(byCreatedAsc));
+  }
+
+  const out: LaneSummary[] = [];
+  const visit = (lane: LaneSummary) => {
+    out.push(lane);
+    for (const child of childrenByParent.get(lane.id) ?? []) visit(child);
+  };
+  for (const root of roots) visit(root);
+
+  const seen = new Set(out.map((lane) => lane.id));
+  return out.concat(lanes.filter((lane) => !seen.has(lane.id)).sort(byCreatedAsc));
+}
+
 function mergeUnique(...lists: string[][]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -127,6 +169,7 @@ export function LanesPage() {
   const filteredLanes = useMemo(() => {
     return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
   }, [sortedLanes, laneFilter, pinnedLaneIds]);
+  const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
 
@@ -505,6 +548,43 @@ export function LanesPage() {
             </button>
           );
         })}
+      </div>
+
+      <div className="border-b border-border bg-card/35 px-2 py-1.5">
+        <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack graph</div>
+        <div className="grid max-h-[120px] grid-cols-1 gap-0.5 overflow-y-auto pr-1">
+          {stackGraphLanes.map((lane) => (
+            <button
+              key={`stack-graph:${lane.id}`}
+              type="button"
+              className={cn(
+                "relative flex items-center justify-between rounded px-1.5 py-1 text-left text-[11px] transition-colors",
+                selectedLaneId === lane.id ? "bg-accent/15 text-fg" : "text-muted-fg hover:bg-muted/60 hover:text-fg"
+              )}
+              onClick={() => handleLaneSelect(lane.id, { extend: false })}
+              title={lane.parentLaneId ? "Child lane" : "Stack root"}
+            >
+              <span className="relative inline-flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${4 + lane.stackDepth * 16}px` }}>
+                {lane.parentLaneId ? (
+                  <span
+                    className="pointer-events-none absolute h-px bg-border/70"
+                    style={{ left: `${lane.stackDepth * 16 - 8}px`, width: "8px" }}
+                  />
+                ) : null}
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    lane.laneType === "primary" ? "bg-emerald-500" : lane.status.dirty ? "bg-amber-500" : "bg-sky-500"
+                  )}
+                />
+                <span className="truncate">{lane.name}</span>
+              </span>
+              <span className="ml-2 shrink-0 font-mono text-[10px]">
+                {lane.status.ahead}↑ {lane.status.behind}↓
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {visibleLaneIds.length === 0 ? (

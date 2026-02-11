@@ -151,21 +151,30 @@ function migrate(db: Database) {
       worktree_path text not null,
       attached_root_path text,
       is_edit_protected integer not null default 0,
+      parent_lane_id text,
       status text not null,
       created_at text not null,
       archived_at text,
-      foreign key(project_id) references projects(id)
+      foreign key(project_id) references projects(id),
+      foreign key(parent_lane_id) references lanes(id)
     )
   `);
   addColumnIfMissing(db, "lanes", "lane_type text not null default 'worktree'", "lane_type");
   addColumnIfMissing(db, "lanes", "attached_root_path text", "attached_root_path");
   addColumnIfMissing(db, "lanes", "is_edit_protected integer not null default 0", "is_edit_protected");
+  addColumnIfMissing(db, "lanes", "parent_lane_id text", "parent_lane_id");
   createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
   createIndexIfColumnsExist(
     db,
     "create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)",
     "lanes",
     ["project_id", "lane_type"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)",
+    "lanes",
+    ["project_id", "parent_lane_id"]
   );
 
   db.run(`

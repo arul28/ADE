@@ -3,6 +3,7 @@ import type {
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
+  CreateChildLaneArgs,
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
@@ -63,8 +64,11 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  RestackArgs,
+  RestackResult,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -91,10 +95,14 @@ declare global {
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
+        createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
         delete: (args: DeleteLaneArgs) => Promise<void>;
+        getStackChain: (laneId: string) => Promise<StackChainItem[]>;
+        getChildren: (laneId: string) => Promise<LaneSummary[]>;
+        restack: (args: RestackArgs) => Promise<RestackResult>;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
