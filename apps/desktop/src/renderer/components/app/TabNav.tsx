@@ -15,23 +15,22 @@ const items = [
 
 export function TabNav() {
   return (
-    <nav className="flex h-full flex-col gap-1 rounded-lg border border-border bg-card/60 p-2 backdrop-blur">
+    <nav className="flex flex-col gap-2 w-full items-center">
       {items.map((it) => (
         <NavLink
           key={it.to}
           to={it.to}
+          title={it.label}
           className={({ isActive }) =>
             cn(
-              "flex items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-fg hover:bg-muted/60 hover:text-fg",
-              isActive && "bg-muted/70 text-fg"
+              "flex items-center justify-center w-10 h-10 rounded-md text-muted-fg transition-colors hover:text-fg hover:bg-muted",
+              isActive && "text-accent bg-transparent ring-1 ring-border shadow-sm"
             )
           }
         >
-          <it.icon className="h-4 w-4" />
-          <span>{it.label}</span>
+          <it.icon className="h-5 w-5" />
         </NavLink>
       ))}
-      <div className="mt-auto px-2 py-1 text-xs text-muted-fg">Phase -1: shell only</div>
     </nav>
   );
 }

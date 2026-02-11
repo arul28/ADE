@@ -6,6 +6,10 @@ import type { ProjectInfo } from "../../../shared/types";
 export type AdePaths = {
   adeDir: string;
   logsDir: string;
+  transcriptsDir: string;
+  worktreesDir: string;
+  packsDir: string;
+  dbPath: string;
 };
 
 function resolveProjectRoot(): string {
@@ -35,8 +39,15 @@ export function getProjectInfo(): ProjectInfo {
 export function ensureAdeDirs(projectRoot: string): AdePaths {
   const adeDir = path.join(projectRoot, ".ade");
   const logsDir = path.join(adeDir, "logs");
+  const transcriptsDir = path.join(adeDir, "transcripts");
+  const worktreesDir = path.join(adeDir, "worktrees");
+  const packsDir = path.join(adeDir, "packs");
+  const dbPath = path.join(adeDir, "ade.db");
 
   fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(transcriptsDir, { recursive: true });
+  fs.mkdirSync(worktreesDir, { recursive: true });
+  fs.mkdirSync(packsDir, { recursive: true });
 
   // A small marker helps debugging state location quickly.
   try {
@@ -52,6 +63,5 @@ export function ensureAdeDirs(projectRoot: string): AdePaths {
     // Ignore marker failures.
   }
 
-  return { adeDir, logsDir };
+  return { adeDir, logsDir, transcriptsDir, worktreesDir, packsDir, dbPath };
 }
-

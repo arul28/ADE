@@ -3,7 +3,17 @@ import path from "node:path";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { openKvDb } from "./services/state/kvDb";
-import { ensureAdeDirs, getProjectInfo } from "./services/state/projectState";
+import { ensureAdeDirs } from "./services/state/projectState";
+import { readGlobalState, upsertRecentProject, writeGlobalState } from "./services/state/globalState";
+import { createLaneService } from "./services/lanes/laneService";
+import { createSessionService } from "./services/sessions/sessionService";
+import { createPtyService } from "./services/pty/ptyService";
+import { createDiffService } from "./services/diffs/diffService";
+import { createFileService } from "./services/files/fileService";
+import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
+import { IPC } from "../shared/ipc";
+import type { AppContext } from "./services/ipc/registerIpc";
+import fs from "node:fs";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -49,22 +59,149 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 app.whenReady().then(async () => {
-  const project = getProjectInfo();
-  const adePaths = ensureAdeDirs(project.rootPath);
-  const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+  const globalStatePath = path.join(app.getPath("userData"), "ade-state.json");
+  const saved = readGlobalState(globalStatePath);
 
-  logger.info("app.start", { projectRoot: project.rootPath });
+  const envRoot = process.env.ADE_PROJECT_ROOT;
+  const initialCandidate =
+    envRoot && envRoot.trim().length
+      ? path.resolve(envRoot)
+      : saved.lastProjectRoot && fs.existsSync(saved.lastProjectRoot)
+        ? saved.lastProjectRoot
+        : process.env.VITE_DEV_SERVER_URL
+          ? path.resolve(process.cwd(), "..", "..")
+          : path.resolve(app.getPath("userData"), "ade-project");
+
+  const broadcast = (channel: string, payload: unknown) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(channel, payload);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const loadPty = () => {
+    // node-pty is a native dependency; keep the require inside the main process runtime.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require("node-pty") as typeof import("node-pty");
+  };
+
+  let ctxRef!: AppContext;
+
+  const initContextForProjectRoot = async ({
+    projectRoot,
+    baseRef,
+    ensureExclude
+  }: {
+    projectRoot: string;
+    baseRef: string;
+    ensureExclude: boolean;
+  }): Promise<AppContext> => {
+    const adePaths = ensureAdeDirs(projectRoot);
+    const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+
+    logger.info("project.init", { projectRoot, baseRef, ensureExclude });
+
+    const db = await openKvDb(adePaths.dbPath, logger);
+
+    // Avoid surprising git changes; use .git/info/exclude by default.
+    if (ensureExclude) {
+      try {
+        await ensureAdeExcluded(projectRoot);
+      } catch (err) {
+        logger.warn("project.exclude_failed", { projectRoot, err: String(err) });
+      }
+    }
+
+    const project = toProjectInfo(projectRoot, baseRef);
+    const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
+
+    const laneService = createLaneService({
+      db,
+      projectRoot,
+      projectId,
+      defaultBaseRef: baseRef,
+      worktreesDir: adePaths.worktreesDir
+    });
+    const sessionService = createSessionService({ db });
+    const diffService = createDiffService({ laneService });
+    const fileService = createFileService({ laneService });
+
+    const ptyService = createPtyService({
+      projectRoot,
+      transcriptsDir: adePaths.transcriptsDir,
+      laneService,
+      sessionService,
+      logger,
+      broadcastData: (ev) => broadcast(IPC.ptyData, ev),
+      broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
+      loadPty
+    });
+
+    const state = upsertRecentProject(readGlobalState(globalStatePath), project);
+    writeGlobalState(globalStatePath, state);
+
+    return {
+      db,
+      logger,
+      project,
+      projectId,
+      adeDir: adePaths.adeDir,
+      laneService,
+      sessionService,
+      ptyService,
+      diffService,
+      fileService
+    };
+  };
+
+  const closeContext = () => {
+    try {
+      ctxRef.ptyService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      ctxRef.db.flushNow();
+      ctxRef.db.close();
+    } catch {
+      // ignore
+    }
+  };
+
+  const switchProjectFromDialog = async (selectedPath: string) => {
+    const repoRoot = await resolveRepoRoot(selectedPath); // require a real git repo for onboarding.
+    const baseRef = await detectDefaultBaseRef(repoRoot);
+    closeContext();
+    ctxRef = await initContextForProjectRoot({ projectRoot: repoRoot, baseRef, ensureExclude: true });
+    return ctxRef.project;
+  };
+
+  // Initial project: prefer last opened repo; if missing/non-git, start in a minimal local state until onboarding.
+  try {
+    const repoRoot = await resolveRepoRoot(initialCandidate);
+    const baseRef = await detectDefaultBaseRef(repoRoot);
+    ctxRef = await initContextForProjectRoot({ projectRoot: repoRoot, baseRef, ensureExclude: true });
+  } catch {
+    ctxRef = await initContextForProjectRoot({ projectRoot: initialCandidate, baseRef: "main", ensureExclude: false });
+  }
 
   process.on("uncaughtException", (err) => {
-    logger.error("process.uncaught_exception", { err: String(err), stack: err instanceof Error ? err.stack : undefined });
+    ctxRef.logger.error("process.uncaught_exception", {
+      err: String(err),
+      stack: err instanceof Error ? err.stack : undefined
+    });
   });
   process.on("unhandledRejection", (reason) => {
-    logger.error("process.unhandled_rejection", { reason: String(reason) });
+    ctxRef.logger.error("process.unhandled_rejection", { reason: String(reason) });
   });
 
-  const db = await openKvDb(path.join(adePaths.adeDir, "ade.db"), logger);
-
-  registerIpc({ db, logger, project });
+  registerIpc({
+    getCtx: () => ctxRef,
+    switchProjectFromDialog
+  });
 
   await createWindow();
 
@@ -75,9 +212,8 @@ app.whenReady().then(async () => {
   });
 
   app.on("before-quit", () => {
-    logger.info("app.before_quit");
-    db.flushNow();
-    db.close();
+    ctxRef.logger.info("app.before_quit");
+    closeContext();
   });
 });
 

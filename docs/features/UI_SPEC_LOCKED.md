@@ -1,6 +1,6 @@
 # UI Spec (Locked)
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 This is the single source of truth for ADE’s UI structure. It locks:
 
@@ -34,40 +34,38 @@ Implementation note: reusable UI components are inventoried in `UI_COMPONENT_INV
 
 ## 0.1 Visual Direction (MVP)
 
-Locked aesthetic direction for MVP: **old white e-reader**.
+Locked aesthetic direction for MVP: **Maestro on Parchment** (Clean Paper).
 
 Guidelines:
 
-- Off-white / paper backgrounds (avoid pure white).
-- Low-saturation ink colors; emphasize hierarchy with spacing and typography more than color.
-- Borders/separators should feel like thin graphite lines (not “app chrome”).
-- One accent color max (used sparingly for primary actions and active states).
-- Prefer readability over density: generous line-height, clear titles, minimal icon noise.
+- **Clean Paper**: Solid, warm off-white background (`#FDFBF7`) with no noise or gradients. Like fresh stationer's paper.
+- **High-Density Console**: Layouts should feel like a technical console. Full-height panes, explicit borders.
+- **Crisp Borders**: Borders are 1px solid (`#DBD8D3`), acting as physical fold lines or dividers. No soft shadows.
+- **Typography as Interface**:
+  - **Headers**: Serif (`ui-serif`) for a "Document" / "Narrative" feel.
+  - **Data/UI**: Monospace (`ui-monospace`) for high-density information, status, and controls.
+- **Accents**: "Sealing Wax" Red & "Ink" Blue. Used for active states and critical alerts.
+- **Physicality**: Elements should feel like distinct cards or sheets of paper resting on a desk.
 
 ## 1. App Shell
 
-### 1.1 Main Regions
+### 1.1 Main Regions (Console Layout)
 
-- **Top bar** (always visible)
-  - Project selector (repo name + path)
-  - Current base branch indicator (e.g., `main`)
-  - Global status chips:
-    - hosted sync status (idle/syncing/error)
-    - job status (e.g., N running)
-    - processes running (N running)
-  - Global actions:
-    - Command palette
-    - Create lane
-    - Start terminal (in selected lane)
-- **Left nav** (tabs)
-  - Projects (Home)
-  - Lanes
-  - Terminals
-  - Conflicts
-  - PRs
-  - History
-  - Settings
-- **Main content** (tab content area)
+- **Top bar** (Integrated, not floating)
+  - Project selector (repo name)
+  - Global status & Command palette trigger
+  - *Note: Top bar separates the "Paper" flow from the OS chrome.*
+- **Left nav** (Slim Icon Rail - 50px)
+  - Vertical rail of icon-only tabs for high efficiency:
+    - Projects
+    - Lanes
+    - Terminals
+    - Conflicts
+    - PRs
+    - History
+    - Settings
+- **Main content** (Canvas)
+  - Full-height, distinct pane separated from nav by a border.
 
 ### 1.2 Lane Context (Cross-Tab Overlap)
 
@@ -99,19 +97,22 @@ Rule: the user should never be forced to leave the Lanes tab to do common lane a
 
 All panes are resizable. Layout is persisted per project.
 
-### 2.2 Lane List Card/Row Requirements
+### 2.2 Lane List Card/Row Requirements (Index Card)
 
-Each lane row must show at-a-glance:
+Each lane row is designed as a **High-Density Index Card**:
 
-- name + optional description
-- dirty/clean indicator
-- ahead/behind counts vs base
-- test status badge (last run)
-- PR status badge (if linked)
-- conflict badges (GitButler-like):
-  - predicted conflicts badge + count
-  - active conflict badge
-  - blocked-by-parent badge (if stacked)
+- **Header**:
+  - Name (Serif, Semibold) + Git Branch Icon
+  - Description (Monospace, truncated)
+- **Actions (Hover)**:
+  - New Terminal, Open Folder, Rename, Archive (appear on card hover)
+- **Footer (Metadata Grid)**:
+  - **Sync**: Ahead/Behind counts (Monospace, directional arrows)
+  - **State**: Dirty/Clean status (Uppercase Monospace)
+  - **Activity**: Last active timestamp
+- **Visuals**:
+  - 1px border.
+  - Active state: "Sealing Wax" accent border + subtle background tint.
 
 Primary row actions:
 
@@ -193,17 +194,25 @@ This tab is the “SoloTerm-like” project control plane and the default home f
   - change/open repo (onboarding flow)
   - base branch selection (V1 if needed; MVP can be read-only)
   - open `.ade/` folder (escape hatch)
-- stack profile selector (dev/test/e2e) (if multiple)
+- stack button row:
+  - named subset buttons (for example `Backend`, `Frontend`, `Full Stack`)
+  - each button maps to an explicit process set
+  - each button shows aggregate state (`running`, `partial`, `stopped`, `error`)
 - “Start all” / “Stop all”
 
 ### 4.2 Managed Processes Panel
 
 - list of managed processes
 - per process:
-  - start/stop/restart
+  - start/stop/restart/kill
   - readiness indicator
   - ports (best-effort)
+  - status details (PID, uptime, last exit)
   - logs viewer (tail + search)
+
+Home tab requirement:
+
+- user must be able to view every managed process and force-kill from this tab without leaving Home.
 
 ### 4.3 Test Suites Panel (Buttons)
 
@@ -215,7 +224,12 @@ This tab is the “SoloTerm-like” project control plane and the default home f
 
 ### 4.4 Config Surface
 
-MVP: allow editing processes/tests via UI that writes to `.ade/` config files (or direct DB with export).
+MVP: allow editing processes/stack buttons/tests via UI that writes to `.ade/` config files.
+
+Config split:
+
+- shared defaults in `.ade/ade.yaml`
+- machine-specific overrides in `.ade/local.yaml`
 
 See `PROCESSES_AND_TESTS.md`.
 

@@ -3,6 +3,7 @@ import * as Tabs from "@radix-ui/react-tabs";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { PaneHeader } from "../ui/PaneHeader";
+import { LaneTerminalsPanel } from "./LaneTerminalsPanel";
 
 const tabTrigger =
   "px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:border-b-2 data-[state=active]:border-accent";
@@ -28,7 +29,7 @@ export function LaneInspector() {
         </Tabs.List>
         <div className="flex-1 overflow-auto p-3">
           <Tabs.Content value="terminals">
-            <EmptyState title="Terminals (stub)" description="Phase 0 wires xterm + PTY IPC." />
+            <LaneTerminalsPanel />
           </Tabs.Content>
           <Tabs.Content value="packs">
             <EmptyState title="Packs (stub)" description="Phase 3 adds deterministic packs and viewer." />

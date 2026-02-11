@@ -1,14 +1,40 @@
 import React from "react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
+import { Button } from "../ui/Button";
+import { ExternalLink, FolderOpen } from "lucide-react";
 
 export function ProjectHomePage() {
   const project = useAppStore((s) => s.project);
+  const openRepo = useAppStore((s) => s.openRepo);
 
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
       <div className="text-sm font-semibold">Projects (Home)</div>
       <div className="mt-1 text-sm text-muted-fg">Project-wide management, processes, and test buttons live here.</div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          onClick={() => {
+            openRepo().catch(() => {});
+          }}
+          title="Open a git repo"
+        >
+          <FolderOpen className="h-4 w-4" />
+          Open repo
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => {
+            window.ade.project.openAdeFolder().catch(() => {});
+          }}
+          title="Open .ade folder (escape hatch)"
+        >
+          <ExternalLink className="h-4 w-4" />
+          Open .ade
+        </Button>
+      </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
         <div className="rounded-lg border border-border bg-card/70 p-3">
@@ -31,4 +57,3 @@ export function ProjectHomePage() {
     </div>
   );
 }
-

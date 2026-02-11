@@ -1,6 +1,6 @@
 # Implementation Plan
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 This plan is the build order for ADE MVP. It is intentionally explicit about:
 
@@ -73,6 +73,8 @@ Verification:
 
 ## Phase 0: Terminals + Session Tracking (Gating)
 
+Status: DONE (2026-02-11)
+
 References:
 
 - Terminals: `features/TERMINALS_AND_SESSIONS.md`
@@ -129,12 +131,14 @@ Exit criteria:
 
 Checklist:
 
-- [ ] IPC channels for PTY streaming are implemented and typed
-- [ ] `TerminalSessionRow` list renders 50+ sessions without UI lag (virtualize if needed)
-- [ ] Transcript capture and basic redaction toggle exists (default off for uploads)
-- [ ] Lane-scoped session list works in the Lanes inspector Terminals tab
+- [x] IPC channels for PTY streaming are implemented and typed
+- [x] Global Terminals list supports high session volume (filters + lightweight rows)
+- [x] Transcript capture persists to local `.ade/transcripts/` (local-only by default)
+- [x] Lane-scoped session list works in the Lanes inspector Terminals tab
 
 ## Phase 1: Project Onboarding + Lanes Cockpit + Diffs
+
+Status: DONE (2026-02-11)
 
 References:
 
@@ -185,53 +189,76 @@ Exit criteria:
 
 Checklist:
 
-- [ ] Lane list shows badges per `UI_SPEC_LOCKED.md` (dirty, ahead/behind placeholders OK)
-- [ ] Lane “open folder” works
-- [ ] Lane inspector exists with sub-tabs (Terminals/Packs/Conflicts/PR)
-- [ ] Diff viewer for working tree + staged
+- [x] Lane list shows badges per `UI_SPEC_LOCKED.md` (dirty, ahead/behind)
+- [x] Lane “open folder” works
+- [x] Lane inspector exists with sub-tabs (Terminals/Packs/Conflicts/PR)
+- [x] Diff viewer for working tree + staged (Monaco diff + quick edit for unstaged files)
 
 ## Phase 2: Project Home (Processes + Test Buttons) (SoloTerm-like)
+
+Status: NOT STARTED (UI stub exists; implementation pending)
 
 References:
 
 - Processes/tests: `features/PROCESSES_AND_TESTS.md`
 - Locked UI spec: `features/UI_SPEC_LOCKED.md`
 - Configuration: `architecture/CONFIGURATION.md`
+- Data model: `architecture/DATA_MODEL.md`
+- Security/privacy: `architecture/SECURITY_PRIVACY.md`
 
 Scope:
 
-- Provide global project process runner and test buttons with persistent config.
+- Provide a SoloTerm-like project control plane:
+  - process visibility and lifecycle controls (including kill)
+  - stack buttons (`Backend`, `Frontend`, `Full Stack`, etc.)
+  - test suite buttons with persisted run history
+  - persistent config with shared + local overrides
 
 Desktop core:
 
 - Implement `processService`:
-  - spawn/stop/restart managed processes
+  - spawn/stop/restart/kill managed processes
   - capture logs to `.ade/logs/`
-  - readiness checks (V1; MVP optional)
+  - runtime status events + persisted process run records
+  - readiness checks (MVP supports none/port/logRegex)
+  - stack-button start/stop orchestration
 - Implement `testService`:
   - run test suites
-  - store run history and exit codes
+  - store run history, duration, timestamps, and exit codes
+  - persist logs to `.ade/logs/tests/`
+  - emit live run events for Home tab updates
+- Implement `projectConfigService`:
+  - read/validate/save `.ade/ade.yaml` + `.ade/local.yaml`
+  - merge effective config
+  - trust confirmation flow when shared config changes
 
 Renderer UI:
 
 - Projects (Home) tab:
-  - managed process list + log viewer
-  - stack profile selector (even if single default)
-  - “Start all / Stop all”
+  - stack button row + `Start all`/`Stop all`
+  - managed process list + per-process controls (`Start/Stop/Restart/Kill`)
+  - process detail/log viewer (tail + search)
   - test suite buttons with last run badges
 - Settings/config:
-  - edit process/test definitions (UI writes `.ade/` config)
+  - edit process definitions, stack buttons, and test suites
+  - write validated config to `.ade/` files
 
 Exit criteria:
 
-- Can start/stop the project stack from one place.
-- Can run unit/lint tests via buttons and see last run status.
+- Can start/stop/restart/kill any managed process from Home tab.
+- Can execute stack buttons that target configured process subsets.
+- Can run unit/lint/integration/e2e/custom test suites via buttons and see persisted last run status.
+- Process/test logs are searchable in UI and persisted to `.ade/logs/`.
 
 Checklist:
 
-- [ ] Projects (Home) tab matches locked UI layout
-- [ ] Test buttons exist and persist across restart
-- [ ] Logs viewer supports search
+- [ ] `processService` supports start/stop/restart/kill + runtime event streaming
+- [ ] Stack button engine supports named process subsets + start all/stop all
+- [ ] `testService` supports suite runs with persisted history/logs
+- [ ] Home tab renders process controls, stack buttons, and test suite buttons
+- [ ] Process/test config editor writes validated `.ade/` config
+- [ ] Trust prompt blocks execution of changed shared config until confirmed
+- [ ] Logs viewer supports search across process and test logs
 
 ## Phase 3: Deterministic Packs (Always In Sync)
 

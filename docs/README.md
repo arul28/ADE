@@ -6,6 +6,7 @@ This folder contains the product requirements, feature specs, system architectur
 
 - `PRD.md`: overall product requirements and scope
 - `IMPLEMENTATION_PLAN.md`: build order and milestones
+- `walkthrough.md`: current UI architecture/aesthetic walkthrough and migration notes
 
 ## Feature Specs
 

@@ -1,6 +1,6 @@
 # UI Component Inventory (Locked)
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 This doc lists the reusable UI components ADE should build and reuse across tabs. It is intended to:
 
@@ -28,12 +28,12 @@ In `/Users/arul/ADE/apps/desktop/src/renderer/components/`:
 
 ## 2. Shell + Navigation
 
-- `AppShell`
-- `TopBar`
+- `AppShell` (Console Grid)
+- `TopBar` (Integrated)
 - `ProjectSelector`
-- `GlobalStatusChips` (sync/jobs/processes)
-- `TabNav`
-- `CommandPalette` (MVP can be a modal; V1 richer)
+- `GlobalStatusChips`
+- `TabNav` (Slim Icon Rail - 50px)
+- `CommandPalette`
 
 ## 3. Layout Primitives
 
@@ -47,13 +47,11 @@ These are required early to match the locked 3-pane cockpit.
 ## 4. Lanes UI
 
 - `LaneList`
-- `LaneRow`
-- `LaneStatusBadges`:
-  - dirty/clean
-  - ahead/behind
-  - tests
-  - PR
-  - conflicts (predicted/active/blocked)
+- `LaneRow` (High-Density Index Card)
+- `LaneStatusBadges` (Metadata Grid):
+  - dirty/clean (Mono)
+  - ahead/behind (Mono)
+  - tests/PR/active timestamps
 - `StackGraphMini` (left pane)
 - `LaneDetail` (center pane container)
 - `ChangesDiffView` (working/staged/commits)
@@ -77,18 +75,22 @@ These are required early to match the locked 3-pane cockpit.
 ## 6. Project Home UI (Project Management + Processes + Tests)
 
 - `ProjectHome` (tab container)
-- `ProjectHeader` (repo/path/base branch + stack profile selector + start/stop all)
+- `ProjectHeader` (repo/path/base branch + stack button row + start/stop all)
 - `ProjectActions` (open/change repo, open `.ade/` folder, export config)
-- `StackProfileSelector`
+- `StackButtonsBar` (named process subsets like Backend/Frontend/Full Stack)
+- `StackButton`
 - `ProcessList`
 - `ProcessCard`
 - `ProcessStatusChip` (running/stopped/exited + readiness)
+- `ProcessRuntimeMeta` (pid/uptime/last-exit)
+- `ProcessControls` (start/stop/restart/kill)
 - `ProcessLogsViewer` (tail + search)
 - `PortsPanel` (V1; best-effort detection)
 - `TestSuitesPanel`
 - `TestSuiteButton`
+- `TestRunMeta` (last status/duration/time)
 - `RunHistoryList` (tests/process restarts)
-- `ConfigEditor` (process/test definitions)
+- `ConfigEditor` (process/stack button/test definitions)
 
 ## 7. Packs UI
 

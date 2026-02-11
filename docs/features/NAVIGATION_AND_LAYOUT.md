@@ -1,6 +1,6 @@
 # Navigation and Layout
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
 This spec locks the top-level UI structure (tabs) and how features "overlap" across tabs.
 
@@ -86,10 +86,13 @@ The Projects (Home) tab provides:
 - Project overview header:
   - repo name/path
   - active base branch
-  - stack profile selection (if multiple)
+  - stack button row (for example Backend/Frontend/Full Stack)
+  - global `Start all` / `Stop all`
 - Managed processes list:
   - status (running/stopped/exited)
+  - lifecycle controls (start/stop/restart/kill)
   - readiness
+  - pid/uptime/last exit
   - ports
   - logs quick view
 - Test suite buttons:
