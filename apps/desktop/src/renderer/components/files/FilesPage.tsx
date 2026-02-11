@@ -1,16 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookOpenText,
   ChevronDown,
   ChevronRight,
+  FileArchive,
+  FileBraces,
+  FileCog,
   FileCode2,
+  FileImage,
   FilePlus2,
+  FileSpreadsheet,
+  FileText,
   Folder,
   FolderOpen,
   FolderPlus,
   Save,
   Search,
-  Sparkles
+  Sparkles,
+  TerminalSquare
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type {
@@ -22,6 +30,7 @@ import type {
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
+import { useAppStore } from "../../state/appStore";
 
 type OpenTab = {
   path: string;
@@ -116,8 +125,65 @@ function parentDirOfPath(filePath: string): string {
   return normalized.slice(0, idx);
 }
 
+function getFileIcon(fileName: string): { icon: React.ComponentType<{ className?: string }>; className: string } {
+  const lower = fileName.toLowerCase();
+  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
+
+  if (
+    ext === ".ts" ||
+    ext === ".tsx" ||
+    ext === ".mts" ||
+    ext === ".cts" ||
+    ext === ".js" ||
+    ext === ".jsx" ||
+    ext === ".mjs" ||
+    ext === ".cjs"
+  ) {
+    return { icon: FileCode2, className: "text-sky-500" };
+  }
+  if (ext === ".json" || ext === ".jsonc") {
+    return { icon: FileBraces, className: "text-emerald-500" };
+  }
+  if (ext === ".yml" || ext === ".yaml" || ext === ".toml" || ext === ".ini") {
+    return { icon: FileCog, className: "text-orange-500" };
+  }
+  if (ext === ".md" || ext === ".mdx") {
+    return { icon: BookOpenText, className: "text-amber-500" };
+  }
+  if (ext === ".css" || ext === ".scss" || ext === ".sass" || ext === ".less") {
+    return { icon: FileCode2, className: "text-indigo-500" };
+  }
+  if (ext === ".sh" || ext === ".bash" || ext === ".zsh" || ext === ".fish" || ext === ".ps1") {
+    return { icon: TerminalSquare, className: "text-teal-500" };
+  }
+  if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".gif" || ext === ".webp" || ext === ".svg" || ext === ".ico") {
+    return { icon: FileImage, className: "text-fuchsia-500" };
+  }
+  if (ext === ".zip" || ext === ".tar" || ext === ".gz" || ext === ".tgz" || ext === ".rar" || ext === ".7z") {
+    return { icon: FileArchive, className: "text-rose-500" };
+  }
+  if (ext === ".csv" || ext === ".tsv" || ext === ".xls" || ext === ".xlsx") {
+    return { icon: FileSpreadsheet, className: "text-green-600" };
+  }
+  return { icon: FileText, className: "text-muted-fg" };
+}
+
+function changeStatusClasses(changeStatus: FileTreeNode["changeStatus"]): { dot: string; text: string } {
+  if (changeStatus === "A") {
+    return { dot: "bg-emerald-500", text: "text-emerald-600" };
+  }
+  if (changeStatus === "D") {
+    return { dot: "bg-rose-500", text: "text-rose-600" };
+  }
+  if (changeStatus === "M") {
+    return { dot: "bg-amber-500", text: "text-amber-600" };
+  }
+  return { dot: "bg-border", text: "text-muted-fg" };
+}
+
 export function FilesPage() {
   const navigate = useNavigate();
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string>("");
@@ -162,6 +228,18 @@ export function FilesPage() {
     [openTabs]
   );
 
+  const switchWorkspace = useCallback((nextWorkspaceId: string) => {
+    if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
+    if (hasUnsavedTabs) {
+      const ok = window.confirm("You have unsaved changes. Switch workspace anyway?");
+      if (!ok) return;
+    }
+    setWorkspaceId(nextWorkspaceId);
+    setOpenTabs([]);
+    setActiveTabPath(null);
+    setSelectedNodePath(null);
+  }, [workspaceId, hasUnsavedTabs]);
+
   const activeContextPath = contextMenu?.nodePath ?? selectedNodePath ?? activeTabPath;
   const nodeByPath = useMemo(() => {
     const out = new Map<string, FileTreeNode>();
@@ -175,6 +253,15 @@ export function FilesPage() {
     return out;
   }, [tree]);
   const activeContextNodeType = contextMenu?.nodeType ?? (activeContextPath ? nodeByPath.get(activeContextPath)?.type : undefined);
+  const laneWorkspaces = useMemo(() => workspaces.filter((ws) => ws.kind !== "primary"), [workspaces]);
+  const suggestedLaneWorkspace = useMemo(() => {
+    if (!laneWorkspaces.length) return null;
+    if (selectedLaneId) {
+      const fromSelectedLane = laneWorkspaces.find((ws) => ws.laneId === selectedLaneId);
+      if (fromSelectedLane) return fromSelectedLane;
+    }
+    return laneWorkspaces[0] ?? null;
+  }, [laneWorkspaces, selectedLaneId]);
 
   useEffect(() => {
     activeTabPathRef.current = activeTabPath;
@@ -581,12 +668,16 @@ export function FilesPage() {
       {nodes.map((node) => {
         const isExpanded = expanded.has(node.path);
         const isActive = activeTabPath === node.path || selectedNodePath === node.path;
+        const statusClasses = changeStatusClasses(node.changeStatus ?? null);
+        const fileIcon = node.type === "file" ? getFileIcon(node.name) : null;
+        const FileIcon = fileIcon?.icon;
+
         return (
           <div key={node.path}>
             <button
               className={cx(
-                "flex h-6 w-full items-center gap-1.5 px-2 text-left text-xs hover:bg-muted/60",
-                isActive && "bg-muted/80",
+                "group relative flex h-6 w-full items-center gap-1.5 rounded-sm px-2 text-left text-xs text-muted-fg transition-colors hover:bg-muted/70 hover:text-fg",
+                isActive && "bg-accent/10 text-fg ring-1 ring-accent/30",
               )}
               style={{ paddingLeft: `${8 + level * 12}px` }}
               onClick={() => {
@@ -615,20 +706,32 @@ export function FilesPage() {
               }}
               title={node.path}
             >
+              {level > 0 ? (
+                <span className="pointer-events-none absolute inset-y-0 left-0">
+                  {Array.from({ length: level }).map((_, idx) => (
+                    <span
+                      key={`${node.path}:guide:${idx}`}
+                      className="absolute inset-y-0 w-px bg-border/45 transition-colors group-hover:bg-border/70"
+                      style={{ left: `${8 + idx * 12 + 4}px` }}
+                    />
+                  ))}
+                </span>
+              ) : null}
+              {isActive ? <span className="absolute inset-y-1 left-0 w-[2px] rounded bg-accent" /> : null}
               {node.type === "directory" ? (
                 <>
-                  {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-fg" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-fg" />}
-                  {isExpanded ? <FolderOpen className="h-3.5 w-3.5 text-muted-fg" /> : <Folder className="h-3.5 w-3.5 text-muted-fg" />}
+                  {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" />}
+                  {isExpanded ? <FolderOpen className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" /> : <Folder className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" />}
                 </>
               ) : (
                 <>
                   <span className="w-3.5" />
-                  <FileCode2 className="h-3.5 w-3.5 text-muted-fg" />
+                  {FileIcon ? <FileIcon className={cx("h-3.5 w-3.5", fileIcon?.className)} /> : <FileText className="h-3.5 w-3.5 text-muted-fg" />}
                 </>
               )}
               <span className="truncate">{node.name}</span>
-              {node.type === "directory" && node.changeStatus ? <span className="ml-auto h-1.5 w-1.5 rounded-full bg-amber-300" /> : null}
-              {node.type === "file" && node.changeStatus ? <span className="ml-auto text-[10px] text-amber-300">{node.changeStatus}</span> : null}
+              {node.type === "directory" && node.changeStatus ? <span className={cx("ml-auto h-1.5 w-1.5 rounded-full", statusClasses.dot)} /> : null}
+              {node.type === "file" && node.changeStatus ? <span className={cx("ml-auto text-[10px]", statusClasses.text)}>{node.changeStatus}</span> : null}
             </button>
             {node.type === "directory" && isExpanded && node.children?.length ? renderTree(node.children, level + 1) : null}
           </div>
@@ -673,16 +776,7 @@ export function FilesPage() {
           <div className="text-sm font-semibold">Files</div>
           <select
             value={workspaceId}
-            onChange={(e) => {
-              if (hasUnsavedTabs) {
-                const ok = window.confirm("You have unsaved changes. Switch workspace anyway?");
-                if (!ok) return;
-              }
-              setWorkspaceId(e.target.value);
-              setOpenTabs([]);
-              setActiveTabPath(null);
-              setSelectedNodePath(null);
-            }}
+            onChange={(e) => switchWorkspace(e.target.value)}
             className="h-8 rounded border border-border bg-card/70 px-2 text-xs"
           >
             {workspaces.map((ws) => (
@@ -717,9 +811,27 @@ export function FilesPage() {
         </div>
       </div>
 
-      {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-        <div className="border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
-          Editing is disabled for Primary workspace by default. Use <span className="font-semibold">Trust and enable edits</span> to unlock writes.
+      {(activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace) ? (
+        <div className={cx(
+          "flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs",
+          activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit
+            ? "border-amber-300 bg-amber-50 text-amber-900"
+            : "border-orange-300 bg-orange-50 text-orange-900"
+        )}>
+          {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
+            <span>
+              Editing is disabled for Primary workspace by default. Use <span className="font-semibold">Trust and enable edits</span> to unlock writes.
+            </span>
+          ) : (
+            <span>
+              You are editing directly in Primary workspace. Lane workspaces are safer for branch-scoped edits.
+            </span>
+          )}
+          {suggestedLaneWorkspace ? (
+            <Button size="sm" variant="outline" onClick={() => switchWorkspace(suggestedLaneWorkspace.id)}>
+              Switch to lane: {suggestedLaneWorkspace.name}
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

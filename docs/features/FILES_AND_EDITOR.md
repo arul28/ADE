@@ -332,7 +332,7 @@ Future enhancement: Persist editor state to `.ade/editor-state.json` so that ope
 | FILES-001 | File tree listing service (respect .gitignore) | DONE |
 | FILES-002 | File explorer component (tree view) | DONE |
 | FILES-003 | Workspace scope selector | DONE |
-| FILES-004 | File icons by type | PARTIAL — generic icons only, no extension-aware icons |
+| FILES-004 | File icons by type | DONE |
 | FILES-005 | Change indicators in tree (M/A/D) | DONE |
 | FILES-006 | Open file in Monaco editor | DONE |
 | FILES-007 | Monaco syntax highlighting and theming | DONE |
@@ -350,7 +350,7 @@ Future enhancement: Persist editor state to `.ade/editor-state.json` so that ope
 | FILES-010 | Diff mode (staged vs unstaged) | DONE |
 | FILES-011 | Diff mode (commit comparison) | DONE |
 | FILES-012 | Conflict mode (3-way merge view) | DONE |
-| FILES-017 | Protected branch warnings | PARTIAL — read-only banner exists, but lacks "switch to lane" suggestion |
+| FILES-017 | Protected branch warnings | DONE |
 
 ### Phase 3 — Advanced Editor Features (DONE)
 
@@ -359,4 +359,4 @@ Future enhancement: Persist editor state to `.ade/editor-state.json` so that ope
 | FILES-016 | File watching for external changes | DONE |
 | FILES-019 | Search across files (Ctrl+Shift+F) | DONE |
 | FILES-020 | Go to file (Ctrl+P) | DONE |
-| FILES-021 | Zed-inspired file tree styling (compact rows, minimal chrome, keyboard-driven) | PARTIAL — compact rows done, missing indentation guides and some hover state refinements |
+| FILES-021 | Zed-inspired file tree styling (compact rows, minimal chrome, keyboard-driven) | DONE |

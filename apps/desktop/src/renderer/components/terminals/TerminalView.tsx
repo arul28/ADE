@@ -5,14 +5,24 @@ import "xterm/css/xterm.css";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 
-function readThemeColor(varName: string, fallback: string): string {
-  try {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-    return v.length ? v : fallback;
-  } catch {
-    return fallback;
+type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
+
+const terminalThemes: Record<"light" | "dark", XtermTheme> = {
+  light: {
+    background: "#F2F0ED",
+    foreground: "#1C1917",
+    cursor: "#C22323",
+    cursorAccent: "#FDFBF7",
+    selectionBackground: "rgba(194, 35, 35, 0.16)"
+  },
+  dark: {
+    background: "#1A1A1A",
+    foreground: "#EDEDED",
+    cursor: "#F59E0B",
+    cursorAccent: "#0A0A0A",
+    selectionBackground: "rgba(245, 158, 11, 0.26)"
   }
-}
+};
 
 export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; sessionId: string; className?: string }) {
   const appTheme = useAppStore((s) => s.theme);
@@ -23,17 +33,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null);
   const [exited, setExited] = useState<number | null>(null);
 
-  const termTheme = useMemo(
-    () => ({
-      // Use concrete colors from current CSS vars (Tailwind v4 "Clean Paper" tokens).
-      background: readThemeColor("--color-muted", "#F2F0ED"),
-      foreground: readThemeColor("--color-fg", "#1C1917"),
-      cursor: readThemeColor("--color-accent", "#C22323"),
-      cursorAccent: readThemeColor("--color-bg", "#FDFBF7"),
-      selectionBackground: "rgba(194, 35, 35, 0.16)"
-    }),
-    [appTheme]
-  );
+  const termTheme = useMemo(() => terminalThemes[appTheme], [appTheme]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -136,7 +136,13 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       fitRef.current = null;
       resizeObsRef.current = null;
     };
-  }, [ptyId, sessionId, termTheme]);
+  }, [ptyId, sessionId]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options = { ...term.options, theme: termTheme ? { ...termTheme } : undefined };
+  }, [termTheme]);
 
   return (
     <div

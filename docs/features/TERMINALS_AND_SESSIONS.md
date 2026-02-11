@@ -545,7 +545,7 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-021 | Tiling layout for multiple terminals | TODO |
 | TERM-022 | Split horizontal/vertical | TODO |
 | TERM-023 | Drag to rearrange tiles | TODO |
-| TERM-024 | Terminal theme sync (dark/light) | TODO |
+| TERM-024 | Terminal theme sync (dark/light) | DONE |
 | TERM-025 | Session goal/purpose tagging | TODO |
 | TERM-026 | Tool type detection (Claude, Cursor, etc.) | TODO |
 | TERM-027 | Session transcript search | TODO |

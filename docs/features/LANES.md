@@ -341,8 +341,8 @@ lanes (
 | LANES-031 | Merge simulation from lane context menu | TODO |
 | LANES-032 | Lane profiles (preset configs per lane type) | TODO |
 | LANES-033 | Lane overlay policies | TODO |
-| LANES-034 | Keyboard shortcuts for lane navigation | TODO |
-| LANES-035 | Lane search/filter | TODO |
+| LANES-034 | Keyboard shortcuts for lane navigation | DONE |
+| LANES-035 | Lane search/filter | DONE |
 | LANES-036 | Amend commit | TODO |
 | LANES-037 | Branch create/delete/rename from lane | TODO |
 | LANES-038 | Reset (soft/mixed/hard) with confirmation | TODO |

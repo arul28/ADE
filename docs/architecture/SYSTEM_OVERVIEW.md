@@ -212,12 +212,18 @@ Real-time events (PTY data, process status changes, test run updates) are broadc
 - Job engine (queue, deduplication, sequential processing)
 - Layout persistence (panel sizes via KV store)
 
-### In Progress (Phase 3 — Files Tab & UI Polish)
+### Completed (Phase 3 — Files Tab & UI Polish)
 
 - Files tab with full workspace file tree, Monaco editor, multi-tab editing, quick-open, text search
 - File service expanded: listWorkspaces, listTree, readFile, writeText, create, rename, delete, watchWorkspace, quickOpen, searchText
 - File watcher service (chokidar-based, debounced change events)
 - File search index service (in-memory cooperative indexing with fuzzy path scoring)
+- Extension-aware file icons and color-coded change status indicators
+- Zed-inspired file tree styling (indentation guides, accent highlights, refined hover states)
+- Protected branch warnings with lane workspace switch suggestion
+- Lane search/filter with token-based queries (is:dirty, is:pinned, type:worktree)
+- Lane keyboard navigation (j/k, arrows, Enter, Escape, Cmd+F)
+- Terminal theme sync (dark/light xterm.js themes without PTY recreation)
 - Guest mode (no-account usage with local features only)
 - Guest mode banner (persistent amber bar with provider setup link)
 - Untracked terminal sessions (tracked: false support)

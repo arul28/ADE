@@ -428,6 +428,6 @@ All tasks for this feature are **TODO** — implementation has not yet begun.
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | TODO |
+| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | TODO — **deferred to Phase 6** (requires Phase 4 stacks) |
 | CONF-023 | Batch conflict assessment (all-lanes report) | TODO |
 | CONF-024 | Conflict notification/alerts (in-app and system) | TODO |
