@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Square } from "lucide-react";
 import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -20,6 +20,7 @@ export function TerminalsPage() {
   const [filterLaneId, setFilterLaneId] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<TerminalSessionStatus | "all">("all");
   const [q, setQ] = useState("");
+  const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
 
   const refresh = async () => {
     setLoading(true);
@@ -75,15 +76,70 @@ export function TerminalsPage() {
     });
   }, [sessions, filterLaneId, filterStatus, q]);
 
+  const runningSessions = useMemo(
+    () => sessions.filter((s) => s.status === "running" && Boolean(s.ptyId)),
+    [sessions]
+  );
+
+  const markPtyClosed = (ptyId: string) => {
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.ptyId === ptyId
+          ? { ...session, ptyId: null, status: "disposed", endedAt: new Date().toISOString(), exitCode: null }
+          : session
+      )
+    );
+  };
+
+  const closeSession = async (ptyId: string) => {
+    setClosingPtyIds((prev) => {
+      if (prev.has(ptyId)) return prev;
+      const next = new Set(prev);
+      next.add(ptyId);
+      return next;
+    });
+    markPtyClosed(ptyId);
+    try {
+      await window.ade.pty.dispose({ ptyId });
+    } finally {
+      setClosingPtyIds((prev) => {
+        if (!prev.has(ptyId)) return prev;
+        const next = new Set(prev);
+        next.delete(ptyId);
+        return next;
+      });
+      await refresh();
+    }
+  };
+
+  const closeRunning = async () => {
+    const ptyIds = runningSessions
+      .map((session) => session.ptyId)
+      .filter((ptyId): ptyId is string => Boolean(ptyId));
+    await Promise.allSettled(ptyIds.map((ptyId) => closeSession(ptyId)));
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
       <PaneHeader
         title="Terminals"
         meta={loading ? "Loading…" : `${filtered.length} sessions`}
         right={
-          <Button variant="ghost" size="sm" title="Refresh sessions" onClick={() => refresh().catch(() => {})}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={runningSessions.length === 0}
+              title={runningSessions.length ? "Close all running sessions" : "No running sessions"}
+              onClick={() => closeRunning().catch(() => {})}
+            >
+              <Square className="h-4 w-4" />
+              Close Running ({runningSessions.length})
+            </Button>
+            <Button variant="ghost" size="sm" title="Refresh sessions" onClick={() => refresh().catch(() => {})}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
         }
       />
 
@@ -156,6 +212,21 @@ export function TerminalsPage() {
                   </div>
 
                   <div className="flex shrink-0 items-center gap-2">
+                    {s.status === "running" && s.ptyId ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={closingPtyIds.has(s.ptyId)}
+                        onClick={() => {
+                          const ptyId = s.ptyId;
+                          if (!ptyId) return;
+                          closeSession(ptyId).catch(() => {});
+                        }}
+                        title="Close terminal session"
+                      >
+                        {closingPtyIds.has(s.ptyId) ? "Closing…" : "Close"}
+                      </Button>
+                    ) : null}
                     <Button
                       variant="outline"
                       size="sm"

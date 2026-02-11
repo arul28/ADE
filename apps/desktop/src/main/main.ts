@@ -13,6 +13,10 @@ import { createFileService } from "./services/files/fileService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
 import { createTestService } from "./services/tests/testService";
+import { createOperationService } from "./services/history/operationService";
+import { createGitOperationsService } from "./services/git/gitOperationsService";
+import { createPackService } from "./services/packs/packService";
+import { createJobEngine } from "./services/jobs/jobEngine";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -139,6 +143,25 @@ app.whenReady().then(async () => {
       logger
     });
 
+    const operationService = createOperationService({ db, projectId });
+
+    const packService = createPackService({
+      db,
+      logger,
+      projectRoot,
+      projectId,
+      packsDir: adePaths.packsDir,
+      laneService,
+      sessionService,
+      projectConfigService,
+      operationService
+    });
+
+    const jobEngine = createJobEngine({
+      logger,
+      packService
+    });
+
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
@@ -147,7 +170,19 @@ app.whenReady().then(async () => {
       logger,
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
+      onSessionEnded: ({ laneId, sessionId }) => {
+        jobEngine.onSessionEnded({ laneId, sessionId });
+      },
       loadPty
+    });
+
+    const gitService = createGitOperationsService({
+      laneService,
+      operationService,
+      logger,
+      onHeadChanged: ({ laneId, reason }) => {
+        jobEngine.onHeadChanged({ laneId, reason });
+      }
     });
 
     const processService = createProcessService({
@@ -173,6 +208,11 @@ app.whenReady().then(async () => {
     const state = upsertRecentProject(readGlobalState(globalStatePath), project);
     writeGlobalState(globalStatePath, state);
 
+    // Keep project pack initialized even before first terminal session.
+    void packService.refreshProjectPack({ reason: "project_init" }).catch((err: unknown) => {
+      logger.warn("packs.project_init_failed", { err: String(err) });
+    });
+
     return {
       db,
       logger,
@@ -184,6 +224,9 @@ app.whenReady().then(async () => {
       ptyService,
       diffService,
       fileService,
+      operationService,
+      gitService,
+      packService,
       projectConfigService,
       processService,
       testService

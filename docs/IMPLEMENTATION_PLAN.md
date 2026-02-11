@@ -45,7 +45,7 @@ Renderer UI:
 
 - Implement `AppShell` with:
   - top bar (project selector placeholder)
-  - left tab nav (all tabs exist)
+  - left tab nav (initial core tabs exist; feature tabs can be added in later phases)
   - main content area
 - Implement Lanes cockpit layout skeleton:
   - 3 resizable panes + right inspector with sub-tabs
@@ -58,7 +58,7 @@ Persistence:
 
 Exit criteria:
 
-- App launches and shows all tabs per `UI_SPEC_LOCKED.md`.
+- App launches and shows initial core shell/navigation with tab routing.
 - Resizable 3-pane layout works and persists after restart (even with placeholder content).
 
 Checklist:
@@ -200,6 +200,109 @@ Checklist:
 - [x] Lane inspector exists with sub-tabs (Terminals/Packs/Conflicts/PR)
 - [x] Diff viewer for working tree + staged (Monaco diff + quick edit for unstaged files)
 
+## Phase 1.5: Workspace Topology + Lane Modes (Primary, Worktree, Attached)
+
+Status: NOT STARTED
+
+References:
+
+- Workspace graph: `features/WORKSPACE_GRAPH.md`
+- Navigation/layout: `features/NAVIGATION_AND_LAYOUT.md`
+- Lanes: `features/LANES.md`
+- Data model: `architecture/DATA_MODEL.md`
+- Locked UI spec: `features/UI_SPEC_LOCKED.md`
+
+Scope:
+
+- Support all lane/workspace modes:
+  - primary lane (main repository directory)
+  - dedicated worktree lanes
+  - attached existing worktree lanes
+- Add workspace topology model and graph/canvas foundations.
+
+Desktop core:
+
+- Implement workspace service/model:
+  - register primary workspace on onboarding
+  - discover and import git worktrees
+  - attach existing worktree paths as lanes
+- Extend `laneService`:
+  - lane type metadata (`primary|worktree|attached`)
+  - lane -> workspace linkage
+  - safe archive semantics for primary lane
+
+Renderer UI:
+
+- Lanes left panel:
+  - topology mode toggle (`list`, `stack graph`, `workspace canvas`)
+- Workspace canvas MVP:
+  - centered primary node
+  - connected worktree nodes
+  - click to focus lane details
+
+Exit criteria:
+
+- User can work in main directory as a first-class lane.
+- User can create/import attached worktree lanes and manage them from same UI.
+- Workspace topology view reflects all known lanes and directories.
+
+Checklist:
+
+- [ ] Primary lane created automatically on project import
+- [ ] Worktree discovery and attach flow
+- [ ] Lane type badges in lane list
+- [ ] Workspace canvas MVP rendering + focus interactions
+
+## Phase 1.6: Files Workbench Tab (Explorer + Editor)
+
+Status: NOT STARTED
+
+References:
+
+- Files workbench: `features/FILE_VIEWER_DIFF_QUICK_EDIT.md`
+- Navigation/layout: `features/NAVIGATION_AND_LAYOUT.md`
+- Locked UI spec: `features/UI_SPEC_LOCKED.md`
+- UI inventory: `features/UI_COMPONENT_INVENTORY.md`
+- Git operations: `features/GIT_OPERATIONS.md`
+
+Scope:
+
+- Add dedicated Files tab for IDE-style explorer/editing workflows.
+- Support selecting primary workspace and all open lane workspaces.
+- Keep lane center quick edit, but move deeper editing workflows to Files tab.
+
+Desktop core:
+
+- Implement files service additions:
+  - list tree for selected workspace scope
+  - read/write file content (atomic save)
+  - diff endpoints (working/staged/commit)
+  - scoped stage/unstage helpers
+- Ensure save and stage operations emit lane status/conflict refresh triggers.
+
+Renderer UI:
+
+- Add Files tab route in app shell.
+- Implement workbench layout:
+  - workspace scope selector
+  - file explorer tree
+  - Monaco editor and diff panes
+  - context panel with quick stage/unstage and jump links
+
+Exit criteria:
+
+- User can browse/edit files in main directory and any open lane workspace.
+- User can view staged/unstaged/commit diffs from Files tab.
+- Save operations are atomic and reflected in lane/conflict status quickly.
+
+Checklist:
+
+- [ ] Files tab exists in nav and routing
+- [ ] Workspace scope selector (primary + lanes + attached worktrees)
+- [ ] Explorer tree + file open/edit/save flow
+- [ ] Diff panes for working/staged/commit
+- [ ] Quick stage/unstage in Files context panel
+
 ## Phase 2: Project Home (Processes + Test Buttons) (SoloTerm-like)
 
 Status: DONE (2026-02-11)
@@ -297,6 +400,7 @@ Scope:
 
 - Expose routine git actions directly in ADE UI (lane-scoped where applicable).
 - Keep renderer untrusted; execute git operations in main process via typed intents.
+- Support branch management inside lanes (including primary lane safeguards).
 
 Desktop core:
 
@@ -305,6 +409,7 @@ Desktop core:
   - commit/amend/revert/cherry-pick
   - stash push/pop/apply/drop
   - fetch/sync/push/force-with-lease
+  - branch create/switch/rename/delete
 - Persist operation metadata for history/undo surfaces (pre/post SHA where possible).
 
 Renderer UI:
@@ -314,10 +419,12 @@ Renderer UI:
   - commit composer + amend flow
   - stash controls
   - push/sync actions with confirmations for destructive ops
+  - branch switcher and branch management actions
 
 Exit criteria:
 
 - User can complete daily git workflow (stage -> commit -> push -> sync) from ADE without dropping to external terminal.
+- User can switch and manage branches in-lane with safety checks for dirty/running-session states.
 
 Checklist:
 
@@ -326,51 +433,84 @@ Checklist:
 - [ ] Stash operations work with list/apply/pop/drop
 - [ ] Push + force-with-lease flow works with explicit confirmation
 - [ ] Revert and cherry-pick actions are available from UI
+- [ ] Branch create/switch/rename/delete flows exist in lane UI
+- [ ] Dirty/running-session branch-switch safeguards work reliably
 - [ ] Operations are recorded for History timeline
 
-## Phase 3: Deterministic Packs (Always In Sync)
+## Phase 3: Comprehensive Packs + Checkpoints + Plan Versioning (All At Once)
+
+Status: NOT STARTED
 
 References:
 
 - Packs: `features/PACKS.md`
 - Job engine: `architecture/JOB_ENGINE.md`
 - Terminal command center: `features/TERMINAL_COMMAND_CENTER.md`
+- Data model: `architecture/DATA_MODEL.md`
+- History graph: `features/HISTORY_GRAPH.md`
 - Locked UI spec: `features/UI_SPEC_LOCKED.md`
 
 Scope:
 
-- Packs update on session end/commit and are visible in the UI.
+- Deliver the full packs system in one implementation phase:
+  - immutable checkpoints
+  - append-only pack events
+  - immutable pack versions + pack heads
+  - materialized current views
+  - plan versioning with compare/revert
+  - feature history timeline foundations
 
 Desktop core:
 
-- Implement `packService`:
-  - project pack (baseline build + incremental updates)
-  - lane pack update:
-    - based on session deltas (head sha start/end, diff stats, files touched)
-    - include test results and process state pointers
-- Implement `jobEngine` pipeline:
-  - on session end:
-    - update lane pack
-    - update project pack (bounded)
+- Implement checkpoint capture service:
+  - create immutable checkpoint on session end and commit boundaries
+  - include SHAs, deterministic deltas, tool/session metadata, validation context
+- Expand `packService` to versioned model:
+  - write immutable pack versions for project/lane/feature/conflict/plan packs
+  - update pack head pointers atomically
+  - maintain fast materialized current pack files
+- Implement planning version service:
+  - immutable plan versions
+  - activate/revert versions
+  - emit plan lifecycle events
+- Expand `jobEngine` pipeline:
+  - checkpoint creation + event append + materialization
+  - feature pack updates when issue/feature linkage exists
+- Persist all lifecycle events for history graph queries.
 
 Renderer UI:
 
 - Lane inspector Packs tab:
-  - pack viewer
-  - freshness indicators (deterministic timestamps)
-- Session delta card surfaces:
-  - show in terminal detail and in lane pack
+  - current pack viewer
+  - pack version history
+  - compare selected versions
+  - source traceability (which checkpoints/events fed this version)
+- Plan surfaces:
+  - plan version list
+  - activate/revert controls
+  - handoff prompt blocks per phase and full plan
+- History tab (MVP foundation in this phase):
+  - timeline of checkpoints + pack events + plan revisions
+  - filters by lane/feature/event type
 
 Exit criteria:
 
-- After any terminal session ends, lane pack updates within seconds (deterministic).
-- Packs are viewable and linked to sessions.
+- Every completed terminal session yields a durable checkpoint with SHA anchors.
+- Pack data is append-only and auditable (no in-place history mutation).
+- Lane/project/feature/conflict/plan packs materialize within seconds after session end.
+- User can compare plan versions and switch active version.
+- User can inspect feature history derived from all sessions so far.
 
 Checklist:
 
-- [ ] Pack file layout under `.ade/packs/`
-- [ ] Pack viewer UI
-- [ ] Freshness indicators
+- [ ] Checkpoint schema + writer + validation
+- [ ] Pack events append-only log
+- [ ] Pack versions storage + head pointers
+- [ ] Materializers for all pack types (project/lane/feature/conflict/plan)
+- [ ] Plan versioning (create/compare/activate/revert)
+- [ ] Packs UI: current + history + diff + traceability
+- [ ] History timeline foundation wired to checkpoints/events/plan versions
+- [ ] Backfill/migration path from existing `packs_index` model
 
 ## Phase 4: Conflict Radar + Guided Sync + Conflicts UI
 
@@ -378,6 +518,7 @@ References:
 
 - Conflict radar: `features/CONFLICT_RADAR.md`
 - Conflict resolution: `features/CONFLICT_RESOLUTION.md`
+- Workspace graph: `features/WORKSPACE_GRAPH.md`
 - Git engine: `architecture/GIT_ENGINE.md`
 - Locked UI spec: `features/UI_SPEC_LOCKED.md`
 - History graph: `features/HISTORY_GRAPH.md` (operations timeline data)
@@ -386,12 +527,18 @@ Scope:
 
 - Predict conflicts early and show GitButler-like lane badges.
 - Provide guided sync and conflict packs (deterministic).
+- Add pairwise lane-lane conflict risk and merge simulation.
+- Add near-real-time conflict updates from staged/dirty changes.
 
 Desktop core:
 
 - Implement `conflictPredictionService` (dry-run):
   - per lane vs base
+  - pairwise lane vs lane risk snapshots
   - store predicted conflict files
+- Implement staged/dirty change watchers with coalesced prediction refresh.
+- Implement `mergeSimulationService`:
+  - lane -> lane and lane -> branch dry-run simulations
 - Implement `syncService`:
   - merge default, rebase optional
   - operation records with pre/post SHA for undo
@@ -403,19 +550,24 @@ Renderer UI:
 
 - Lanes tab:
   - conflict predicted/active badges on `LaneRow`
+  - pairwise overlap/risk hints in workspace canvas
   - lane Conflicts inspector tab shows file list + CTA to open conflicts window
 - Conflicts tab:
-  - aggregate list + detail viewer + pack viewer
+  - aggregate list + pairwise risk matrix + detail viewer + merge simulation panel + pack viewer
 
 Exit criteria:
 
 - Conflicts appear in Lanes tab without the user clicking anything.
+- Risk updates react within seconds to staged/dirty changes (coalesced).
 - Sync lane with base is guided and undoable.
 
 Checklist:
 
 - [ ] Conflict prediction runs on session end and base updates (best-effort)
-- [ ] Conflicts tab skeleton is navigable and shows conflict packs
+- [ ] Pairwise lane risk matrix is computed and visible
+- [ ] Merge simulation supports lane -> lane and lane -> branch
+- [ ] Staged/dirty watchers trigger coalesced prediction refresh
+- [ ] Conflicts tab is navigable and shows conflict packs + simulation
 - [ ] Undo last sync works reliably
 
 ## Phase 5: Hosted Agent (AWS) + Auth + Mirror Sync + Proposal Flow
@@ -538,6 +690,7 @@ References:
 Scope:
 
 - Make stacked lanes and restack flows first-class and aligned with PR chains.
+- Support stacks where parent lane can be primary/worktree/attached.
 
 Desktop core:
 
@@ -556,6 +709,7 @@ Exit criteria:
 Checklist:
 
 - [ ] Create stacked lane flow
+- [ ] Attach existing lane as child in stack
 - [ ] Restack action with progress UI
 - [ ] Land stack flow (guided) (V1)
 
@@ -589,7 +743,7 @@ Checklist:
 - [ ] `actions.yaml` schema and persistence
 - [ ] Scheduler + logs
 
-## Phase 9: History (Timeline + Graph V1)
+## Phase 9: History Graph V1 (Advanced Views and Replay)
 
 References:
 
@@ -598,24 +752,27 @@ References:
 
 Scope:
 
-- MVP timeline view from operations/sessions/packs.
-- V1 graph view reusing stack graph library.
+- Build advanced graph visualizations on top of Phase 3 history foundations.
+- Add replay and deep search experiences.
 
 Desktop core:
 
-- Ensure all operations write complete records (pre/post SHAs).
+- Add optimized query/index helpers for large history volumes.
+- Add context replay helpers (checkpoint to new session seed).
 
 Renderer UI:
 
-- History timeline + filters
-- Event detail with jump links
-- Graph view (V1)
+- Graph view (stack + operations + feature links)
+- Advanced search across checkpoints/events/pack versions/plan versions
+- Context replay action from history detail views
 
 Exit criteria:
 
-- User can answer “what happened?” without leaving ADE.
+- User can visualize and navigate complex multi-lane and multi-feature history.
+- User can replay prior context into a fresh session without manual copy/paste.
 
 Checklist:
 
-- [ ] Timeline view
-- [ ] Event detail panel
+- [ ] Graph view
+- [ ] Search across history artifacts
+- [ ] Context replay entrypoint

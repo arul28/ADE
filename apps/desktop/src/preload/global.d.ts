@@ -2,6 +2,7 @@ import type {
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
+  DeleteLaneArgs,
   DiffChanges,
   DockLayout,
   FileDiff,
@@ -9,10 +10,24 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  GitActionResult,
+  GitCherryPickArgs,
+  GitCommitArgs,
+  GitCommitSummary,
+  GitFileActionArgs,
+  GitPushArgs,
+  GitRevertArgs,
+  GitStashPushArgs,
+  GitStashRefArgs,
+  GitStashSummary,
+  GitSyncArgs,
   LaneSummary,
   ListLanesArgs,
+  ListOperationsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  OperationRecord,
+  PackSummary,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -31,6 +46,7 @@ import type {
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   RunTestSuiteArgs,
+  SessionDeltaSummary,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -59,12 +75,14 @@ declare global {
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
+        delete: (args: DeleteLaneArgs) => Promise<void>;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
+        getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
@@ -80,6 +98,32 @@ declare global {
       };
       files: {
         writeTextAtomic: (args: WriteTextAtomicArgs) => Promise<void>;
+      };
+      git: {
+        stageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        unstageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        discardFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        restoreStagedFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        commit: (args: GitCommitArgs) => Promise<GitActionResult>;
+        listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
+        revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
+        cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
+        stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
+        stashList: (args: { laneId: string }) => Promise<GitStashSummary[]>;
+        stashApply: (args: GitStashRefArgs) => Promise<GitActionResult>;
+        stashPop: (args: GitStashRefArgs) => Promise<GitActionResult>;
+        stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
+        fetch: (args: { laneId: string }) => Promise<GitActionResult>;
+        sync: (args: GitSyncArgs) => Promise<GitActionResult>;
+        push: (args: GitPushArgs) => Promise<GitActionResult>;
+      };
+      packs: {
+        getProjectPack: () => Promise<PackSummary>;
+        getLanePack: (laneId: string) => Promise<PackSummary>;
+        refreshLanePack: (laneId: string) => Promise<PackSummary>;
+      };
+      history: {
+        listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;
       };
       layout: {
         get: (layoutId: string) => Promise<DockLayout | null>;

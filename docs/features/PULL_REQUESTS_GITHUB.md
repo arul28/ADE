@@ -19,6 +19,7 @@ Make PRs a natural extension of lanes, including stacked PR workflows.
   - stacked PR chains
   - parallel PR list for non-stacked lanes
   - “land stack” guided flow entry point
+  - base retargeting and merge simulation status per PR lane
 
 ## 3. Functional Requirements
 
@@ -27,6 +28,10 @@ MVP:
 - Push lane branch to origin.
 - Create PR against base:
   - base = `main` or parent lane branch for stacked PRs
+- Support lanes backed by:
+  - primary workspace (main directory)
+  - dedicated worktree
+  - attached worktree
 - Link PR to lane and show basic metadata.
 - Draft PR description using:
   - Lane Pack deterministic sections
@@ -42,6 +47,7 @@ V1:
   - suggest review order
   - "land stack" guided flow (depends on stacks feature)
   - PR base retargeting suggestions when restacking
+  - conflict and overlap risk overlays from conflict radar
 
 ## 4. Safety and Auth
 

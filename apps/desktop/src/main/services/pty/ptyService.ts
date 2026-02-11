@@ -47,6 +47,7 @@ export function createPtyService({
   logger,
   broadcastData,
   broadcastExit,
+  onSessionEnded,
   loadPty
 }: {
   projectRoot: string;
@@ -56,6 +57,7 @@ export function createPtyService({
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
+  onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   loadPty: () => typeof ptyNs;
 }) {
   const ptys = new Map<string, PtyEntry>();
@@ -92,7 +94,14 @@ export function createPtyService({
         const sha = await computeHeadShaBestEffort(worktreePath);
         if (sha) sessionService.setHeadShaEnd(entry.sessionId, sha);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        try {
+          onSessionEnded?.({ laneId: entry.laneId, sessionId: entry.sessionId, exitCode });
+        } catch {
+          // ignore
+        }
+      });
 
     broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode });
     ptys.delete(ptyId);
@@ -231,6 +240,12 @@ export function createPtyService({
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
+
+      try {
+        onSessionEnded?.({ laneId: entry.laneId, sessionId: entry.sessionId, exitCode: null });
+      } catch {
+        // ignore
+      }
     },
 
     disposeAll(): void {

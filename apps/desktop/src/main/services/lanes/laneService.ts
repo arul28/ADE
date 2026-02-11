@@ -1,8 +1,9 @@
+import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { runGit, runGitOrThrow } from "../git/git";
-import type { LaneStatus, LaneSummary } from "../../../shared/types";
+import type { DeleteLaneArgs, LaneStatus, LaneSummary } from "../../../shared/types";
 
 function slugify(input: string): string {
   const s = input
@@ -140,6 +141,49 @@ export function createLaneService({
       db.run("update lanes set status = 'archived', archived_at = ? where id = ?", [now, laneId]);
     },
 
+    async delete({ laneId, deleteBranch = true, force = false }: DeleteLaneArgs): Promise<void> {
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+
+      if (row.worktree_path && fs.existsSync(row.worktree_path)) {
+        const dirtyRes = await runGit(["status", "--porcelain=v1"], { cwd: row.worktree_path, timeoutMs: 8_000 });
+        const dirty = dirtyRes.exitCode === 0 && dirtyRes.stdout.trim().length > 0;
+        if (dirty && !force) {
+          throw new Error("Lane has uncommitted changes. Enable force delete after confirming warnings.");
+        }
+
+        const removeArgs = ["worktree", "remove"];
+        if (force) {
+          removeArgs.push("--force");
+        }
+        removeArgs.push(row.worktree_path);
+        await runGitOrThrow(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
+      }
+
+      if (deleteBranch && row.branch_ref) {
+        const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
+          cwd: projectRoot,
+          timeoutMs: 8_000
+        });
+        if (refCheck.exitCode === 0) {
+          await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
+        }
+      }
+
+      const lanePackDir = path.join(projectRoot, ".ade", "packs", "lanes", laneId);
+      try {
+        fs.rmSync(lanePackDir, { recursive: true, force: true });
+      } catch {
+        // ignore pack folder cleanup failures
+      }
+
+      db.run("delete from session_deltas where lane_id = ?", [laneId]);
+      db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
+      db.run("delete from operations where lane_id = ?", [laneId]);
+      db.run("delete from packs_index where lane_id = ?", [laneId]);
+      db.run("delete from lanes where id = ?", [laneId]);
+    },
+
     getLaneWorktreePath(laneId: string): string {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
@@ -153,4 +197,3 @@ export function createLaneService({
     }
   };
 }
-

@@ -1,29 +1,81 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { FileText, FolderTree, RefreshCw, Save } from "lucide-react";
+import {
+  ArrowDownToLine,
+  ArrowRight,
+  ArrowUpFromLine,
+  Check,
+  ChevronDown,
+  Columns,
+  FileText,
+  GitCommit,
+  GitMerge,
+  History,
+  MoreHorizontal,
+
+  RefreshCw,
+  Save,
+  Send,
+  Trash2,
+  Undo2,
+  Upload,
+  Zap
+} from "lucide-react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { EmptyState } from "../ui/EmptyState";
 import { useAppStore } from "../../state/appStore";
 import { PaneHeader } from "../ui/PaneHeader";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
-import type { DiffChanges, DiffMode, FileDiff, FileChange } from "../../../shared/types";
+import { cn } from "../ui/cn";
+import type {
+  DiffChanges,
+  FileDiff,
+  FileChange,
+  GitCommitSummary,
+  GitStashSummary,
+  GitSyncMode
+} from "../../../shared/types";
 import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
 
-export function LaneDetail() {
-  const laneId = useAppStore((s) => s.selectedLaneId);
+function formatTs(ts: string): string {
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return ts;
+  return date.toLocaleString();
+}
+
+export function LaneDetail({
+  overrideLaneId,
+  isPrimary,
+  onSplit
+}: {
+  overrideLaneId?: string;
+  isPrimary?: boolean;
+  onSplit?: () => void;
+}) {
+  const globalLaneId = useAppStore((s) => s.selectedLaneId);
+  const laneId = overrideLaneId ?? globalLaneId;
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
 
-  const laneName = useMemo(() => lanes.find((l) => l.id === laneId)?.name ?? null, [lanes, laneId]);
+  const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
+  const laneName = lane?.name ?? null;
 
-  const [mode, setMode] = useState<DiffMode>("unstaged");
-  const [showFiles, setShowFiles] = useState(true);
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
-  const diffRef = useRef<MonacoDiffHandle | null>(null);
 
-  const files: FileChange[] = mode === "unstaged" ? changes.unstaged : changes.staged;
+  const [commitMessage, setCommitMessage] = useState("");
+  const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
+
+  const [stashes, setStashes] = useState<GitStashSummary[]>([]);
+  const [recentCommits, setRecentCommits] = useState<GitCommitSummary[]>([]);
+
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const diffRef = useRef<MonacoDiffHandle | null>(null);
 
   const refreshChanges = async () => {
     if (!laneId) return;
@@ -31,7 +83,7 @@ export function LaneDetail() {
     try {
       const next = await window.ade.diff.getChanges({ laneId });
       setChanges(next);
-      // If selected file disappears, clear selection.
+      // If selected path is gone, clear selection
       if (selectedPath && ![...next.staged, ...next.unstaged].some((f) => f.path === selectedPath)) {
         setSelectedPath(null);
         setDiff(null);
@@ -41,157 +93,354 @@ export function LaneDetail() {
     }
   };
 
+  const refreshGitMeta = async () => {
+    if (!laneId) return;
+    try {
+      const [nextStashes, nextCommits] = await Promise.all([
+        window.ade.git.stashList({ laneId }),
+        window.ade.git.listRecentCommits({ laneId, limit: 20 })
+      ]);
+      setStashes(nextStashes);
+      setRecentCommits(nextCommits);
+    } catch (e) {
+      console.error("Failed to refresh git meta", e);
+    }
+  };
+
+  const refreshAll = async () => {
+    await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
+  };
+
+  const runAction = async (actionName: string, fn: () => Promise<void>) => {
+    setBusyAction(actionName);
+    setNotice(null);
+    setError(null);
+    try {
+      await fn();
+      await refreshAll();
+      setNotice(`${actionName} completed`);
+      setTimeout(() => setNotice(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   useEffect(() => {
     setSelectedPath(null);
     setDiff(null);
     setChanges({ staged: [], unstaged: [] });
+    setStashes([]);
+    setRecentCommits([]);
+    setNotice(null);
+    setError(null);
     if (!laneId) return;
-    refreshChanges().catch(() => {
-      // ignore
-    });
+    refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [laneId]);
+
+  // Determine which mode (staged/unstaged) the selected file belongs to for diff fetching
+  const selectedFileMode = useMemo(() => {
+    if (!selectedPath) return null;
+    if (changes.unstaged.some(f => f.path === selectedPath)) return "unstaged";
+    if (changes.staged.some(f => f.path === selectedPath)) return "staged";
+    return null;
+  }, [changes, selectedPath]);
 
   useEffect(() => {
     setDiff(null);
-    if (!laneId || !selectedPath) return;
+    if (!laneId || !selectedPath || !selectedFileMode) return;
+    const mode = selectedFileMode as "staged" | "unstaged"; // Help TS
     window.ade.diff
       .getFile({ laneId, path: selectedPath, mode })
-      .then((d) => setDiff(d))
-      .catch(() => {
-        setDiff(null);
-      });
-  }, [laneId, selectedPath, mode]);
+      .then((value) => setDiff(value))
+      .catch(() => setDiff(null));
+  }, [laneId, selectedPath, selectedFileMode]);
+
+  const stageFile = async (path: string) => {
+    if (!laneId) return;
+    await window.ade.git.stageFile({ laneId, path });
+  };
+
+  const unstageFile = async (path: string) => {
+    if (!laneId) return;
+    await window.ade.git.unstageFile({ laneId, path });
+  };
+
+  const stageAll = async () => {
+    if (!laneId) return;
+    // MVP: simple loop or specialized IPC. Loop is fine for small checks.
+    // Better: use '.'? But let's act on specific files to be safe or use IPC if available.
+    // We'll map mostly.
+    runAction("stage all", async () => {
+      // Sequentially to avoid race? Parallel usually ok.
+      await Promise.all(changes.unstaged.map(f => window.ade.git.stageFile({ laneId, path: f.path })));
+    });
+  };
+
+  const unstageAll = async () => {
+    if (!laneId) return;
+    runAction("unstage all", async () => {
+      await Promise.all(changes.staged.map(f => window.ade.git.unstageFile({ laneId, path: f.path })));
+    });
+  };
+
+  const renderFileList = (title: string, files: FileChange[], actionLabel: string, onAction: (path: string) => void, onAll?: () => void) => (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">{title}</span>
+          <Chip className="text-[10px] h-4 px-1">{files.length}</Chip>
+        </div>
+        {files.length > 0 && onAll ? (
+          <Button variant="ghost" size="sm" className="h-5 text-[10px] px-1" onClick={onAll}>
+            {actionLabel} All
+          </Button>
+        ) : null}
+      </div>
+      <div className="flex-1 overflow-auto p-1 space-y-0.5">
+        {files.map(file => (
+          <div
+            key={file.path}
+            className={cn(
+              "group flex items-center justify-between gap-2 px-2 py-1 rounded cursor-pointer text-xs border border-transparent",
+              selectedPath === file.path ? "bg-accent/10 border-accent/20 text-fg" : "hover:bg-muted/50 text-muted-fg hover:text-fg"
+            )}
+            onClick={() => setSelectedPath(file.path)}
+          >
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
+                file.kind === "modified" ? "bg-blue-400" :
+                  file.kind === "added" ? "bg-emerald-400" :
+                    file.kind === "deleted" ? "bg-red-400" : "bg-amber-400"
+              )} />
+              <span className="truncate">{file.path}</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100"
+              onClick={(e) => { e.stopPropagation(); runAction(actionLabel, () => Promise.resolve(onAction(file.path))); }}
+              title={actionLabel}
+            >
+              {actionLabel === "Stage" ? <ArrowRight className="h-3 w-3" /> : <Undo2 className="h-3 w-3" />}
+            </Button>
+          </div>
+        ))}
+        {files.length === 0 && (
+          <div className="p-4 text-center text-xs text-muted-fg opacity-50 italic">
+            No files
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex h-full flex-col">
       <PaneHeader
         title="Changes"
-        meta={laneName ?? (laneId ?? "no lane selected")}
+        meta={laneName}
         right={
-          <div className="flex items-center gap-2">
-            <Button
-              variant={mode === "unstaged" ? "primary" : "outline"}
-              size="sm"
-              onClick={() => setMode("unstaged")}
-              title="Working tree (unstaged)"
-            >
-              <FileText className="h-4 w-4" />
-              Unstaged
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={() => refreshAll().catch(() => { })} title="Refresh">
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             </Button>
+            <div className="h-4 w-px bg-border mx-1" />
+            <DropdownMenu.Root modal={false}>
+              <DropdownMenu.Trigger asChild>
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="More git actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  className="z-[120] min-w-[220px] overflow-hidden rounded-md border border-border bg-card p-1 text-fg shadow-lg"
+                  align="end"
+                  sideOffset={6}
+                  collisionPadding={8}
+                >
+                  <DropdownMenu.Label className="px-2 py-1.5 text-xs font-semibold text-muted-fg">
+                    Stash
+                  </DropdownMenu.Label>
+                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
+                    if (laneId) runAction("stash push", async () => {
+                      const msg = window.prompt("Stash message?");
+                      if (msg !== null) await window.ade.git.stashPush({ laneId, message: msg || undefined });
+                    });
+                  }}>
+                    Push changes
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
+                    if (laneId && stashes.length > 0) runAction("stash pop", async () => {
+                      await window.ade.git.stashPop({ laneId, stashRef: stashes[0].ref });
+                    });
+                  }} disabled={stashes.length === 0}>
+                    Pop latest ({stashes[0]?.ref ?? "none"})
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-muted" />
+                  <DropdownMenu.Label className="px-2 py-1.5 text-xs font-semibold text-muted-fg">
+                    History
+                  </DropdownMenu.Label>
+                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
+                    if (laneId && recentCommits.length > 0) {
+                      const sha = window.prompt("Enter commit SHA to revert (default: HEAD)", recentCommits[0].sha);
+                      if (sha) runAction(`revert ${sha.slice(0, 7)}`, async () => {
+                        await window.ade.git.revertCommit({ laneId, commitSha: sha });
+                      });
+                    }
+                  }} disabled={recentCommits.length === 0}>
+                    Revert commit...
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
+                    if (laneId) {
+                      const sha = window.prompt("Enter commit SHA to cherry-pick");
+                      if (sha) runAction(`cherry-pick ${sha.slice(0, 7)}`, async () => {
+                        await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
+                      });
+                    }
+                  }}>
+                    Cherry-pick commit...
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+            <div className="h-4 w-px bg-border mx-1" />
+
+            {onSplit && (
+              <Button variant="ghost" size="sm" onClick={onSplit} title="Split View">
+                <Columns className="h-4 w-4" />
+              </Button>
+            )}
+
+            <div className="h-4 w-px bg-border mx-1" />
             <Button
-              variant={mode === "staged" ? "primary" : "outline"}
+              variant="outline"
               size="sm"
-              onClick={() => setMode("staged")}
-              title="Index (staged)"
+              disabled={!laneId || busyAction != null}
+              onClick={() => { if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }) }}
             >
-              <FileText className="h-4 w-4" />
-              Staged
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title={showFiles ? "Hide file list" : "Show file list"}
-              onClick={() => setShowFiles((v) => !v)}
-            >
-              <FolderTree className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              title="Refresh changes"
-              onClick={() => {
-                refreshChanges().catch(() => {});
-                refreshLanes().catch(() => {});
-              }}
-            >
-              <RefreshCw className="h-4 w-4" />
+              <ArrowDownToLine className="h-3.5 w-3.5 mr-1.5" /> Fetch
             </Button>
             <Button
               variant="outline"
               size="sm"
-              disabled={!laneId || !selectedPath || mode !== "unstaged" || !diff || diff.isBinary}
-              title={mode !== "unstaged" ? "Quick edit applies to the working tree (unstaged)" : "Save changes"}
-              onClick={() => {
-                if (!laneId || !selectedPath) return;
-                const text = diffRef.current?.getModifiedValue();
-                if (text == null) return;
-                window.ade.files
-                  .writeTextAtomic({ laneId, path: selectedPath, text })
-                  .then(async () => {
-                    await refreshChanges();
-                    const d = await window.ade.diff.getFile({ laneId, path: selectedPath, mode: "unstaged" });
-                    setDiff(d);
-                  })
-                  .catch(() => {});
-              }}
+              disabled={!laneId || busyAction != null}
+              onClick={() => { if (laneId) runAction("sync", async () => { await window.ade.git.sync({ laneId, mode: syncMode }); }) }}
             >
-              <Save className="h-4 w-4" />
-              Save
+              <GitMerge className="h-3.5 w-3.5 mr-1.5" /> Sync
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!laneId || busyAction != null}
+              onClick={() => { if (laneId) runAction("push", async () => { await window.ade.git.push({ laneId }); }) }}
+            >
+              <Upload className="h-3.5 w-3.5 mr-1.5" /> Push
             </Button>
           </div>
         }
       />
 
-      <div className="flex min-h-0 flex-1">
-        {showFiles ? (
-          <aside className="w-[260px] shrink-0 border-r border-border p-2">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-xs font-semibold text-muted-fg">Files</div>
-              <Chip className="text-[11px]">{loading ? "…" : `${files.length}`}</Chip>
-            </div>
-            <div className="space-y-1 overflow-auto pr-1">
-              {files.length === 0 ? (
-                <div className="rounded-lg border border-border bg-card/60 p-3 text-xs text-muted-fg">
-                  No {mode} changes.
-                </div>
-              ) : (
-                files.map((f) => (
-                  <button
-                    key={`${mode}:${f.path}`}
-                    className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-2 text-left text-xs transition-colors ${
-                      f.path === selectedPath
-                        ? "border-accent/40 bg-muted/70 text-fg"
-                        : "border-border bg-card/50 text-muted-fg hover:bg-muted/50 hover:text-fg"
-                    }`}
-                    onClick={() => setSelectedPath(f.path)}
-                    title={f.path}
-                  >
-                    <span className="truncate">{f.path}</span>
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-fg">{f.kind}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </aside>
-        ) : null}
+      <div className="flex-1 flex flex-col min-h-0">
+        {/* Top Section: 2 Columns for Staging */}
+        <div className="flex-none h-[45%] min-h-[220px] flex border-b border-border">
+          {/* Unstaged Column */}
+          <div className="flex-1 flex flex-col border-r border-border min-w-0">
+            {renderFileList("Unstaged", changes.unstaged, "Stage", stageFile, stageAll)}
+          </div>
 
-        <section className="min-w-0 flex-1 p-3">
-          {!laneId ? (
-            <EmptyState title="Select a lane" description="Create and select a lane to view diffs." />
-          ) : !selectedPath ? (
-            <EmptyState title="Select a file" description="Pick a changed file to view a Monaco diff and quick edit." />
-          ) : !diff ? (
-            <div className="h-full rounded-lg border border-border bg-card/60 p-4 text-sm text-muted-fg">Loading diff…</div>
-          ) : diff.isBinary ? (
-            <EmptyState title="Binary file" description="MVP diff viewer only supports text files." />
-          ) : (
-            <div className="h-full min-h-0">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-semibold">{diff.path}</div>
-                  <div className="truncate text-[11px] text-muted-fg">{mode === "unstaged" ? "index → working tree" : "HEAD → index"}</div>
+          {/* Staged Column + Commit */}
+          <div className="flex-1 flex flex-col min-w-0 bg-muted/10">
+            <div className="flex-1 min-h-0">
+              {renderFileList("Staged", changes.staged, "Unstage", unstageFile, unstageAll)}
+            </div>
+            {/* Commit Box */}
+            <div className="p-3 border-t border-border bg-card">
+              <div className="flex gap-2">
+                <textarea
+                  className="flex-1 h-[60px] p-2 text-xs bg-bg border border-border rounded resize-none focus:border-accent outline-none"
+                  placeholder="Commit message..."
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      if (laneId && commitMessage.trim()) {
+                        runAction("commit", async () => {
+                          await window.ade.git.commit({ laneId, message: commitMessage.trim() });
+                          setCommitMessage("");
+                        });
+                      }
+                    }
+                  }}
+                />
+                <div className="flex flex-col gap-1 w-[80px]">
+                  <Button
+                    variant="primary"
+                    className="flex-1 h-full"
+                    disabled={!commitMessage.trim() || changes.staged.length === 0 || busyAction != null}
+                    onClick={() => {
+                      if (laneId) runAction("commit", async () => {
+                        await window.ade.git.commit({ laneId, message: commitMessage.trim() });
+                        setCommitMessage("");
+                      });
+                    }}
+                  >
+                    Commit
+                  </Button>
                 </div>
-                {mode === "unstaged" ? (
-                  <Chip className="text-[11px]">quick edit enabled</Chip>
-                ) : (
-                  <Chip className="text-[11px]">read-only</Chip>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom Section: Diff View */}
+        <div className="flex-1 min-h-0 bg-bg">
+          {!laneId ? (
+            <EmptyState title="No lane selected" />
+          ) : !selectedPath ? (
+            <EmptyState title="Select a file" description="View diff and quick edit" />
+          ) : !diff ? (
+            <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading diff...</div>
+          ) : (
+            <div className="h-full flex flex-col">
+              <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-card/30">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-mono text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
+                  <span className="text-muted-fg">/</span>
+                  <span className="font-semibold">{diff.path}</span>
+                </div>
+                {selectedFileMode === "unstaged" && !diff.isBinary && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6"
+                    onClick={() => {
+                      if (!laneId || !selectedPath) return;
+                      const text = diffRef.current?.getModifiedValue();
+                      if (text == null) return;
+                      runAction("save edit", async () => {
+                        await window.ade.files.writeTextAtomic({ laneId, path: selectedPath, text });
+                      });
+                    }}
+                  >
+                    <Save className="h-3.5 w-3.5 mr-1" />
+                    Save
+                  </Button>
                 )}
               </div>
-              <MonacoDiffView ref={diffRef} diff={diff} editable={mode === "unstaged"} className="h-[calc(100%-28px)]" />
+              <MonacoDiffView ref={diffRef} diff={diff} editable={selectedFileMode === "unstaged"} className="flex-1" />
             </div>
           )}
-        </section>
+        </div>
       </div>
+
+      {/* Footer Info / Status Bar (optional, maybe specific lane errors/notices) */}
+      {(notice || error || busyAction) && (
+        <div className={cn("px-3 py-1 text-xs border-t border-border flex items-center justify-between", error ? "bg-red-950/30 text-red-300" : "bg-accent/10 text-accent")}>
+          <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>
+        </div>
+      )}
     </div>
   );
 }

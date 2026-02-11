@@ -115,6 +115,12 @@ export type ArchiveLaneArgs = {
   laneId: string;
 };
 
+export type DeleteLaneArgs = {
+  laneId: string;
+  deleteBranch?: boolean;
+  force?: boolean;
+};
+
 export type OpenLaneFolderArgs = {
   laneId: string;
 };
@@ -414,4 +420,115 @@ export type ProjectConfigSaveArgs = {
 
 export type ProjectConfigConfirmTrustArgs = {
   sharedHash?: string;
+};
+
+export type GitSyncMode = "merge" | "rebase";
+
+export type GitFileActionArgs = {
+  laneId: string;
+  path: string;
+};
+
+export type GitCommitArgs = {
+  laneId: string;
+  message: string;
+  amend?: boolean;
+};
+
+export type GitRevertArgs = {
+  laneId: string;
+  commitSha: string;
+};
+
+export type GitCherryPickArgs = {
+  laneId: string;
+  commitSha: string;
+};
+
+export type GitStashPushArgs = {
+  laneId: string;
+  message?: string;
+  includeUntracked?: boolean;
+};
+
+export type GitStashRefArgs = {
+  laneId: string;
+  stashRef: string;
+};
+
+export type GitSyncArgs = {
+  laneId: string;
+  mode?: GitSyncMode;
+  baseRef?: string;
+};
+
+export type GitPushArgs = {
+  laneId: string;
+  forceWithLease?: boolean;
+};
+
+export type GitActionResult = {
+  operationId: string;
+  preHeadSha: string | null;
+  postHeadSha: string | null;
+};
+
+export type GitCommitSummary = {
+  sha: string;
+  shortSha: string;
+  authorName: string;
+  authoredAt: string;
+  subject: string;
+};
+
+export type GitStashSummary = {
+  ref: string;
+  subject: string;
+  createdAt: string | null;
+};
+
+export type PackType = "project" | "lane";
+
+export type PackSummary = {
+  packType: PackType;
+  path: string;
+  exists: boolean;
+  deterministicUpdatedAt: string | null;
+  narrativeUpdatedAt: string | null;
+  lastHeadSha: string | null;
+  body: string;
+};
+
+export type SessionDeltaSummary = {
+  sessionId: string;
+  laneId: string;
+  startedAt: string;
+  endedAt: string | null;
+  headShaStart: string | null;
+  headShaEnd: string | null;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  touchedFiles: string[];
+  failureLines: string[];
+  computedAt: string | null;
+};
+
+export type ListOperationsArgs = {
+  laneId?: string;
+  kind?: string;
+  limit?: number;
+};
+
+export type OperationRecord = {
+  id: string;
+  laneId: string | null;
+  laneName: string | null;
+  kind: string;
+  startedAt: string;
+  endedAt: string | null;
+  status: "running" | "succeeded" | "failed" | "canceled";
+  preHeadSha: string | null;
+  postHeadSha: string | null;
+  metadataJson: string | null;
 };

@@ -4,15 +4,30 @@ import type {
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
+  DeleteLaneArgs,
   DockLayout,
+  GitActionResult,
+  GitCherryPickArgs,
+  GitCommitArgs,
+  GitCommitSummary,
+  GitFileActionArgs,
+  GitPushArgs,
+  GitRevertArgs,
+  GitStashPushArgs,
+  GitStashRefArgs,
+  GitStashSummary,
+  GitSyncArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   LaneSummary,
+  ListOperationsArgs,
   ListLanesArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  OperationRecord,
+  PackSummary,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -27,6 +42,7 @@ import type {
   PtyCreateResult,
   RenameLaneArgs,
   RunTestSuiteArgs,
+  SessionDeltaSummary,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -44,6 +60,9 @@ import type { createFileService } from "../files/fileService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createProcessService } from "../processes/processService";
 import type { createTestService } from "../tests/testService";
+import type { createGitOperationsService } from "../git/gitOperationsService";
+import type { createPackService } from "../packs/packService";
+import type { createOperationService } from "../history/operationService";
 
 export type AppContext = {
   db: AdeDb;
@@ -56,6 +75,9 @@ export type AppContext = {
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
   fileService: ReturnType<typeof createFileService>;
+  operationService: ReturnType<typeof createOperationService>;
+  gitService: ReturnType<typeof createGitOperationsService>;
+  packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
@@ -155,6 +177,11 @@ export function registerIpc({
     ctx.laneService.archive(arg);
   });
 
+  ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.laneService.delete(arg);
+  });
+
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
     const worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
@@ -177,6 +204,11 @@ export function registerIpc({
     if (!session) return "";
     const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(2_000_000, arg.maxBytes)) : 160_000;
     return ctx.sessionService.readTranscriptTail(session.transcriptPath, maxBytes);
+  });
+
+  ipcMain.handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {
+    const ctx = getCtx();
+    return ctx.packService.getSessionDelta(arg.sessionId);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
@@ -212,6 +244,114 @@ export function registerIpc({
   ipcMain.handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.fileService.writeTextAtomic({ laneId: arg.laneId, relPath: arg.path, text: arg.text });
+  });
+
+  ipcMain.handle(IPC.gitStageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stageFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitUnstageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.unstageFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitDiscardFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.discardFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitRestoreStagedFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.restoreStagedFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.commit(arg);
+  });
+
+  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> => {
+    const ctx = getCtx();
+    return ctx.gitService.listRecentCommits(arg);
+  });
+
+  ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.revertCommit(arg);
+  });
+
+  ipcMain.handle(IPC.gitCherryPickCommit, async (_event, arg: GitCherryPickArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.cherryPickCommit(arg);
+  });
+
+  ipcMain.handle(IPC.gitStashPush, async (_event, arg: GitStashPushArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stashPush(arg);
+  });
+
+  ipcMain.handle(IPC.gitStashList, async (_event, arg: { laneId: string }): Promise<GitStashSummary[]> => {
+    const ctx = getCtx();
+    return ctx.gitService.listStashes(arg);
+  });
+
+  ipcMain.handle(IPC.gitStashApply, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stashApply(arg);
+  });
+
+  ipcMain.handle(IPC.gitStashPop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stashPop(arg);
+  });
+
+  ipcMain.handle(IPC.gitStashDrop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stashDrop(arg);
+  });
+
+  ipcMain.handle(IPC.gitFetch, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.fetch(arg);
+  });
+
+  ipcMain.handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.sync(arg);
+  });
+
+  ipcMain.handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.push(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getProjectPack();
+  });
+
+  ipcMain.handle(IPC.packsGetLanePack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getLanePack(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.packsRefreshLanePack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    const lanePack = await ctx.packService.refreshLanePack({
+      laneId: arg.laneId,
+      reason: "manual_refresh"
+    });
+    await ctx.packService.refreshProjectPack({
+      reason: "manual_refresh",
+      laneId: arg.laneId
+    });
+    return lanePack;
+  });
+
+  ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
+    const ctx = getCtx();
+    return ctx.operationService.list(arg);
   });
 
   ipcMain.handle(IPC.processesListDefinitions, async (): Promise<ProcessDefinition[]> => {

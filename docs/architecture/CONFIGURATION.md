@@ -8,6 +8,7 @@ Last updated: 2026-02-11
 - Avoid surprising git changes by default.
 - Make provider swapping (hosted/BYOK/CLI) a config change, not a rewrite.
 - Make process/test workflows reproducible via explicit definitions.
+- Support lane profiles and local-overlay policies for worktree setup.
 
 ## 2. `.ade/` Folder
 
@@ -45,6 +46,8 @@ Top-level keys:
 - `processes[]`
 - `stackButtons[]`
 - `testSuites[]`
+- `laneProfiles[]`
+- `laneOverlayPolicies[]`
 - `providers` (existing provider config)
 
 ### 4.1 `processes[]`
@@ -85,6 +88,32 @@ Each suite definition:
 - `env` (optional)
 - `timeoutMs` (optional)
 - `tags[]` (optional)
+
+### 4.4 `laneProfiles[]`
+
+Reusable lane templates used at lane creation.
+
+Each profile definition:
+
+- `id` (required)
+- `name` (required)
+- `defaultBaseRef` (optional)
+- `defaultTool` (optional)
+- `goalTemplate` (optional)
+- `bootstrapCommands[]` (optional argv arrays)
+- `overlayPolicyId` (optional, references `laneOverlayPolicies[]`)
+
+### 4.5 `laneOverlayPolicies[]`
+
+Explicit allowlist of local-only files that may be copied/symlinked to new lanes.
+
+Each policy definition:
+
+- `id` (required)
+- `name` (required)
+- `mode` (optional: `copy | symlink | mixed`, default `copy`)
+- `items[]` (required path/glob entries)
+- `notes` (optional)
 
 ## 5. Example `.ade/ade.yaml`
 
@@ -136,6 +165,26 @@ testSuites:
     name: Lint
     command: ["npm", "run", "lint"]
     cwd: "."
+
+# Optional lane setup templates
+laneProfiles:
+  - id: feature
+    name: Feature
+    defaultBaseRef: main
+    defaultTool: codex
+    goalTemplate: "Implement feature with tests and rollout notes"
+    bootstrapCommands:
+      - ["npm", "install"]
+    overlayPolicyId: local-dev
+
+laneOverlayPolicies:
+  - id: local-dev
+    name: Local Dev Files
+    mode: copy
+    items:
+      - ".env.local"
+      - "apps/web/.env.local"
+      - ".vscode/settings.json"
 ```
 
 ## 6. Validation Rules
@@ -148,6 +197,8 @@ Validation must fail fast for:
 - cyclic `dependsOn`
 - stack buttons referencing unknown process IDs
 - test suites with missing command/cwd
+- lane profile references unknown overlay policy IDs
+- overlay policy items that resolve outside project root
 
 ## 7. Trust and Change Confirmation
 

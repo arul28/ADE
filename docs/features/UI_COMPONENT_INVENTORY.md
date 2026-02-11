@@ -19,6 +19,8 @@ In `/Users/arul/ADE/apps/desktop/src/renderer/components/`:
 - `app/` app shell and routing
 - `project/` project home (project management + processes + tests)
 - `lanes/` lane list, lane detail, stack graph
+- `files/` files workbench (scope selector, explorer, editor/diff)
+- `workspace/` workspace graph canvas and topology overlays
 - `terminals/` session list, terminal view wrappers, filters
 - `conflicts/` conflict list/detail, proposal UI, patch viewer
 - `prs/` PR lists, PR detail, checks/review badges
@@ -54,6 +56,10 @@ These are required early to match the locked 3-pane cockpit.
   - ahead/behind (Mono)
   - tests/PR/active timestamps
 - `StackGraphMini` (left pane)
+- `WorkspaceGraphCanvas` (infinite-canvas topology mode)
+- `WorkspaceNodeCard` (primary/worktree/attached lane node)
+- `WorkspaceEdgeOverlay` (stack + risk + simulation status)
+- `TopologyModeToggle` (list/stack graph/workspace canvas)
 - `LaneDetail` (center pane container)
 - `ChangesDiffView` (working/staged/commits)
 - `FileTree` (toggle)
@@ -73,7 +79,19 @@ These are required early to match the locked 3-pane cockpit.
 - `TerminalPreviewFrame` (lightweight preview for non-focused sessions)
 - `SessionDeltaCard` (rendered in packs and in terminal detail)
 
-## 6. Project Home UI (Project Management + Processes + Tests)
+## 6. Files Workbench UI
+
+- `FilesWorkbenchPage`
+- `WorkspaceScopeSelector` (primary/lane/attached)
+- `FilesExplorerTree`
+- `FilesEditorTabs`
+- `FileEditorPane` (Monaco single-file mode)
+- `FileDiffPane` (Monaco diff mode)
+- `FilesContextPanel` (git status, quick stage/unstage, jump links)
+- `ConflictMarkerEditorMode`
+- `ExternalEditorButton`
+
+## 7. Project Home UI (Project Management + Processes + Tests)
 
 - `ProjectHome` (tab container)
 - `ProjectHeader` (repo/path/base branch + stack button row + start/stop all)
@@ -94,7 +112,7 @@ These are required early to match the locked 3-pane cockpit.
 - `RunHistoryList` (tests/process restarts)
 - `ConfigEditor` (process/stack button/test definitions)
 
-## 7. Packs UI
+## 8. Packs UI
 
 - `PackViewer`
 - `PackFreshnessIndicator` (deterministic vs narrative timestamps)
@@ -105,12 +123,14 @@ V1:
 
 - `PackDiffViewer` (compare pack versions)
 
-## 8. Conflicts UI
+## 9. Conflicts UI
 
 - `ConflictsLaneList` (aggregate across lanes)
 - `ConflictSummaryRow` (files + severity)
+- `ConflictRiskMatrix` (pairwise lane-lane risk grid)
 - `ConflictDetailPanel`
 - `ConflictFilesList`
+- `MergeSimulationPanel` (lane -> lane/branch dry-run summary)
 - `ConflictPackViewer` (wraps `PackViewer`)
 - `ProposalRunnerPanel` (job status + controls)
 - `ProposalList`
@@ -118,7 +138,7 @@ V1:
 - `ApplyProposalControls` (apply as commit, choose mode)
 - `LocalTestRunPanel` (run suggested tests; show results)
 
-## 9. PRs UI
+## 10. PRs UI
 
 - `PRsStackedChainsView`
 - `PRChainRow`
@@ -128,7 +148,7 @@ V1:
 - `ReviewStatusChip`
 - `LandStackWizard` (V1)
 
-## 10. History UI
+## 11. History UI
 
 MVP:
 
@@ -141,7 +161,7 @@ V1:
 
 - `HistoryGraphView`
 
-## 11. Shared UI Primitives
+## 12. Shared UI Primitives
 
 - `Button` (+ variants)
 - `Badge` / `Chip`
@@ -154,7 +174,7 @@ V1:
 - `ContextMenu`
 - `Kbd` (keyboard shortcut renderer)
 
-## 12. Development Checklist
+## 13. Development Checklist
 
 - [ ] Create folders and component stubs following this inventory
 - [ ] Ensure Lanes cockpit uses shared layout primitives (no duplicated split-pane logic)

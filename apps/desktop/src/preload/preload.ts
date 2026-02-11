@@ -4,17 +4,32 @@ import type {
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
+  DeleteLaneArgs,
   DiffChanges,
   DockLayout,
   FileDiff,
+  GitActionResult,
+  GitCherryPickArgs,
+  GitCommitArgs,
+  GitCommitSummary,
+  GitFileActionArgs,
+  GitPushArgs,
+  GitRevertArgs,
+  GitStashPushArgs,
+  GitStashRefArgs,
+  GitStashSummary,
+  GitSyncArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   LaneSummary,
   ListLanesArgs,
+  ListOperationsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  OperationRecord,
+  PackSummary,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -33,6 +48,7 @@ import type {
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   RunTestSuiteArgs,
+  SessionDeltaSummary,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -57,6 +73,7 @@ contextBridge.exposeInMainWorld("ade", {
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
     archive: async (args: ArchiveLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesArchive, args),
+    delete: async (args: DeleteLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesDelete, args),
     openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
   },
   sessions: {
@@ -65,7 +82,9 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args)
+      ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
+    getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
+      ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId })
   },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => ipcRenderer.invoke(IPC.ptyCreate, args),
@@ -91,6 +110,36 @@ contextBridge.exposeInMainWorld("ade", {
   files: {
     writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> =>
       ipcRenderer.invoke(IPC.filesWriteTextAtomic, args)
+  },
+  git: {
+    stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStageFile, args),
+    unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitUnstageFile, args),
+    discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitDiscardFile, args),
+    restoreStagedFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitRestoreStagedFile, args),
+    commit: async (args: GitCommitArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitCommit, args),
+    listRecentCommits: async (args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> =>
+      ipcRenderer.invoke(IPC.gitListRecentCommits, args),
+    revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitRevertCommit, args),
+    cherryPickCommit: async (args: GitCherryPickArgs): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitCherryPickCommit, args),
+    stashPush: async (args: GitStashPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashPush, args),
+    stashList: async (args: { laneId: string }): Promise<GitStashSummary[]> => ipcRenderer.invoke(IPC.gitStashList, args),
+    stashApply: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashApply, args),
+    stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashPop, args),
+    stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashDrop, args),
+    fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
+    sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),
+    push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args)
+  },
+  packs: {
+    getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
+    getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
+    refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId })
+  },
+  history: {
+    listOperations: async (args: ListOperationsArgs = {}): Promise<OperationRecord[]> =>
+      ipcRenderer.invoke(IPC.historyListOperations, args)
   },
   layout: {
     get: async (layoutId: string): Promise<DockLayout | null> => ipcRenderer.invoke(IPC.layoutGet, { layoutId }),

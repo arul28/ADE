@@ -4,13 +4,13 @@ Last updated: 2026-02-11
 
 ## 1. Goal
 
-All routine git workflows should be executable from ADE’s UI, without requiring users to leave the app for CLI-only flows.
+All routine git workflows should be executable from ADE's UI, without requiring users to leave the app for CLI-only flows.
 
 Design intent:
 
 - keep power-user speed
 - preserve safety for destructive actions
-- keep lane/worktree context explicit
+- keep lane/workspace/branch context explicit
 
 ## 2. UX Surface
 
@@ -25,7 +25,7 @@ Secondary surface:
 
 Guidelines:
 
-- every action shows scope (`lane`, `branch`, `files`, `commit`)
+- every action shows scope (`lane`, `workspace path`, `branch`, `files`, `commit`)
 - destructive actions require explicit confirmation
 - operation progress/status appears in timeline/history
 
@@ -54,6 +54,10 @@ Guidelines:
 - Cherry-pick commit(s) into lane
 - Reset lane HEAD:
   - soft / mixed / hard (hard must have high-friction confirmation)
+- Branch create
+- Branch switch
+- Branch rename
+- Branch delete (safe checks)
 
 ### 3.4 Stash Operations
 
@@ -72,9 +76,14 @@ Guidelines:
 ## 4. Safety Rules
 
 - Renderer sends typed intents only; main process executes git.
-- All destructive operations require a confirmation modal with exact branch/lane target.
+- All destructive operations require a confirmation modal with exact lane/branch/workspace target.
 - `--force-with-lease` and hard reset require secondary confirmation text.
 - All operations create timeline records with pre/post SHA where possible.
+- Branch switch safety:
+  - if dirty: require commit/stash/discard choice
+  - if running sessions: block unless user force-confirms
+- Primary-lane protection:
+  - warn or block direct commits to protected branches (for example `main`) based on user policy
 
 ## 5. Development Checklist
 
@@ -86,10 +95,12 @@ MVP:
 - [ ] Fetch + lane sync (merge/rebase) UI integration
 - [ ] Stash push/pop/apply/drop UI
 - [ ] Revert and cherry-pick UI actions
+- [ ] Branch create/switch UI actions with safety checks
 - [ ] Operation records written to timeline/history
 
 V1:
 
 - [ ] Hunk-level staging
+- [ ] Branch rename/delete UI with dependency checks
 - [ ] Interactive rebase UX (todo/edit/drop)
 - [ ] Batch git actions across selected lanes

@@ -213,6 +213,68 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_test_runs_project_suite on test_runs(project_id, suite_key)");
   db.run("create index if not exists idx_test_runs_started_at on test_runs(started_at)");
+
+  // Phase 2.5 + Phase 3 git operations timeline and deterministic packs.
+  db.run(`
+    create table if not exists operations (
+      id text primary key,
+      project_id text not null,
+      lane_id text,
+      kind text not null,
+      started_at text not null,
+      ended_at text,
+      status text not null,
+      pre_head_sha text,
+      post_head_sha text,
+      metadata_json text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_operations_project_started on operations(project_id, started_at)");
+  db.run("create index if not exists idx_operations_lane_started on operations(lane_id, started_at)");
+  db.run("create index if not exists idx_operations_kind on operations(kind)");
+
+  db.run(`
+    create table if not exists packs_index (
+      pack_key text primary key,
+      project_id text not null,
+      lane_id text,
+      pack_type text not null,
+      pack_path text not null,
+      deterministic_updated_at text not null,
+      narrative_updated_at text,
+      last_head_sha text,
+      metadata_json text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_packs_index_project on packs_index(project_id)");
+  db.run("create index if not exists idx_packs_index_lane on packs_index(lane_id)");
+
+  db.run(`
+    create table if not exists session_deltas (
+      session_id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      started_at text not null,
+      ended_at text,
+      head_sha_start text,
+      head_sha_end text,
+      files_changed integer not null,
+      insertions integer not null,
+      deletions integer not null,
+      touched_files_json text not null,
+      failure_lines_json text not null,
+      computed_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(session_id) references terminal_sessions(id)
+    )
+  `);
+  db.run("create index if not exists idx_session_deltas_lane_started on session_deltas(lane_id, started_at)");
+  db.run("create index if not exists idx_session_deltas_project_started on session_deltas(project_id, started_at)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

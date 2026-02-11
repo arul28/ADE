@@ -5,6 +5,7 @@ Each file in this folder is a feature spec with planned behavior and development
 - `UI_SPEC_LOCKED.md`
 - `UI_COMPONENT_INVENTORY.md`
 - `NAVIGATION_AND_LAYOUT.md`
+- `WORKSPACE_GRAPH.md`
 - `LANES.md`
 - `STACKS_AND_RESTACK.md`
 - `TERMINALS_AND_SESSIONS.md`
