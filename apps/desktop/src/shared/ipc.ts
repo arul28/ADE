@@ -22,7 +22,31 @@ export const IPC = {
   diffGetFile: "ade.diff.getFile",
   filesWriteTextAtomic: "ade.files.writeTextAtomic",
   layoutGet: "ade.layout.get",
-  layoutSet: "ade.layout.set"
+  layoutSet: "ade.layout.set",
+  processesListDefinitions: "ade.processes.listDefinitions",
+  processesListRuntime: "ade.processes.listRuntime",
+  processesStart: "ade.processes.start",
+  processesStop: "ade.processes.stop",
+  processesRestart: "ade.processes.restart",
+  processesKill: "ade.processes.kill",
+  processesStartStack: "ade.processes.startStack",
+  processesStopStack: "ade.processes.stopStack",
+  processesRestartStack: "ade.processes.restartStack",
+  processesStartAll: "ade.processes.startAll",
+  processesStopAll: "ade.processes.stopAll",
+  processesGetLogTail: "ade.processes.getLogTail",
+  processesEvent: "ade.processes.event",
+  testsListSuites: "ade.tests.listSuites",
+  testsRun: "ade.tests.run",
+  testsStop: "ade.tests.stop",
+  testsListRuns: "ade.tests.listRuns",
+  testsGetLogTail: "ade.tests.getLogTail",
+  testsEvent: "ade.tests.event",
+  projectConfigGet: "ade.projectConfig.get",
+  projectConfigValidate: "ade.projectConfig.validate",
+  projectConfigSave: "ade.projectConfig.save",
+  projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
+  projectConfigConfirmTrust: "ade.projectConfig.confirmTrust"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

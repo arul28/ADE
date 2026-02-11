@@ -12,6 +12,12 @@ UI source of truth:
 
 - `features/UI_SPEC_LOCKED.md`
 - `features/UI_COMPONENT_INVENTORY.md`
+- `architecture/SYSTEM_OVERVIEW.md`
+
+Coverage notes:
+
+- Authentication is explicitly scoped to **Phase 5** (`authService` + Cognito Hosted UI + GitHub OAuth federation).
+- All docs listed in `features/INDEX.md` and `architecture/INDEX.md` are represented in this plan.
 
 ## Phase -1: Repo + Desktop Scaffold (Start From Nothing)
 
@@ -196,7 +202,7 @@ Checklist:
 
 ## Phase 2: Project Home (Processes + Test Buttons) (SoloTerm-like)
 
-Status: NOT STARTED (UI stub exists; implementation pending)
+Status: DONE (2026-02-11)
 
 References:
 
@@ -252,13 +258,75 @@ Exit criteria:
 
 Checklist:
 
-- [ ] `processService` supports start/stop/restart/kill + runtime event streaming
-- [ ] Stack button engine supports named process subsets + start all/stop all
-- [ ] `testService` supports suite runs with persisted history/logs
-- [ ] Home tab renders process controls, stack buttons, and test suite buttons
-- [ ] Process/test config editor writes validated `.ade/` config
-- [ ] Trust prompt blocks execution of changed shared config until confirmed
-- [ ] Logs viewer supports search across process and test logs
+- [x] `processService` supports start/stop/restart/kill + runtime event streaming
+- [x] Stack button engine supports named process subsets + start all/stop all
+- [x] `testService` supports suite runs with persisted history/logs
+- [x] Home tab renders process controls, stack buttons, and test suite buttons
+- [x] Process/test config editor writes validated `.ade/` config
+- [x] Trust prompt blocks execution of changed shared config until confirmed
+- [x] Logs viewer supports search across process and test logs
+- [x] Theme toggle supports dark/light UI modes in Projects (Home)
+- [x] Theme preference persists locally across renderer reload/restart
+
+Verification:
+
+- `cd apps/desktop && npm run typecheck`
+- `cd apps/desktop && npm run build`
+- `cd apps/desktop && npm run dev` (manual smoke)
+- Manual smoke:
+  - Start/stop/restart/kill single process.
+  - Start/stop stack subset and start/stop all.
+  - Run/rerun/stop test suites and verify persisted history badges.
+  - Confirm trust prompt blocks execution after shared config mutation.
+  - Confirm process/test logs stream and search.
+  - Confirm dark/light toggle applies and persists after app restart.
+
+## Phase 2.5: In-App Git Operations (Stage/Commit/Stash/Push)
+
+Status: NOT STARTED
+
+References:
+
+- Git operations: `features/GIT_OPERATIONS.md`
+- Lanes: `features/LANES.md`
+- File viewer/diff/quick edit: `features/FILE_VIEWER_DIFF_QUICK_EDIT.md`
+- Git engine: `architecture/GIT_ENGINE.md`
+- Security/privacy: `architecture/SECURITY_PRIVACY.md`
+
+Scope:
+
+- Expose routine git actions directly in ADE UI (lane-scoped where applicable).
+- Keep renderer untrusted; execute git operations in main process via typed intents.
+
+Desktop core:
+
+- Extend git/lane services for in-app source control actions:
+  - stage/unstage
+  - commit/amend/revert/cherry-pick
+  - stash push/pop/apply/drop
+  - fetch/sync/push/force-with-lease
+- Persist operation metadata for history/undo surfaces (pre/post SHA where possible).
+
+Renderer UI:
+
+- Add source control action surfaces in Lanes:
+  - file-level stage/unstage/discard actions
+  - commit composer + amend flow
+  - stash controls
+  - push/sync actions with confirmations for destructive ops
+
+Exit criteria:
+
+- User can complete daily git workflow (stage -> commit -> push -> sync) from ADE without dropping to external terminal.
+
+Checklist:
+
+- [ ] Stage/unstage file actions are wired in UI
+- [ ] Commit/amend UI flow works lane-scoped
+- [ ] Stash operations work with list/apply/pop/drop
+- [ ] Push + force-with-lease flow works with explicit confirmation
+- [ ] Revert and cherry-pick actions are available from UI
+- [ ] Operations are recorded for History timeline
 
 ## Phase 3: Deterministic Packs (Always In Sync)
 
@@ -350,7 +418,7 @@ Checklist:
 - [ ] Conflicts tab skeleton is navigable and shows conflict packs
 - [ ] Undo last sync works reliably
 
-## Phase 5: Hosted Agent (AWS) + Mirror Sync + Proposal Flow
+## Phase 5: Hosted Agent (AWS) + Auth + Mirror Sync + Proposal Flow
 
 References:
 

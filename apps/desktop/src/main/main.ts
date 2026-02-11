@@ -10,6 +10,9 @@ import { createSessionService } from "./services/sessions/sessionService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createFileService } from "./services/files/fileService";
+import { createProjectConfigService } from "./services/config/projectConfigService";
+import { createProcessService } from "./services/processes/processService";
+import { createTestService } from "./services/tests/testService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -128,6 +131,13 @@ app.whenReady().then(async () => {
     const sessionService = createSessionService({ db });
     const diffService = createDiffService({ laneService });
     const fileService = createFileService({ laneService });
+    const projectConfigService = createProjectConfigService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      projectId,
+      db,
+      logger
+    });
 
     const ptyService = createPtyService({
       projectRoot,
@@ -138,6 +148,26 @@ app.whenReady().then(async () => {
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
       loadPty
+    });
+
+    const processService = createProcessService({
+      db,
+      projectRoot,
+      projectId,
+      processLogsDir: adePaths.processLogsDir,
+      logger,
+      projectConfigService,
+      broadcastEvent: (ev) => broadcast(IPC.processesEvent, ev)
+    });
+
+    const testService = createTestService({
+      db,
+      projectRoot,
+      projectId,
+      testLogsDir: adePaths.testLogsDir,
+      logger,
+      projectConfigService,
+      broadcastEvent: (ev) => broadcast(IPC.testsEvent, ev)
     });
 
     const state = upsertRecentProject(readGlobalState(globalStatePath), project);
@@ -153,11 +183,24 @@ app.whenReady().then(async () => {
       sessionService,
       ptyService,
       diffService,
-      fileService
+      fileService,
+      projectConfigService,
+      processService,
+      testService
     };
   };
 
   const closeContext = () => {
+    try {
+      ctxRef.testService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      ctxRef.processService.disposeAll();
+    } catch {
+      // ignore
+    }
     try {
       ctxRef.ptyService.disposeAll();
     } catch {

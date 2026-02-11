@@ -1,3 +1,45 @@
+import type {
+  AppInfo,
+  ArchiveLaneArgs,
+  CreateLaneArgs,
+  DiffChanges,
+  DockLayout,
+  FileDiff,
+  GetDiffChangesArgs,
+  GetFileDiffArgs,
+  GetProcessLogTailArgs,
+  GetTestLogTailArgs,
+  LaneSummary,
+  ListLanesArgs,
+  ListSessionsArgs,
+  ListTestRunsArgs,
+  ProcessActionArgs,
+  ProcessDefinition,
+  ProcessEvent,
+  ProcessRuntime,
+  ProcessStackArgs,
+  ProjectConfigCandidate,
+  ProjectConfigDiff,
+  ProjectConfigSnapshot,
+  ProjectConfigTrust,
+  ProjectConfigValidationResult,
+  ProjectInfo,
+  PtyCreateArgs,
+  PtyCreateResult,
+  PtyDataEvent,
+  PtyExitEvent,
+  ReadTranscriptTailArgs,
+  RenameLaneArgs,
+  RunTestSuiteArgs,
+  StopTestRunArgs,
+  TerminalSessionDetail,
+  TerminalSessionSummary,
+  TestEvent,
+  TestRunSummary,
+  TestSuiteDefinition,
+  WriteTextAtomicArgs
+} from "../shared/types";
+
 export {};
 
 declare global {
@@ -5,128 +47,73 @@ declare global {
     ade: {
       app: {
         ping: () => Promise<"pong">;
-        getInfo: () => Promise<{
-          appVersion: string;
-          isPackaged: boolean;
-          platform: NodeJS.Platform;
-          arch: string;
-          versions: {
-            electron: string;
-            chrome: string;
-            node: string;
-            v8: string;
-          };
-          env: {
-            nodeEnv?: string;
-            viteDevServerUrl?: string;
-          };
-        }>;
-        getProject: () => Promise<{
-          rootPath: string;
-          displayName: string;
-          baseRef: string;
-        }>;
+        getInfo: () => Promise<AppInfo>;
+        getProject: () => Promise<ProjectInfo>;
       };
       project: {
-        openRepo: () => Promise<{
-          rootPath: string;
-          displayName: string;
-          baseRef: string;
-        }>;
+        openRepo: () => Promise<ProjectInfo>;
         openAdeFolder: () => Promise<void>;
       };
       lanes: {
-        list: (args?: { includeArchived?: boolean }) => Promise<
-          Array<{
-            id: string;
-            name: string;
-            description?: string | null;
-            baseRef: string;
-            branchRef: string;
-            worktreePath: string;
-            status: { dirty: boolean; ahead: number; behind: number };
-            createdAt: string;
-            archivedAt?: string | null;
-          }>
-        >;
-        create: (args: { name: string; description?: string }) => Promise<{
-          id: string;
-          name: string;
-          description?: string | null;
-          baseRef: string;
-          branchRef: string;
-          worktreePath: string;
-          status: { dirty: boolean; ahead: number; behind: number };
-          createdAt: string;
-          archivedAt?: string | null;
-        }>;
-        rename: (args: { laneId: string; name: string }) => Promise<void>;
-        archive: (args: { laneId: string }) => Promise<void>;
+        list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
+        create: (args: CreateLaneArgs) => Promise<LaneSummary>;
+        rename: (args: RenameLaneArgs) => Promise<void>;
+        archive: (args: ArchiveLaneArgs) => Promise<void>;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
-        list: (args?: { laneId?: string; status?: "running" | "completed" | "failed" | "disposed"; limit?: number }) => Promise<
-          Array<{
-            id: string;
-            laneId: string;
-            laneName: string;
-            ptyId: string | null;
-            title: string;
-            status: "running" | "completed" | "failed" | "disposed";
-            startedAt: string;
-            endedAt: string | null;
-            exitCode: number | null;
-            transcriptPath: string;
-            headShaStart: string | null;
-            headShaEnd: string | null;
-            lastOutputPreview: string | null;
-          }>
-        >;
-        get: (sessionId: string) => Promise<{
-          id: string;
-          laneId: string;
-          laneName: string;
-          ptyId: string | null;
-          title: string;
-          status: "running" | "completed" | "failed" | "disposed";
-          startedAt: string;
-          endedAt: string | null;
-          exitCode: number | null;
-          transcriptPath: string;
-          headShaStart: string | null;
-          headShaEnd: string | null;
-          lastOutputPreview: string | null;
-        } | null>;
-        readTranscriptTail: (args: { sessionId: string; maxBytes?: number }) => Promise<string>;
+        list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
+        get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
+        readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
       };
       pty: {
-        create: (args: { laneId: string; cwd?: string; cols: number; rows: number; title: string }) => Promise<{ ptyId: string; sessionId: string }>;
+        create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
         resize: (args: { ptyId: string; cols: number; rows: number }) => Promise<void>;
         dispose: (args: { ptyId: string }) => Promise<void>;
-        onData: (cb: (ev: { ptyId: string; sessionId: string; data: string }) => void) => () => void;
-        onExit: (cb: (ev: { ptyId: string; sessionId: string; exitCode: number | null }) => void) => () => void;
+        onData: (cb: (ev: PtyDataEvent) => void) => () => void;
+        onExit: (cb: (ev: PtyExitEvent) => void) => () => void;
       };
       diff: {
-        getChanges: (args: { laneId: string }) => Promise<{
-          unstaged: Array<{ path: string; kind: "modified" | "added" | "deleted" | "renamed" | "untracked" | "unknown" }>;
-          staged: Array<{ path: string; kind: "modified" | "added" | "deleted" | "renamed" | "untracked" | "unknown" }>;
-        }>;
-        getFile: (args: { laneId: string; path: string; mode: "unstaged" | "staged" }) => Promise<{
-          path: string;
-          mode: "unstaged" | "staged";
-          original: { exists: boolean; text: string };
-          modified: { exists: boolean; text: string };
-          isBinary?: boolean;
-          language?: string;
-        }>;
+        getChanges: (args: GetDiffChangesArgs) => Promise<DiffChanges>;
+        getFile: (args: GetFileDiffArgs) => Promise<FileDiff>;
       };
       files: {
-        writeTextAtomic: (args: { laneId: string; path: string; text: string }) => Promise<void>;
+        writeTextAtomic: (args: WriteTextAtomicArgs) => Promise<void>;
       };
       layout: {
-        get: (layoutId: string) => Promise<Record<string, number> | null>;
-        set: (layoutId: string, layout: Record<string, number>) => Promise<void>;
+        get: (layoutId: string) => Promise<DockLayout | null>;
+        set: (layoutId: string, layout: DockLayout) => Promise<void>;
+      };
+      processes: {
+        listDefinitions: () => Promise<ProcessDefinition[]>;
+        listRuntime: () => Promise<ProcessRuntime[]>;
+        start: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        stop: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        restart: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        kill: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
+        startStack: (args: ProcessStackArgs) => Promise<void>;
+        stopStack: (args: ProcessStackArgs) => Promise<void>;
+        restartStack: (args: ProcessStackArgs) => Promise<void>;
+        startAll: () => Promise<void>;
+        stopAll: () => Promise<void>;
+        getLogTail: (args: GetProcessLogTailArgs) => Promise<string>;
+        onEvent: (cb: (ev: ProcessEvent) => void) => () => void;
+      };
+      tests: {
+        listSuites: () => Promise<TestSuiteDefinition[]>;
+        run: (args: RunTestSuiteArgs) => Promise<TestRunSummary>;
+        stop: (args: StopTestRunArgs) => Promise<void>;
+        listRuns: (args?: ListTestRunsArgs) => Promise<TestRunSummary[]>;
+        getLogTail: (args: GetTestLogTailArgs) => Promise<string>;
+        onEvent: (cb: (ev: TestEvent) => void) => () => void;
+      };
+      projectConfig: {
+        get: () => Promise<ProjectConfigSnapshot>;
+        validate: (candidate: ProjectConfigCandidate) => Promise<ProjectConfigValidationResult>;
+        save: (candidate: ProjectConfigCandidate) => Promise<ProjectConfigSnapshot>;
+        diffAgainstDisk: () => Promise<ProjectConfigDiff>;
+        confirmTrust: (arg?: { sharedHash?: string }) => Promise<ProjectConfigTrust>;
       };
     };
   }

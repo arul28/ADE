@@ -26,6 +26,7 @@
     "tailwind-merge": "^3.4.0",
     "xterm": "^5.3.0",
     "xterm-addon-fit": "^0.8.0",
+    "yaml": "^2.8.2",
     "zustand": "^5.0.11"
   },
   "devDependencies": {

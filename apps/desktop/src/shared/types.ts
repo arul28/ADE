@@ -165,3 +165,253 @@ export type WriteTextAtomicArgs = {
 
 // react-resizable-panels uses a map of panel id -> percentage (0..100)
 export type DockLayout = Record<string, number>;
+
+export type ProcessRestartPolicy = "never" | "on_crash";
+export type StackStartOrder = "parallel" | "dependency";
+export type ProcessReadinessType = "none" | "port" | "logRegex";
+export type ProcessRuntimeStatus = "stopped" | "starting" | "running" | "degraded" | "stopping" | "exited" | "crashed";
+export type ProcessReadinessState = "unknown" | "ready" | "not_ready";
+export type StackAggregateStatus = "running" | "partial" | "stopped" | "error";
+export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
+export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
+
+export type ProcessReadinessConfig =
+  | { type: "none" }
+  | { type: "port"; port: number }
+  | { type: "logRegex"; pattern: string };
+
+export type ConfigProcessReadiness =
+  | { type?: "none" }
+  | { type: "port"; port?: number }
+  | { type: "logRegex"; pattern?: string };
+
+export type ProcessDefinition = {
+  id: string;
+  name: string;
+  command: string[];
+  cwd: string;
+  env: Record<string, string>;
+  autostart: boolean;
+  restart: ProcessRestartPolicy;
+  gracefulShutdownMs: number;
+  dependsOn: string[];
+  readiness: ProcessReadinessConfig;
+};
+
+export type StackButtonDefinition = {
+  id: string;
+  name: string;
+  processIds: string[];
+  startOrder: StackStartOrder;
+};
+
+export type TestSuiteDefinition = {
+  id: string;
+  name: string;
+  command: string[];
+  cwd: string;
+  env: Record<string, string>;
+  timeoutMs: number | null;
+  tags: TestSuiteTag[];
+};
+
+export type ConfigProcessDefinition = {
+  id: string;
+  name?: string;
+  command?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  autostart?: boolean;
+  restart?: ProcessRestartPolicy;
+  gracefulShutdownMs?: number;
+  dependsOn?: string[];
+  readiness?: ConfigProcessReadiness;
+};
+
+export type ConfigStackButtonDefinition = {
+  id: string;
+  name?: string;
+  processIds?: string[];
+  startOrder?: StackStartOrder;
+};
+
+export type ConfigTestSuiteDefinition = {
+  id: string;
+  name?: string;
+  command?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+  tags?: TestSuiteTag[];
+};
+
+export type ProjectConfigFile = {
+  version?: number;
+  processes?: ConfigProcessDefinition[];
+  stackButtons?: ConfigStackButtonDefinition[];
+  testSuites?: ConfigTestSuiteDefinition[];
+  providers?: Record<string, unknown>;
+};
+
+export type ProjectConfigCandidate = {
+  shared: ProjectConfigFile;
+  local: ProjectConfigFile;
+};
+
+export type EffectiveProjectConfig = {
+  version: number;
+  processes: ProcessDefinition[];
+  stackButtons: StackButtonDefinition[];
+  testSuites: TestSuiteDefinition[];
+  providers?: Record<string, unknown>;
+};
+
+export type ProjectConfigValidationIssue = {
+  path: string;
+  message: string;
+};
+
+export type ProjectConfigValidationResult = {
+  ok: boolean;
+  issues: ProjectConfigValidationIssue[];
+};
+
+export type ProjectConfigTrust = {
+  sharedHash: string;
+  localHash: string;
+  approvedSharedHash: string | null;
+  requiresSharedTrust: boolean;
+};
+
+export type ProjectConfigSnapshot = {
+  shared: ProjectConfigFile;
+  local: ProjectConfigFile;
+  effective: EffectiveProjectConfig;
+  validation: ProjectConfigValidationResult;
+  trust: ProjectConfigTrust;
+  paths: {
+    sharedPath: string;
+    localPath: string;
+  };
+};
+
+export type ProjectConfigDiff = {
+  sharedChanged: boolean;
+  localChanged: boolean;
+  sharedHash: string;
+  localHash: string;
+  approvedSharedHash: string | null;
+  requiresSharedTrust: boolean;
+};
+
+export type ProcessRuntime = {
+  processId: string;
+  status: ProcessRuntimeStatus;
+  readiness: ProcessReadinessState;
+  pid: number | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  exitCode: number | null;
+  lastExitCode: number | null;
+  lastEndedAt: string | null;
+  uptimeMs: number | null;
+  ports: number[];
+  logPath: string | null;
+  updatedAt: string;
+};
+
+export type ProcessListItem = {
+  definition: ProcessDefinition;
+  runtime: ProcessRuntime;
+};
+
+export type StackButtonStatus = StackButtonDefinition & {
+  status: StackAggregateStatus;
+};
+
+export type ProcessLogEvent = {
+  type: "log";
+  processId: string;
+  stream: "stdout" | "stderr";
+  chunk: string;
+  ts: string;
+};
+
+export type ProcessRuntimeEvent = {
+  type: "runtime";
+  runtime: ProcessRuntime;
+};
+
+export type ProcessEvent = ProcessLogEvent | ProcessRuntimeEvent;
+
+export type TestRunSummary = {
+  id: string;
+  suiteId: string;
+  suiteName: string;
+  laneId: string | null;
+  status: TestRunStatus;
+  exitCode: number | null;
+  durationMs: number | null;
+  startedAt: string;
+  endedAt: string | null;
+  logPath: string;
+};
+
+export type TestRunEvent = {
+  type: "run";
+  run: TestRunSummary;
+};
+
+export type TestLogEvent = {
+  type: "log";
+  runId: string;
+  suiteId: string;
+  stream: "stdout" | "stderr";
+  chunk: string;
+  ts: string;
+};
+
+export type TestEvent = TestRunEvent | TestLogEvent;
+
+export type ProcessActionArgs = {
+  processId: string;
+};
+
+export type ProcessStackArgs = {
+  stackId: string;
+};
+
+export type GetProcessLogTailArgs = {
+  processId: string;
+  maxBytes?: number;
+};
+
+export type RunTestSuiteArgs = {
+  suiteId: string;
+};
+
+export type StopTestRunArgs = {
+  runId: string;
+};
+
+export type ListTestRunsArgs = {
+  suiteId?: string;
+  limit?: number;
+};
+
+export type GetTestLogTailArgs = {
+  runId: string;
+  maxBytes?: number;
+};
+
+export type ProjectConfigValidateArgs = {
+  candidate: ProjectConfigCandidate;
+};
+
+export type ProjectConfigSaveArgs = {
+  candidate: ProjectConfigCandidate;
+};
+
+export type ProjectConfigConfirmTrustArgs = {
+  sharedHash?: string;
+};

@@ -34,6 +34,7 @@ In `/Users/arul/ADE/apps/desktop/src/renderer/components/`:
 - `GlobalStatusChips`
 - `TabNav` (Slim Icon Rail - 50px)
 - `CommandPalette`
+- `ThemeToggle` (dark/light switch, local preference)
 
 ## 3. Layout Primitives
 
@@ -77,6 +78,7 @@ These are required early to match the locked 3-pane cockpit.
 - `ProjectHome` (tab container)
 - `ProjectHeader` (repo/path/base branch + stack button row + start/stop all)
 - `ProjectActions` (open/change repo, open `.ade/` folder, export config)
+- `ProjectThemeToggle` (if scoped to Home header in MVP)
 - `StackButtonsBar` (named process subsets like Backend/Frontend/Full Stack)
 - `StackButton`
 - `ProcessList`

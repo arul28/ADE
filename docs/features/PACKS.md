@@ -11,6 +11,10 @@ Packs are always-in-sync, structured artifacts that provide:
 
 They are the core substrate for conflict resolution, PR drafting, and lane handoff.
 
+Terminology note:
+
+- "Context pack" refers to the **Project Pack** (global context) unless explicitly stated otherwise.
+
 ## 2. Pack Types
 
 ### 2.1 Project Pack (global)
@@ -118,4 +122,3 @@ V1:
 
 - [ ] Hosted narrative integration (merge narrative into packs or show as separate "agent notes")
 - [ ] Pack diff viewer (what changed between pack versions)
-

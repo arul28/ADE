@@ -1,42 +1,54 @@
 @import "tailwindcss";
 
 @theme {
-  /* 
-   * theme: "Clean Paper" / "Maestro on Parchment"
-   * background: Warm, solid off-white. No noise.
-   * foreground: High-contrast dark ink.
-   */
+  --radius-xl: 0px;
+  --radius-lg: 2px;
+  --radius-md: 1px;
+  --radius-sm: 0px;
+
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+:root {
+  /* LIGHT Theme ("Clean Paper") */
   --color-bg: hsl(40 20% 98%);
-  /* #FDFBF7 - Warm Paper */
+  /* #FDFBF7 */
   --color-fg: hsl(30 10% 10%);
-  /* #1C1917 - Dark Ink */
+  /* #1C1917 */
 
   --color-card: hsl(40 20% 98%);
-  /* Same as bg for clean look */
   --color-card-fg: hsl(30 10% 10%);
 
   --color-muted: hsl(40 10% 94%);
-  /* #F2F0ED - Subtle highlight/hover */
+  /* #F2F0ED */
   --color-muted-fg: hsl(30 5% 40%);
-  /* #6B665E - Pencil text */
+  /* #6B665E */
 
   --color-border: hsl(30 8% 85%);
-  /* #DBD8D3 - distinct but not harsh */
+  /* #DBD8D3 */
 
   --color-accent: hsl(10 70% 45%);
-  /* #C22323 - Deep Red */
+  /* #C22323 */
   --color-accent-fg: hsl(0 0% 100%);
+}
 
-  --radius-xl: 0px;
-  /* Sharp corners for "Technical" feel */
-  --radius-lg: 4px;
-  /* Minimal rounding */
-  --radius-md: 2px;
-  --radius-sm: 1px;
+[data-theme="dark"] {
+  /* DARK Theme ("Bloomberg Terminal") */
+  --color-bg: #0a0a0a;
+  --color-fg: #ededed;
 
-  /* Font mappings */
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --color-card: #111111;
+  --color-card-fg: #ededed;
+
+  --color-muted: #1a1a1a;
+  --color-muted-fg: #888888;
+
+  --color-border: #333333;
+
+  --color-accent: #f59e0b;
+  /* Amber */
+  --color-accent-fg: #000000;
 }
 
 /* 

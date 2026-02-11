@@ -106,6 +106,113 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)");
   db.run("create index if not exists idx_terminal_sessions_status on terminal_sessions(status)");
+
+  // Phase 2 process/test config and history tables.
+  db.run(`
+    create table if not exists process_definitions (
+      id text primary key,
+      project_id text not null,
+      key text not null,
+      name text not null,
+      command_json text not null,
+      cwd text not null,
+      env_json text not null,
+      autostart integer not null,
+      restart_policy text not null,
+      graceful_shutdown_ms integer not null,
+      depends_on_json text not null,
+      readiness_json text not null,
+      updated_at text not null,
+      unique(project_id, key),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_process_definitions_project_id on process_definitions(project_id)");
+
+  db.run(`
+    create table if not exists process_runtime (
+      project_id text not null,
+      process_key text not null,
+      status text not null,
+      pid integer,
+      started_at text,
+      ended_at text,
+      exit_code integer,
+      readiness text not null,
+      updated_at text not null,
+      primary key(project_id, process_key),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_process_runtime_project_id on process_runtime(project_id)");
+
+  db.run(`
+    create table if not exists process_runs (
+      id text primary key,
+      project_id text not null,
+      process_key text not null,
+      started_at text not null,
+      ended_at text,
+      exit_code integer,
+      termination_reason text not null,
+      log_path text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_process_runs_project_proc on process_runs(project_id, process_key)");
+  db.run("create index if not exists idx_process_runs_started_at on process_runs(started_at)");
+
+  db.run(`
+    create table if not exists stack_buttons (
+      id text primary key,
+      project_id text not null,
+      key text not null,
+      name text not null,
+      process_keys_json text not null,
+      start_order text not null,
+      updated_at text not null,
+      unique(project_id, key),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_stack_buttons_project_id on stack_buttons(project_id)");
+
+  db.run(`
+    create table if not exists test_suites (
+      id text primary key,
+      project_id text not null,
+      key text not null,
+      name text not null,
+      command_json text not null,
+      cwd text not null,
+      env_json text not null,
+      timeout_ms integer,
+      tags_json text not null,
+      updated_at text not null,
+      unique(project_id, key),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_test_suites_project_id on test_suites(project_id)");
+
+  db.run(`
+    create table if not exists test_runs (
+      id text primary key,
+      project_id text not null,
+      lane_id text,
+      suite_key text not null,
+      started_at text not null,
+      ended_at text,
+      status text not null,
+      exit_code integer,
+      duration_ms integer,
+      summary_json text,
+      log_path text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_test_runs_project_suite on test_runs(project_id, suite_key)");
+  db.run("create index if not exists idx_test_runs_started_at on test_runs(started_at)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
@@ -198,4 +305,3 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     }
   };
 }
-

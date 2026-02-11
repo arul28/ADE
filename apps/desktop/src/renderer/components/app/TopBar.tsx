@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Play, Plus, Search } from "lucide-react";
+import { Moon, Play, Plus, Search, Sun } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -21,6 +21,8 @@ export function TopBar({
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const focusSession = useAppStore((s) => s.focusSession);
+  const theme = useAppStore((s) => s.theme);
+  const toggleTheme = useAppStore((s) => s.toggleTheme);
   const navigate = useNavigate();
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -53,6 +55,10 @@ export function TopBar({
       </div>
 
       <div className="flex items-center gap-2">
+        <Button variant="ghost" onClick={toggleTheme} title="Toggle theme">
+          {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          <span className="hidden sm:inline">{theme === "dark" ? "Light" : "Dark"}</span>
+        </Button>
         <Button variant="ghost" onClick={onOpenCommandPalette} title="Command palette">
           <Search className="h-4 w-4" />
           <span className="hidden sm:inline">Commands</span>

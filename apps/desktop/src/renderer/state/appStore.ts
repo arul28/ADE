@@ -1,16 +1,39 @@
 import { create } from "zustand";
 import type { LaneSummary, ProjectInfo } from "../../shared/types";
 
+type ThemeMode = "dark" | "light";
+
+function readInitialTheme(): ThemeMode {
+  try {
+    const raw = window.localStorage.getItem("ade.theme");
+    if (raw === "dark" || raw === "light") return raw;
+  } catch {
+    // ignore
+  }
+  return "dark";
+}
+
+function persistTheme(theme: ThemeMode) {
+  try {
+    window.localStorage.setItem("ade.theme", theme);
+  } catch {
+    // ignore
+  }
+}
+
 type AppState = {
   project: ProjectInfo | null;
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   focusedSessionId: string | null;
+  theme: ThemeMode;
 
   setProject: (project: ProjectInfo) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
+  setTheme: (theme: ThemeMode) => void;
+  toggleTheme: () => void;
 
   refreshProject: () => Promise<void>;
   refreshLanes: () => Promise<void>;
@@ -22,11 +45,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   lanes: [],
   selectedLaneId: null,
   focusedSessionId: null,
+  theme: readInitialTheme(),
 
   setProject: (project) => set({ project }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
+  setTheme: (theme) => {
+    persistTheme(theme);
+    set({ theme });
+  },
+  toggleTheme: () =>
+    set((state) => {
+      const next = state.theme === "dark" ? "light" : "dark";
+      persistTheme(next);
+      return { theme: next };
+    }),
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
@@ -47,4 +81,3 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().refreshLanes();
   }
 }));
-

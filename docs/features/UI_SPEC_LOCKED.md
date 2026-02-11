@@ -34,18 +34,23 @@ Implementation note: reusable UI components are inventoried in `UI_COMPONENT_INV
 
 ## 0.1 Visual Direction (MVP)
 
-Locked aesthetic direction for MVP: **Maestro on Parchment** (Clean Paper).
+Locked aesthetic direction for MVP supports two first-class themes:
+
+- **Clean Paper (Light)**: Maestro on Parchment, warm off-white stationer's paper.
+- **Bloomberg Terminal (Dark)**: high-contrast terminal-like dark mode with dense operational readability.
 
 Guidelines:
 
-- **Clean Paper**: Solid, warm off-white background (`#FDFBF7`) with no noise or gradients. Like fresh stationer's paper.
 - **High-Density Console**: Layouts should feel like a technical console. Full-height panes, explicit borders.
-- **Crisp Borders**: Borders are 1px solid (`#DBD8D3`), acting as physical fold lines or dividers. No soft shadows.
+- **Crisp Borders**: Borders are 1px solid and act as physical fold lines or dividers. No soft shadows.
 - **Typography as Interface**:
   - **Headers**: Serif (`ui-serif`) for a "Document" / "Narrative" feel.
   - **Data/UI**: Monospace (`ui-monospace`) for high-density information, status, and controls.
-- **Accents**: "Sealing Wax" Red & "Ink" Blue. Used for active states and critical alerts.
-- **Physicality**: Elements should feel like distinct cards or sheets of paper resting on a desk.
+- **Theme Switching**:
+  - UI can switch between light/dark without reload.
+  - Theme preference persists locally per machine/user.
+  - Tokenized colors must preserve status readability in both themes.
+- **Physicality**: Elements should feel like distinct cards or sheets/panels, regardless of theme.
 
 ## 1. App Shell
 
@@ -152,6 +157,19 @@ Secondary (overflow):
 - checks/review summary
 - “Update PR description” from packs
 
+### 2.4 In-App Git Operations
+
+Lanes must expose a source-control action surface so routine git tasks can be done without leaving ADE:
+
+- stage/unstage file actions
+- commit/amend
+- stash operations
+- sync (merge/rebase)
+- revert/cherry-pick
+- push/force-with-lease
+
+Destructive actions must use explicit confirmations and show lane/branch target.
+
 ## 3. Terminals Tab (Command Center)
 
 The Terminals tab is optimized for high session volume.
@@ -194,6 +212,7 @@ This tab is the “SoloTerm-like” project control plane and the default home f
   - change/open repo (onboarding flow)
   - base branch selection (V1 if needed; MVP can be read-only)
   - open `.ade/` folder (escape hatch)
+- theme toggle (dark/light)
 - stack button row:
   - named subset buttons (for example `Backend`, `Frontend`, `Full Stack`)
   - each button maps to an explicit process set

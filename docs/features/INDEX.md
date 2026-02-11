@@ -17,4 +17,5 @@ Each file in this folder is a feature spec with planned behavior and development
 - `HISTORY_GRAPH.md`
 - `AUTOMATIONS_ACTIONS.md`
 - `FILE_VIEWER_DIFF_QUICK_EDIT.md`
+- `GIT_OPERATIONS.md`
 - `ONBOARDING_TRUST.md`

@@ -7,15 +7,31 @@ import type {
   DockLayout,
   GetDiffChangesArgs,
   GetFileDiffArgs,
+  GetProcessLogTailArgs,
+  GetTestLogTailArgs,
   LaneSummary,
   ListLanesArgs,
   ListSessionsArgs,
+  ListTestRunsArgs,
+  ProcessActionArgs,
+  ProcessDefinition,
+  ProcessRuntime,
+  ProcessStackArgs,
+  ProjectConfigCandidate,
+  ProjectConfigDiff,
+  ProjectConfigSnapshot,
+  ProjectConfigTrust,
+  ProjectConfigValidationResult,
   ProjectInfo,
   PtyCreateArgs,
   PtyCreateResult,
   RenameLaneArgs,
+  RunTestSuiteArgs,
+  StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
+  TestRunSummary,
+  TestSuiteDefinition,
   WriteTextAtomicArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -25,6 +41,9 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createDiffService } from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
+import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createProcessService } from "../processes/processService";
+import type { createTestService } from "../tests/testService";
 
 export type AppContext = {
   db: AdeDb;
@@ -37,6 +56,9 @@ export type AppContext = {
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
   fileService: ReturnType<typeof createFileService>;
+  projectConfigService: ReturnType<typeof createProjectConfigService>;
+  processService: ReturnType<typeof createProcessService>;
+  testService: ReturnType<typeof createTestService>;
 };
 
 function clampLayout(layout: DockLayout): DockLayout {
@@ -190,5 +212,115 @@ export function registerIpc({
   ipcMain.handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.fileService.writeTextAtomic({ laneId: arg.laneId, relPath: arg.path, text: arg.text });
+  });
+
+  ipcMain.handle(IPC.processesListDefinitions, async (): Promise<ProcessDefinition[]> => {
+    const ctx = getCtx();
+    return ctx.processService.listDefinitions();
+  });
+
+  ipcMain.handle(IPC.processesListRuntime, async (): Promise<ProcessRuntime[]> => {
+    const ctx = getCtx();
+    return ctx.processService.listRuntime();
+  });
+
+  ipcMain.handle(IPC.processesStart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+    const ctx = getCtx();
+    return await ctx.processService.start(arg);
+  });
+
+  ipcMain.handle(IPC.processesStop, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+    const ctx = getCtx();
+    return await ctx.processService.stop(arg);
+  });
+
+  ipcMain.handle(IPC.processesRestart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+    const ctx = getCtx();
+    return await ctx.processService.restart(arg);
+  });
+
+  ipcMain.handle(IPC.processesKill, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
+    const ctx = getCtx();
+    return await ctx.processService.kill(arg);
+  });
+
+  ipcMain.handle(IPC.processesStartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.startStack(arg);
+  });
+
+  ipcMain.handle(IPC.processesStopStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.stopStack(arg);
+  });
+
+  ipcMain.handle(IPC.processesRestartStack, async (_event, arg: ProcessStackArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.restartStack(arg);
+  });
+
+  ipcMain.handle(IPC.processesStartAll, async (): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.startAll();
+  });
+
+  ipcMain.handle(IPC.processesStopAll, async (): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.processService.stopAll();
+  });
+
+  ipcMain.handle(IPC.processesGetLogTail, async (_event, arg: GetProcessLogTailArgs): Promise<string> => {
+    const ctx = getCtx();
+    return ctx.processService.getLogTail(arg);
+  });
+
+  ipcMain.handle(IPC.testsListSuites, async (): Promise<TestSuiteDefinition[]> => {
+    const ctx = getCtx();
+    return ctx.testService.listSuites();
+  });
+
+  ipcMain.handle(IPC.testsRun, async (_event, arg: RunTestSuiteArgs): Promise<TestRunSummary> => {
+    const ctx = getCtx();
+    return ctx.testService.run(arg);
+  });
+
+  ipcMain.handle(IPC.testsStop, async (_event, arg: StopTestRunArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.testService.stop(arg);
+  });
+
+  ipcMain.handle(IPC.testsListRuns, async (_event, arg: ListTestRunsArgs = {}): Promise<TestRunSummary[]> => {
+    const ctx = getCtx();
+    return ctx.testService.listRuns(arg);
+  });
+
+  ipcMain.handle(IPC.testsGetLogTail, async (_event, arg: GetTestLogTailArgs): Promise<string> => {
+    const ctx = getCtx();
+    return ctx.testService.getLogTail(arg);
+  });
+
+  ipcMain.handle(IPC.projectConfigGet, async (): Promise<ProjectConfigSnapshot> => {
+    const ctx = getCtx();
+    return ctx.projectConfigService.get();
+  });
+
+  ipcMain.handle(IPC.projectConfigValidate, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigValidationResult> => {
+    const ctx = getCtx();
+    return ctx.projectConfigService.validate(arg.candidate);
+  });
+
+  ipcMain.handle(IPC.projectConfigSave, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigSnapshot> => {
+    const ctx = getCtx();
+    return ctx.projectConfigService.save(arg.candidate);
+  });
+
+  ipcMain.handle(IPC.projectConfigDiffAgainstDisk, async (): Promise<ProjectConfigDiff> => {
+    const ctx = getCtx();
+    return ctx.projectConfigService.diffAgainstDisk();
+  });
+
+  ipcMain.handle(IPC.projectConfigConfirmTrust, async (_event, arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> => {
+    const ctx = getCtx();
+    return ctx.projectConfigService.confirmTrust(arg);
   });
 }

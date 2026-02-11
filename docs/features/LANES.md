@@ -12,6 +12,11 @@ Lanes make parallel work safe and visible. Each lane is a real workspace (git wo
   - list + filters (active/ready/archived)
   - indicators: dirty, ahead/behind, conflict predicted/active, tests status, PR status
   - actions: create, rename, archive, open folder, open terminal, sync, run tests
+- Lane source control actions (in-app):
+  - stage/unstage
+  - commit/amend/revert/cherry-pick
+  - stash push/pop/apply/drop
+  - push/force-with-lease
 - Lane detail:
   - file tree + diffs
   - terminals (lane inspector -> Terminals)
@@ -62,6 +67,7 @@ MVP:
 - [ ] Rename lane and persist
 - [ ] Archive lane (safe flow)
 - [ ] Open lane folder and open terminal in lane
+- [ ] Lane-scoped source control actions wired to git engine
 
 V1:
 
