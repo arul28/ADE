@@ -1,22 +1,38 @@
 import React, { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle, Archive, ExternalLink, GitBranch, Pencil, TerminalSquare, Trash2 } from "lucide-react";
-import type { LaneSummary } from "../../../shared/types";
+import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 
+function conflictDotClass(status: ConflictStatus["status"] | null | undefined): string {
+  if (status === "conflict-active") return "bg-red-600";
+  if (status === "conflict-predicted") return "bg-orange-500";
+  if (status === "behind-base") return "bg-amber-500";
+  if (status === "merge-ready") return "bg-emerald-500";
+  return "bg-muted-fg";
+}
+
+function chipText(kind: ConflictChip["kind"]): string {
+  return kind === "new-overlap" ? "new overlap" : "high risk";
+}
+
 export function LaneRow({
   lane,
   selected,
   primary,
-  onSelect
+  onSelect,
+  conflictStatus,
+  conflictChips
 }: {
   lane: LaneSummary;
   selected: boolean;
   primary?: boolean;
   onSelect: (args: { extend: boolean }) => void;
+  conflictStatus?: ConflictStatus | null;
+  conflictChips?: ConflictChip[];
 }) {
   const navigate = useNavigate();
   const focusSession = useAppStore((s) => s.focusSession);
@@ -57,9 +73,30 @@ export function LaneRow({
             <span className="truncate font-serif text-base font-semibold tracking-tight text-fg">{lane.name}</span>
             <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-fg">{lane.laneType}</span>
             {isPrimaryLane ? <span className="rounded border border-emerald-400 px-1.5 py-0.5 text-[10px] uppercase text-emerald-700">home</span> : null}
+            <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-fg">
+              <span className={cn("inline-block h-2 w-2 rounded-full", conflictDotClass(conflictStatus?.status))} />
+              {conflictStatus?.status ?? "unknown"}
+            </span>
           </div>
           {lane.description ? (
             <div className="mt-0.5 truncate pl-6 font-mono text-xs text-muted-fg opacity-80">{lane.description}</div>
+          ) : null}
+          {conflictChips && conflictChips.length > 0 ? (
+            <div className="mt-1 flex flex-wrap gap-1 pl-6">
+              {conflictChips.slice(0, 2).map((chip, index) => (
+                <span
+                  key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
+                  className={cn(
+                    "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                    chip.kind === "high-risk"
+                      ? "border-red-500/60 bg-red-900/30 text-red-200"
+                      : "border-amber-500/60 bg-amber-900/20 text-amber-200"
+                  )}
+                >
+                  {chipText(chip.kind)}
+                </span>
+              ))}
+            </div>
           ) : null}
         </div>
 

@@ -449,6 +449,44 @@ function migrate(db: Database) {
     "session_deltas",
     ["project_id", "started_at"]
   );
+
+  // Phase 5 conflict radar predictions.
+  db.run(`
+    create table if not exists conflict_predictions (
+      id text primary key,
+      project_id text not null,
+      lane_a_id text not null,
+      lane_b_id text,
+      status text not null,
+      conflicting_files_json text,
+      overlap_files_json text,
+      lane_a_sha text,
+      lane_b_sha text,
+      predicted_at text not null,
+      expires_at text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_a_id) references lanes(id),
+      foreign key(lane_b_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_cp_lane_a on conflict_predictions(lane_a_id)",
+    "conflict_predictions",
+    ["lane_a_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_cp_lane_b on conflict_predictions(lane_b_id)",
+    "conflict_predictions",
+    ["lane_b_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_cp_predicted_at on conflict_predictions(predicted_at)",
+    "conflict_predictions",
+    ["predicted_at"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

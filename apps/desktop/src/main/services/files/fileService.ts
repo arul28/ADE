@@ -108,7 +108,13 @@ function inferDirectoryStatus(statusMap: Map<string, FileTreeChangeStatus>, relP
   return null;
 }
 
-export function createFileService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
+export function createFileService({
+  laneService,
+  onLaneWorktreeMutation
+}: {
+  laneService: ReturnType<typeof createLaneService>;
+  onLaneWorktreeMutation?: (args: { laneId: string; reason: string }) => void;
+}) {
   const watcherService = createFileWatcherService();
   const indexService = createFileSearchIndexService();
   const ignoreCache = new Map<string, boolean>();
@@ -123,6 +129,16 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
   };
 
   const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
+
+  const emitLaneMutation = (workspaceId: string, reason: string) => {
+    if (!onLaneWorktreeMutation) return;
+    const workspace = resolveWorkspace(workspaceId);
+    if (!workspace.laneId) return;
+    onLaneWorktreeMutation({
+      laneId: workspace.laneId,
+      reason
+    });
+  };
 
   const listWorkspaces = (_args: FilesListWorkspacesArgs = {}): FilesWorkspace[] => {
     const scopes = laneService.getFilesWorkspaces();
@@ -262,6 +278,12 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const { absPath } = ensureSafePath(worktreePath, relPath);
       writeTextAtomicAbs(absPath, text);
+      if (onLaneWorktreeMutation) {
+        onLaneWorktreeMutation({
+          laneId,
+          reason: "file_write_atomic"
+        });
+      }
     },
 
     listWorkspaces(args: FilesListWorkspacesArgs = {}): FilesWorkspace[] {
@@ -311,6 +333,7 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
         type: "modified",
         shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
       });
+      emitLaneMutation(args.workspaceId, "file_write");
     },
 
     createFile(args: FilesCreateFileArgs): void {
@@ -327,6 +350,7 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
         type: "created",
         shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
       });
+      emitLaneMutation(args.workspaceId, "file_create");
     },
 
     createDirectory(args: FilesCreateDirectoryArgs): void {
@@ -334,6 +358,7 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
       const { absPath } = ensureSafePath(workspace.rootPath, args.path);
       fs.mkdirSync(absPath, { recursive: true });
       indexService.invalidateWorkspace(args.workspaceId);
+      emitLaneMutation(args.workspaceId, "directory_create");
     },
 
     rename(args: FilesRenameArgs): void {
@@ -353,6 +378,7 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
         path: newRel,
         shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
       });
+      emitLaneMutation(args.workspaceId, "file_rename");
     },
 
     deletePath(args: FilesDeleteArgs): void {
@@ -369,6 +395,7 @@ export function createFileService({ laneService }: { laneService: ReturnType<typ
         type: "deleted",
         shouldIgnore: (relPath) => isIgnoredPath(workspace.rootPath, relPath, false)
       });
+      emitLaneMutation(args.workspaceId, "file_delete");
     },
 
     async watchWorkspace(args: FilesWatchArgs, callback: (ev: FileChangeEvent) => void, senderId: number): Promise<void> {

@@ -63,12 +63,20 @@ export function createGitOperationsService({
   laneService,
   operationService,
   logger,
-  onHeadChanged
+  onHeadChanged,
+  onWorktreeChanged
 }: {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   logger: Logger;
   onHeadChanged?: (args: {
+    laneId: string;
+    reason: string;
+    operationId: string;
+    preHeadSha: string | null;
+    postHeadSha: string | null;
+  }) => void;
+  onWorktreeChanged?: (args: {
     laneId: string;
     reason: string;
     operationId: string;
@@ -111,6 +119,20 @@ export function createGitOperationsService({
         status: "succeeded",
         postHeadSha
       });
+
+      if (onWorktreeChanged) {
+        try {
+          onWorktreeChanged({
+            laneId,
+            reason,
+            operationId: operation.operationId,
+            preHeadSha,
+            postHeadSha
+          });
+        } catch {
+          // Never fail git operation due to callback issues.
+        }
+      }
 
       if (preHeadSha !== postHeadSha && onHeadChanged) {
         try {

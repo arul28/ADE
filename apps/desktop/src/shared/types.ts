@@ -46,6 +46,101 @@ export type LaneSummary = {
   archivedAt?: string | null;
 };
 
+export type ConflictStatusValue =
+  | "merge-ready"
+  | "behind-base"
+  | "conflict-predicted"
+  | "conflict-active"
+  | "unknown";
+
+export type ConflictRiskLevel = "none" | "low" | "medium" | "high";
+
+export type ConflictFileType = "content" | "rename" | "delete" | "add";
+
+export type ConflictStatus = {
+  laneId: string;
+  status: ConflictStatusValue;
+  overlappingFileCount: number;
+  peerConflictCount: number;
+  lastPredictedAt: string | null;
+};
+
+export type ConflictOverlap = {
+  peerId: string | null;
+  peerName: string;
+  files: Array<{
+    path: string;
+    conflictType: ConflictFileType;
+  }>;
+  riskLevel: ConflictRiskLevel;
+};
+
+export type RiskMatrixEntry = {
+  laneAId: string;
+  laneBId: string;
+  riskLevel: ConflictRiskLevel;
+  overlapCount: number;
+  hasConflict: boolean;
+};
+
+export type MergeSimulationArgs = {
+  laneAId: string;
+  laneBId?: string;
+};
+
+export type MergeSimulationResult = {
+  outcome: "clean" | "conflict" | "error";
+  mergedFiles: string[];
+  conflictingFiles: Array<{
+    path: string;
+    conflictMarkers: string;
+  }>;
+  diffStat: {
+    insertions: number;
+    deletions: number;
+    filesChanged: number;
+  };
+  error?: string;
+};
+
+export type ConflictPrediction = {
+  id: string;
+  laneAId: string;
+  laneBId: string | null;
+  status: "clean" | "conflict" | "unknown";
+  conflictingFiles: Array<{ path: string; conflictType: string }>;
+  overlapFiles: string[];
+  laneASha: string;
+  laneBSha: string | null;
+  predictedAt: string;
+};
+
+export type BatchAssessmentResult = {
+  lanes: ConflictStatus[];
+  matrix: RiskMatrixEntry[];
+  computedAt: string;
+};
+
+export type GetLaneConflictStatusArgs = { laneId: string };
+export type ListOverlapsArgs = { laneId: string };
+export type RunConflictPredictionArgs = { laneId?: string };
+
+export type ConflictChipKind = "new-overlap" | "high-risk";
+
+export type ConflictChip = {
+  laneId: string;
+  peerId: string | null;
+  kind: ConflictChipKind;
+  overlapCount: number;
+};
+
+export type ConflictEventPayload = {
+  type: "prediction-complete";
+  computedAt: string;
+  laneIds: string[];
+  chips: ConflictChip[];
+};
+
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
 export type TerminalSessionSummary = {
