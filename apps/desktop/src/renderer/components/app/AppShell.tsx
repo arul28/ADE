@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
@@ -7,17 +8,19 @@ import { useAppStore } from "../../state/appStore";
 export function AppShell({ children }: { children: React.ReactNode }) {
   const setProject = useAppStore((s) => s.setProject);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
+  const providerMode = useAppStore((s) => s.providerMode);
   const [commandOpen, setCommandOpen] = useState(false);
 
   useEffect(() => {
     window.ade.app
       .getProject()
       .then(setProject)
-      .then(() => refreshLanes())
+      .then(() => Promise.all([refreshLanes(), refreshProviderMode()]))
       .catch(() => {
         // Leave project unset; UI will show placeholders.
       });
-  }, [setProject, refreshLanes]);
+  }, [setProject, refreshLanes, refreshProviderMode]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -48,6 +51,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           }
         />
       </div>
+
+      {providerMode === "guest" ? (
+        <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+          Running in Guest Mode - context tracking uses template narratives. <Link to="/settings" className="underline">Set up provider</Link>
+        </div>
+      ) : null}
 
       <div className="flex-1 flex min-h-0">
         {/* Sidebar Navigation - High contrast, distinct pane */}

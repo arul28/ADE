@@ -1,13 +1,31 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
+  AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
+  FileChangeEvent,
+  FileContent,
   FileDiff,
+  FileTreeNode,
+  FilesCreateDirectoryArgs,
+  FilesCreateFileArgs,
+  FilesDeleteArgs,
+  FilesListTreeArgs,
+  FilesListWorkspacesArgs,
+  FilesQuickOpenArgs,
+  FilesQuickOpenItem,
+  FilesReadFileArgs,
+  FilesRenameArgs,
+  FilesSearchTextArgs,
+  FilesSearchTextMatch,
+  FilesWatchArgs,
+  FilesWorkspace,
+  FilesWriteTextArgs,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -71,6 +89,7 @@ contextBridge.exposeInMainWorld("ade", {
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
+    attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
     archive: async (args: ArchiveLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesArchive, args),
     delete: async (args: DeleteLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesDelete, args),
@@ -108,8 +127,26 @@ contextBridge.exposeInMainWorld("ade", {
     getFile: async (args: GetFileDiffArgs): Promise<FileDiff> => ipcRenderer.invoke(IPC.diffGetFile, args)
   },
   files: {
-    writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesWriteTextAtomic, args)
+    writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> => ipcRenderer.invoke(IPC.filesWriteTextAtomic, args),
+    listWorkspaces: async (args: FilesListWorkspacesArgs = {}): Promise<FilesWorkspace[]> =>
+      ipcRenderer.invoke(IPC.filesListWorkspaces, args),
+    listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> => ipcRenderer.invoke(IPC.filesListTree, args),
+    readFile: async (args: FilesReadFileArgs): Promise<FileContent> => ipcRenderer.invoke(IPC.filesReadFile, args),
+    writeText: async (args: FilesWriteTextArgs): Promise<void> => ipcRenderer.invoke(IPC.filesWriteText, args),
+    createFile: async (args: FilesCreateFileArgs): Promise<void> => ipcRenderer.invoke(IPC.filesCreateFile, args),
+    createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.filesCreateDirectory, args),
+    rename: async (args: FilesRenameArgs): Promise<void> => ipcRenderer.invoke(IPC.filesRename, args),
+    delete: async (args: FilesDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.filesDelete, args),
+    watchChanges: async (args: FilesWatchArgs): Promise<void> => ipcRenderer.invoke(IPC.filesWatchChanges, args),
+    stopWatching: async (args: FilesWatchArgs): Promise<void> => ipcRenderer.invoke(IPC.filesStopWatching, args),
+    quickOpen: async (args: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> => ipcRenderer.invoke(IPC.filesQuickOpen, args),
+    searchText: async (args: FilesSearchTextArgs): Promise<FilesSearchTextMatch[]> => ipcRenderer.invoke(IPC.filesSearchText, args),
+    onChange: (cb: (ev: FileChangeEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: FileChangeEvent) => cb(payload);
+      ipcRenderer.on(IPC.filesChange, listener);
+      return () => ipcRenderer.removeListener(IPC.filesChange, listener);
+    }
   },
   git: {
     stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStageFile, args),
@@ -148,7 +185,7 @@ contextBridge.exposeInMainWorld("ade", {
   },
   processes: {
     listDefinitions: async (): Promise<ProcessDefinition[]> => ipcRenderer.invoke(IPC.processesListDefinitions),
-    listRuntime: async (): Promise<ProcessRuntime[]> => ipcRenderer.invoke(IPC.processesListRuntime),
+    listRuntime: async (laneId: string): Promise<ProcessRuntime[]> => ipcRenderer.invoke(IPC.processesListRuntime, { laneId }),
     start: async (args: ProcessActionArgs): Promise<ProcessRuntime> => ipcRenderer.invoke(IPC.processesStart, args),
     stop: async (args: ProcessActionArgs): Promise<ProcessRuntime> => ipcRenderer.invoke(IPC.processesStop, args),
     restart: async (args: ProcessActionArgs): Promise<ProcessRuntime> => ipcRenderer.invoke(IPC.processesRestart, args),
@@ -156,8 +193,8 @@ contextBridge.exposeInMainWorld("ade", {
     startStack: async (args: ProcessStackArgs): Promise<void> => ipcRenderer.invoke(IPC.processesStartStack, args),
     stopStack: async (args: ProcessStackArgs): Promise<void> => ipcRenderer.invoke(IPC.processesStopStack, args),
     restartStack: async (args: ProcessStackArgs): Promise<void> => ipcRenderer.invoke(IPC.processesRestartStack, args),
-    startAll: async (): Promise<void> => ipcRenderer.invoke(IPC.processesStartAll),
-    stopAll: async (): Promise<void> => ipcRenderer.invoke(IPC.processesStopAll),
+    startAll: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.processesStartAll, args),
+    stopAll: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.processesStopAll, args),
     getLogTail: async (args: GetProcessLogTailArgs): Promise<string> => ipcRenderer.invoke(IPC.processesGetLogTail, args),
     onEvent: (cb: (ev: ProcessEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ProcessEvent) => cb(payload);

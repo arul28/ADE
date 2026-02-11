@@ -521,8 +521,8 @@ test_runs (
 
 | ID | Task | Status |
 |----|------|--------|
-| PROJ-033 | Tab rename to "Run" with play/pause nav icon | TODO |
-| PROJ-034 | Lane selector for command execution context | TODO |
+| PROJ-033 | Tab rename to "Run" with play/pause nav icon | DONE |
+| PROJ-034 | Lane selector for command execution context | DONE |
 | PROJ-035 | AI-suggested run prompts (detect new suites/apps/services on merge) | TODO |
 | PROJ-036 | CI/CD workflow scan and import (GitHub Actions, GitLab CI, etc.) | TODO |
 | PROJ-037 | CI/CD sync mode (auto-detect workflow file changes, suggest updates) | TODO |

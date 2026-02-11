@@ -35,6 +35,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 
 const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
+const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
 const DEFAULT_TEST_COMMAND = '["npm", "run", "test"]';
 const DEFAULT_ENV = "{}";
 
@@ -104,8 +105,9 @@ function stackTone(status: StackAggregateStatus): string {
   return "text-muted-fg border-border";
 }
 
-function getRuntimeFallback(processId: string): ProcessRuntime {
+function getRuntimeFallback(laneId: string | null, processId: string): ProcessRuntime {
   return {
+    laneId: laneId ?? "",
     processId,
     status: "stopped",
     readiness: "unknown",
@@ -122,7 +124,7 @@ function getRuntimeFallback(processId: string): ProcessRuntime {
   };
 }
 
-function aggregateStackStatus(stack: StackButtonDefinition, runtimeById: Map<string, ProcessRuntime>): StackAggregateStatus {
+function aggregateStackStatus(stack: StackButtonDefinition, runtimeById: Map<string, ProcessRuntime>, laneId: string | null): StackAggregateStatus {
   if (!stack.processIds.length) return "stopped";
 
   let running = 0;
@@ -130,7 +132,7 @@ function aggregateStackStatus(stack: StackButtonDefinition, runtimeById: Map<str
   let errors = 0;
 
   for (const processId of stack.processIds) {
-    const runtime = runtimeById.get(processId) ?? getRuntimeFallback(processId);
+    const runtime = runtimeById.get(processId) ?? getRuntimeFallback(laneId, processId);
     if (runtime.status === "crashed" || runtime.status === "degraded") {
       errors += 1;
       continue;
@@ -163,10 +165,89 @@ function filterLog(raw: string, query: string): string {
   return lines.filter((line) => line.toLowerCase().includes(q)).join("\n");
 }
 
+function quoteShellArg(arg: string): string {
+  if (!arg.length) return '""';
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(arg)) return arg;
+  return `"${arg.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function commandArrayToLine(command: string[]): string {
+  if (!command.length) return "";
+  return command.map(quoteShellArg).join(" ");
+}
+
+function parseCommandLine(input: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]!;
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === "\\") {
+        const next = input[i + 1];
+        if (next == null) {
+          current += "\\";
+        } else {
+          i += 1;
+          current += next;
+        }
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === "\\" ) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current.length) {
+        out.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (escaped) current += "\\";
+  if (quote != null) throw new Error("Unclosed quote in command line");
+  if (current.length) out.push(current);
+  if (!out.length) throw new Error("Command line must not be empty");
+  return out;
+}
+
 type EditableProcessRow = {
   id: string;
   name: string;
   cwd: string;
+  commandLine: string;
   commandJson: string;
   envJson: string;
   autostart: boolean;
@@ -197,12 +278,14 @@ type EditableSuiteRow = {
 
 function processRowsFromFile(file: ProjectConfigFile): EditableProcessRow[] {
   return (file.processes ?? []).map((p) => {
+    const command = p.command ?? ["npm", "run", "dev"];
     const readiness = p.readiness;
     return {
       id: p.id,
       name: p.name ?? "",
       cwd: p.cwd ?? ".",
-      commandJson: JSON.stringify(p.command ?? ["npm", "run", "dev"]),
+      commandLine: commandArrayToLine(command),
+      commandJson: JSON.stringify(command),
       envJson: JSON.stringify(p.env ?? {}),
       autostart: p.autostart ?? false,
       restart: p.restart ?? "never",
@@ -269,13 +352,26 @@ function parseStringMap(name: string, raw: string): Record<string, string> {
   return out;
 }
 
+function parseProcessCommand(name: string, row: EditableProcessRow): string[] {
+  const line = row.commandLine.trim();
+  if (line.length) {
+    try {
+      return parseCommandLine(line);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`${name} command line is invalid: ${detail}`);
+    }
+  }
+  return parseJsonArray(`${name} command`, row.commandJson);
+}
+
 function toFileProcesses(rows: EditableProcessRow[]): ConfigProcessDefinition[] {
   const out: ConfigProcessDefinition[] = [];
   for (const row of rows) {
     const id = row.id.trim();
     if (!id) continue;
 
-    const command = parseJsonArray(`process ${id} command`, row.commandJson);
+    const command = parseProcessCommand(`process ${id}`, row);
     const env = parseStringMap(`process ${id} env`, row.envJson);
     const graceful = Number(row.gracefulShutdownMs);
     if (!Number.isFinite(graceful) || graceful <= 0) {
@@ -372,6 +468,10 @@ function toFileSuites(rows: EditableSuiteRow[]): ConfigTestSuiteDefinition[] {
 
 export function ProjectHomePage() {
   const project = useAppStore((s) => s.project);
+  const lanes = useAppStore((s) => s.lanes);
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const runLaneId = useAppStore((s) => s.runLaneId);
+  const selectRunLane = useAppStore((s) => s.selectRunLane);
   const openRepo = useAppStore((s) => s.openRepo);
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
@@ -402,11 +502,18 @@ export function ProjectHomePage() {
   const [processRows, setProcessRows] = useState<EditableProcessRow[]>([]);
   const [stackRows, setStackRows] = useState<EditableStackRow[]>([]);
   const [suiteRows, setSuiteRows] = useState<EditableSuiteRow[]>([]);
+  const [quickProcessName, setQuickProcessName] = useState("");
+  const [quickProcessCwd, setQuickProcessCwd] = useState(".");
+  const [quickProcessCommand, setQuickProcessCommand] = useState(DEFAULT_PROCESS_COMMAND_LINE);
 
   const [nowTick, setNowTick] = useState(Date.now());
 
+  const effectiveLaneId = runLaneId ?? selectedLaneId ?? lanes[0]?.id ?? null;
+  const effectiveLaneName = lanes.find((lane) => lane.id === effectiveLaneId)?.name ?? null;
+
   const processLogRef = useRef<HTMLPreElement | null>(null);
   const testLogRef = useRef<HTMLPreElement | null>(null);
+  const configEditorRef = useRef<HTMLElement | null>(null);
   const selectedProcessIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
 
@@ -423,18 +530,28 @@ export function ProjectHomePage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!runLaneId && selectedLaneId) {
+      selectRunLane(selectedLaneId);
+    }
+  }, [runLaneId, selectedLaneId, selectRunLane]);
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const [nextConfig, nextDefs, nextRuntime, nextSuites, nextRuns] = await Promise.all([
+      const [nextConfig, nextDefs, nextSuites] = await Promise.all([
         window.ade.projectConfig.get(),
         window.ade.processes.listDefinitions(),
-        window.ade.processes.listRuntime(),
-        window.ade.tests.listSuites(),
-        window.ade.tests.listRuns({ limit: 120 })
+        window.ade.tests.listSuites()
       ]);
+      const [nextRuntime, nextRuns] = effectiveLaneId
+        ? await Promise.all([
+          window.ade.processes.listRuntime(effectiveLaneId),
+          window.ade.tests.listRuns({ laneId: effectiveLaneId, limit: 120 })
+        ])
+        : [[], []] as [ProcessRuntime[], TestRunSummary[]];
 
       setConfig(nextConfig);
       setDefinitions(nextDefs);
@@ -456,7 +573,7 @@ export function ProjectHomePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [effectiveLaneId]);
 
   useEffect(() => {
     refreshAll().catch(() => { });
@@ -465,6 +582,7 @@ export function ProjectHomePage() {
   useEffect(() => {
     const unsubProc = window.ade.processes.onEvent((ev) => {
       if (ev.type === "runtime") {
+        if (!effectiveLaneId || ev.runtime.laneId !== effectiveLaneId) return;
         setRuntime((prev) => {
           const idx = prev.findIndex((row) => row.processId === ev.runtime.processId);
           if (idx < 0) return [...prev, ev.runtime];
@@ -475,13 +593,14 @@ export function ProjectHomePage() {
         return;
       }
 
-      if (ev.type === "log" && selectedProcessIdRef.current === ev.processId) {
+      if (ev.type === "log" && ev.laneId === effectiveLaneId && selectedProcessIdRef.current === ev.processId) {
         setProcessLogRaw((prev) => normalizeLog(`${prev}${ev.chunk}`));
       }
     });
 
     const unsubTests = window.ade.tests.onEvent((ev) => {
       if (ev.type === "run") {
+        if (ev.run.laneId !== effectiveLaneId) return;
         setRuns((prev) => {
           const idx = prev.findIndex((row) => row.id === ev.run.id);
           if (idx < 0) {
@@ -514,19 +633,19 @@ export function ProjectHomePage() {
         // ignore
       }
     };
-  }, []);
+  }, [effectiveLaneId]);
 
   useEffect(() => {
-    if (!selectedProcessId) {
+    if (!selectedProcessId || !effectiveLaneId) {
       setProcessLogRaw("");
       return;
     }
 
     window.ade.processes
-      .getLogTail({ processId: selectedProcessId, maxBytes: 220_000 })
+      .getLogTail({ laneId: effectiveLaneId, processId: selectedProcessId, maxBytes: 220_000 })
       .then((log) => setProcessLogRaw(normalizeLog(log)))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [selectedProcessId]);
+  }, [selectedProcessId, effectiveLaneId]);
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -565,22 +684,22 @@ export function ProjectHomePage() {
   const processItems = useMemo(() => {
     return definitions.map((def) => ({
       definition: def,
-      runtime: runtimeById.get(def.id) ?? getRuntimeFallback(def.id)
+      runtime: runtimeById.get(def.id) ?? getRuntimeFallback(effectiveLaneId, def.id)
     }));
-  }, [definitions, runtimeById]);
+  }, [definitions, runtimeById, effectiveLaneId]);
 
   const selectedProcessRuntime = useMemo(
-    () => (selectedProcessId ? runtimeById.get(selectedProcessId) ?? getRuntimeFallback(selectedProcessId) : null),
-    [runtimeById, selectedProcessId]
+    () => (selectedProcessId ? runtimeById.get(selectedProcessId) ?? getRuntimeFallback(effectiveLaneId, selectedProcessId) : null),
+    [runtimeById, selectedProcessId, effectiveLaneId]
   );
 
   const stackStatuses = useMemo(() => {
     const stacks = config?.effective.stackButtons ?? [];
     return stacks.map((stack) => ({
       stack,
-      status: aggregateStackStatus(stack, runtimeById)
+      status: aggregateStackStatus(stack, runtimeById, effectiveLaneId)
     }));
-  }, [config, runtimeById]);
+  }, [config, runtimeById, effectiveLaneId]);
 
   const latestRunBySuite = useMemo(() => {
     const out = new Map<string, TestRunSummary>();
@@ -633,12 +752,16 @@ export function ProjectHomePage() {
       setConfig(next);
       setNotice(`Saved ${configTarget === "shared" ? ".ade/ade.yaml" : ".ade/local.yaml"}`);
 
-      const [nextDefs, nextRuntime, nextSuites, nextRuns] = await Promise.all([
+      const [nextDefs, nextSuites] = await Promise.all([
         window.ade.processes.listDefinitions(),
-        window.ade.processes.listRuntime(),
-        window.ade.tests.listSuites(),
-        window.ade.tests.listRuns({ limit: 120 })
+        window.ade.tests.listSuites()
       ]);
+      const [nextRuntime, nextRuns] = effectiveLaneId
+        ? await Promise.all([
+          window.ade.processes.listRuntime(effectiveLaneId),
+          window.ade.tests.listRuns({ laneId: effectiveLaneId, limit: 120 })
+        ])
+        : [[], []] as [ProcessRuntime[], TestRunSummary[]];
 
       setDefinitions(nextDefs);
       setRuntime(nextRuntime);
@@ -647,7 +770,49 @@ export function ProjectHomePage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [config, configTarget, processRows, stackRows, suiteRows]);
+  }, [config, configTarget, processRows, stackRows, suiteRows, effectiveLaneId]);
+
+  const scrollToConfigEditor = useCallback(() => {
+    configEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const addQuickProcessDraft = useCallback(() => {
+    setError(null);
+    const commandLine = quickProcessCommand.trim();
+    if (!commandLine) {
+      setError("Command is required.");
+      return;
+    }
+
+    let argv: string[];
+    try {
+      argv = parseCommandLine(commandLine);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    setProcessRows((prev) => [
+      ...prev,
+      {
+        id: `proc_${prev.length + 1}`,
+        name: quickProcessName.trim(),
+        cwd: quickProcessCwd.trim() || ".",
+        commandLine,
+        commandJson: JSON.stringify(argv),
+        envJson: DEFAULT_ENV,
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: "7000",
+        dependsOnCsv: "",
+        readinessType: "none",
+        readinessPort: "",
+        readinessPattern: ""
+      }
+    ]);
+    setNotice("Added process draft. Save config to apply.");
+    scrollToConfigEditor();
+  }, [quickProcessCommand, quickProcessCwd, quickProcessName, scrollToConfigEditor]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -675,29 +840,29 @@ export function ProjectHomePage() {
         if (prev) setSelectedProcessId(prev);
       } else if (e.key === "s") {
         e.preventDefault();
-        if (selectedProcessId && !trustRequired) {
+        if (selectedProcessId && !trustRequired && effectiveLaneId) {
           const rt = runtimeById.get(selectedProcessId);
           if (rt && (rt.status === "stopped" || rt.status === "exited" || rt.status === "crashed")) {
             runWithRefresh(async () => {
-              await window.ade.processes.start({ processId: selectedProcessId });
+              await window.ade.processes.start({ laneId: effectiveLaneId, processId: selectedProcessId });
             });
           }
         }
       } else if (e.key === "x") {
         e.preventDefault();
-        if (selectedProcessId) {
+        if (selectedProcessId && effectiveLaneId) {
           const rt = runtimeById.get(selectedProcessId);
           if (rt && (rt.status === "running" || rt.status === "starting" || rt.status === "degraded")) {
             runWithRefresh(async () => {
-              await window.ade.processes.stop({ processId: selectedProcessId });
+              await window.ade.processes.stop({ laneId: effectiveLaneId, processId: selectedProcessId });
             });
           }
         }
       } else if (e.key === "r") {
         e.preventDefault();
-        if (selectedProcessId && !trustRequired) {
+        if (selectedProcessId && !trustRequired && effectiveLaneId) {
           runWithRefresh(async () => {
-            await window.ade.processes.restart({ processId: selectedProcessId });
+            await window.ade.processes.restart({ laneId: effectiveLaneId, processId: selectedProcessId });
           });
         }
       }
@@ -705,14 +870,14 @@ export function ProjectHomePage() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [processItems, selectedProcessId, trustRequired, runWithRefresh, runtimeById]);
+  }, [processItems, selectedProcessId, trustRequired, runWithRefresh, runtimeById, effectiveLaneId]);
 
     return (
       <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
-            <div className="text-sm font-semibold">Projects (Home)</div>
-            <div className="text-xs text-muted-fg">Managed processes, stack controls, tests, and config</div>
+            <div className="text-sm font-semibold">Run</div>
+            <div className="text-xs text-muted-fg">Managed processes, lane-scoped stack controls, tests, and config</div>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -810,6 +975,22 @@ export function ProjectHomePage() {
                 <div className="flex items-center gap-2">
                   <Chip>base: {project?.baseRef ?? "main"}</Chip>
                   <Chip>{project?.displayName ?? "(no project)"}</Chip>
+                  <label className="flex items-center gap-2 text-xs text-muted-fg">
+                    <span>Running in:</span>
+                    <select
+                      className="h-7 rounded border border-border bg-card/80 px-2 text-xs"
+                      value={effectiveLaneId ?? ""}
+                      onChange={(e) => selectRunLane(e.target.value || null)}
+                    >
+                      <option value="">Select lane</option>
+                      {lanes.map((lane) => (
+                        <option key={lane.id} value={lane.id}>
+                          {lane.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {effectiveLaneName ? <Chip>{effectiveLaneName}</Chip> : null}
                 </div>
               </div>
 
@@ -819,13 +1000,19 @@ export function ProjectHomePage() {
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={trustRequired}
-                  onClick={() => runWithRefresh(async () => { await window.ade.processes.startAll(); })}
+                  disabled={trustRequired || !effectiveLaneId}
+                  onClick={() => runWithRefresh(async () => {
+                    if (!effectiveLaneId) return;
+                    await window.ade.processes.startAll({ laneId: effectiveLaneId });
+                  })}
                 >
                   <Play className="h-4 w-4" />
                   Start all
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => runWithRefresh(async () => { await window.ade.processes.stopAll(); })}>
+                <Button size="sm" variant="outline" disabled={!effectiveLaneId} onClick={() => runWithRefresh(async () => {
+                  if (!effectiveLaneId) return;
+                  await window.ade.processes.stopAll({ laneId: effectiveLaneId });
+                })}>
                   <Square className="h-4 w-4" />
                   Stop all
                 </Button>
@@ -838,8 +1025,11 @@ export function ProjectHomePage() {
                       size="sm"
                       variant="ghost"
                       className="h-7 px-2"
-                      disabled={trustRequired}
-                      onClick={() => runWithRefresh(async () => { await window.ade.processes.startStack({ stackId: stack.id }); })}
+                      disabled={trustRequired || !effectiveLaneId}
+                      onClick={() => runWithRefresh(async () => {
+                        if (!effectiveLaneId) return;
+                        await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: stack.id });
+                      })}
                     >
                       Start
                     </Button>
@@ -847,12 +1037,58 @@ export function ProjectHomePage() {
                       size="sm"
                       variant="ghost"
                       className="h-7 px-2"
-                      onClick={() => runWithRefresh(async () => { await window.ade.processes.stopStack({ stackId: stack.id }); })}
+                      disabled={!effectiveLaneId}
+                      onClick={() => runWithRefresh(async () => {
+                        if (!effectiveLaneId) return;
+                        await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId: stack.id });
+                      })}
                     >
                       Stop
                     </Button>
                   </div>
                 ))}
+              </div>
+            </section>
+
+            <section className="rounded-md border border-border bg-card/70 p-3">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold">Quick add process</div>
+                  <div className="text-xs text-muted-fg">Use this for common commands. You can fine-tune in Config editor.</div>
+                </div>
+                <Button size="sm" variant="outline" onClick={scrollToConfigEditor}>
+                  Jump to config editor
+                </Button>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-[160px_1fr_1fr_auto_auto]">
+                <input
+                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                  placeholder="Name (optional)"
+                  value={quickProcessName}
+                  onChange={(e) => setQuickProcessName(e.target.value)}
+                />
+                <input
+                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                  placeholder="Working directory, e.g. apps/web"
+                  value={quickProcessCwd}
+                  onChange={(e) => setQuickProcessCwd(e.target.value)}
+                />
+                <input
+                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                  placeholder='Command, e.g. "pnpm dev"'
+                  value={quickProcessCommand}
+                  onChange={(e) => setQuickProcessCommand(e.target.value)}
+                />
+                <Button size="sm" variant="primary" onClick={addQuickProcessDraft}>
+                  Add process draft
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => saveConfig().catch(() => {})}>
+                  Save config
+                </Button>
+              </div>
+              <div className="mt-2 text-[11px] text-muted-fg">
+                For commands that need a subdirectory, set <span className="font-mono">Working directory</span> instead of using <span className="font-mono">cd ... &&</span>.
               </div>
             </section>
 
@@ -869,7 +1105,7 @@ export function ProjectHomePage() {
                 <div className="space-y-2">
                   {processItems.length === 0 ? (
                     <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
-                      No process definitions. Add process entries in the config editor below.
+                      No process definitions. Use "Quick add process" above or the config editor.
                     </div>
                   ) : null}
 
@@ -883,11 +1119,15 @@ export function ProjectHomePage() {
                           <th className="w-16 px-3 py-2">PID</th>
                           <th className="w-20 px-3 py-2">Uptime</th>
                           <th className="w-20 px-3 py-2">Port</th>
+                          <th className="w-32 px-3 py-2">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
                         {processItems.map(({ definition, runtime: rowRuntime }) => {
                           const active = selectedProcessId === definition.id;
+                          const isRunning = rowRuntime.status === "running" || rowRuntime.status === "starting" || rowRuntime.status === "degraded";
+                          const canStart = !isRunning && !trustRequired && Boolean(effectiveLaneId);
+                          const canStop = isRunning && Boolean(effectiveLaneId);
                           return (
                             <tr
                               key={definition.id}
@@ -912,6 +1152,55 @@ export function ProjectHomePage() {
                               <td className="px-3 py-1.5 font-mono text-muted-fg">{formatUptime(rowRuntime, nowTick)}</td>
                               <td className="px-3 py-1.5 font-mono text-muted-fg">
                                 {rowRuntime.ports.length ? rowRuntime.ports.join(",") : "-"}
+                              </td>
+                              <td className="px-3 py-1.5">
+                                <div className="flex items-center gap-1">
+                                  {isRunning ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={!canStop}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (!effectiveLaneId) return;
+                                        runWithRefresh(async () => {
+                                          await window.ade.processes.stop({ laneId: effectiveLaneId, processId: definition.id });
+                                        });
+                                      }}
+                                    >
+                                      Stop
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={!canStart}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (!effectiveLaneId) return;
+                                        runWithRefresh(async () => {
+                                          await window.ade.processes.start({ laneId: effectiveLaneId, processId: definition.id });
+                                        });
+                                      }}
+                                    >
+                                      Start
+                                    </Button>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={trustRequired || !effectiveLaneId}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      if (!effectiveLaneId) return;
+                                      runWithRefresh(async () => {
+                                        await window.ade.processes.restart({ laneId: effectiveLaneId, processId: definition.id });
+                                      });
+                                    }}
+                                  >
+                                    Restart
+                                  </Button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -999,9 +1288,10 @@ export function ProjectHomePage() {
                             <Button
                               size="sm"
                               variant="outline"
-                              disabled={trustRequired || running}
+                              disabled={trustRequired || running || !effectiveLaneId}
                               onClick={() => runWithRefresh(async () => {
-                                const next = await window.ade.tests.run({ suiteId: suite.id });
+                                if (!effectiveLaneId) return;
+                                const next = await window.ade.tests.run({ laneId: effectiveLaneId, suiteId: suite.id });
                                 setSelectedRunId(next.id);
                               })}
                             >
@@ -1074,7 +1364,7 @@ export function ProjectHomePage() {
               </div>
             </section>
 
-            <section className="rounded-md border border-border bg-card/70 p-3">
+            <section ref={configEditorRef} className="rounded-md border border-border bg-card/70 p-3">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-sm font-semibold">Config editor</div>
@@ -1111,6 +1401,7 @@ export function ProjectHomePage() {
                             id: `proc_${prev.length + 1}`,
                             name: "",
                             cwd: ".",
+                            commandLine: DEFAULT_PROCESS_COMMAND_LINE,
                             commandJson: DEFAULT_PROCESS_COMMAND,
                             envJson: DEFAULT_ENV,
                             autostart: false,
@@ -1162,7 +1453,7 @@ export function ProjectHomePage() {
                           />
                           <input
                             className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="cwd"
+                            placeholder="cwd (use this instead of cd ... &&)"
                             value={row.cwd}
                             onChange={(e) =>
                               setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))
@@ -1170,10 +1461,10 @@ export function ProjectHomePage() {
                           />
                           <input
                             className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder='command JSON, e.g. ["npm","run","dev"]'
-                            value={row.commandJson}
+                            placeholder='command, e.g. pnpm dev'
+                            value={row.commandLine}
                             onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandJson: e.target.value } : p)))
+                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandLine: e.target.value } : p)))
                             }
                           />
                           <input
@@ -1263,6 +1554,17 @@ export function ProjectHomePage() {
                             />
                             autostart
                           </label>
+                          <details className="rounded-md border border-border bg-card px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
+                            <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
+                            <input
+                              className="mt-2 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
+                              placeholder='["npm","run","dev"]'
+                              value={row.commandJson}
+                              onChange={(e) =>
+                                setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandJson: e.target.value } : p)))
+                              }
+                            />
+                          </details>
                         </div>
                       </div>
                     ))}

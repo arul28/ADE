@@ -3,6 +3,7 @@ import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { ProjectHomePage } from "../project/ProjectHomePage";
 import { LanesPage } from "../lanes/LanesPage";
+import { FilesPage } from "../files/FilesPage";
 import { TerminalsPage } from "../terminals/TerminalsPage";
 import { ConflictsPage } from "../conflicts/ConflictsPage";
 import { PRsPage } from "../prs/PRsPage";
@@ -28,6 +29,7 @@ export function App() {
             <Route path="/" element={<Navigate to="/project" replace />} />
             <Route path="/project" element={<ProjectHomePage />} />
             <Route path="/lanes" element={<LanesPage />} />
+            <Route path="/files" element={<FilesPage />} />
             <Route path="/terminals" element={<TerminalsPage />} />
             <Route path="/conflicts" element={<ConflictsPage />} />
             <Route path="/prs" element={<PRsPage />} />

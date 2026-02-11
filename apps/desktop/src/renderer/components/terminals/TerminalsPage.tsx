@@ -201,6 +201,7 @@ export function TerminalsPage() {
                     <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
                       <span className="truncate">lane: {s.laneName}</span>
                       <Chip className="text-[11px]">{s.status}</Chip>
+                      {!s.tracked ? <Chip className="text-[11px]">ghost</Chip> : null}
                       {s.exitCode != null ? <Chip className="text-[11px]">exit {s.exitCode}</Chip> : null}
                       <Chip className="text-[11px]">{new Date(s.startedAt).toLocaleString()}</Chip>
                     </div>

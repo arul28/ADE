@@ -36,7 +36,7 @@ The **Files tab** provides an IDE-like file explorer and editor for browsing and
 
 This feature matters because ADE's primary value proposition is keeping developers in a single tool. While the Lanes tab handles git operations and the Terminals tab provides shell access, the Files tab closes the loop by enabling direct code inspection and editing. Without it, developers must context-switch to an external editor for simple edits, breaking the workflow that ADE is designed to streamline.
 
-**Important**: This feature is **not yet implemented**. All tasks in the implementation tracking section have a status of TODO. This document serves as the design specification for future development.
+**Current status**: This feature is **implemented and working**. The full Files tab — file explorer, Monaco editor, diff modes, conflict resolution, file watching, quick open, and cross-file search — has been built. A small number of refinement tasks remain (file-type icons, Zed styling polish).
 
 **Design reference**: The Files tab draws heavy inspiration from [Zed](https://zed.dev)'s simple, minimal IDE interface. Zed's approach — a clean file tree, lightweight tabs, fast file switching, and a focus on keyboard-driven workflows — is the target aesthetic. The file explorer should feel snappy and uncluttered, avoiding the visual weight of VS Code's explorer. Specifically: single-click to preview, double-click to pin-open, minimal chrome around the editor, and a flat file tree with subtle indentation guides rather than heavy tree lines.
 
@@ -325,40 +325,38 @@ Future enhancement: Persist editor state to `.ade/editor-state.json` so that ope
 
 ## Implementation Tracking
 
-**Note**: This feature is entirely unimplemented. All tasks are TODO.
-
-### Phase 1 — File Tree & Basic Editor (TODO)
+### Phase 1 — File Tree & Basic Editor (DONE)
 
 | ID | Task | Status |
 |----|------|--------|
-| FILES-001 | File tree listing service (respect .gitignore) | TODO |
-| FILES-002 | File explorer component (tree view) | TODO |
-| FILES-003 | Workspace scope selector | TODO |
-| FILES-004 | File icons by type | TODO |
-| FILES-005 | Change indicators in tree (M/A/D) | TODO |
-| FILES-006 | Open file in Monaco editor | TODO |
-| FILES-007 | Monaco syntax highlighting and theming | TODO |
-| FILES-008 | File tab bar (multiple open files) | TODO |
-| FILES-009 | Edit mode (read/write with save) | TODO |
-| FILES-013 | File path breadcrumb | TODO |
-| FILES-014 | Right-click context menu | TODO |
-| FILES-015 | Unsaved changes indicator and prompt | TODO |
-| FILES-018 | Atomic file save integration | TODO |
+| FILES-001 | File tree listing service (respect .gitignore) | DONE |
+| FILES-002 | File explorer component (tree view) | DONE |
+| FILES-003 | Workspace scope selector | DONE |
+| FILES-004 | File icons by type | PARTIAL — generic icons only, no extension-aware icons |
+| FILES-005 | Change indicators in tree (M/A/D) | DONE |
+| FILES-006 | Open file in Monaco editor | DONE |
+| FILES-007 | Monaco syntax highlighting and theming | DONE |
+| FILES-008 | File tab bar (multiple open files) | DONE |
+| FILES-009 | Edit mode (read/write with save) | DONE |
+| FILES-013 | File path breadcrumb | DONE |
+| FILES-014 | Right-click context menu | DONE |
+| FILES-015 | Unsaved changes indicator and prompt | DONE |
+| FILES-018 | Atomic file save integration | DONE |
 
-### Phase 2 — Diff & Conflict Modes (TODO)
-
-| ID | Task | Status |
-|----|------|--------|
-| FILES-010 | Diff mode (staged vs unstaged) | TODO |
-| FILES-011 | Diff mode (commit comparison) | TODO |
-| FILES-012 | Conflict mode (3-way merge view) | TODO |
-| FILES-017 | Protected branch warnings | TODO |
-
-### Phase 3 — Advanced Editor Features (TODO)
+### Phase 2 — Diff & Conflict Modes (DONE)
 
 | ID | Task | Status |
 |----|------|--------|
-| FILES-016 | File watching for external changes | TODO |
-| FILES-019 | Search across files (Ctrl+Shift+F) | TODO |
-| FILES-020 | Go to file (Ctrl+P) | TODO |
-| FILES-021 | Zed-inspired file tree styling (compact rows, minimal chrome, keyboard-driven) | TODO |
+| FILES-010 | Diff mode (staged vs unstaged) | DONE |
+| FILES-011 | Diff mode (commit comparison) | DONE |
+| FILES-012 | Conflict mode (3-way merge view) | DONE |
+| FILES-017 | Protected branch warnings | PARTIAL — read-only banner exists, but lacks "switch to lane" suggestion |
+
+### Phase 3 — Advanced Editor Features (DONE)
+
+| ID | Task | Status |
+|----|------|--------|
+| FILES-016 | File watching for external changes | DONE |
+| FILES-019 | Search across files (Ctrl+Shift+F) | DONE |
+| FILES-020 | Go to file (Ctrl+P) | DONE |
+| FILES-021 | Zed-inspired file tree styling (compact rows, minimal chrome, keyboard-driven) | PARTIAL — compact rows done, missing indentation guides and some hover state refinements |

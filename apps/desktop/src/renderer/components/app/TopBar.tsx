@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Moon, Play, Plus, Search, Sun } from "lucide-react";
+import { Link2, Moon, Play, Plus, Search, Sun } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -27,6 +27,9 @@ export function TopBar({
 
   const [createOpen, setCreateOpen] = useState(false);
   const [laneName, setLaneName] = useState("");
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachName, setAttachName] = useState("");
+  const [attachPath, setAttachPath] = useState("");
 
   const canCreateLane = Boolean(project?.rootPath);
   const canStartTerminal = Boolean(selectedLaneId);
@@ -133,6 +136,89 @@ export function TopBar({
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root>
+        <Dialog.Root open={attachOpen} onOpenChange={setAttachOpen}>
+          <Dialog.Trigger asChild>
+            <Button variant="outline" disabled={!canCreateLane} title={canCreateLane ? "Attach existing lane" : "Open a repo first"}>
+              <Link2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Attach</span>
+            </Button>
+          </Dialog.Trigger>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-sm" />
+            <Dialog.Content
+              className={cn(
+                "fixed left-1/2 top-[18%] w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded-xl border border-border bg-card/90 p-3 shadow-2xl backdrop-blur",
+                "focus:outline-none"
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <Dialog.Title className="text-sm font-semibold">Attach lane</Dialog.Title>
+                <Dialog.Close asChild>
+                  <Button variant="ghost" size="sm">
+                    Esc
+                  </Button>
+                </Dialog.Close>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                <div>
+                  <div className="mb-1 text-xs text-muted-fg">Lane name</div>
+                  <input
+                    value={attachName}
+                    onChange={(e) => setAttachName(e.target.value)}
+                    placeholder="e.g. bugfix/from-other-worktree"
+                    className="h-10 w-full rounded-lg border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-muted-fg">Attached path</div>
+                  <input
+                    value={attachPath}
+                    onChange={(e) => setAttachPath(e.target.value)}
+                    placeholder="/absolute/path/to/existing/worktree"
+                    className="h-10 w-full rounded-lg border border-border bg-card/70 px-3 font-mono text-xs outline-none placeholder:text-muted-fg"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setAttachOpen(false);
+                    setAttachName("");
+                    setAttachPath("");
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={!attachPath.trim().length || !attachName.trim().length}
+                  onClick={() => {
+                    const name = attachName.trim();
+                    const attachedPath = attachPath.trim();
+                    window.ade.lanes
+                      .attach({ name, attachedPath })
+                      .then(async (lane) => {
+                        await refreshLanes();
+                        setAttachOpen(false);
+                        setAttachName("");
+                        setAttachPath("");
+                        navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                      })
+                      .catch(() => {
+                        // lane attach can fail due to invalid path/repo mismatch
+                      });
+                  }}
+                >
+                  Attach
+                </Button>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
 
         <Button
           variant="primary"
@@ -153,6 +239,23 @@ export function TopBar({
         >
           <Play className="h-4 w-4" />
           <span className="hidden sm:inline">Terminal</span>
+        </Button>
+        <Button
+          variant="outline"
+          disabled={!canStartTerminal}
+          title={canStartTerminal ? `Start untracked terminal in ${selectedLaneName ?? "lane"}` : "Select a lane first"}
+          onClick={() => {
+            if (!selectedLaneId) return;
+            window.ade.pty
+              .create({ laneId: selectedLaneId, cols: 100, rows: 30, title: "Untracked Shell", tracked: false })
+              .then(({ sessionId }) => {
+                focusSession(sessionId);
+                navigate(`/lanes?laneId=${encodeURIComponent(selectedLaneId)}&sessionId=${encodeURIComponent(sessionId)}`);
+              })
+              .catch(() => {});
+          }}
+        >
+          <span className="hidden sm:inline">Untracked</span>
         </Button>
       </div>
     </header>

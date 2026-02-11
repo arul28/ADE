@@ -1,11 +1,29 @@
 import type {
+  AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
+  FileChangeEvent,
+  FileContent,
   FileDiff,
+  FileTreeNode,
+  FilesCreateDirectoryArgs,
+  FilesCreateFileArgs,
+  FilesDeleteArgs,
+  FilesListTreeArgs,
+  FilesListWorkspacesArgs,
+  FilesQuickOpenArgs,
+  FilesQuickOpenItem,
+  FilesReadFileArgs,
+  FilesRenameArgs,
+  FilesSearchTextArgs,
+  FilesSearchTextMatch,
+  FilesWatchArgs,
+  FilesWorkspace,
+  FilesWriteTextArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
@@ -73,6 +91,7 @@ declare global {
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
+        attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
         delete: (args: DeleteLaneArgs) => Promise<void>;
@@ -98,6 +117,19 @@ declare global {
       };
       files: {
         writeTextAtomic: (args: WriteTextAtomicArgs) => Promise<void>;
+        listWorkspaces: (args?: FilesListWorkspacesArgs) => Promise<FilesWorkspace[]>;
+        listTree: (args: FilesListTreeArgs) => Promise<FileTreeNode[]>;
+        readFile: (args: FilesReadFileArgs) => Promise<FileContent>;
+        writeText: (args: FilesWriteTextArgs) => Promise<void>;
+        createFile: (args: FilesCreateFileArgs) => Promise<void>;
+        createDirectory: (args: FilesCreateDirectoryArgs) => Promise<void>;
+        rename: (args: FilesRenameArgs) => Promise<void>;
+        delete: (args: FilesDeleteArgs) => Promise<void>;
+        watchChanges: (args: FilesWatchArgs) => Promise<void>;
+        stopWatching: (args: FilesWatchArgs) => Promise<void>;
+        quickOpen: (args: FilesQuickOpenArgs) => Promise<FilesQuickOpenItem[]>;
+        searchText: (args: FilesSearchTextArgs) => Promise<FilesSearchTextMatch[]>;
+        onChange: (cb: (ev: FileChangeEvent) => void) => () => void;
       };
       git: {
         stageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
@@ -131,7 +163,7 @@ declare global {
       };
       processes: {
         listDefinitions: () => Promise<ProcessDefinition[]>;
-        listRuntime: () => Promise<ProcessRuntime[]>;
+        listRuntime: (laneId: string) => Promise<ProcessRuntime[]>;
         start: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
         stop: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
         restart: (args: ProcessActionArgs) => Promise<ProcessRuntime>;
@@ -139,8 +171,8 @@ declare global {
         startStack: (args: ProcessStackArgs) => Promise<void>;
         stopStack: (args: ProcessStackArgs) => Promise<void>;
         restartStack: (args: ProcessStackArgs) => Promise<void>;
-        startAll: () => Promise<void>;
-        stopAll: () => Promise<void>;
+        startAll: (args: { laneId: string }) => Promise<void>;
+        stopAll: (args: { laneId: string }) => Promise<void>;
         getLogTail: (args: GetProcessLogTailArgs) => Promise<string>;
         onEvent: (cb: (ev: ProcessEvent) => void) => () => void;
       };

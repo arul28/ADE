@@ -25,6 +25,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       laneId: string;
       laneName: string;
       ptyId: string | null;
+      tracked: number;
       title: string;
       status: TerminalSessionStatus;
       startedAt: string;
@@ -41,6 +42,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
           s.lane_id as laneId,
           l.name as laneName,
           s.pty_id as ptyId,
+          s.tracked as tracked,
           s.title as title,
           s.status as status,
           s.started_at as startedAt,
@@ -59,7 +61,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       params
     );
 
-    return rows as TerminalSessionSummary[];
+    return rows.map((row) => ({ ...row, tracked: row.tracked === 1 })) as TerminalSessionSummary[];
   };
 
   return {
@@ -73,6 +75,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
             s.lane_id as laneId,
             l.name as laneName,
             s.pty_id as ptyId,
+            s.tracked as tracked,
             s.title as title,
             s.status as status,
             s.started_at as startedAt,
@@ -89,7 +92,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `,
         [sessionId]
       );
-      return row ? (row as TerminalSessionDetail) : null;
+      return row ? ({ ...row, tracked: (row as any).tracked === 1 } as TerminalSessionDetail) : null;
     },
 
     create({
@@ -98,11 +101,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
       ptyId,
       title,
       startedAt,
-      transcriptPath
+      transcriptPath,
+      tracked,
     }: {
       sessionId: string;
       laneId: string;
       ptyId: string;
+      tracked: boolean;
       title: string;
       startedAt: string;
       transcriptPath: string;
@@ -110,11 +115,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run(
         `
           insert into terminal_sessions(
-            id, lane_id, pty_id, title, started_at, ended_at, exit_code, transcript_path,
+            id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
             head_sha_start, head_sha_end, status, last_output_preview
-          ) values (?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null)
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null)
         `,
-        [sessionId, laneId, ptyId, title, startedAt, transcriptPath]
+        [sessionId, laneId, ptyId, tracked ? 1 : 0, title, startedAt, transcriptPath]
       );
     },
 
@@ -150,6 +155,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     readTranscriptTail(transcriptPath: string, maxBytes: number): string {
+      if (!transcriptPath) return "";
       try {
         const stat = fs.statSync(transcriptPath);
         const size = stat.size;
@@ -168,4 +174,3 @@ export function createSessionService({ db }: { db: AdeDb }) {
     }
   };
 }
-

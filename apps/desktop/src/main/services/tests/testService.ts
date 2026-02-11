@@ -17,8 +17,10 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createLaneService } from "../lanes/laneService";
 
 type ActiveRunEntry = {
+  laneId: string;
   runId: string;
   suiteId: string;
   suiteName: string;
@@ -56,32 +58,31 @@ function readTail(filePath: string, maxBytes: number): string {
 
 export function createTestService({
   db,
-  projectRoot,
   projectId,
   testLogsDir,
   logger,
+  laneService,
   projectConfigService,
   broadcastEvent
 }: {
   db: AdeDb;
-  projectRoot: string;
   projectId: string;
   testLogsDir: string;
   logger: Logger;
+  laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   broadcastEvent: (ev: TestEvent) => void;
 }) {
   const activeRuns = new Map<string, ActiveRunEntry>();
-
   const nowIso = () => new Date().toISOString();
 
-  const persistRunStart = (runId: string, suiteId: string, startedAt: string, logPath: string) => {
+  const persistRunStart = (runId: string, laneId: string, suiteId: string, startedAt: string, logPath: string) => {
     db.run(
       `
         insert into test_runs(id, project_id, lane_id, suite_key, started_at, ended_at, status, exit_code, duration_ms, summary_json, log_path)
-        values (?, ?, null, ?, ?, null, 'running', null, null, null, ?)
+        values (?, ?, ?, ?, ?, null, 'running', null, null, null, ?)
       `,
-      [runId, projectId, suiteId, startedAt, logPath]
+      [runId, projectId, laneId, suiteId, startedAt, logPath]
     );
   };
 
@@ -107,17 +108,11 @@ export function createTestService({
     ]);
   };
 
-  const getSuiteMap = (config: EffectiveProjectConfig) => {
-    return new Map(config.testSuites.map((s) => [s.id, s] as const));
-  };
+  const getSuiteMap = (config: EffectiveProjectConfig) => new Map(config.testSuites.map((s) => [s.id, s] as const));
 
-  const emitRun = (run: TestRunSummary) => {
-    broadcastEvent({ type: "run", run });
-  };
-
-  const emitLog = (runId: string, suiteId: string, stream: "stdout" | "stderr", chunk: string) => {
+  const emitRun = (run: TestRunSummary) => broadcastEvent({ type: "run", run });
+  const emitLog = (runId: string, suiteId: string, stream: "stdout" | "stderr", chunk: string) =>
     broadcastEvent({ type: "log", runId, suiteId, stream, chunk, ts: nowIso() });
-  };
 
   const buildRunSummary = (row: {
     id: string;
@@ -171,7 +166,6 @@ export function createTestService({
       `,
       [runId]
     );
-
     if (!row) return null;
     return buildRunSummary(row, suiteNameMap);
   };
@@ -188,22 +182,16 @@ export function createTestService({
 
     const endedAt = nowIso();
     const durationMs = Math.max(0, Date.parse(endedAt) - Date.parse(entry.startedAt));
-
     let status: TestRunStatus;
-    if (entry.stopIntent === "timed_out") {
-      status = "timed_out";
-    } else if (entry.stopIntent === "canceled") {
-      status = "canceled";
-    } else {
-      status = exitCode === 0 ? "passed" : "failed";
-    }
+    if (entry.stopIntent === "timed_out") status = "timed_out";
+    else if (entry.stopIntent === "canceled") status = "canceled";
+    else status = exitCode === 0 ? "passed" : "failed";
 
     try {
       entry.logStream.write(`\n# test run ended at ${endedAt} status=${status} exit=${exitCode ?? "null"}\n`);
     } catch {
       // ignore
     }
-
     try {
       entry.logStream.end();
     } catch {
@@ -211,15 +199,13 @@ export function createTestService({
     }
 
     persistRunEnd({ runId: entry.runId, status, exitCode, endedAt, durationMs });
-
-    const suiteMap = new Map<string, string>([[entry.suiteId, entry.suiteName]]);
-    const summary = getRunById(entry.runId, suiteMap);
+    const summary = getRunById(entry.runId, new Map([[entry.suiteId, entry.suiteName]]));
     if (summary) emitRun(summary);
-
     activeRuns.delete(entry.runId);
 
     logger.info("tests.run.finished", {
       runId: entry.runId,
+      laneId: entry.laneId,
       suiteId: entry.suiteId,
       status,
       exitCode,
@@ -227,20 +213,18 @@ export function createTestService({
     });
   };
 
-  const spawnSuite = (suite: TestSuiteDefinition): TestRunSummary => {
+  const spawnSuite = (laneId: string, suite: TestSuiteDefinition): TestRunSummary => {
     const runId = randomUUID();
     const startedAt = nowIso();
-    const cwd = path.isAbsolute(suite.cwd) ? suite.cwd : path.join(projectRoot, suite.cwd);
+    const laneRoot = laneService.getLaneWorktreePath(laneId);
+    const cwd = path.isAbsolute(suite.cwd) ? suite.cwd : path.join(laneRoot, suite.cwd);
 
-    if (!suite.command.length) {
-      throw new Error(`Suite '${suite.id}' has an empty command`);
-    }
+    if (!suite.command.length) throw new Error(`Suite '${suite.id}' has an empty command`);
 
-    const suiteDir = path.join(testLogsDir, suite.id);
+    const suiteDir = path.join(testLogsDir, laneId, suite.id);
     fs.mkdirSync(suiteDir, { recursive: true });
     const logPath = path.join(suiteDir, `${runId}.log`);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
-
     logStream.write(`\n# test run start ${startedAt} cmd=${JSON.stringify(suite.command)} cwd=${cwd}\n`);
 
     const child: ChildProcessByStdio<null, Readable, Readable> = spawn(suite.command[0]!, suite.command.slice(1), {
@@ -251,6 +235,7 @@ export function createTestService({
     });
 
     const entry: ActiveRunEntry = {
+      laneId,
       runId,
       suiteId: suite.id,
       suiteName: suite.name,
@@ -264,13 +249,13 @@ export function createTestService({
     };
 
     activeRuns.set(runId, entry);
-    persistRunStart(runId, suite.id, startedAt, logPath);
+    persistRunStart(runId, laneId, suite.id, startedAt, logPath);
 
     const summary: TestRunSummary = {
       id: runId,
       suiteId: suite.id,
       suiteName: suite.name,
-      laneId: null,
+      laneId,
       status: "running",
       exitCode: null,
       durationMs: null,
@@ -293,7 +278,6 @@ export function createTestService({
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => onChunk("stdout", chunk));
     child.stderr.on("data", (chunk: string) => onChunk("stderr", chunk));
-
     child.on("error", (err) => {
       try {
         logStream.write(`\n[test run error] ${String(err)}\n`);
@@ -301,10 +285,7 @@ export function createTestService({
         // ignore
       }
     });
-
-    child.on("close", (code) => {
-      finishRun(entry, code ?? null);
-    });
+    child.on("close", (code) => finishRun(entry, code ?? null));
 
     if (suite.timeoutMs && suite.timeoutMs > 0) {
       entry.timeoutTimer = setTimeout(() => {
@@ -314,7 +295,6 @@ export function createTestService({
         } catch {
           // ignore
         }
-
         entry.killTimer = setTimeout(() => {
           if (activeRuns.has(runId)) {
             try {
@@ -323,17 +303,11 @@ export function createTestService({
               // ignore
             }
           }
-        }, 2000);
+        }, 3000);
       }, suite.timeoutMs);
     }
 
-    logger.info("tests.run.started", {
-      runId,
-      suiteId: suite.id,
-      cwd,
-      command: suite.command
-    });
-
+    logger.info("tests.run.started", { runId, laneId, suiteId: suite.id, cwd, command: suite.command });
     return summary;
   };
 
@@ -344,32 +318,35 @@ export function createTestService({
 
     run(arg: RunTestSuiteArgs): TestRunSummary {
       const config = projectConfigService.getExecutableConfig();
-      const suite = config.testSuites.find((s) => s.id === arg.suiteId);
-      if (!suite) {
-        throw new Error(`Suite not found: ${arg.suiteId}`);
-      }
+      const suiteMap = getSuiteMap(config);
+      const suite = suiteMap.get(arg.suiteId);
+      if (!suite) throw new Error(`Test suite not found: ${arg.suiteId}`);
 
-      const existing = Array.from(activeRuns.values()).find((entry) => entry.suiteId === suite.id);
+      const existing = Array.from(activeRuns.values()).find((entry) => entry.laneId === arg.laneId && entry.suiteId === suite.id);
       if (existing) {
         const summary = getRunById(existing.runId, new Map([[suite.id, suite.name]]));
         if (summary) return summary;
       }
-
-      return spawnSuite(suite);
+      return spawnSuite(arg.laneId, suite);
     },
 
     stop(arg: StopTestRunArgs): void {
       const entry = activeRuns.get(arg.runId);
       if (!entry) return;
-
+      if (entry.timeoutTimer) {
+        clearTimeout(entry.timeoutTimer);
+        entry.timeoutTimer = null;
+      }
+      if (entry.killTimer) {
+        clearTimeout(entry.killTimer);
+        entry.killTimer = null;
+      }
       entry.stopIntent = "canceled";
       try {
         entry.child.kill("SIGTERM");
       } catch {
         // ignore
       }
-
-      if (entry.killTimer) clearTimeout(entry.killTimer);
       entry.killTimer = setTimeout(() => {
         if (!activeRuns.has(arg.runId)) return;
         try {
@@ -377,24 +354,24 @@ export function createTestService({
         } catch {
           // ignore
         }
-      }, 2000);
+      }, 3000);
     },
 
     listRuns(arg: ListTestRunsArgs = {}): TestRunSummary[] {
-      const suites = projectConfigService.get().effective.testSuites;
-      const suiteNameMap = new Map(suites.map((s) => [s.id, s.name] as const));
-
+      const config = projectConfigService.get();
+      const suiteNameMap = new Map(config.effective.testSuites.map((suite) => [suite.id, suite.name] as const));
       const where: string[] = ["project_id = ?"];
       const params: Array<string | number> = [projectId];
-
+      if (arg.laneId) {
+        where.push("lane_id = ?");
+        params.push(arg.laneId);
+      }
       if (arg.suiteId) {
         where.push("suite_key = ?");
         params.push(arg.suiteId);
       }
-
-      const limit = typeof arg.limit === "number" ? Math.max(1, Math.min(500, Math.floor(arg.limit))) : 100;
+      const limit = typeof arg.limit === "number" ? Math.max(1, Math.min(500, arg.limit)) : 120;
       params.push(limit);
-
       const rows = db.all<{
         id: string;
         suiteId: string;
@@ -424,27 +401,22 @@ export function createTestService({
         `,
         params
       );
-
       return rows.map((row) => buildRunSummary(row, suiteNameMap));
     },
 
-    getLogTail(arg: GetTestLogTailArgs): string {
-      const run = db.get<{ logPath: string }>("select log_path as logPath from test_runs where id = ? limit 1", [arg.runId]);
-      if (!run?.logPath) return "";
-      return readTail(run.logPath, clampMaxBytes(arg.maxBytes, 180_000));
+    getLogTail({ runId, maxBytes }: GetTestLogTailArgs): string {
+      const limit = clampMaxBytes(maxBytes, 220_000);
+      const active = activeRuns.get(runId);
+      if (active) return readTail(active.logPath, limit);
+      const row = db.get<{ log_path: string }>("select log_path from test_runs where id = ? limit 1", [runId]);
+      if (!row?.log_path) return "";
+      return readTail(row.log_path, limit);
     },
 
     disposeAll() {
       for (const entry of activeRuns.values()) {
-        if (entry.timeoutTimer) {
-          clearTimeout(entry.timeoutTimer);
-          entry.timeoutTimer = null;
-        }
-        if (entry.killTimer) {
-          clearTimeout(entry.killTimer);
-          entry.killTimer = null;
-        }
-        entry.stopIntent = "canceled";
+        if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+        if (entry.killTimer) clearTimeout(entry.killTimer);
         try {
           entry.child.kill("SIGKILL");
         } catch {
@@ -460,3 +432,4 @@ export function createTestService({
     }
   };
 }
+

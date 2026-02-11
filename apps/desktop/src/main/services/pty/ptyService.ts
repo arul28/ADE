@@ -13,8 +13,9 @@ type PtyEntry = {
   pty: IPty;
   laneId: string;
   sessionId: string;
+  tracked: boolean;
   transcriptPath: string;
-  transcriptStream: fs.WriteStream;
+  transcriptStream: fs.WriteStream | null;
   lastPreviewWriteAt: number;
   disposed: boolean;
 };
@@ -78,7 +79,7 @@ export function createPtyService({
     entry.disposed = true;
 
     try {
-      entry.transcriptStream.end();
+      entry.transcriptStream?.end();
     } catch {
       // ignore
     }
@@ -96,6 +97,7 @@ export function createPtyService({
       })
       .catch(() => {})
       .finally(() => {
+        if (!entry.tracked) return;
         try {
           onSessionEnded?.({ laneId: entry.laneId, sessionId: entry.sessionId, exitCode });
         } catch {
@@ -108,6 +110,7 @@ export function createPtyService({
   };
 
   const writeTranscript = (entry: PtyEntry, data: string) => {
+    if (!entry.tracked || !entry.transcriptStream) return;
     try {
       entry.transcriptStream.write(data);
     } catch {
@@ -134,12 +137,16 @@ export function createPtyService({
       const ptyId = randomUUID();
       const sessionId = randomUUID();
       const startedAt = new Date().toISOString();
+      const tracked = args.tracked !== false;
       const transcriptPath = safeTranscriptPathFor(sessionId);
 
-      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-      const transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
+      let transcriptStream: fs.WriteStream | null = null;
+      if (tracked) {
+        fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+        transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
+      }
 
-      sessionService.create({ sessionId, laneId, ptyId, title, startedAt, transcriptPath });
+      sessionService.create({ sessionId, laneId, ptyId, tracked, title, startedAt, transcriptPath: tracked ? transcriptPath : "" });
 
       // Best-effort head SHA at start; do not block terminal creation.
       Promise.resolve()
@@ -164,7 +171,7 @@ export function createPtyService({
       } catch (err) {
         logger.error("pty.spawn_failed", { ptyId, sessionId, err: String(err) });
         try {
-          transcriptStream.end();
+          transcriptStream?.end();
         } catch {
           // ignore
         }
@@ -177,6 +184,7 @@ export function createPtyService({
         pty,
         laneId,
         sessionId,
+        tracked,
         transcriptPath,
         transcriptStream,
         lastPreviewWriteAt: 0,
@@ -227,7 +235,7 @@ export function createPtyService({
       if (entry.disposed) return;
       entry.disposed = true;
       try {
-        entry.transcriptStream.end();
+        entry.transcriptStream?.end();
       } catch {
         // ignore
       }
@@ -240,6 +248,10 @@ export function createPtyService({
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
+
+      if (!entry.tracked) {
+        return;
+      }
 
       try {
         onSessionEnded?.({ laneId: entry.laneId, sessionId: entry.sessionId, exitCode: null });

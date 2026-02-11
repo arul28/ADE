@@ -19,10 +19,12 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createLaneService } from "../lanes/laneService";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
 type ManagedProcessEntry = {
+  laneId: string;
   runtime: ProcessRuntime;
   child: ChildProcessByStdio<null, Readable, Readable> | null;
   definition: ProcessDefinition | null;
@@ -66,11 +68,8 @@ function isProcessActive(status: ProcessRuntimeStatus): boolean {
 
 function sortByDefinitions(ids: string[], definitions: Map<string, ProcessDefinition>): string[] {
   const ordered = [...ids];
-  ordered.sort((a, b) => {
-    const ai = definitions.has(a) ? Array.from(definitions.keys()).indexOf(a) : Number.MAX_SAFE_INTEGER;
-    const bi = definitions.has(b) ? Array.from(definitions.keys()).indexOf(b) : Number.MAX_SAFE_INTEGER;
-    return ai - bi;
-  });
+  const orderMap = new Map(Array.from(definitions.keys()).map((key, idx) => [key, idx]));
+  ordered.sort((a, b) => (orderMap.get(a) ?? Number.MAX_SAFE_INTEGER) - (orderMap.get(b) ?? Number.MAX_SAFE_INTEGER));
   return ordered;
 }
 
@@ -89,9 +88,7 @@ function resolveDependencyOrder(processIds: string[], byId: Map<string, ProcessD
     const proc = byId.get(id);
     if (proc) {
       for (const dep of proc.dependsOn) {
-        if (set.has(dep)) {
-          visit(dep);
-        }
+        if (set.has(dep)) visit(dep);
       }
     }
     stack.delete(id);
@@ -99,10 +96,7 @@ function resolveDependencyOrder(processIds: string[], byId: Map<string, ProcessD
     out.push(id);
   };
 
-  for (const id of processIds) {
-    visit(id);
-  }
-
+  for (const id of processIds) visit(id);
   return out;
 }
 
@@ -110,7 +104,6 @@ function checkPortReady(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: "127.0.0.1", port });
     let done = false;
-
     const settle = (ok: boolean) => {
       if (done) return;
       done = true;
@@ -121,7 +114,6 @@ function checkPortReady(port: number): Promise<boolean> {
       }
       resolve(ok);
     };
-
     socket.setTimeout(600);
     socket.once("connect", () => settle(true));
     socket.once("timeout", () => settle(false));
@@ -129,35 +121,38 @@ function checkPortReady(port: number): Promise<boolean> {
   });
 }
 
+function keyFor(laneId: string, processId: string): string {
+  return `${laneId}:${processId}`;
+}
+
 export function createProcessService({
   db,
-  projectRoot,
   projectId,
   processLogsDir,
   logger,
+  laneService,
   projectConfigService,
   broadcastEvent
 }: {
   db: AdeDb;
-  projectRoot: string;
   projectId: string;
   processLogsDir: string;
   logger: Logger;
+  laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   broadcastEvent: (ev: ProcessEvent) => void;
 }) {
   const entries = new Map<string, ManagedProcessEntry>();
-
   const nowIso = () => new Date().toISOString();
 
-  const processLogPath = (processId: string) => path.join(processLogsDir, `${processId}.log`);
+  const processLogPath = (laneId: string, processId: string) => path.join(processLogsDir, laneId, `${processId}.log`);
 
   const persistRuntime = (runtime: ProcessRuntime) => {
     db.run(
       `
-        insert into process_runtime(project_id, process_key, status, pid, started_at, ended_at, exit_code, readiness, updated_at)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(project_id, process_key) do update set
+        insert into process_runtime(project_id, lane_id, process_key, status, pid, started_at, ended_at, exit_code, readiness, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(project_id, lane_id, process_key) do update set
           status=excluded.status,
           pid=excluded.pid,
           started_at=excluded.started_at,
@@ -168,6 +163,7 @@ export function createProcessService({
       `,
       [
         projectId,
+        runtime.laneId,
         runtime.processId,
         runtime.status,
         runtime.pid,
@@ -182,30 +178,27 @@ export function createProcessService({
 
   const emitRuntime = (entry: ManagedProcessEntry) => {
     const runtime = entry.runtime;
-    const now = nowIso();
-    runtime.updatedAt = now;
-
+    runtime.updatedAt = nowIso();
     if (runtime.startedAt && isProcessActive(runtime.status)) {
       runtime.uptimeMs = Math.max(0, Date.now() - Date.parse(runtime.startedAt));
     } else {
       runtime.uptimeMs = null;
     }
-
     persistRuntime(runtime);
     broadcastEvent({ type: "runtime", runtime: { ...runtime } });
   };
 
-  const emitLog = (processId: string, stream: "stdout" | "stderr", chunk: string) => {
-    broadcastEvent({ type: "log", processId, stream, chunk, ts: nowIso() });
+  const emitLog = (laneId: string, processId: string, stream: "stdout" | "stderr", chunk: string) => {
+    broadcastEvent({ type: "log", laneId, processId, stream, chunk, ts: nowIso() });
   };
 
-  const upsertRunStart = (runId: string, processId: string, startedAt: string, logPath: string) => {
+  const upsertRunStart = (runId: string, laneId: string, processId: string, startedAt: string, logPath: string) => {
     db.run(
       `
-        insert into process_runs(id, project_id, process_key, started_at, ended_at, exit_code, termination_reason, log_path)
-        values (?, ?, ?, ?, null, null, 'stopped', ?)
+        insert into process_runs(id, project_id, lane_id, process_key, started_at, ended_at, exit_code, termination_reason, log_path)
+        values (?, ?, ?, ?, ?, null, null, 'stopped', ?)
       `,
-      [runId, projectId, processId, startedAt, logPath]
+      [runId, projectId, laneId, processId, startedAt, logPath]
     );
   };
 
@@ -236,15 +229,12 @@ export function createProcessService({
     }
   };
 
-  const ensureEntry = (processId: string, definition: ProcessDefinition | null): ManagedProcessEntry => {
-    const existing = entries.get(processId);
+  const ensureEntry = (laneId: string, processId: string, definition: ProcessDefinition | null): ManagedProcessEntry => {
+    const k = keyFor(laneId, processId);
+    const existing = entries.get(k);
     if (existing) {
       existing.definition = definition;
-      if (definition?.readiness.type === "port") {
-        existing.runtime.ports = [definition.readiness.port];
-      } else {
-        existing.runtime.ports = [];
-      }
+      existing.runtime.ports = definition?.readiness.type === "port" ? [definition.readiness.port] : [];
       return existing;
     }
 
@@ -260,10 +250,10 @@ export function createProcessService({
       `
         select status, pid, started_at, ended_at, exit_code, readiness, updated_at
         from process_runtime
-        where project_id = ? and process_key = ?
+        where project_id = ? and lane_id = ? and process_key = ?
         limit 1
       `,
-      [projectId, processId]
+      [projectId, laneId, processId]
     );
 
     const hadActiveStatus =
@@ -272,23 +262,26 @@ export function createProcessService({
       persisted?.status === "stopping" ||
       persisted?.status === "degraded";
 
+    const now = nowIso();
     const runtime: ProcessRuntime = {
+      laneId,
       processId,
       status: hadActiveStatus ? "exited" : persisted?.status ?? "stopped",
       readiness: persisted?.readiness ?? "unknown",
       pid: null,
       startedAt: hadActiveStatus ? null : persisted?.started_at ?? null,
-      endedAt: hadActiveStatus ? nowIso() : persisted?.ended_at ?? null,
-      exitCode: hadActiveStatus ? persisted?.exit_code ?? null : persisted?.exit_code ?? null,
+      endedAt: hadActiveStatus ? now : persisted?.ended_at ?? null,
+      exitCode: persisted?.exit_code ?? null,
       lastExitCode: persisted?.exit_code ?? null,
-      lastEndedAt: hadActiveStatus ? nowIso() : persisted?.ended_at ?? null,
+      lastEndedAt: hadActiveStatus ? now : persisted?.ended_at ?? null,
       uptimeMs: null,
       ports: definition?.readiness.type === "port" ? [definition.readiness.port] : [],
-      logPath: processLogPath(processId),
-      updatedAt: persisted?.updated_at ?? nowIso()
+      logPath: processLogPath(laneId, processId),
+      updatedAt: persisted?.updated_at ?? now
     };
 
     const entry: ManagedProcessEntry = {
+      laneId,
       runtime,
       child: null,
       definition,
@@ -300,21 +293,18 @@ export function createProcessService({
       readinessInterval: null,
       gracefulKillTimeout: null
     };
-
-    entries.set(processId, entry);
+    entries.set(k, entry);
     persistRuntime(runtime);
     return entry;
   };
 
-  const ensureEntriesFromConfig = (config: EffectiveProjectConfig) => {
-    const activeIds = new Set<string>();
+  const ensureEntriesForLane = (laneId: string, config: EffectiveProjectConfig) => {
     for (const proc of config.processes) {
-      activeIds.add(proc.id);
-      ensureEntry(proc.id, proc);
+      ensureEntry(laneId, proc.id, proc);
     }
-
-    for (const [id, entry] of entries) {
-      if (!activeIds.has(id)) {
+    for (const [k, entry] of entries) {
+      if (entry.laneId !== laneId) continue;
+      if (!config.processes.some((proc) => proc.id === entry.runtime.processId)) {
         entry.definition = null;
       }
     }
@@ -323,9 +313,7 @@ export function createProcessService({
   const markReadinessReady = (entry: ManagedProcessEntry) => {
     clearReadinessTimers(entry);
     entry.runtime.readiness = "ready";
-    if (entry.runtime.status === "starting") {
-      entry.runtime.status = "running";
-    }
+    if (entry.runtime.status === "starting") entry.runtime.status = "running";
     emitRuntime(entry);
   };
 
@@ -363,9 +351,7 @@ export function createProcessService({
           .then((ok) => {
             if (ok) markReadinessReady(entry);
           })
-          .catch(() => {
-            // ignore probe failures
-          });
+          .catch(() => {});
       }, 500);
       return;
     }
@@ -382,7 +368,6 @@ export function createProcessService({
   const handleProcessExit = (entry: ManagedProcessEntry, processId: string, exitCode: number | null) => {
     clearReadinessTimers(entry);
     clearKillTimer(entry);
-
     const endedAt = nowIso();
 
     if (entry.logStream) {
@@ -411,7 +396,6 @@ export function createProcessService({
     entry.runtime.lastEndedAt = endedAt;
     entry.runtime.exitCode = exitCode;
     entry.runtime.lastExitCode = exitCode;
-
     emitRuntime(entry);
 
     if (entry.runId) {
@@ -420,10 +404,9 @@ export function createProcessService({
     }
 
     if (reason === "restart") {
-      // Restart uses the latest validated executable config.
       setTimeout(() => {
-        void startById(processId).catch((err) => {
-          logger.warn("process.restart_failed", { processId, err: String(err) });
+        void startById(entry.laneId, processId).catch((err) => {
+          logger.warn("process.restart_failed", { laneId: entry.laneId, processId, err: String(err) });
         });
       }, 20);
       return;
@@ -431,14 +414,19 @@ export function createProcessService({
 
     if (reason === "crashed" && entry.definition?.restart === "on_crash") {
       setTimeout(() => {
-        void startById(processId, { skipTrust: true }).catch((err) => {
-          logger.warn("process.auto_restart_failed", { processId, err: String(err) });
+        void startById(entry.laneId, processId, { skipTrust: true }).catch((err) => {
+          logger.warn("process.auto_restart_failed", { laneId: entry.laneId, processId, err: String(err) });
         });
       }, 600);
     }
   };
 
-  const attachProcessStreams = (entry: ManagedProcessEntry, processId: string, child: ChildProcessByStdio<null, Readable, Readable>) => {
+  const attachProcessStreams = (
+    entry: ManagedProcessEntry,
+    laneId: string,
+    processId: string,
+    child: ChildProcessByStdio<null, Readable, Readable>
+  ) => {
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
 
@@ -450,14 +438,8 @@ export function createProcessService({
           // ignore
         }
       }
-      emitLog(processId, stream, chunk);
-
-      if (
-        entry.definition?.readiness.type === "logRegex" &&
-        entry.runtime.status === "starting" &&
-        entry.readinessRegex &&
-        entry.readinessRegex.test(chunk)
-      ) {
+      emitLog(laneId, processId, stream, chunk);
+      if (entry.definition?.readiness.type === "logRegex" && entry.runtime.status === "starting" && entry.readinessRegex && entry.readinessRegex.test(chunk)) {
         markReadinessReady(entry);
       }
     };
@@ -466,28 +448,24 @@ export function createProcessService({
     child.stderr.on("data", (chunk: string) => onChunk("stderr", chunk));
   };
 
-  const startByDefinition = async (definition: ProcessDefinition, opts: { skipTrust?: boolean } = {}): Promise<ProcessRuntime> => {
-    if (!opts.skipTrust) {
-      projectConfigService.getExecutableConfig();
-    }
+  const startByDefinition = async (
+    laneId: string,
+    definition: ProcessDefinition,
+    opts: { skipTrust?: boolean } = {}
+  ): Promise<ProcessRuntime> => {
+    if (!opts.skipTrust) projectConfigService.getExecutableConfig();
+    const entry = ensureEntry(laneId, definition.id, definition);
+    if (entry.child && isProcessActive(entry.runtime.status)) return { ...entry.runtime };
 
-    const entry = ensureEntry(definition.id, definition);
+    if (!definition.command.length) throw new Error(`Process '${definition.id}' has an empty command`);
 
-    if (entry.child && isProcessActive(entry.runtime.status)) {
-      return { ...entry.runtime };
-    }
-
-    if (!definition.command.length) {
-      throw new Error(`Process '${definition.id}' has an empty command`);
-    }
-
-    const cwd = path.isAbsolute(definition.cwd) ? definition.cwd : path.join(projectRoot, definition.cwd);
-    fs.mkdirSync(processLogsDir, { recursive: true });
+    const laneRoot = laneService.getLaneWorktreePath(laneId);
+    const cwd = path.isAbsolute(definition.cwd) ? definition.cwd : path.join(laneRoot, definition.cwd);
+    fs.mkdirSync(path.dirname(processLogPath(laneId, definition.id)), { recursive: true });
 
     const startedAt = nowIso();
     const runId = randomUUID();
-    const logPath = processLogPath(definition.id);
-
+    const logPath = processLogPath(laneId, definition.id);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
     logStream.write(`\n# process start ${startedAt} cmd=${JSON.stringify(definition.command)} cwd=${cwd}\n`);
 
@@ -520,70 +498,46 @@ export function createProcessService({
     entry.runtime.endedAt = null;
     entry.runtime.exitCode = null;
     entry.runtime.ports = definition.readiness.type === "port" ? [definition.readiness.port] : [];
-
-    upsertRunStart(runId, definition.id, startedAt, logPath);
+    upsertRunStart(runId, laneId, definition.id, startedAt, logPath);
     emitRuntime(entry);
     setupReadinessChecks(entry, definition);
-
-    attachProcessStreams(entry, definition.id, child);
+    attachProcessStreams(entry, laneId, definition.id, child);
 
     child.on("spawn", () => {
       entry.runtime.pid = child.pid ?? null;
       emitRuntime(entry);
     });
-
     child.on("error", (err) => {
-      logger.warn("process.child_error", { processId: definition.id, err: String(err) });
-      if (entry.logStream) {
-        try {
-          entry.logStream.write(`\n[process error] ${String(err)}\n`);
-        } catch {
-          // ignore
-        }
+      logger.warn("process.child_error", { laneId, processId: definition.id, err: String(err) });
+      try {
+        entry.logStream?.write(`\n[process error] ${String(err)}\n`);
+      } catch {
+        // ignore
       }
     });
-
     child.on("close", (code) => {
-      logger.info("process.exit", { processId: definition.id, code });
+      logger.info("process.exit", { laneId, processId: definition.id, code });
       handleProcessExit(entry, definition.id, code ?? null);
     });
 
-    logger.info("process.start", {
-      processId: definition.id,
-      cwd,
-      command: definition.command,
-      runId
-    });
-
+    logger.info("process.start", { laneId, processId: definition.id, cwd, command: definition.command, runId });
     return { ...entry.runtime };
   };
 
-  const startById = async (processId: string, opts: { skipTrust?: boolean } = {}) => {
+  const startById = async (laneId: string, processId: string, opts: { skipTrust?: boolean } = {}) => {
     const config = opts.skipTrust ? projectConfigService.getEffective() : projectConfigService.getExecutableConfig();
-    ensureEntriesFromConfig(config);
+    ensureEntriesForLane(laneId, config);
     const definition = config.processes.find((p) => p.id === processId);
-    if (!definition) {
-      throw new Error(`Process not found: ${processId}`);
-    }
-    return await startByDefinition(definition, opts);
+    if (!definition) throw new Error(`Process not found: ${processId}`);
+    return await startByDefinition(laneId, definition, opts);
   };
 
-  const stopById = async (
-    processId: string,
-    intent: ManagedTerminationReason,
-    force: boolean
-  ): Promise<ProcessRuntime> => {
+  const stopById = async (laneId: string, processId: string, intent: ManagedTerminationReason, force: boolean): Promise<ProcessRuntime> => {
     const config = projectConfigService.get();
-    ensureEntriesFromConfig(config.effective);
-
-    const entry = entries.get(processId);
-    if (!entry) {
-      throw new Error(`Process not found: ${processId}`);
-    }
-
-    if (!entry.child) {
-      return { ...entry.runtime };
-    }
+    ensureEntriesForLane(laneId, config.effective);
+    const entry = entries.get(keyFor(laneId, processId));
+    if (!entry) throw new Error(`Process not found: ${processId}`);
+    if (!entry.child) return { ...entry.runtime };
 
     clearKillTimer(entry);
     entry.stopIntent = intent;
@@ -600,13 +554,11 @@ export function createProcessService({
     }
 
     const shutdownMs = Math.max(250, entry.definition?.gracefulShutdownMs ?? 7000);
-
     try {
       entry.child.kill("SIGTERM");
     } catch {
       // ignore
     }
-
     entry.gracefulKillTimeout = setTimeout(() => {
       if (!entry.child) return;
       try {
@@ -619,39 +571,28 @@ export function createProcessService({
     return { ...entry.runtime };
   };
 
-  const runStartSet = async (processIds: string[], startOrder: StackStartOrder): Promise<void> => {
+  const runStartSet = async (laneId: string, processIds: string[], startOrder: StackStartOrder): Promise<void> => {
     const config = projectConfigService.getExecutableConfig();
-    ensureEntriesFromConfig(config);
+    ensureEntriesForLane(laneId, config);
     const byId = new Map(config.processes.map((p) => [p.id, p] as const));
     const known = processIds.filter((id) => byId.has(id));
-
-    const ordered =
-      startOrder === "dependency"
-        ? resolveDependencyOrder(known, byId)
-        : sortByDefinitions(known, byId);
-
+    const ordered = startOrder === "dependency" ? resolveDependencyOrder(known, byId) : sortByDefinitions(known, byId);
     if (startOrder === "dependency") {
       for (const id of ordered) {
-        await startByDefinition(byId.get(id)!, {});
+        await startByDefinition(laneId, byId.get(id)!, {});
       }
       return;
     }
-
-    await Promise.all(ordered.map((id) => startByDefinition(byId.get(id)!, {})));
+    await Promise.all(ordered.map((id) => startByDefinition(laneId, byId.get(id)!, {})));
   };
 
-  const runStopSet = async (processIds: string[], startOrder: StackStartOrder): Promise<void> => {
+  const runStopSet = async (laneId: string, processIds: string[], startOrder: StackStartOrder): Promise<void> => {
     const config = projectConfigService.get();
-    ensureEntriesFromConfig(config.effective);
+    ensureEntriesForLane(laneId, config.effective);
     const byId = new Map(config.effective.processes.map((p) => [p.id, p] as const));
     const known = processIds.filter((id) => byId.has(id));
-
-    const ordered =
-      startOrder === "dependency"
-        ? resolveDependencyOrder(known, byId).reverse()
-        : sortByDefinitions(known, byId).reverse();
-
-    await Promise.all(ordered.map((id) => stopById(id, "stopped", false).catch(() => {})));
+    const ordered = startOrder === "dependency" ? resolveDependencyOrder(known, byId).reverse() : sortByDefinitions(known, byId).reverse();
+    await Promise.all(ordered.map((id) => stopById(laneId, id, "stopped", false).catch(() => {})));
   };
 
   const stackById = (config: EffectiveProjectConfig, stackId: string): StackButtonDefinition => {
@@ -660,57 +601,18 @@ export function createProcessService({
     return stack;
   };
 
-  // Load previous runtime cache once and normalize stale active states.
-  const initialConfig = projectConfigService.get();
-  ensureEntriesFromConfig(initialConfig.effective);
-  for (const entry of entries.values()) {
-    if (isProcessActive(entry.runtime.status)) {
-      entry.runtime.status = "exited";
-      entry.runtime.pid = null;
-      entry.runtime.endedAt = nowIso();
-      entry.runtime.lastEndedAt = entry.runtime.endedAt;
-      entry.runtime.readiness = "unknown";
-      emitRuntime(entry);
-    }
-  }
-
-  // Best effort autostart after service init.
-  void Promise.resolve()
-    .then(async () => {
-      let config: EffectiveProjectConfig;
-      try {
-        config = projectConfigService.getExecutableConfig();
-      } catch {
-        return;
-      }
-
-      const autostart = config.processes.filter((p) => p.autostart);
-      for (const proc of autostart) {
-        await startByDefinition(proc, {}).catch((err) => {
-          logger.warn("process.autostart_failed", { processId: proc.id, err: String(err) });
-        });
-      }
-    })
-    .catch(() => {
-      // ignore
-    });
-
   return {
     listDefinitions(): ProcessDefinition[] {
-      const snapshot = projectConfigService.get();
-      ensureEntriesFromConfig(snapshot.effective);
-      return snapshot.effective.processes;
+      return projectConfigService.get().effective.processes;
     },
 
-    listRuntime(): ProcessRuntime[] {
+    listRuntime(laneId: string): ProcessRuntime[] {
       const snapshot = projectConfigService.get();
-      ensureEntriesFromConfig(snapshot.effective);
-
+      ensureEntriesForLane(laneId, snapshot.effective);
       const byDefOrder = snapshot.effective.processes.map((p) => p.id);
       const out: ProcessRuntime[] = [];
-
       for (const processId of byDefOrder) {
-        const entry = entries.get(processId);
+        const entry = entries.get(keyFor(laneId, processId));
         if (!entry) continue;
         const runtime = { ...entry.runtime };
         if (runtime.startedAt && isProcessActive(runtime.status)) {
@@ -718,70 +620,59 @@ export function createProcessService({
         }
         out.push(runtime);
       }
-
-      for (const [processId, entry] of entries.entries()) {
-        if (byDefOrder.includes(processId)) continue;
-        out.push({ ...entry.runtime });
-      }
-
       return out;
     },
 
     async start(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      return await startById(arg.processId);
+      return await startById(arg.laneId, arg.processId);
     },
 
     async stop(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      return await stopById(arg.processId, "stopped", false);
+      return await stopById(arg.laneId, arg.processId, "stopped", false);
     },
 
     async restart(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      const entry = entries.get(arg.processId);
-      if (!entry?.child) {
-        return await startById(arg.processId);
-      }
-      return await stopById(arg.processId, "restart", false);
+      const entry = entries.get(keyFor(arg.laneId, arg.processId));
+      if (!entry?.child) return await startById(arg.laneId, arg.processId);
+      return await stopById(arg.laneId, arg.processId, "restart", false);
     },
 
     async kill(arg: ProcessActionArgs): Promise<ProcessRuntime> {
-      return await stopById(arg.processId, "killed", true);
+      return await stopById(arg.laneId, arg.processId, "killed", true);
     },
 
     async startStack(arg: ProcessStackArgs): Promise<void> {
       const config = projectConfigService.getExecutableConfig();
       const stack = stackById(config, arg.stackId);
-      await runStartSet(stack.processIds, stack.startOrder);
+      await runStartSet(arg.laneId, stack.processIds, stack.startOrder);
     },
 
     async stopStack(arg: ProcessStackArgs): Promise<void> {
       const config = projectConfigService.get();
       const stack = stackById(config.effective, arg.stackId);
-      await runStopSet(stack.processIds, stack.startOrder);
+      await runStopSet(arg.laneId, stack.processIds, stack.startOrder);
     },
 
     async restartStack(arg: ProcessStackArgs): Promise<void> {
       const config = projectConfigService.getExecutableConfig();
       const stack = stackById(config, arg.stackId);
-      await runStopSet(stack.processIds, stack.startOrder);
-      await runStartSet(stack.processIds, stack.startOrder);
+      await runStopSet(arg.laneId, stack.processIds, stack.startOrder);
+      await runStartSet(arg.laneId, stack.processIds, stack.startOrder);
     },
 
-    async startAll(): Promise<void> {
+    async startAll(arg: { laneId: string }): Promise<void> {
       const config = projectConfigService.getExecutableConfig();
-      const ids = config.processes.map((p) => p.id);
-      await runStartSet(ids, "dependency");
+      await runStartSet(arg.laneId, config.processes.map((p) => p.id), "dependency");
     },
 
-    async stopAll(): Promise<void> {
+    async stopAll(arg: { laneId: string }): Promise<void> {
       const config = projectConfigService.get();
-      const ids = config.effective.processes.map((p) => p.id);
-      await runStopSet(ids, "dependency");
+      await runStopSet(arg.laneId, config.effective.processes.map((p) => p.id), "dependency");
     },
 
-    getLogTail({ processId, maxBytes }: { processId: string; maxBytes?: number }): string {
-      const entry = entries.get(processId) ?? ensureEntry(processId, null);
-      const limit = clampMaxBytes(maxBytes, 180_000);
-      return readTail(entry.runtime.logPath ?? processLogPath(processId), limit);
+    getLogTail({ laneId, processId, maxBytes }: { laneId: string; processId: string; maxBytes?: number }): string {
+      const entry = entries.get(keyFor(laneId, processId)) ?? ensureEntry(laneId, processId, null);
+      return readTail(entry.runtime.logPath ?? processLogPath(laneId, processId), clampMaxBytes(maxBytes, 180_000));
     },
 
     disposeAll() {
@@ -808,3 +699,4 @@ export function createProcessService({
     }
   };
 }
+

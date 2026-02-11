@@ -11,8 +11,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     fs: {
-      // Allow importing shared types/utilities from src/ outside the renderer root.
-      allow: [path.resolve(__dirname, "src")]
+      // Keep Vite's default workspace/node_modules access and additionally allow src/.
+      // Monaco's ESM runtime pulls CSS/assets from node_modules at dev-time.
+      allow: [path.resolve(__dirname), path.resolve(__dirname, "src")]
     }
   },
   build: {

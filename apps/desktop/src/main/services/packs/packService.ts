@@ -12,6 +12,7 @@ import type { PackSummary, SessionDeltaSummary, TestRunStatus } from "../../../s
 type LaneSessionRow = {
   id: string;
   lane_id: string;
+  tracked: number;
   started_at: string;
   ended_at: string | null;
   head_sha_start: string | null;
@@ -249,6 +250,7 @@ export function createPackService({
         select
           id,
           lane_id,
+          tracked,
           started_at,
           ended_at,
           head_sha_start,
@@ -352,6 +354,7 @@ export function createPackService({
     const userTodos = extractSection(existingBody, USER_TODOS_START, USER_TODOS_END, "- [ ] Add actionable todos for this lane\n- [ ] Note open risks before PR");
 
     const recentDeltas = listRecentLaneSessionDeltas(laneId, 4);
+    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
     const latestTouchedFiles = latestDelta?.touchedFiles ?? [];
     const touchedModules = [...new Set(latestTouchedFiles.map(moduleFromPath))].slice(0, 10);
 
@@ -389,6 +392,7 @@ export function createPackService({
     lines.push("");
     lines.push(`- Deterministic updated: ${deterministicUpdatedAt}`);
     lines.push(`- Trigger: ${reason}`);
+    lines.push(`- Provider mode: ${providerMode}`);
     lines.push(`- Lane ID: ${lane.id}`);
     lines.push(`- Branch: ${lane.branchRef}`);
     lines.push(`- Base: ${lane.baseRef}`);
@@ -469,6 +473,13 @@ export function createPackService({
     lines.push(USER_TODOS_START);
     lines.push(userTodos);
     lines.push(USER_TODOS_END);
+    lines.push("");
+    lines.push("## Narrative");
+    if (providerMode === "guest") {
+      lines.push("Template narrative mode active (Guest Mode). Deterministic sections are fully local.");
+    } else {
+      lines.push("Template narrative mode active (LLM augmentation not yet enabled in this build).");
+    }
     lines.push("");
 
     return { body: `${lines.join("\n")}\n`, lastHeadSha: headSha };
@@ -554,7 +565,11 @@ export function createPackService({
 
     lines.push("## Conventions And Constraints");
     lines.push("- Deterministic sections are rebuilt by ADE on session end and commit operations.");
-    lines.push("- Narrative fields remain local placeholders until hosted integration is enabled.");
+    if ((config.providerMode ?? "guest") === "guest") {
+      lines.push("- Guest Mode active: narrative sections use local templates only.");
+    } else {
+      lines.push("- Narrative fields remain local placeholders until hosted integration is enabled.");
+    }
     lines.push("");
 
     return `${lines.join("\n")}\n`;
@@ -647,6 +662,7 @@ export function createPackService({
     async computeSessionDelta(sessionId: string): Promise<SessionDeltaSummary | null> {
       const session = getSessionRow(sessionId);
       if (!session) return null;
+      if (session.tracked !== 1) return null;
 
       const lane = laneService.getLaneBaseAndBranch(session.lane_id);
       const diffRef = session.head_sha_start?.trim() || "HEAD";

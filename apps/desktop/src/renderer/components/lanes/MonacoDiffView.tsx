@@ -31,6 +31,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       null
     );
     const [ready, setReady] = useState(false);
+    const [failed, setFailed] = useState(false);
 
     useImperativeHandle(ref, () => ({
       getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null
@@ -56,10 +57,11 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
           });
 
           diffEditorRef.current = editor;
+          setFailed(false);
           setReady(true);
         })
         .catch(() => {
-          // ignore; UI will show fallback message
+          if (!cancelled) setFailed(true);
         });
 
       return () => {
@@ -105,7 +107,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
           editor.getOriginalEditor().updateOptions({ readOnly: true });
         })
         .catch(() => {
-          // ignore
+          if (!cancelled) setFailed(true);
         });
 
       return () => {
@@ -114,14 +116,31 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     }, [diff, editable]);
 
     return (
-      <div className={cn("h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
-        {!ready ? (
-          <div className="flex h-full items-center justify-center p-4 text-sm text-muted-fg">Loading diff editor…</div>
-        ) : (
-          <div ref={containerRef} className="h-full w-full" />
-        )}
+      <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
+        <div ref={containerRef} className={cn("h-full w-full", failed && "hidden")} />
+        {!ready && !failed ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-sm text-muted-fg">
+            Loading diff editor…
+          </div>
+        ) : null}
+        {failed ? (
+          <div className="h-full w-full overflow-auto p-3 text-xs">
+            <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
+              Monaco failed to load in dev mode. Showing plain-text diff fallback.
+            </div>
+            <div className="grid h-[calc(100%-36px)] grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="min-h-0 overflow-auto rounded border border-border bg-bg p-2">
+                <div className="mb-1 text-[11px] font-semibold text-muted-fg">Original</div>
+                <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{diff.original.text ?? ""}</pre>
+              </div>
+              <div className="min-h-0 overflow-auto rounded border border-border bg-bg p-2">
+                <div className="mb-1 text-[11px] font-semibold text-muted-fg">{editable ? "Modified (editable in Monaco only)" : "Modified"}</div>
+                <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5">{diff.modified.text ?? ""}</pre>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   }
 );
-

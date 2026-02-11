@@ -132,6 +132,7 @@ app.whenReady().then(async () => {
       defaultBaseRef: baseRef,
       worktreesDir: adePaths.worktreesDir
     });
+    await laneService.ensurePrimaryLane();
     const sessionService = createSessionService({ db });
     const diffService = createDiffService({ laneService });
     const fileService = createFileService({ laneService });
@@ -187,20 +188,20 @@ app.whenReady().then(async () => {
 
     const processService = createProcessService({
       db,
-      projectRoot,
       projectId,
       processLogsDir: adePaths.processLogsDir,
       logger,
+      laneService,
       projectConfigService,
       broadcastEvent: (ev) => broadcast(IPC.processesEvent, ev)
     });
 
     const testService = createTestService({
       db,
-      projectRoot,
       projectId,
       testLogsDir: adePaths.testLogsDir,
       logger,
+      laneService,
       projectConfigService,
       broadcastEvent: (ev) => broadcast(IPC.testsEvent, ev)
     });
@@ -234,6 +235,11 @@ app.whenReady().then(async () => {
   };
 
   const closeContext = () => {
+    try {
+      ctxRef.fileService.dispose();
+    } catch {
+      // ignore
+    }
     try {
       ctxRef.testService.disposeAll();
     } catch {

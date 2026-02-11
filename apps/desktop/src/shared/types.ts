@@ -21,6 +21,10 @@ export type ProjectInfo = {
   baseRef: string;
 };
 
+export type LaneType = "primary" | "worktree" | "attached";
+
+export type ProviderMode = "guest" | "hosted" | "byok" | "cli";
+
 export type LaneStatus = {
   dirty: boolean;
   ahead: number;
@@ -31,9 +35,12 @@ export type LaneSummary = {
   id: string;
   name: string;
   description?: string | null;
+  laneType: LaneType;
   baseRef: string;
   branchRef: string;
   worktreePath: string;
+  attachedRootPath?: string | null;
+  isEditProtected: boolean;
   status: LaneStatus;
   createdAt: string;
   archivedAt?: string | null;
@@ -46,6 +53,7 @@ export type TerminalSessionSummary = {
   laneId: string;
   laneName: string;
   ptyId: string | null;
+  tracked: boolean;
   title: string;
   status: TerminalSessionStatus;
   startedAt: string;
@@ -67,6 +75,7 @@ export type PtyCreateArgs = {
   cols: number;
   rows: number;
   title: string;
+  tracked?: boolean;
 };
 
 export type PtyCreateResult = {
@@ -106,6 +115,12 @@ export type CreateLaneArgs = {
   description?: string;
 };
 
+export type AttachLaneArgs = {
+  name: string;
+  attachedPath: string;
+  description?: string;
+};
+
 export type RenameLaneArgs = {
   laneId: string;
   name: string;
@@ -118,6 +133,8 @@ export type ArchiveLaneArgs = {
 export type DeleteLaneArgs = {
   laneId: string;
   deleteBranch?: boolean;
+  deleteRemoteBranch?: boolean;
+  remoteName?: string;
   force?: boolean;
 };
 
@@ -127,7 +144,7 @@ export type OpenLaneFolderArgs = {
 
 export type ProjectOpenRepoResult = ProjectInfo;
 
-export type DiffMode = "unstaged" | "staged";
+export type DiffMode = "unstaged" | "staged" | "commit";
 
 export type FileChange = {
   path: string;
@@ -147,6 +164,7 @@ export type GetFileDiffArgs = {
   laneId: string;
   path: string; // repo-relative path
   mode: DiffMode;
+  compareRef?: string;
 };
 
 export type DiffSide = {
@@ -167,6 +185,117 @@ export type WriteTextAtomicArgs = {
   laneId: string;
   path: string; // repo-relative path
   text: string;
+};
+
+export type FilesWorkspaceKind = "primary" | "worktree" | "attached";
+
+export type FilesWorkspace = {
+  id: string;
+  kind: FilesWorkspaceKind;
+  laneId: string | null;
+  name: string;
+  rootPath: string;
+  isReadOnlyByDefault: boolean;
+};
+
+export type FilesListWorkspacesArgs = {
+  includeArchived?: boolean;
+};
+
+export type FileTreeChangeStatus = "M" | "A" | "D" | null;
+
+export type FileTreeNode = {
+  name: string;
+  path: string; // relative to workspace root
+  type: "file" | "directory";
+  hasChildren?: boolean;
+  children?: FileTreeNode[];
+  changeStatus?: FileTreeChangeStatus;
+  size?: number;
+};
+
+export type FilesListTreeArgs = {
+  workspaceId: string;
+  parentPath?: string;
+  depth?: number;
+  includeIgnored?: boolean;
+};
+
+export type FileContent = {
+  content: string;
+  encoding: string;
+  size: number;
+  languageId: string;
+  isBinary: boolean;
+};
+
+export type FilesReadFileArgs = {
+  workspaceId: string;
+  path: string; // relative to workspace root
+};
+
+export type FilesWriteTextArgs = {
+  workspaceId: string;
+  path: string; // relative to workspace root
+  text: string;
+};
+
+export type FilesCreateFileArgs = {
+  workspaceId: string;
+  path: string; // relative path
+  content?: string;
+};
+
+export type FilesCreateDirectoryArgs = {
+  workspaceId: string;
+  path: string; // relative path
+};
+
+export type FilesRenameArgs = {
+  workspaceId: string;
+  oldPath: string;
+  newPath: string;
+};
+
+export type FilesDeleteArgs = {
+  workspaceId: string;
+  path: string;
+};
+
+export type FilesWatchArgs = {
+  workspaceId: string;
+};
+
+export type FileChangeEvent = {
+  workspaceId: string;
+  type: "created" | "modified" | "deleted" | "renamed";
+  path: string;
+  oldPath?: string;
+  ts: string;
+};
+
+export type FilesQuickOpenArgs = {
+  workspaceId: string;
+  query: string;
+  limit?: number;
+};
+
+export type FilesQuickOpenItem = {
+  path: string;
+  score: number;
+};
+
+export type FilesSearchTextArgs = {
+  workspaceId: string;
+  query: string;
+  limit?: number;
+};
+
+export type FilesSearchTextMatch = {
+  path: string;
+  line: number;
+  column: number;
+  preview: string;
 };
 
 // react-resizable-panels uses a map of panel id -> percentage (0..100)
@@ -269,6 +398,7 @@ export type EffectiveProjectConfig = {
   processes: ProcessDefinition[];
   stackButtons: StackButtonDefinition[];
   testSuites: TestSuiteDefinition[];
+  providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
 };
 
@@ -311,6 +441,7 @@ export type ProjectConfigDiff = {
 };
 
 export type ProcessRuntime = {
+  laneId: string;
   processId: string;
   status: ProcessRuntimeStatus;
   readiness: ProcessReadinessState;
@@ -337,6 +468,7 @@ export type StackButtonStatus = StackButtonDefinition & {
 
 export type ProcessLogEvent = {
   type: "log";
+  laneId: string;
   processId: string;
   stream: "stdout" | "stderr";
   chunk: string;
@@ -380,19 +512,23 @@ export type TestLogEvent = {
 export type TestEvent = TestRunEvent | TestLogEvent;
 
 export type ProcessActionArgs = {
+  laneId: string;
   processId: string;
 };
 
 export type ProcessStackArgs = {
+  laneId: string;
   stackId: string;
 };
 
 export type GetProcessLogTailArgs = {
+  laneId: string;
   processId: string;
   maxBytes?: number;
 };
 
 export type RunTestSuiteArgs = {
+  laneId: string;
   suiteId: string;
 };
 
@@ -401,6 +537,7 @@ export type StopTestRunArgs = {
 };
 
 export type ListTestRunsArgs = {
+  laneId?: string;
   suiteId?: string;
   limit?: number;
 };

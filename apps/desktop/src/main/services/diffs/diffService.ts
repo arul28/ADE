@@ -94,7 +94,17 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       return { unstaged, staged };
     },
 
-    async getFileDiff({ laneId, filePath, mode }: { laneId: string; filePath: string; mode: DiffMode }): Promise<FileDiff> {
+    async getFileDiff({
+      laneId,
+      filePath,
+      mode,
+      compareRef
+    }: {
+      laneId: string;
+      filePath: string;
+      mode: DiffMode;
+      compareRef?: string;
+    }): Promise<FileDiff> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const abs = path.join(worktreePath, filePath);
 
@@ -107,6 +117,23 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
           mode,
           original: { exists: head.exists, text: head.text },
           modified: { exists: idx.exists, text: idx.text },
+          ...(isBinary ? { isBinary: true } : {})
+        };
+      }
+
+      if (mode === "commit") {
+        const ref = compareRef?.trim();
+        if (!ref) {
+          throw new Error("compareRef is required for commit mode");
+        }
+        const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_TEXT_BYTES);
+        const wt = readTextFileSafe(abs, MAX_TEXT_BYTES);
+        const isBinary = Boolean(commitSide.isBinary || wt.isBinary);
+        return {
+          path: filePath,
+          mode,
+          original: { exists: commitSide.exists, text: commitSide.text },
+          modified: { exists: wt.exists, text: wt.text },
           ...(isBinary ? { isBinary: true } : {})
         };
       }
@@ -125,4 +152,3 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
     }
   };
 }
-

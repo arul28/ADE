@@ -155,12 +155,16 @@ function TileRenderer({
           closingSessionIds={closingSessionIds}
         />
       </Panel>
-      <Separator className="relative flex items-center justify-center bg-border transition-colors hover:bg-accent data-[resize-handle-active]:bg-accent">
-        <div className={cn("z-20 bg-accent/50", node.direction === "horizontal" ? "h-full w-[2px]" : "h-[2px] w-full")} />
+      <Separator
+        className={cn(
+          "relative flex shrink-0 items-center justify-center bg-border/70 transition-colors hover:bg-accent data-[resize-handle-active]:bg-accent",
+          node.direction === "horizontal" ? "w-2 cursor-col-resize" : "h-2 cursor-row-resize"
+        )}
+      >
+        <div className={cn("z-20 bg-accent/70", node.direction === "horizontal" ? "h-full w-px" : "h-px w-full")} />
         <div
           className={cn(
-            "pointer-events-none absolute inset-0 flex items-center justify-center opacity-0",
-            node.direction === "horizontal" ? "w-4" : "h-4"
+            "pointer-events-none absolute inset-0 flex items-center justify-center opacity-100"
           )}
         >
           {node.direction === "horizontal" ? <GripVertical className="h-3 w-3 text-bg" /> : <GripHorizontal className="h-3 w-3 text-bg" />}

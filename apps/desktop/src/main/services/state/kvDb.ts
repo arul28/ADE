@@ -54,6 +54,75 @@ function mapExecRows(rows: { columns: string[]; values: unknown[][] }[]): Record
   return out;
 }
 
+function hasColumn(db: Database, table: string, column: string): boolean {
+  try {
+    const rows = db.exec(`pragma table_info(${table})`);
+    const mapped = mapExecRows(rows);
+    return mapped.some((row) => String(row.name ?? "") === column);
+  } catch {
+    return false;
+  }
+}
+
+function addColumnIfMissing(db: Database, table: string, columnSql: string, columnName: string) {
+  if (hasColumn(db, table, columnName)) return;
+  db.run(`alter table ${table} add column ${columnSql}`);
+}
+
+function createIndexIfColumnsExist(db: Database, indexSql: string, table: string, columns: string[]) {
+  const allPresent = columns.every((column) => hasColumn(db, table, column));
+  if (!allPresent) return;
+  db.run(indexSql);
+}
+
+function ensureProcessRuntimeLaneSchema(db: Database) {
+  const hasLaneId = hasColumn(db, "process_runtime", "lane_id");
+  if (hasLaneId) {
+    db.run("create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)");
+    return;
+  }
+
+  db.run("alter table process_runtime rename to process_runtime_legacy");
+  db.run(`
+    create table process_runtime (
+      project_id text not null,
+      lane_id text not null,
+      process_key text not null,
+      status text not null,
+      pid integer,
+      started_at text,
+      ended_at text,
+      exit_code integer,
+      readiness text not null,
+      updated_at text not null,
+      primary key(project_id, lane_id, process_key),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+
+  db.run(`
+    insert into process_runtime(
+      project_id, lane_id, process_key, status, pid, started_at, ended_at, exit_code, readiness, updated_at
+    )
+    select
+      project_id,
+      '__legacy__',
+      process_key,
+      status,
+      pid,
+      started_at,
+      ended_at,
+      exit_code,
+      readiness,
+      updated_at
+    from process_runtime_legacy
+  `);
+  db.run("drop table process_runtime_legacy");
+  db.run("create index if not exists idx_process_runtime_project_id on process_runtime(project_id)");
+  db.run("create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)");
+}
+
 function migrate(db: Database) {
   // Keep KV for UI layout persistence.
   db.run("create table if not exists kv (key text primary key, value text not null)");
@@ -76,22 +145,35 @@ function migrate(db: Database) {
       project_id text not null,
       name text not null,
       description text,
+      lane_type text not null default 'worktree',
       base_ref text not null,
       branch_ref text not null,
       worktree_path text not null,
+      attached_root_path text,
+      is_edit_protected integer not null default 0,
       status text not null,
       created_at text not null,
       archived_at text,
       foreign key(project_id) references projects(id)
     )
   `);
-  db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
+  addColumnIfMissing(db, "lanes", "lane_type text not null default 'worktree'", "lane_type");
+  addColumnIfMissing(db, "lanes", "attached_root_path text", "attached_root_path");
+  addColumnIfMissing(db, "lanes", "is_edit_protected integer not null default 0", "is_edit_protected");
+  createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)",
+    "lanes",
+    ["project_id", "lane_type"]
+  );
 
   db.run(`
     create table if not exists terminal_sessions (
       id text primary key,
       lane_id text not null,
       pty_id text,
+      tracked integer not null default 1,
       title text not null,
       started_at text not null,
       ended_at text,
@@ -104,8 +186,19 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  db.run("create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)");
-  db.run("create index if not exists idx_terminal_sessions_status on terminal_sessions(status)");
+  addColumnIfMissing(db, "terminal_sessions", "tracked integer not null default 1", "tracked");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)",
+    "terminal_sessions",
+    ["lane_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_terminal_sessions_status on terminal_sessions(status)",
+    "terminal_sessions",
+    ["status"]
+  );
 
   // Phase 2 process/test config and history tables.
   db.run(`
@@ -132,6 +225,7 @@ function migrate(db: Database) {
   db.run(`
     create table if not exists process_runtime (
       project_id text not null,
+      lane_id text not null default '__legacy__',
       process_key text not null,
       status text not null,
       pid integer,
@@ -140,27 +234,59 @@ function migrate(db: Database) {
       exit_code integer,
       readiness text not null,
       updated_at text not null,
-      primary key(project_id, process_key),
-      foreign key(project_id) references projects(id)
+      primary key(project_id, lane_id, process_key),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
     )
   `);
-  db.run("create index if not exists idx_process_runtime_project_id on process_runtime(project_id)");
+  ensureProcessRuntimeLaneSchema(db);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_process_runtime_project_id on process_runtime(project_id)",
+    "process_runtime",
+    ["project_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_process_runtime_project_lane on process_runtime(project_id, lane_id)",
+    "process_runtime",
+    ["project_id", "lane_id"]
+  );
 
   db.run(`
     create table if not exists process_runs (
       id text primary key,
       project_id text not null,
+      lane_id text,
       process_key text not null,
       started_at text not null,
       ended_at text,
       exit_code integer,
       termination_reason text not null,
       log_path text not null,
-      foreign key(project_id) references projects(id)
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
     )
   `);
-  db.run("create index if not exists idx_process_runs_project_proc on process_runs(project_id, process_key)");
-  db.run("create index if not exists idx_process_runs_started_at on process_runs(started_at)");
+  addColumnIfMissing(db, "process_runs", "lane_id text", "lane_id");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_process_runs_project_proc on process_runs(project_id, process_key)",
+    "process_runs",
+    ["project_id", "process_key"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_process_runs_project_lane on process_runs(project_id, lane_id)",
+    "process_runs",
+    ["project_id", "lane_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_process_runs_started_at on process_runs(started_at)",
+    "process_runs",
+    ["started_at"]
+  );
 
   db.run(`
     create table if not exists stack_buttons (
@@ -211,8 +337,19 @@ function migrate(db: Database) {
       foreign key(project_id) references projects(id)
     )
   `);
-  db.run("create index if not exists idx_test_runs_project_suite on test_runs(project_id, suite_key)");
-  db.run("create index if not exists idx_test_runs_started_at on test_runs(started_at)");
+  addColumnIfMissing(db, "test_runs", "lane_id text", "lane_id");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_test_runs_project_suite on test_runs(project_id, suite_key)",
+    "test_runs",
+    ["project_id", "suite_key"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_test_runs_started_at on test_runs(started_at)",
+    "test_runs",
+    ["started_at"]
+  );
 
   // Phase 2.5 + Phase 3 git operations timeline and deterministic packs.
   db.run(`
@@ -231,9 +368,25 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  db.run("create index if not exists idx_operations_project_started on operations(project_id, started_at)");
-  db.run("create index if not exists idx_operations_lane_started on operations(lane_id, started_at)");
-  db.run("create index if not exists idx_operations_kind on operations(kind)");
+  addColumnIfMissing(db, "operations", "lane_id text", "lane_id");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_operations_project_started on operations(project_id, started_at)",
+    "operations",
+    ["project_id", "started_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_operations_lane_started on operations(lane_id, started_at)",
+    "operations",
+    ["lane_id", "started_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_operations_kind on operations(kind)",
+    "operations",
+    ["kind"]
+  );
 
   db.run(`
     create table if not exists packs_index (
@@ -250,8 +403,19 @@ function migrate(db: Database) {
       foreign key(lane_id) references lanes(id)
     )
   `);
-  db.run("create index if not exists idx_packs_index_project on packs_index(project_id)");
-  db.run("create index if not exists idx_packs_index_lane on packs_index(lane_id)");
+  addColumnIfMissing(db, "packs_index", "lane_id text", "lane_id");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_packs_index_project on packs_index(project_id)",
+    "packs_index",
+    ["project_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_packs_index_lane on packs_index(lane_id)",
+    "packs_index",
+    ["lane_id"]
+  );
 
   db.run(`
     create table if not exists session_deltas (
@@ -273,8 +437,18 @@ function migrate(db: Database) {
       foreign key(session_id) references terminal_sessions(id)
     )
   `);
-  db.run("create index if not exists idx_session_deltas_lane_started on session_deltas(lane_id, started_at)");
-  db.run("create index if not exists idx_session_deltas_project_started on session_deltas(project_id, started_at)");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_session_deltas_lane_started on session_deltas(lane_id, started_at)",
+    "session_deltas",
+    ["lane_id", "started_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_session_deltas_project_started on session_deltas(project_id, started_at)",
+    "session_deltas",
+    ["project_id", "started_at"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

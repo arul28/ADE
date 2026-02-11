@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "../ui/Button";
 import { Kbd } from "../ui/Kbd";
 import { cn } from "../ui/cn";
+import { useAppStore } from "../../state/appStore";
 
 type Command = {
   id: string;
@@ -16,17 +17,62 @@ type Command = {
 
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const navigate = useNavigate();
+  const lanes = useAppStore((s) => s.lanes);
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const selectLane = useAppStore((s) => s.selectLane);
   const [q, setQ] = useState("");
 
   const commands: Command[] = useMemo(
     () => [
-      { id: "go-project", title: "Go to Projects (Home)", shortcut: "G 1", run: () => navigate("/project") },
+      { id: "go-project", title: "Go to Run", shortcut: "G 1", run: () => navigate("/project") },
       { id: "go-lanes", title: "Go to Lanes", shortcut: "G L", run: () => navigate("/lanes") },
+      { id: "go-files", title: "Go to Files", shortcut: "G F", run: () => navigate("/files") },
       { id: "go-terminals", title: "Go to Terminals", shortcut: "G T", run: () => navigate("/terminals") },
       { id: "go-conflicts", title: "Go to Conflicts", shortcut: "G C", run: () => navigate("/conflicts") },
       { id: "go-prs", title: "Go to PRs", shortcut: "G R", run: () => navigate("/prs") },
       { id: "go-history", title: "Go to History", shortcut: "G H", run: () => navigate("/history") },
       { id: "go-settings", title: "Go to Settings", shortcut: "G S", run: () => navigate("/settings") },
+      {
+        id: "lane-next",
+        title: "Select Next Lane",
+        shortcut: "]",
+        run: () => {
+          if (!lanes.length) return;
+          const currentIdx = lanes.findIndex((lane) => lane.id === selectedLaneId);
+          const next = lanes[(currentIdx + 1 + lanes.length) % lanes.length];
+          if (!next) return;
+          selectLane(next.id);
+          navigate(`/lanes?laneId=${encodeURIComponent(next.id)}`);
+        }
+      },
+      {
+        id: "lane-prev",
+        title: "Select Previous Lane",
+        shortcut: "[",
+        run: () => {
+          if (!lanes.length) return;
+          const currentIdx = lanes.findIndex((lane) => lane.id === selectedLaneId);
+          const next = lanes[(currentIdx - 1 + lanes.length) % lanes.length];
+          if (!next) return;
+          selectLane(next.id);
+          navigate(`/lanes?laneId=${encodeURIComponent(next.id)}`);
+        }
+      },
+      {
+        id: "lane-filter",
+        title: "Focus Lane Filter",
+        shortcut: "/",
+        run: () => {
+          navigate("/lanes");
+          setTimeout(() => {
+            const input = document.getElementById("lanes-filter-input");
+            if (input instanceof HTMLInputElement) {
+              input.focus();
+              input.select();
+            }
+          }, 30);
+        }
+      },
       {
         id: "ping",
         title: "Ping preload bridge",
@@ -38,7 +84,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
         }
       }
     ],
-    [navigate]
+    [lanes, navigate, selectLane, selectedLaneId]
   );
 
   const filtered = useMemo(() => {

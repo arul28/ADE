@@ -17,6 +17,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationIssue,
   ProjectConfigValidationResult,
+  ProviderMode,
   StackButtonDefinition,
   TestSuiteDefinition,
   TestSuiteTag
@@ -290,19 +291,24 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     tags: entry.tags ?? []
   }));
 
+  const mergedProviders = shared.providers || local.providers
+    ? {
+      ...(shared.providers ?? {}),
+      ...(local.providers ?? {})
+    }
+    : undefined;
+
+  const modeRaw = typeof mergedProviders?.mode === "string" ? mergedProviders.mode : undefined;
+  const providerMode: ProviderMode =
+    modeRaw === "hosted" || modeRaw === "byok" || modeRaw === "cli" || modeRaw === "guest" ? modeRaw : "guest";
+
   return {
     version: VERSION,
     processes,
     stackButtons,
     testSuites,
-    ...(shared.providers || local.providers
-      ? {
-          providers: {
-            ...(shared.providers ?? {}),
-            ...(local.providers ?? {})
-          }
-        }
-      : {})
+    providerMode,
+    ...(mergedProviders ? { providers: mergedProviders } : {})
   };
 }
 

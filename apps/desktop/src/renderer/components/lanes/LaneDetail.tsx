@@ -1,26 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowDownToLine,
-  ArrowRight,
-  ArrowUpFromLine,
-  Check,
-  ChevronDown,
-  Columns,
-  FileText,
-  GitCommit,
-  GitMerge,
-  History,
-  MoreHorizontal,
-
-  RefreshCw,
-  Save,
-  Send,
-  Trash2,
-  Undo2,
-  Upload,
-  Zap
-} from "lucide-react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { ArrowDownToLine, ArrowRight, Columns, GitMerge, MoreHorizontal, RefreshCw, Save, Undo2, Upload } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { useAppStore } from "../../state/appStore";
 import { PaneHeader } from "../ui/PaneHeader";
@@ -70,6 +50,7 @@ export function LaneDetail({
 
   const [stashes, setStashes] = useState<GitStashSummary[]>([]);
   const [recentCommits, setRecentCommits] = useState<GitCommitSummary[]>([]);
+  const [gitActionsOpen, setGitActionsOpen] = useState(false);
 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -247,64 +228,16 @@ export function LaneDetail({
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             </Button>
             <div className="h-4 w-px bg-border mx-1" />
-            <DropdownMenu.Root modal={false}>
-              <DropdownMenu.Trigger asChild>
-                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="More git actions">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  className="z-[120] min-w-[220px] overflow-hidden rounded-md border border-border bg-card p-1 text-fg shadow-lg"
-                  align="end"
-                  sideOffset={6}
-                  collisionPadding={8}
-                >
-                  <DropdownMenu.Label className="px-2 py-1.5 text-xs font-semibold text-muted-fg">
-                    Stash
-                  </DropdownMenu.Label>
-                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
-                    if (laneId) runAction("stash push", async () => {
-                      const msg = window.prompt("Stash message?");
-                      if (msg !== null) await window.ade.git.stashPush({ laneId, message: msg || undefined });
-                    });
-                  }}>
-                    Push changes
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
-                    if (laneId && stashes.length > 0) runAction("stash pop", async () => {
-                      await window.ade.git.stashPop({ laneId, stashRef: stashes[0].ref });
-                    });
-                  }} disabled={stashes.length === 0}>
-                    Pop latest ({stashes[0]?.ref ?? "none"})
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-muted" />
-                  <DropdownMenu.Label className="px-2 py-1.5 text-xs font-semibold text-muted-fg">
-                    History
-                  </DropdownMenu.Label>
-                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
-                    if (laneId && recentCommits.length > 0) {
-                      const sha = window.prompt("Enter commit SHA to revert (default: HEAD)", recentCommits[0].sha);
-                      if (sha) runAction(`revert ${sha.slice(0, 7)}`, async () => {
-                        await window.ade.git.revertCommit({ laneId, commitSha: sha });
-                      });
-                    }
-                  }} disabled={recentCommits.length === 0}>
-                    Revert commit...
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors focus:bg-accent focus:text-accent-fg data-[disabled]:pointer-events-none data-[disabled]:opacity-50" onSelect={() => {
-                    if (laneId) {
-                      const sha = window.prompt("Enter commit SHA to cherry-pick");
-                      if (sha) runAction(`cherry-pick ${sha.slice(0, 7)}`, async () => {
-                        await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
-                      });
-                    }
-                  }}>
-                    Cherry-pick commit...
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              title="More git actions"
+              onClick={() => setGitActionsOpen(true)}
+            >
+              <MoreHorizontal className="mr-1 h-4 w-4" />
+              Git actions
+            </Button>
             <div className="h-4 w-px bg-border mx-1" />
 
             {onSplit && (
@@ -435,9 +368,96 @@ export function LaneDetail({
         </div>
       </div>
 
+      <Dialog.Root open={gitActionsOpen} onOpenChange={setGitActionsOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-card p-4 shadow-2xl focus:outline-none">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <Dialog.Title className="text-sm font-semibold">Git actions</Dialog.Title>
+              <Dialog.Close asChild>
+                <Button size="sm" variant="ghost">Esc</Button>
+              </Dialog.Close>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded border border-border bg-bg/40 p-2">
+                <div className="mb-2 text-xs font-semibold text-muted-fg">Stash</div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (!laneId) return;
+                      setGitActionsOpen(false);
+                      runAction("stash push", async () => {
+                        const msg = window.prompt("Stash message?");
+                        if (msg !== null) await window.ade.git.stashPush({ laneId, message: msg || undefined });
+                      });
+                    }}
+                  >
+                    Push changes
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={stashes.length === 0}
+                    onClick={() => {
+                      if (!laneId || stashes.length === 0) return;
+                      setGitActionsOpen(false);
+                      runAction("stash pop", async () => {
+                        await window.ade.git.stashPop({ laneId, stashRef: stashes[0]!.ref });
+                      });
+                    }}
+                  >
+                    Pop latest ({stashes[0]?.ref ?? "none"})
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded border border-border bg-bg/40 p-2">
+                <div className="mb-2 text-xs font-semibold text-muted-fg">History</div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={recentCommits.length === 0}
+                    onClick={() => {
+                      if (!laneId || recentCommits.length === 0) return;
+                      setGitActionsOpen(false);
+                      const sha = window.prompt("Enter commit SHA to revert (default: HEAD)", recentCommits[0]!.sha);
+                      if (!sha) return;
+                      runAction(`revert ${sha.slice(0, 7)}`, async () => {
+                        await window.ade.git.revertCommit({ laneId, commitSha: sha });
+                      });
+                    }}
+                  >
+                    Revert commit...
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (!laneId) return;
+                      setGitActionsOpen(false);
+                      const sha = window.prompt("Enter commit SHA to cherry-pick");
+                      if (!sha) return;
+                      runAction(`cherry-pick ${sha.slice(0, 7)}`, async () => {
+                        await window.ade.git.cherryPickCommit({ laneId, commitSha: sha });
+                      });
+                    }}
+                  >
+                    Cherry-pick commit...
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       {/* Footer Info / Status Bar (optional, maybe specific lane errors/notices) */}
       {(notice || error || busyAction) && (
-        <div className={cn("px-3 py-1 text-xs border-t border-border flex items-center justify-between", error ? "bg-red-950/30 text-red-300" : "bg-accent/10 text-accent")}>
+        <div className={cn("flex items-center justify-between border-t border-border px-3 py-1 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
           <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>
         </div>
       )}

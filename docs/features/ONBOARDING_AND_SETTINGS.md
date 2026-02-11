@@ -301,8 +301,8 @@ interface DetectionResult {
 | ONBOARD-022 | Existing documentation import | Ask user for docs directory/files, ingest via LLM for richer pack seeding | TODO |
 | ONBOARD-023 | Existing lane/branch detection | Detect existing branches and worktrees, offer to create lanes and generate Lane Packs | TODO |
 | ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | TODO |
-| ONBOARD-025 | Guest mode | No-account usage with local features only, context tracking disabled | TODO |
-| ONBOARD-026 | Guest mode banner | Persistent "Guest Mode" banner with provider setup link | TODO |
+| ONBOARD-025 | Guest mode | No-account usage with local features only, context tracking disabled | DONE |
+| ONBOARD-026 | Guest mode banner | Persistent "Guest Mode" banner with provider setup link | DONE |
 
 ### Dependency Notes
 

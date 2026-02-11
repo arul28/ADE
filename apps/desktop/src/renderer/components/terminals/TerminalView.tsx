@@ -3,6 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 import { cn } from "../ui/cn";
+import { useAppStore } from "../../state/appStore";
 
 function readThemeColor(varName: string, fallback: string): string {
   try {
@@ -14,6 +15,7 @@ function readThemeColor(varName: string, fallback: string): string {
 }
 
 export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; sessionId: string; className?: string }) {
+  const appTheme = useAppStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -21,7 +23,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null);
   const [exited, setExited] = useState<number | null>(null);
 
-  const theme = useMemo(
+  const termTheme = useMemo(
     () => ({
       // Use concrete colors from current CSS vars (Tailwind v4 "Clean Paper" tokens).
       background: readThemeColor("--color-muted", "#F2F0ED"),
@@ -30,7 +32,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       cursorAccent: readThemeColor("--color-bg", "#FDFBF7"),
       selectionBackground: "rgba(194, 35, 35, 0.16)"
     }),
-    []
+    [appTheme]
   );
 
   useEffect(() => {
@@ -44,7 +46,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 13,
       lineHeight: 1.2,
-      theme
+      theme: termTheme
     });
 
     const fit = new FitAddon();
@@ -134,7 +136,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       fitRef.current = null;
       resizeObsRef.current = null;
     };
-  }, [ptyId, sessionId, theme]);
+  }, [ptyId, sessionId, termTheme]);
 
   return (
     <div

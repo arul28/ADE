@@ -38,17 +38,17 @@ export function LaneInspector({
             PR
           </Tabs.Trigger>
         </Tabs.List>
-        <div className="flex-1 overflow-auto p-3">
-          <Tabs.Content value="terminals">
+        <div className="flex-1 min-h-0 p-3">
+          <Tabs.Content value="terminals" forceMount className="h-full data-[state=inactive]:hidden">
             <LaneTerminalsPanel overrideLaneId={laneId} />
           </Tabs.Content>
-          <Tabs.Content value="packs">
+          <Tabs.Content value="packs" className="h-full overflow-auto">
             <PackViewer laneId={laneId} />
           </Tabs.Content>
-          <Tabs.Content value="conflicts">
+          <Tabs.Content value="conflicts" className="h-full">
             <EmptyState title="Conflicts (stub)" description="Phase 4 adds conflict radar and guided resolution." />
           </Tabs.Content>
-          <Tabs.Content value="pr">
+          <Tabs.Content value="pr" className="h-full">
             <EmptyState title="PR (stub)" description="Phase 1+ adds PR linkage and checks." />
           </Tabs.Content>
         </div>

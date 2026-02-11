@@ -1,11 +1,29 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../../../shared/ipc";
 import type {
+  AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
   CreateLaneArgs,
   DeleteLaneArgs,
   DockLayout,
+  FileChangeEvent,
+  FileContent,
+  FileTreeNode,
+  FilesCreateDirectoryArgs,
+  FilesCreateFileArgs,
+  FilesDeleteArgs,
+  FilesListTreeArgs,
+  FilesListWorkspacesArgs,
+  FilesQuickOpenArgs,
+  FilesQuickOpenItem,
+  FilesReadFileArgs,
+  FilesRenameArgs,
+  FilesSearchTextArgs,
+  FilesSearchTextMatch,
+  FilesWatchArgs,
+  FilesWorkspace,
+  FilesWriteTextArgs,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -167,6 +185,11 @@ export function registerIpc({
     return await ctx.laneService.create({ name: arg.name, description: arg.description });
   });
 
+  ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    return await ctx.laneService.attach(arg);
+  });
+
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.laneService.rename(arg);
@@ -238,12 +261,84 @@ export function registerIpc({
 
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
     const ctx = getCtx();
-    return await ctx.diffService.getFileDiff({ laneId: arg.laneId, filePath: arg.path, mode: arg.mode });
+    return await ctx.diffService.getFileDiff({
+      laneId: arg.laneId,
+      filePath: arg.path,
+      mode: arg.mode,
+      compareRef: arg.compareRef
+    });
   });
 
   ipcMain.handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.fileService.writeTextAtomic({ laneId: arg.laneId, relPath: arg.path, text: arg.text });
+  });
+
+  ipcMain.handle(IPC.filesListWorkspaces, async (_event, arg: FilesListWorkspacesArgs = {}): Promise<FilesWorkspace[]> => {
+    const ctx = getCtx();
+    return ctx.fileService.listWorkspaces(arg);
+  });
+
+  ipcMain.handle(IPC.filesListTree, async (_event, arg: FilesListTreeArgs): Promise<FileTreeNode[]> => {
+    const ctx = getCtx();
+    return await ctx.fileService.listTree(arg);
+  });
+
+  ipcMain.handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {
+    const ctx = getCtx();
+    return ctx.fileService.readFile(arg);
+  });
+
+  ipcMain.handle(IPC.filesWriteText, async (_event, arg: FilesWriteTextArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.fileService.writeWorkspaceText(arg);
+  });
+
+  ipcMain.handle(IPC.filesCreateFile, async (_event, arg: FilesCreateFileArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.fileService.createFile(arg);
+  });
+
+  ipcMain.handle(IPC.filesCreateDirectory, async (_event, arg: FilesCreateDirectoryArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.fileService.createDirectory(arg);
+  });
+
+  ipcMain.handle(IPC.filesRename, async (_event, arg: FilesRenameArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.fileService.rename(arg);
+  });
+
+  ipcMain.handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.fileService.deletePath(arg);
+  });
+
+  ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
+    const ctx = getCtx();
+    const senderId = event.sender.id;
+    await ctx.fileService.watchWorkspace(arg, (payload: FileChangeEvent) => {
+      try {
+        event.sender.send(IPC.filesChange, payload);
+      } catch {
+        // ignore detached renderer
+      }
+    }, senderId);
+  });
+
+  ipcMain.handle(IPC.filesStopWatching, async (event, arg: FilesWatchArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.fileService.stopWatching(arg, event.sender.id);
+  });
+
+  ipcMain.handle(IPC.filesQuickOpen, async (_event, arg: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> => {
+    const ctx = getCtx();
+    return await ctx.fileService.quickOpen(arg);
+  });
+
+  ipcMain.handle(IPC.filesSearchText, async (_event, arg: FilesSearchTextArgs): Promise<FilesSearchTextMatch[]> => {
+    const ctx = getCtx();
+    return await ctx.fileService.searchText(arg);
   });
 
   ipcMain.handle(IPC.gitStageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
@@ -359,9 +454,10 @@ export function registerIpc({
     return ctx.processService.listDefinitions();
   });
 
-  ipcMain.handle(IPC.processesListRuntime, async (): Promise<ProcessRuntime[]> => {
+  ipcMain.handle(IPC.processesListRuntime, async (_event, arg: { laneId: string }): Promise<ProcessRuntime[]> => {
     const ctx = getCtx();
-    return ctx.processService.listRuntime();
+    if (!arg?.laneId) return [];
+    return ctx.processService.listRuntime(arg.laneId);
   });
 
   ipcMain.handle(IPC.processesStart, async (_event, arg: ProcessActionArgs): Promise<ProcessRuntime> => {
@@ -399,14 +495,16 @@ export function registerIpc({
     await ctx.processService.restartStack(arg);
   });
 
-  ipcMain.handle(IPC.processesStartAll, async (): Promise<void> => {
+  ipcMain.handle(IPC.processesStartAll, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
-    await ctx.processService.startAll();
+    if (!arg?.laneId) return;
+    await ctx.processService.startAll(arg);
   });
 
-  ipcMain.handle(IPC.processesStopAll, async (): Promise<void> => {
+  ipcMain.handle(IPC.processesStopAll, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
-    await ctx.processService.stopAll();
+    if (!arg?.laneId) return;
+    await ctx.processService.stopAll(arg);
   });
 
   ipcMain.handle(IPC.processesGetLogTail, async (_event, arg: GetProcessLogTailArgs): Promise<string> => {

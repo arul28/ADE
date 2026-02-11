@@ -95,12 +95,14 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     setSessions([]);
     setClosingSessionIds(new Set());
     laneSessionIdsRef.current = new Set();
-    if (overrideLaneId != null) {
-      setLocalFocusedSessionId(globalFocusedSessionId);
-    }
     if (!laneId) return;
     refresh().catch(() => {});
-  }, [laneId, overrideLaneId, globalFocusedSessionId, refresh]);
+  }, [laneId, overrideLaneId, refresh]);
+
+  useEffect(() => {
+    if (overrideLaneId == null) return;
+    setLocalFocusedSessionId((current) => current ?? globalFocusedSessionId ?? null);
+  }, [overrideLaneId, globalFocusedSessionId]);
 
   useEffect(() => {
     if (!laneId) return;
@@ -221,6 +223,22 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
             <Plus className="h-4 w-4" />
             New
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            title="New untracked session"
+            onClick={() => {
+              window.ade.pty
+                .create({ laneId, cols: 100, rows: 30, title: "Untracked Shell", tracked: false })
+                .then(({ sessionId }) => {
+                  focusSession(sessionId);
+                  refresh().catch(() => {});
+                })
+                .catch(() => {});
+            }}
+          >
+            Ghost
+          </Button>
         </div>
       </div>
 
@@ -237,6 +255,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>
                 <span className={cn("h-2 w-2 rounded-full", statusDot(s.status))} />
                 <span className="max-w-[180px] truncate">{s.title}</span>
+                {!s.tracked ? <span className="rounded border border-border px-1 text-[10px] text-muted-fg">ghost</span> : null}
               </Tabs.Trigger>
             ))}
           </Tabs.List>
