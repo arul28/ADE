@@ -138,3 +138,177 @@ h6 {
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-muted-fg);
 }
+
+.ade-conflict-ours-line {
+  background: rgba(0, 200, 0, 0.1);
+}
+
+.ade-conflict-theirs-line {
+  background: rgba(200, 0, 0, 0.1);
+}
+
+.ade-conflict-marker-line {
+  background: rgba(220, 38, 38, 0.2);
+  font-weight: 700;
+}
+
+.ade-conflict-marker-glyph {
+  background: rgba(220, 38, 38, 0.55);
+}
+
+@keyframes ade-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.ade-risk-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-muted) 80%, transparent);
+}
+
+.ade-risk-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-bg) 55%, transparent), transparent);
+  animation: ade-shimmer 1.25s ease-in-out infinite;
+}
+
+@keyframes ade-risk-cell-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ade-risk-cell-enter {
+  animation: ade-risk-cell-enter 240ms ease-out;
+}
+
+@keyframes ade-risk-pulse-out {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55);
+  }
+
+  100% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+}
+
+@keyframes ade-risk-pulse-in {
+  0% {
+    box-shadow: inset 0 0 0 0 rgba(16, 185, 129, 0.55);
+  }
+
+  100% {
+    box-shadow: inset 0 0 0 10px rgba(16, 185, 129, 0);
+  }
+}
+
+.ade-risk-cell-increase {
+  animation: ade-risk-pulse-out 380ms ease-out;
+}
+
+.ade-risk-cell-decrease {
+  animation: ade-risk-pulse-in 320ms ease-out;
+}
+
+@keyframes ade-conflict-badge-worse {
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.3);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes ade-conflict-badge-better {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
+  }
+
+  50% {
+    transform: scale(1.2);
+    box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.28);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.ade-conflict-badge-worse {
+  animation: ade-conflict-badge-worse 600ms ease-in-out 3;
+  transform-origin: center;
+}
+
+.ade-conflict-badge-better {
+  animation: ade-conflict-badge-better 300ms ease-out 1;
+  transform-origin: center;
+}
+
+.ade-tooltip-motion {
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.ade-tooltip-open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.ade-tooltip-closed {
+  opacity: 0;
+  transform: translateY(3px) scale(0.98);
+}
+
+.ade-edge-path {
+  transition: opacity 200ms ease, stroke-width 200ms ease;
+}
+
+@keyframes ade-node-failed-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+
+  100% {
+    box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
+  }
+}
+
+.ade-node-failed-pulse {
+  animation: ade-node-failed-pulse 500ms ease-out 3;
+}
+
+@keyframes ade-drop-preview-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ade-drop-preview-pop {
+  animation: ade-drop-preview-pop 160ms ease-out;
+}

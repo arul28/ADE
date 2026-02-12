@@ -1,11 +1,17 @@
 import type {
+  BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictEventPayload,
+  ConflictOverlap,
+  ConflictStatus,
   CreateLaneArgs,
+  CreateChildLaneArgs,
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
+  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -24,6 +30,7 @@ import type {
   FilesWatchArgs,
   FilesWorkspace,
   FilesWriteTextArgs,
+  GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
@@ -39,7 +46,10 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  ListOverlapsArgs,
   LaneSummary,
+  MergeSimulationArgs,
+  MergeSimulationResult,
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
@@ -63,14 +73,22 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  ReparentLaneArgs,
+  ReparentLaneResult,
+  RestackArgs,
+  RestackResult,
+  RiskMatrixEntry,
   RunTestSuiteArgs,
+  RunConflictPredictionArgs,
   SessionDeltaSummary,
+  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
+  UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs
 } from "../shared/types";
 
@@ -91,10 +109,16 @@ declare global {
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
+        createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
+        reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
+        updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
         delete: (args: DeleteLaneArgs) => Promise<void>;
+        getStackChain: (laneId: string) => Promise<StackChainItem[]>;
+        getChildren: (laneId: string) => Promise<LaneSummary[]>;
+        restack: (args: RestackArgs) => Promise<RestackResult>;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
@@ -149,6 +173,15 @@ declare global {
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
       };
+      conflicts: {
+        getLaneStatus: (args: GetLaneConflictStatusArgs) => Promise<ConflictStatus>;
+        listOverlaps: (args: ListOverlapsArgs) => Promise<ConflictOverlap[]>;
+        getRiskMatrix: () => Promise<RiskMatrixEntry[]>;
+        simulateMerge: (args: MergeSimulationArgs) => Promise<MergeSimulationResult>;
+        runPrediction: (args?: RunConflictPredictionArgs) => Promise<BatchAssessmentResult>;
+        getBatchAssessment: () => Promise<BatchAssessmentResult>;
+        onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
+      };
       packs: {
         getProjectPack: () => Promise<PackSummary>;
         getLanePack: (laneId: string) => Promise<PackSummary>;
@@ -160,6 +193,10 @@ declare global {
       layout: {
         get: (layoutId: string) => Promise<DockLayout | null>;
         set: (layoutId: string, layout: DockLayout) => Promise<void>;
+      };
+      graphState: {
+        get: (projectId: string) => Promise<GraphPersistedState | null>;
+        set: (projectId: string, state: GraphPersistedState) => Promise<void>;
       };
       processes: {
         listDefinitions: () => Promise<ProcessDefinition[]>;

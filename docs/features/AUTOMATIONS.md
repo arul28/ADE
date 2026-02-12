@@ -38,6 +38,8 @@ the core session-end pipeline (session end, checkpoint creation, pack refresh).
 Automations generalize this into a user-configurable system where any supported
 trigger can invoke any supported action, with conditional execution and chaining.
 
+The automation service is planned for **Phase 8** (Automations + Onboarding + Packs V2).
+
 ---
 
 ## Core Concepts
@@ -328,24 +330,24 @@ interface AutomationRun {
 
 | ID | Task | Description | Status |
 |----|------|-------------|--------|
-| AUTO-003 | Automation rule schema | Define and validate `automations` section in config | TODO |
-| AUTO-004 | Automation service | Parse rules, register trigger listeners | TODO |
-| AUTO-005 | Session-end trigger | Subscribe to session events, dispatch rules | TODO |
-| AUTO-006 | Commit trigger | Watch `.git/refs/heads/`, dispatch rules | TODO |
-| AUTO-007 | Schedule trigger | Cron-based timer using `node-cron` | TODO |
-| AUTO-008 | Update-packs action | Wire to pack service | TODO |
-| AUTO-009 | Predict-conflicts action | Wire to conflict service (requires it) | TODO |
-| AUTO-010 | Sync-to-mirror action | Wire to hosted agent service (requires it) | TODO |
-| AUTO-011 | Run-tests action | Execute test suite by ID | TODO |
-| AUTO-012 | Run-command action | Execute shell command via PTY service | TODO |
-| AUTO-013 | Action chaining | Sequential execution with failure handling | TODO |
-| AUTO-014 | Conditional execution | Evaluate conditions, skip when false | TODO |
-| AUTO-015 | Automation management UI | List view with status and toggles | TODO |
-| AUTO-016 | Enable/disable toggle | IPC + UI control, persisted to config | TODO |
-| AUTO-017 | Manual trigger button | "Run Now" for immediate execution | TODO |
-| AUTO-018 | Execution history display | Recent runs with expandable details | TODO |
-| AUTO-019 | Automation run logging | Write run/action records to SQLite | TODO |
-| AUTO-020 | Error handling and retry | Configurable retry, backoff, notifications | TODO |
+| AUTO-003 | Automation rule schema | Define and validate `automations` section in config | TODO — **Phase 8** |
+| AUTO-004 | Automation service | Parse rules, register trigger listeners | TODO — **Phase 8** |
+| AUTO-005 | Session-end trigger | Subscribe to session events, dispatch rules | TODO — **Phase 8** |
+| AUTO-006 | Commit trigger | Watch `.git/refs/heads/`, dispatch rules | TODO — **Phase 8** |
+| AUTO-007 | Schedule trigger | Cron-based timer using `node-cron` | TODO — **Phase 8** |
+| AUTO-008 | Update-packs action | Wire to pack service | TODO — **Phase 8** |
+| AUTO-009 | Predict-conflicts action | Wire to conflict service (can use existing conflict service from Phase 5) | TODO — **Phase 8** |
+| AUTO-010 | Sync-to-mirror action | Wire to hosted agent service | TODO — **Phase 8** (depends on **Phase 6** Cloud Infrastructure) |
+| AUTO-011 | Run-tests action | Execute test suite by ID | TODO — **Phase 8** |
+| AUTO-012 | Run-command action | Execute shell command via PTY service | TODO — **Phase 8** |
+| AUTO-013 | Action chaining | Sequential execution with failure handling | TODO — **Phase 8** |
+| AUTO-014 | Conditional execution | Evaluate conditions, skip when false | TODO — **Phase 8** |
+| AUTO-015 | Automation management UI | List view with status and toggles | TODO — **Phase 8** |
+| AUTO-016 | Enable/disable toggle | IPC + UI control, persisted to config | TODO — **Phase 8** |
+| AUTO-017 | Manual trigger button | "Run Now" for immediate execution | TODO — **Phase 8** |
+| AUTO-018 | Execution history display | Recent runs with expandable details | TODO — **Phase 8** |
+| AUTO-019 | Automation run logging | Write run/action records to SQLite | TODO — **Phase 8** |
+| AUTO-020 | Error handling and retry | Configurable retry, backoff, notifications | TODO — **Phase 8** |
 
 ### Dependency Notes
 
@@ -358,10 +360,9 @@ interface AutomationRun {
 - AUTO-015 through AUTO-018 (UI) can be developed independently but need AUTO-004 for real data.
 - AUTO-019 depends on AUTO-004 and AUTO-013.
 - AUTO-020 depends on AUTO-013.
-- AUTO-009 depends on the future `conflictService`.
-- AUTO-010 depends on the future hosted agent service.
+- AUTO-009 can use the existing `conflictService` implemented in Phase 5 (no additional dependency).
+- AUTO-010 depends on the hosted agent/mirror service from **Phase 6** (Cloud Infrastructure).
 
 ---
 
-*This document describes the Automations feature for ADE. It will be updated as
-implementation progresses.*
+*This document describes the Automations feature for ADE, planned for Phase 8. The core job engine pipeline (AUTO-001, AUTO-002) is already implemented. User-configurable automations will be built in Phase 8.*

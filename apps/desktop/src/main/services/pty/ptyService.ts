@@ -20,12 +20,21 @@ type PtyEntry = {
   disposed: boolean;
 };
 
-function resolveShell(): { file: string; args: string[] } {
+type ShellSpec = { file: string; args: string[] };
+
+function resolveShellCandidates(): ShellSpec[] {
   if (process.platform === "win32") {
-    return { file: "powershell.exe", args: [] };
+    return [
+      { file: "powershell.exe", args: [] },
+      { file: "cmd.exe", args: [] }
+    ];
   }
-  const shell = process.env.SHELL && process.env.SHELL.trim().length ? process.env.SHELL : "/bin/zsh";
-  return { file: shell, args: [] };
+  const candidates: string[] = [];
+  const fromEnv = process.env.SHELL?.trim();
+  if (fromEnv) candidates.push(fromEnv);
+  candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
+  const uniq = Array.from(new Set(candidates.filter(Boolean)));
+  return uniq.map((file) => ({ file, args: [] }));
 }
 
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
@@ -132,6 +141,10 @@ export function createPtyService({
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId, title } = args;
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+      const cwd = fs.existsSync(worktreePath) ? worktreePath : projectRoot;
+      if (cwd !== worktreePath) {
+        logger.warn("pty.cwd_missing_fallback", { laneId, missingCwd: worktreePath, fallbackCwd: cwd });
+      }
       const { cols, rows } = clampDims(args.cols, args.rows);
 
       const ptyId = randomUUID();
@@ -156,18 +169,34 @@ export function createPtyService({
         })
         .catch(() => {});
 
-      const { file: shellFile, args: shellArgs } = resolveShell();
+      const shellCandidates = resolveShellCandidates();
       let pty: IPty;
+      let selectedShell: ShellSpec | null = null;
       try {
         const ptyLib = loadPty();
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,
           rows,
-          cwd: worktreePath,
+          cwd,
           env: { ...process.env }
         };
-        pty = ptyLib.spawn(shellFile, shellArgs, opts);
+        let lastErr: unknown = null;
+        let created: IPty | null = null;
+        for (const shell of shellCandidates) {
+          try {
+            created = ptyLib.spawn(shell.file, shell.args, opts);
+            selectedShell = shell;
+            break;
+          } catch (err) {
+            lastErr = err;
+            logger.warn("pty.spawn_retry", { ptyId, sessionId, shell: shell.file, err: String(err) });
+          }
+        }
+        if (!created) {
+          throw lastErr ?? new Error("Unable to spawn terminal shell.");
+        }
+        pty = created;
       } catch (err) {
         logger.error("pty.spawn_failed", { ptyId, sessionId, err: String(err) });
         try {
@@ -203,7 +232,7 @@ export function createPtyService({
         closeEntry(ptyId, exitCode ?? null);
       });
 
-      logger.info("pty.create", { ptyId, sessionId, laneId, cwd: worktreePath });
+      logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });
 
       return { ptyId, sessionId };
     },

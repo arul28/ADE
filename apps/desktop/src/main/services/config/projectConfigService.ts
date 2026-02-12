@@ -3,11 +3,16 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import type {
+  ConfigLaneOverlayPolicy,
   ConfigProcessDefinition,
   ConfigProcessReadiness,
   ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
   EffectiveProjectConfig,
+  LaneOverlayMatch,
+  LaneOverlayOverrides,
+  LaneOverlayPolicy,
+  LaneType,
   ProcessDefinition,
   ProcessReadinessConfig,
   ProjectConfigCandidate,
@@ -42,6 +47,15 @@ function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out = value.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
   return out;
+}
+
+function asLaneTypeArray(value: unknown): LaneType[] | undefined {
+  const out = asStringArray(value);
+  if (!out) return undefined;
+  const laneTypes = out.filter((laneType): laneType is LaneType =>
+    laneType === "primary" || laneType === "worktree" || laneType === "attached"
+  );
+  return laneTypes;
 }
 
 function asNumber(value: unknown): number | undefined {
@@ -146,9 +160,50 @@ function coerceTestSuite(value: unknown): ConfigTestSuiteDefinition | null {
   return out;
 }
 
+function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null {
+  if (!isRecord(value)) return null;
+  const id = asString(value.id)?.trim() ?? "";
+  const out: ConfigLaneOverlayPolicy = { id };
+
+  const name = asString(value.name);
+  const enabled = asBool(value.enabled);
+  if (name != null) out.name = name;
+  if (enabled != null) out.enabled = enabled;
+
+  if (isRecord(value.match)) {
+    const match: LaneOverlayMatch = {};
+    const laneIds = asStringArray(value.match.laneIds);
+    const laneTypes = asLaneTypeArray(value.match.laneTypes);
+    const namePattern = asString(value.match.namePattern);
+    const branchPattern = asString(value.match.branchPattern);
+    const tags = asStringArray(value.match.tags);
+    if (laneIds != null) match.laneIds = laneIds;
+    if (laneTypes != null) match.laneTypes = laneTypes;
+    if (namePattern != null) match.namePattern = namePattern;
+    if (branchPattern != null) match.branchPattern = branchPattern;
+    if (tags != null) match.tags = tags;
+    if (Object.keys(match).length > 0) out.match = match;
+  }
+
+  if (isRecord(value.overrides)) {
+    const overrides: LaneOverlayOverrides = {};
+    const env = asStringMap(value.overrides.env);
+    const cwd = asString(value.overrides.cwd);
+    const processIds = asStringArray(value.overrides.processIds);
+    const testSuiteIds = asStringArray(value.overrides.testSuiteIds);
+    if (env != null) overrides.env = env;
+    if (cwd != null) overrides.cwd = cwd;
+    if (processIds != null) overrides.processIds = processIds;
+    if (testSuiteIds != null) overrides.testSuiteIds = testSuiteIds;
+    if (Object.keys(overrides).length > 0) out.overrides = overrides;
+  }
+
+  return out;
+}
+
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
-    return { version: VERSION, processes: [], stackButtons: [], testSuites: [] };
+    return { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [] };
   }
 
   const version = asNumber(value.version) ?? VERSION;
@@ -161,12 +216,16 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const testSuites = Array.isArray(value.testSuites)
     ? value.testSuites.map(coerceTestSuite).filter((x): x is ConfigTestSuiteDefinition => x != null)
     : [];
+  const laneOverlayPolicies = Array.isArray(value.laneOverlayPolicies)
+    ? value.laneOverlayPolicies.map(coerceLaneOverlayPolicy).filter((x): x is ConfigLaneOverlayPolicy => x != null)
+    : [];
 
   return {
     version,
     processes,
     stackButtons,
     testSuites,
+    laneOverlayPolicies,
     ...(isRecord(value.providers) ? { providers: value.providers } : {})
   };
 }
@@ -175,13 +234,13 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
   try {
     const raw = fs.readFileSync(filePath, "utf8");
     if (!raw.trim().length) {
-      return { config: { version: VERSION, processes: [], stackButtons: [], testSuites: [] }, raw };
+      return { config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [] }, raw };
     }
     const parsed = YAML.parse(raw);
     return { config: coerceConfigFile(parsed), raw };
   } catch (err: any) {
     if (err?.code === "ENOENT") {
-      return { config: { version: VERSION, processes: [], stackButtons: [], testSuites: [] }, raw: "" };
+      return { config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [] }, raw: "" };
     }
     throw err;
   }
@@ -193,6 +252,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     processes: config.processes ?? [],
     stackButtons: config.stackButtons ?? [],
     testSuites: config.testSuites ?? [],
+    laneOverlayPolicies: config.laneOverlayPolicies ?? [],
     ...(config.providers ? { providers: config.providers } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
@@ -261,6 +321,19 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(base.env || over.env ? { env: { ...(base.env ?? {}), ...(over.env ?? {}) } } : {})
   }));
 
+  const mergedLaneOverlayPolicies = mergeById(
+    shared.laneOverlayPolicies ?? [],
+    local.laneOverlayPolicies ?? [],
+    (base, over) => ({
+      ...base,
+      ...over,
+      ...(base.match || over.match ? { match: { ...(base.match ?? {}), ...(over.match ?? {}) } } : {}),
+      ...(base.overrides || over.overrides
+        ? { overrides: { ...(base.overrides ?? {}), ...(over.overrides ?? {}) } }
+        : {})
+    })
+  );
+
   const processes: ProcessDefinition[] = mergedProcesses.map((entry) => ({
     id: entry.id.trim(),
     name: entry.name?.trim() ?? "",
@@ -291,6 +364,25 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     tags: entry.tags ?? []
   }));
 
+  const laneOverlayPolicies: LaneOverlayPolicy[] = mergedLaneOverlayPolicies.map((entry) => ({
+    id: entry.id.trim(),
+    name: entry.name?.trim() ?? entry.id.trim(),
+    enabled: entry.enabled ?? true,
+    match: {
+      ...(entry.match?.laneIds ? { laneIds: entry.match.laneIds.map((v) => v.trim()).filter(Boolean) } : {}),
+      ...(entry.match?.laneTypes ? { laneTypes: entry.match.laneTypes } : {}),
+      ...(entry.match?.namePattern ? { namePattern: entry.match.namePattern.trim() } : {}),
+      ...(entry.match?.branchPattern ? { branchPattern: entry.match.branchPattern.trim() } : {}),
+      ...(entry.match?.tags ? { tags: entry.match.tags.map((v) => v.trim()).filter(Boolean) } : {})
+    },
+    overrides: {
+      ...(entry.overrides?.env ? { env: entry.overrides.env } : {}),
+      ...(entry.overrides?.cwd ? { cwd: entry.overrides.cwd.trim() } : {}),
+      ...(entry.overrides?.processIds ? { processIds: entry.overrides.processIds.map((v) => v.trim()).filter(Boolean) } : {}),
+      ...(entry.overrides?.testSuiteIds ? { testSuiteIds: entry.overrides.testSuiteIds.map((v) => v.trim()).filter(Boolean) } : {})
+    }
+  }));
+
   const mergedProviders = shared.providers || local.providers
     ? {
       ...(shared.providers ?? {}),
@@ -307,6 +399,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     processes,
     stackButtons,
     testSuites,
+    laneOverlayPolicies,
     providerMode,
     ...(mergedProviders ? { providers: mergedProviders } : {})
   };
@@ -384,6 +477,8 @@ function validateEffectiveConfig(
   validateDuplicateIds(local.stackButtons ?? [], "stackButtons", issues, "local");
   validateDuplicateIds(shared.testSuites ?? [], "testSuites", issues, "shared");
   validateDuplicateIds(local.testSuites ?? [], "testSuites", issues, "local");
+  validateDuplicateIds(shared.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "shared");
+  validateDuplicateIds(local.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "local");
 
   const processIds = new Set<string>();
   for (const [idx, proc] of effective.processes.entries()) {
@@ -484,6 +579,40 @@ function validateEffectiveConfig(
 
     if (suite.timeoutMs != null && (!Number.isFinite(suite.timeoutMs) || suite.timeoutMs <= 0)) {
       issues.push({ path: `${p}.timeoutMs`, message: "timeoutMs must be > 0 when provided" });
+    }
+  }
+
+  const overlayIds = new Set<string>();
+  for (const [idx, policy] of effective.laneOverlayPolicies.entries()) {
+    const p = `effective.laneOverlayPolicies[${idx}]`;
+    if (!policy.id) {
+      issues.push({ path: `${p}.id`, message: "Lane overlay policy id is required" });
+      continue;
+    }
+    if (overlayIds.has(policy.id)) {
+      issues.push({ path: `${p}.id`, message: `Duplicate lane overlay policy id '${policy.id}'` });
+    } else {
+      overlayIds.add(policy.id);
+    }
+    if (!policy.name) {
+      issues.push({ path: `${p}.name`, message: "Lane overlay policy name is required" });
+    }
+    const overrideCwd = policy.overrides.cwd;
+    if (overrideCwd) {
+      const absCwd = path.isAbsolute(overrideCwd) ? overrideCwd : path.join(projectRoot, overrideCwd);
+      if (!isDirectory(absCwd)) {
+        issues.push({ path: `${p}.overrides.cwd`, message: `cwd override does not exist: ${overrideCwd}` });
+      }
+    }
+    for (const processId of policy.overrides.processIds ?? []) {
+      if (!processIds.has(processId)) {
+        issues.push({ path: `${p}.overrides.processIds`, message: `Unknown process id '${processId}'` });
+      }
+    }
+    for (const suiteId of policy.overrides.testSuiteIds ?? []) {
+      if (!suiteIds.has(suiteId)) {
+        issues.push({ path: `${p}.overrides.testSuiteIds`, message: `Unknown test suite id '${suiteId}'` });
+      }
     }
   }
 

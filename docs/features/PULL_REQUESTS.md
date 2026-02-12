@@ -39,7 +39,14 @@ checks, track review status, update descriptions, and merge — all from within 
 For stacked workflows, ADE handles the complexity of landing PRs in the correct
 order and retargeting child PRs automatically.
 
-**Current status**: This feature is **not yet implemented**. All tasks are TODO.
+**Current status**: This feature is planned for **Phase 7** (GitHub Integration + Workspace Graph). All tasks are TODO. No PR work has been built yet.
+
+**Phase 6 prerequisite**: Phase 6 (Cloud Infrastructure + Auth + LLM Gateway) must be completed before Phase 7 can begin. Key dependencies:
+
+- **LLM-powered PR description drafting** (PR-007) requires the LLM gateway from Phase 6 to generate pack-based descriptions.
+- **GitHub OAuth authentication** (PR-001) uses AWS Cognito from Phase 6 for secure token management and OAuth flow.
+
+**Cross-feature note**: CONF-022 (stack-aware conflict resolution) is also in Phase 7's scope, bridging the conflict detection system (Phase 5) with the stacked PR workflow.
 
 ---
 
@@ -395,7 +402,7 @@ interface StackChain {
 
 ## Implementation Tracking
 
-All tasks for this feature are **TODO** — implementation has not yet begun.
+All tasks for this feature are **TODO** — implementation has not yet begun. Phase 6 (Cloud Infrastructure + Auth + LLM Gateway) must be completed first, as PR-001 (GitHub OAuth) relies on Cognito and PR-007 (description drafting) relies on the LLM gateway.
 
 ### Authentication & API
 

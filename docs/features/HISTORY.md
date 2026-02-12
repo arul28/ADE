@@ -48,8 +48,9 @@ This timeline serves multiple purposes:
   especially useful in team environments where understanding who did what matters.
 
 **Current status**: The core timeline (operation recording, display, filtering) is
-**implemented and working**. Advanced features (checkpoints, replay, undo, graph
-view) are planned but not yet built.
+**implemented and working**. Checkpoint and event logging features are planned for
+**Phase 8** (Automations + Onboarding + Packs V2). Advanced timeline features
+(graph view, undo, replay, export) are planned for **Phase 9** (Advanced Features + Polish).
 
 ---
 
@@ -493,3 +494,7 @@ interface HistoryEntry {
 | HIST-021 | Jump to lane from operation detail | TODO |
 | HIST-022 | Jump to session from operation detail | TODO |
 | HIST-023 | Export history (CSV and JSON formats with filters) | TODO |
+
+---
+
+*This document describes the History feature for ADE. The core timeline is implemented. Checkpoints and event logging are planned for Phase 8. Advanced timeline features (graph view, undo, replay, export) are planned for Phase 9.*

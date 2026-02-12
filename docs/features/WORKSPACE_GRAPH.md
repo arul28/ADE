@@ -49,7 +49,28 @@ The graph also serves as an **environment mindmap**. The main branch (typically 
 
 Think of it as an infinite canvas where you can see your entire development topology at a glance — which branch maps to which environment, where the conflicts are, and which PRs are open.
 
-**Status**: This feature is NOT YET IMPLEMENTED. All tasks are TODO.
+**Status**: This feature is planned for **Phase 7** (GitHub Integration + Workspace Graph). Some service-layer work has been completed ahead of schedule in Phase 4/5:
+
+- `laneService.reparent()` method exists for moving lanes between parents
+- `laneService.updateAppearance()` method exists for customizing color, icon, and tags
+- IPC channels `lanesReparent` and `lanesUpdateAppearance` are registered in `registerIpc.ts`
+- Preload bridge exposes `reparent` and `updateAppearance` methods to the renderer
+- Types for reparent (`ReparentArgs`), appearance (`AppearanceUpdate`), and graph state (`GraphState`) exist in `types.ts`
+
+The `graph/` directory and `/graph` route exist but UI components are not yet built.
+
+The `docs/PHASE_4_5_UPDATES.md` document (Part 3) contains extended scope beyond the original 28 GRAPH tasks, including:
+
+- Drag-and-drop lane reparenting with cycle detection (WG14)
+- Multi-select reparent (WG15)
+- Batch operations with progress UI (WG16)
+- Collapsible sub-graphs (WG17)
+- Multiple view modes — Stack/Risk/Activity/All (WG18)
+- Custom node appearance — color, tags, icon (WG19)
+- Graph-level filtering (WG20)
+- Multiple saved layout presets (WG21)
+- Loading and skeleton states (WG23)
+- Conflict status animations (WG25)
 
 ---
 
@@ -123,7 +144,7 @@ This makes the graph a deployment-aware topology map, not just a branch relation
 
 ### PR Edge Overlays
 
-When pull requests exist between lanes (from the PR integration in Phase 6), the graph overlays **PR indicators** on edges:
+When pull requests exist between lanes (from the PR integration, also in Phase 7), the graph overlays **PR indicators** on edges:
 
 - **Open PR**: A small PR icon badge on the edge, colored by PR state (green for open, purple for draft, yellow for changes requested)
 - **PR checks**: A tiny status dot (green check, red X, yellow spinner) next to the PR badge
@@ -234,17 +255,17 @@ components handle ADE-specific rendering and interaction.
 | Service | Status | Role |
 |---------|--------|------|
 | `laneService` | Exists | Provides the list of all lanes and their metadata (name, branch, status, type). Each lane becomes a node on the graph. |
-| `conflictService` | Future | Computes pairwise risk between lanes by performing dry-run merges. Provides the risk matrix that determines edge states. |
-| Layout persistence (via `kvDb`) | Planned | Saves and restores node positions so manual layout adjustments survive app restarts. Uses the existing key-value store. |
+| `conflictService` | Exists, implemented | Computes pairwise risk between lanes by performing dry-run merges. Provides the risk matrix that determines edge states. |
+| Layout persistence (via `kvDb`) | Exists (kvDb implemented, graphState get/set IPC channels registered) | Saves and restores node positions so manual layout adjustments survive app restarts. Uses the existing key-value store. |
 
 ### IPC Channels
 
 | Channel | Direction | Status | Payload |
 |---------|-----------|--------|---------|
 | `ade.lanes.list()` | Main -> Renderer | Exists | Returns `Lane[]` — all lanes for rendering as nodes |
-| `ade.conflicts.getRiskMatrix()` | Main -> Renderer | Future | Returns `RiskMatrix` — pairwise risk levels for all lane pairs |
-| `ade.layout.get(projectId)` | Main -> Renderer | Planned | Returns saved node positions for the given project |
-| `ade.layout.set(projectId, positions)` | Renderer -> Main | Planned | Persists node positions to kvDb |
+| `ade.conflicts.getRiskMatrix()` | Main -> Renderer | Exists | Returns `RiskMatrix` — pairwise risk levels for all lane pairs |
+| `ade.layout.get(projectId)` | Main -> Renderer | Exists (registered as `ade.graphState.get`) | Returns saved node positions for the given project |
+| `ade.layout.set(projectId, positions)` | Renderer -> Main | Exists (registered as `ade.graphState.set`) | Persists node positions to kvDb |
 
 ### Component Architecture
 
@@ -365,13 +386,12 @@ completed tasks; it is entirely in the planning stage.
 - GRAPH-001 is a prerequisite for all other tasks.
 - GRAPH-002 through GRAPH-004 can be developed in parallel once GRAPH-001 is complete.
 - GRAPH-007 through GRAPH-010 depend on node components (GRAPH-002 to GRAPH-004).
-- GRAPH-016 and GRAPH-017 depend on the future `conflictService`.
-- GRAPH-014 depends on the existing `kvDb` service.
+- GRAPH-016 and GRAPH-017 depend on `conflictService` (already implemented in Phase 5).
+- GRAPH-014 depends on the existing `kvDb` service (already implemented).
 - GRAPH-022 should be addressed last, after all functional tasks are complete.
 - GRAPH-023 through GRAPH-025 depend on the configuration service (Phase 2).
-- GRAPH-026 and GRAPH-027 depend on the PR service (Phase 6).
+- GRAPH-026 and GRAPH-027 (PR edge overlays) depend on the GitHub integration being built first. Both PR integration and Workspace Graph are in Phase 7, but the PR service (`githubService`, `prService`) must be functional before PR overlays can render on the graph.
 
 ---
 
-*This document describes the planned Workspace Graph feature for ADE. It will be
-updated as implementation progresses.*
+*This document describes the Workspace Graph feature for ADE, planned for Phase 7 (GitHub Integration + Workspace Graph). Service-layer prerequisites (conflict service, kvDb layout persistence, reparent/appearance IPC, and supporting types) are already implemented from Phase 4/5. See `docs/PHASE_4_5_UPDATES.md` Part 3 for the extended scope including view modes (WG18), reparent drag-and-drop (WG14-15), batch operations (WG16), collapsible sub-graphs (WG17), custom appearance (WG19), graph filtering (WG20), layout presets (WG21), loading states (WG23), and conflict animations (WG25). PR edge overlays (GRAPH-026, GRAPH-027) depend on the GitHub integration also being delivered in Phase 7.*

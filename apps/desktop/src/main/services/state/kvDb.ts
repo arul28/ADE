@@ -151,21 +151,36 @@ function migrate(db: Database) {
       worktree_path text not null,
       attached_root_path text,
       is_edit_protected integer not null default 0,
+      parent_lane_id text,
+      color text,
+      icon text,
+      tags_json text,
       status text not null,
       created_at text not null,
       archived_at text,
-      foreign key(project_id) references projects(id)
+      foreign key(project_id) references projects(id),
+      foreign key(parent_lane_id) references lanes(id)
     )
   `);
   addColumnIfMissing(db, "lanes", "lane_type text not null default 'worktree'", "lane_type");
   addColumnIfMissing(db, "lanes", "attached_root_path text", "attached_root_path");
   addColumnIfMissing(db, "lanes", "is_edit_protected integer not null default 0", "is_edit_protected");
+  addColumnIfMissing(db, "lanes", "parent_lane_id text", "parent_lane_id");
+  addColumnIfMissing(db, "lanes", "color text", "color");
+  addColumnIfMissing(db, "lanes", "icon text", "icon");
+  addColumnIfMissing(db, "lanes", "tags_json text", "tags_json");
   createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
   createIndexIfColumnsExist(
     db,
     "create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)",
     "lanes",
     ["project_id", "lane_type"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)",
+    "lanes",
+    ["project_id", "parent_lane_id"]
   );
 
   db.run(`
@@ -448,6 +463,44 @@ function migrate(db: Database) {
     "create index if not exists idx_session_deltas_project_started on session_deltas(project_id, started_at)",
     "session_deltas",
     ["project_id", "started_at"]
+  );
+
+  // Phase 5 conflict radar predictions.
+  db.run(`
+    create table if not exists conflict_predictions (
+      id text primary key,
+      project_id text not null,
+      lane_a_id text not null,
+      lane_b_id text,
+      status text not null,
+      conflicting_files_json text,
+      overlap_files_json text,
+      lane_a_sha text,
+      lane_b_sha text,
+      predicted_at text not null,
+      expires_at text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_a_id) references lanes(id),
+      foreign key(lane_b_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_cp_lane_a on conflict_predictions(lane_a_id)",
+    "conflict_predictions",
+    ["lane_a_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_cp_lane_b on conflict_predictions(lane_b_id)",
+    "conflict_predictions",
+    ["lane_b_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_cp_predicted_at on conflict_predictions(predicted_at)",
+    "conflict_predictions",
+    ["predicted_at"]
   );
 }
 

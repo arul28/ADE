@@ -1,12 +1,17 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../../../shared/ipc";
 import type {
+  BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictOverlap,
+  ConflictStatus,
   CreateLaneArgs,
+  CreateChildLaneArgs,
   DeleteLaneArgs,
   DockLayout,
+  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileTreeNode,
@@ -35,15 +40,19 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   LaneSummary,
   ListOperationsArgs,
+  ListOverlapsArgs,
   ListLanesArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  MergeSimulationArgs,
+  MergeSimulationResult,
   OperationRecord,
   PackSummary,
   ProcessActionArgs,
@@ -58,14 +67,22 @@ import type {
   ProjectInfo,
   PtyCreateArgs,
   PtyCreateResult,
+  ReparentLaneArgs,
+  ReparentLaneResult,
   RenameLaneArgs,
+  RestackArgs,
+  RestackResult,
+  RiskMatrixEntry,
+  RunConflictPredictionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
   TestRunSummary,
   TestSuiteDefinition,
+  UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -81,6 +98,8 @@ import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createPackService } from "../packs/packService";
 import type { createOperationService } from "../history/operationService";
+import type { createConflictService } from "../conflicts/conflictService";
+import type { createJobEngine } from "../jobs/jobEngine";
 
 export type AppContext = {
   db: AdeDb;
@@ -95,6 +114,8 @@ export type AppContext = {
   fileService: ReturnType<typeof createFileService>;
   operationService: ReturnType<typeof createOperationService>;
   gitService: ReturnType<typeof createGitOperationsService>;
+  conflictService: ReturnType<typeof createConflictService>;
+  jobEngine: ReturnType<typeof createJobEngine>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -175,6 +196,18 @@ export function registerIpc({
     ctx.logger.debug("layout.set", { key, panels: Object.keys(safe).length });
   });
 
+  ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
+    const ctx = getCtx();
+    const key = `graph_state:${arg.projectId}`;
+    return ctx.db.getJson<GraphPersistedState>(key);
+  });
+
+  ipcMain.handle(IPC.graphStateSet, async (_event, arg: { projectId: string; state: GraphPersistedState }): Promise<void> => {
+    const ctx = getCtx();
+    const key = `graph_state:${arg.projectId}`;
+    ctx.db.setJson(key, arg.state);
+  });
+
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
     return await ctx.laneService.list(arg);
@@ -182,7 +215,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
-    return await ctx.laneService.create({ name: arg.name, description: arg.description });
+    return await ctx.laneService.create({ name: arg.name, description: arg.description, parentLaneId: arg.parentLaneId });
+  });
+
+  ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    return await ctx.laneService.createChild(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
@@ -195,6 +233,16 @@ export function registerIpc({
     ctx.laneService.rename(arg);
   });
 
+  ipcMain.handle(IPC.lanesReparent, async (_event, arg: ReparentLaneArgs): Promise<ReparentLaneResult> => {
+    const ctx = getCtx();
+    return await ctx.laneService.reparent(arg);
+  });
+
+  ipcMain.handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.laneService.updateAppearance(arg);
+  });
+
   ipcMain.handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.laneService.archive(arg);
@@ -203,6 +251,21 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.laneService.delete(arg);
+  });
+
+  ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
+    const ctx = getCtx();
+    return await ctx.laneService.getStackChain(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesGetChildren, async (_event, arg: { laneId: string }): Promise<LaneSummary[]> => {
+    const ctx = getCtx();
+    return await ctx.laneService.getChildren(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.lanesRestack, async (_event, arg: RestackArgs): Promise<RestackResult> => {
+    const ctx = getCtx();
+    return await ctx.laneService.restack(arg);
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
@@ -419,6 +482,36 @@ export function registerIpc({
   ipcMain.handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.push(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.getLaneStatus(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsListOverlaps, async (_event, arg: ListOverlapsArgs): Promise<ConflictOverlap[]> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.listOverlaps(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsGetRiskMatrix, async (): Promise<RiskMatrixEntry[]> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.getRiskMatrix();
+  });
+
+  ipcMain.handle(IPC.conflictsSimulateMerge, async (_event, arg: MergeSimulationArgs): Promise<MergeSimulationResult> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.simulateMerge(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.runPrediction(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsGetBatchAssessment, async (): Promise<BatchAssessmentResult> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.getBatchAssessment();
   });
 
   ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {

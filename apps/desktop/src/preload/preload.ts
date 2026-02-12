@@ -1,13 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
+  BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictEventPayload,
+  ConflictOverlap,
+  ConflictStatus,
   CreateLaneArgs,
+  CreateChildLaneArgs,
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
+  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -38,14 +44,18 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GetDiffChangesArgs,
+  GetLaneConflictStatusArgs,
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   LaneSummary,
+  ListOverlapsArgs,
   ListLanesArgs,
   ListOperationsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
+  MergeSimulationArgs,
+  MergeSimulationResult,
   OperationRecord,
   PackSummary,
   ProcessActionArgs,
@@ -63,10 +73,18 @@ import type {
   PtyCreateResult,
   PtyDataEvent,
   PtyExitEvent,
+  RiskMatrixEntry,
+  RunConflictPredictionArgs,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  ReparentLaneArgs,
+  ReparentLaneResult,
+  RestackArgs,
+  RestackResult,
+  UpdateLaneAppearanceArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -89,10 +107,18 @@ contextBridge.exposeInMainWorld("ade", {
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
+    createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
+    reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => ipcRenderer.invoke(IPC.lanesReparent, args),
+    updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesUpdateAppearance, args),
     archive: async (args: ArchiveLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesArchive, args),
     delete: async (args: DeleteLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesDelete, args),
+    getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
+      ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
+    getChildren: async (laneId: string): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
+    restack: async (args: RestackArgs): Promise<RestackResult> => ipcRenderer.invoke(IPC.lanesRestack, args),
     openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
   },
   sessions: {
@@ -169,6 +195,23 @@ contextBridge.exposeInMainWorld("ade", {
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),
     push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args)
   },
+  conflicts: {
+    getLaneStatus: async (args: GetLaneConflictStatusArgs): Promise<ConflictStatus> =>
+      ipcRenderer.invoke(IPC.conflictsGetLaneStatus, args),
+    listOverlaps: async (args: ListOverlapsArgs): Promise<ConflictOverlap[]> =>
+      ipcRenderer.invoke(IPC.conflictsListOverlaps, args),
+    getRiskMatrix: async (): Promise<RiskMatrixEntry[]> => ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
+    simulateMerge: async (args: MergeSimulationArgs): Promise<MergeSimulationResult> =>
+      ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
+    runPrediction: async (args: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> =>
+      ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
+    getBatchAssessment: async (): Promise<BatchAssessmentResult> => ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
+    onEvent: (cb: (ev: ConflictEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ConflictEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.conflictsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.conflictsEvent, listener);
+    }
+  },
   packs: {
     getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
     getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
@@ -182,6 +225,12 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (layoutId: string): Promise<DockLayout | null> => ipcRenderer.invoke(IPC.layoutGet, { layoutId }),
     set: async (layoutId: string, layout: DockLayout): Promise<void> =>
       ipcRenderer.invoke(IPC.layoutSet, { layoutId, layout })
+  },
+  graphState: {
+    get: async (projectId: string): Promise<GraphPersistedState | null> =>
+      ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
+    set: async (projectId: string, state: GraphPersistedState): Promise<void> =>
+      ipcRenderer.invoke(IPC.graphStateSet, { projectId, state })
   },
   processes: {
     listDefinitions: async (): Promise<ProcessDefinition[]> => ipcRenderer.invoke(IPC.processesListDefinitions),

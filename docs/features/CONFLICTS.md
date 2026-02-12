@@ -36,7 +36,7 @@ proactive, guided workflow. Developers can see at a glance which lanes are safe 
 merge, which ones are drifting from the base branch, and which pairs of lanes are
 on a collision course.
 
-**Current status**: This feature is **not yet implemented**. All tasks are TODO.
+**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5, merged in `codex/ade-phase-4-5` branch). Resolution proposals via hosted agent are planned for Phase 6.
 
 ---
 
@@ -223,7 +223,7 @@ The typical workflow for managing conflicts in ADE:
 
 | Service | Status | Responsibility |
 |---------|--------|----------------|
-| `conflictService` | **New (planned)** | Runs dry-merge simulations, stores prediction results, computes pairwise risk, manages proposals |
+| `conflictService` | **Exists, implemented** | Runs dry-merge simulations, stores prediction results, computes pairwise risk, manages proposals |
 | `gitService` | Exists | Provides `git merge-tree` execution, temp index operations, diff computation |
 | `jobEngine` | Exists | Triggers periodic conflict prediction jobs, manages job queue and deduplication |
 | `operationService` | Exists | Records resolution applications as operations for history/undo |
@@ -376,58 +376,80 @@ interface ConflictProposal {
 
 ## Implementation Tracking
 
-All tasks for this feature are **TODO** — implementation has not yet begun.
+Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `codex/ade-phase-4-5` branch, commit `65b7a6b`). Resolution proposals are deferred to Phase 6.
+
+### What's Built
+
+| Component | Details |
+|-----------|---------|
+| `conflictService.ts` | 1064 lines — full conflict prediction engine, pairwise risk computation, merge simulation, batch assessment |
+| Conflict UI (6 components) | `ConflictsPage.tsx`, `ConflictFileDiff.tsx`, `RiskMatrix.tsx`, `RiskTooltip.tsx`, `extensionToLanguage.ts`, lane-level conflict badges |
+| Job engine integration | Periodic prediction jobs via `processService`, configurable intervals |
+| Database schema | `conflict_predictions` table with SHA tracking and expiry; `conflict_proposals` table ready for Phase 6 |
+| Git merge-tree integration | Dry-merge via `git merge-tree` for zero-side-effect conflict detection |
+| Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
 ### Prediction Engine
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-001 | Conflict prediction service (dry-merge engine) | TODO |
-| CONF-002 | `git merge-tree` integration in gitService | TODO |
-| CONF-003 | Lane conflict status computation and caching | TODO |
-| CONF-014 | Periodic conflict prediction job (job engine integration) | TODO |
-| CONF-015 | Realtime conflict pass (triggered on stage/dirty change) | TODO |
+| CONF-001 | Conflict prediction service (dry-merge engine) | DONE |
+| CONF-002 | `git merge-tree` integration in gitService | DONE |
+| CONF-003 | Lane conflict status computation and caching | DONE |
+| CONF-014 | Periodic conflict prediction job (job engine integration) | DONE |
+| CONF-015 | Realtime conflict pass (triggered on stage/dirty change) | DONE |
 
 ### Lane Indicators
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-004 | Conflict status badges in lane rows (Lanes tab) | TODO |
-| CONF-005 | Realtime conflict chips ("new overlap", "high risk") | TODO |
+| CONF-004 | Conflict status badges in lane rows (Lanes tab) | DONE |
+| CONF-005 | Realtime conflict chips ("new overlap", "high risk") | DONE |
 
 ### Conflicts Tab UI
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-006 | Conflicts tab page layout (3-panel) | TODO |
-| CONF-007 | Lane list with conflict status (left panel) | TODO |
-| CONF-008 | Conflict summary panel (overlapping files, types, base drift) | TODO |
-| CONF-009 | Pairwise risk matrix view (toggle in center panel) | TODO |
-| CONF-010 | Risk matrix color coding and cell interaction | TODO |
-| CONF-013 | Conflict file diff viewer | TODO |
+| CONF-006 | Conflicts tab page layout (3-panel) | DONE |
+| CONF-007 | Lane list with conflict status (left panel) | DONE |
+| CONF-008 | Conflict summary panel (overlapping files, types, base drift) | DONE |
+| CONF-009 | Pairwise risk matrix view (toggle in center panel) | DONE |
+| CONF-010 | Risk matrix color coding and cell interaction | DONE |
+| CONF-013 | Conflict file diff viewer | DONE |
 
 ### Merge Simulation
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-011 | Merge simulation service (backend) | TODO |
-| CONF-012 | Merge simulation UI (select lanes, preview result) | TODO |
+| CONF-011 | Merge simulation service (backend) | DONE |
+| CONF-012 | Merge simulation UI (select lanes, preview result) | DONE |
 
 ### Resolution Proposals
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-016 | Conflict pack generation (context bundle for agent) | TODO |
-| CONF-017 | Hosted agent proposal integration (ProposeConflictResolution job) | TODO |
-| CONF-018 | Proposal diff preview in UI | TODO |
-| CONF-019 | Proposal apply with operation record | TODO |
-| CONF-020 | Proposal confidence scoring display | TODO |
-| CONF-021 | Proposal undo via operation timeline | TODO |
+| CONF-016 | Conflict pack generation (context bundle for agent) | DONE (conflict pack generation is implemented; pack content is generated) |
+| CONF-017 | Hosted agent proposal integration (ProposeConflictResolution job) | TODO — **moved to Phase 6** (requires hosted agent) |
+| CONF-018 | Proposal diff preview in UI | TODO — **moved to Phase 6** |
+| CONF-019 | Proposal apply with operation record | TODO — **moved to Phase 6** |
+| CONF-020 | Proposal confidence scoring display | TODO — **moved to Phase 6** |
+| CONF-021 | Proposal undo via operation timeline | TODO — **moved to Phase 6** |
 
 ### Advanced Features
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | TODO — **deferred to Phase 6** (requires Phase 4 stacks) |
-| CONF-023 | Batch conflict assessment (all-lanes report) | TODO |
-| CONF-024 | Conflict notification/alerts (in-app and system) | TODO |
+| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | TODO — **moved to Phase 7** (requires Phase 4 stacks + Phase 6 PRs) |
+| CONF-023 | Batch conflict assessment (all-lanes report) | DONE (batch conflict assessment implemented) |
+| CONF-024 | Conflict notification/alerts (in-app and system) | TODO — **moved to Phase 9** |
+
+---
+
+### Completion Notes
+
+**Phase 5 (Conflict Detection) completed** as part of the `codex/ade-phase-4-5` branch merge. The core conflict engine (CONF-001 through CONF-016) and batch assessment (CONF-023) are fully operational.
+
+**Remaining tasks** are scheduled as follows:
+- **Phase 6 (Hosted Agent)**: CONF-017 through CONF-021 (LLM-powered resolution proposals)
+- **Phase 7 (Workspace Graph)**: CONF-022 (stack-aware conflict resolution)
+- **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)

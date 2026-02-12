@@ -10,6 +10,7 @@ import { createSessionService } from "./services/sessions/sessionService";
 import { createPtyService } from "./services/pty/ptyService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createFileService } from "./services/files/fileService";
+import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
 import { createTestService } from "./services/tests/testService";
@@ -125,17 +126,22 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
 
+    const operationService = createOperationService({ db, projectId });
+    let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
       projectId,
       defaultBaseRef: baseRef,
-      worktreesDir: adePaths.worktreesDir
+      worktreesDir: adePaths.worktreesDir,
+      operationService,
+      onHeadChanged: ({ laneId, reason }) => {
+        jobEngine?.onHeadChanged({ laneId, reason });
+      }
     });
     await laneService.ensurePrimaryLane();
     const sessionService = createSessionService({ db });
     const diffService = createDiffService({ laneService });
-    const fileService = createFileService({ laneService });
     const projectConfigService = createProjectConfigService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -143,8 +149,6 @@ app.whenReady().then(async () => {
       db,
       logger
     });
-
-    const operationService = createOperationService({ db, projectId });
 
     const packService = createPackService({
       db,
@@ -158,9 +162,27 @@ app.whenReady().then(async () => {
       operationService
     });
 
-    const jobEngine = createJobEngine({
+    const conflictService = createConflictService({
+      db,
       logger,
-      packService
+      projectId,
+      projectRoot,
+      laneService,
+      conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
+      onEvent: (event) => broadcast(IPC.conflictsEvent, event)
+    });
+
+    jobEngine = createJobEngine({
+      logger,
+      packService,
+      conflictService
+    });
+
+    const fileService = createFileService({
+      laneService,
+      onLaneWorktreeMutation: ({ laneId, reason }) => {
+        jobEngine.onLaneDirtyChanged({ laneId, reason });
+      }
     });
 
     const ptyService = createPtyService({
@@ -181,6 +203,9 @@ app.whenReady().then(async () => {
       laneService,
       operationService,
       logger,
+      onWorktreeChanged: ({ laneId, reason }) => {
+        jobEngine.onLaneDirtyChanged({ laneId, reason });
+      },
       onHeadChanged: ({ laneId, reason }) => {
         jobEngine.onHeadChanged({ laneId, reason });
       }
@@ -227,6 +252,8 @@ app.whenReady().then(async () => {
       fileService,
       operationService,
       gitService,
+      conflictService,
+      jobEngine,
       packService,
       projectConfigService,
       processService,
@@ -235,6 +262,11 @@ app.whenReady().then(async () => {
   };
 
   const closeContext = () => {
+    try {
+      ctxRef.jobEngine.dispose();
+    } catch {
+      // ignore
+    }
     try {
       ctxRef.fileService.dispose();
     } catch {

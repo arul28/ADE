@@ -313,7 +313,14 @@ The LLM gateway is an internal module (not a third-party service) that runs with
 
 ### Naming Conventions
 
-All AWS resources follow a consistent naming convention for clarity and environment isolation:
+All AWS resources follow a consistent naming convention for clarity and environment isolation. **ADE is deployed in a shared AWS account** alongside other projects, so all resources MUST be prefixed with `ade-` and tagged for identification.
+
+**AWS Account Context:**
+- Account: `695094375923`
+- IAM User: `ArulSharma` (profile: `arulsharma`)
+- Deployment tool: SST (uses the `arulsharma` AWS profile)
+
+**Resource Naming:**
 
 ```
 ade-<env>-<resource>
@@ -326,6 +333,42 @@ ade-<env>-<resource>
 | SQS queue | `ade-prod-jobs` | `ade-dev-jobs` |
 | Lambda function | `ade-prod-api-submitJob` | `ade-dev-api-submitJob` |
 | Cognito pool | `ade-prod-users` | `ade-dev-users` |
+| CloudWatch log group | `/ade/prod/api` | `/ade/dev/api` |
+| IAM roles | `ade-prod-api-role` | `ade-dev-api-role` |
+
+**Mandatory Resource Tags:**
+
+Every AWS resource created for ADE MUST include these tags. Configure in the SST `sst.config.ts` via `app.tags`:
+
+| Tag Key | Value | Purpose |
+|---------|-------|---------|
+| `project` | `ade` | Identify ADE resources in the shared account |
+| `environment` | `dev` / `staging` / `prod` | Environment isolation |
+| `managed-by` | `sst` | Track IaC-managed resources |
+
+SST configuration for global tagging:
+
+```typescript
+// sst.config.ts
+export default $config({
+  app(input) {
+    return {
+      name: "ade",
+      removal: input?.stage === "prod" ? "retain" : "remove",
+      home: "aws",
+      providers: {
+        aws: {
+          profile: "arulsharma",
+          region: "us-east-1",
+        },
+      },
+    };
+  },
+  // ...
+});
+```
+
+SST automatically prefixes all resource names with `{app}-{stage}-` when using `sst.aws.*` constructs (e.g., `new sst.aws.Dynamo(...)` named `"projects"` becomes `ade-dev-projects`). Ensure all constructs use short, descriptive names without redundant `ade-` prefixes in code — SST handles the prefixing.
 
 ### Cost Estimation
 

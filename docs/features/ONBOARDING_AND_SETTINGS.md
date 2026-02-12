@@ -35,6 +35,8 @@ behavior before any changes are made. The settings page provides ongoing control
 over those same concerns. Together, these features establish the trust foundation
 that every other ADE feature builds on.
 
+**Current status**: Basic onboarding (ONBOARD-001 through ONBOARD-006) and guest mode (ONBOARD-025, ONBOARD-026) are **implemented**. The full onboarding wizard, provider configuration UI, and initial pack generation are planned for **Phase 8** (Automations + Onboarding + Packs V2). Provider configuration (ONBOARD-014, ONBOARD-015) and hosted agent consent (ONBOARD-012) are planned for **Phase 6** (Cloud Infrastructure + Auth + LLM Gateway).
+
 ---
 
 ## Core Concepts
@@ -283,24 +285,24 @@ interface DetectionResult {
 
 | ID | Task | Description | Status |
 |----|------|-------------|--------|
-| ONBOARD-007 | Project defaults detection | Scan for `package.json`, `Makefile`, etc. | TODO |
-| ONBOARD-008 | Onboarding wizard UI | Step-by-step modal with progress indicator | TODO |
-| ONBOARD-009 | Suggested process definitions | Generate entries from detection results | TODO |
-| ONBOARD-010 | Suggested test definitions | Generate test entries from detection | TODO |
-| ONBOARD-011 | Config review step | Edit suggested config before saving | TODO |
-| ONBOARD-012 | Hosted agent consent flow | Consent screen with data explanation | TODO |
-| ONBOARD-013 | "What ADE will do" previews | Pre-execution dialogs for shared config | TODO |
-| ONBOARD-014 | Provider configuration UI | Hosted/BYOK/CLI selector with config forms | TODO |
-| ONBOARD-015 | API key management | Secure input, local.yaml storage, validation | TODO |
-| ONBOARD-016 | Keybindings viewer | Read-only shortcut table by scope | TODO |
-| ONBOARD-017 | Keybindings customization | Click-to-record editor with conflict detection | TODO |
-| ONBOARD-018 | Data management | Clear local data, export config, delete hosted data | TODO |
-| ONBOARD-019 | Welcome guide | In-app getting started with feature highlights | TODO |
-| ONBOARD-020 | Project switching | Recent projects list with quick-switch | TODO |
-| ONBOARD-021 | Initial codebase scan for pack seeding | Analyze repo structure, key files, and git history to bootstrap Project Pack | TODO |
-| ONBOARD-022 | Existing documentation import | Ask user for docs directory/files, ingest via LLM for richer pack seeding | TODO |
-| ONBOARD-023 | Existing lane/branch detection | Detect existing branches and worktrees, offer to create lanes and generate Lane Packs | TODO |
-| ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | TODO |
+| ONBOARD-007 | Project defaults detection | Scan for `package.json`, `Makefile`, etc. | TODO — **Phase 8** |
+| ONBOARD-008 | Onboarding wizard UI | Step-by-step modal with progress indicator | TODO — **Phase 8** |
+| ONBOARD-009 | Suggested process definitions | Generate entries from detection results | TODO — **Phase 8** |
+| ONBOARD-010 | Suggested test definitions | Generate test entries from detection | TODO — **Phase 8** |
+| ONBOARD-011 | Config review step | Edit suggested config before saving | TODO — **Phase 8** |
+| ONBOARD-012 | Hosted agent consent flow | Consent screen with data explanation | TODO — **Phase 6** (Cloud Infrastructure) |
+| ONBOARD-013 | "What ADE will do" previews | Pre-execution dialogs for shared config | TODO — **Phase 8** |
+| ONBOARD-014 | Provider configuration UI | Hosted/BYOK/CLI selector with config forms | TODO — **Phase 6** (Cloud Infrastructure) |
+| ONBOARD-015 | API key management | Secure input, local.yaml storage, validation | TODO — **Phase 6** (Cloud Infrastructure) |
+| ONBOARD-016 | Keybindings viewer | Read-only shortcut table by scope | TODO — **Phase 8** |
+| ONBOARD-017 | Keybindings customization | Click-to-record editor with conflict detection | TODO — **Phase 8** |
+| ONBOARD-018 | Data management | Clear local data, export config, delete hosted data | TODO — **Phase 8** |
+| ONBOARD-019 | Welcome guide | In-app getting started with feature highlights | TODO — **Phase 8** |
+| ONBOARD-020 | Project switching | Recent projects list with quick-switch | TODO — **Phase 8** |
+| ONBOARD-021 | Initial codebase scan for pack seeding | Analyze repo structure, key files, and git history to bootstrap Project Pack | TODO — **Phase 8** |
+| ONBOARD-022 | Existing documentation import | Ask user for docs directory/files, ingest via LLM for richer pack seeding | TODO — **Phase 8** |
+| ONBOARD-023 | Existing lane/branch detection | Detect existing branches and worktrees, offer to create lanes and generate Lane Packs | TODO — **Phase 8** |
+| ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | TODO — **Phase 8** |
 | ONBOARD-025 | Guest mode | No-account usage with local features only, context tracking disabled | DONE |
 | ONBOARD-026 | Guest mode banner | Persistent "Guest Mode" banner with provider setup link | DONE |
 
@@ -309,14 +311,14 @@ interface DetectionResult {
 - ONBOARD-007 is prerequisite for ONBOARD-009 and ONBOARD-010.
 - ONBOARD-008 depends on ONBOARD-007 for detection step content.
 - ONBOARD-011 depends on ONBOARD-009/010 for suggested config.
-- ONBOARD-012 depends on the hosted agent service (not yet implemented).
-- ONBOARD-014/015 can be developed independently of onboarding.
+- ONBOARD-012 depends on the hosted agent service from **Phase 6** (Cloud Infrastructure).
+- ONBOARD-014/015 (provider config, API keys) depend on **Phase 6** (Cloud Infrastructure).
 - ONBOARD-016/017 are independent of all other tasks.
-- ONBOARD-020 requires a project registry service (not yet implemented).
-- ONBOARD-021 through ONBOARD-024 require a configured LLM provider (skipped in Guest Mode).
-- ONBOARD-025 and ONBOARD-026 are independent and should be implemented early (Phase 2 or 3).
+- ONBOARD-020 requires a project registry service (**Phase 8**).
+- ONBOARD-021 through ONBOARD-024 require a configured LLM provider from **Phase 6** (skipped in Guest Mode); scheduled for **Phase 8**.
+- ONBOARD-025 and ONBOARD-026 are independent and were implemented in Phase 2/3.
+- PROJ-036 and PROJ-037 (CI/CD import for onboarding detection) are planned for **Phase 8**.
 
 ---
 
-*This document describes the Onboarding and Settings features for ADE. It will be
-updated as implementation progresses.*
+*This document describes the Onboarding and Settings features for ADE. Basic setup (ONBOARD-001 through ONBOARD-006) and guest mode (ONBOARD-025, ONBOARD-026) are implemented. The full onboarding wizard and settings enhancements are planned for **Phase 8** (Automations + Onboarding + Packs V2). Provider configuration and hosted agent consent are planned for **Phase 6** (Cloud Infrastructure).*
