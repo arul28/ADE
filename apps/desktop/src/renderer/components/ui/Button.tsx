@@ -4,12 +4,18 @@ import { cn } from "./cn";
 type Variant = "primary" | "outline" | "ghost";
 type Size = "sm" | "md";
 
-export function Button({
-  variant = "outline",
-  size = "md",
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }) {
+export const Button = React.forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }
+>(function Button(
+  {
+    variant = "outline",
+    size = "md",
+    className,
+    ...props
+  },
+  ref
+) {
   const base =
     "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none";
 
@@ -22,6 +28,5 @@ export function Button({
     ghost: "bg-transparent text-fg hover:bg-muted/70 active:bg-muted/90"
   };
 
-  return <button className={cn(base, sizes, variants[variant], className)} {...props} />;
-}
-
+  return <button ref={ref} className={cn(base, sizes, variants[variant], className)} {...props} />;
+});

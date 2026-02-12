@@ -60,7 +60,8 @@ human-readable summaries (initially template-based, eventually LLM-generated).
 
 **Current status**: Core pack functionality (generation, storage, display, refresh)
 is **implemented and working**. Advanced features (checkpoints, versioning, event
-logging, LLM narratives) are planned but not yet built.
+logging) are planned for **Phase 8**. LLM-powered narratives are planned for
+**Phase 6** (Cloud Infrastructure + Auth + LLM Gateway).
 
 ---
 
@@ -591,49 +592,59 @@ interface PackRefreshJob {
 
 ### Checkpoints & Event Logging
 
+These tasks are planned for **Phase 8**.
+
 | ID | Task | Status |
 |----|------|--------|
-| PACK-012 | Checkpoint creation at session boundaries | TODO |
-| PACK-013 | Checkpoint storage and indexing (SQLite + filesystem) | TODO |
-| PACK-014 | Pack event logging (append-only event log) | TODO |
+| PACK-012 | Checkpoint creation at session boundaries | TODO — **Phase 8** |
+| PACK-013 | Checkpoint storage and indexing (SQLite + filesystem) | TODO — **Phase 8** |
+| PACK-014 | Pack event logging (append-only event log) | TODO — **Phase 8** |
 
 ### Versioning System
 
+These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
+
 | ID | Task | Status |
 |----|------|--------|
-| PACK-015 | Pack version snapshots (immutable rendered files) | TODO |
-| PACK-016 | Pack head pointers (mutable, atomic updates) | TODO |
-| PACK-022 | Pack diff (compare two versions side by side) | TODO |
+| PACK-015 | Pack version snapshots (immutable rendered files) | TODO — **Phase 8** |
+| PACK-016 | Pack head pointers (mutable, atomic updates) | TODO — **Phase 8** |
+| PACK-022 | Pack diff (compare two versions side by side) | TODO — **Phase 8** |
 
 ### Additional Pack Types
 
+These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
+
 | ID | Task | Status |
 |----|------|--------|
-| PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | TODO |
-| PACK-018 | Conflict pack type (resolution context bundle) | TODO |
-| PACK-019 | Plan pack type (versioned planning documents) | TODO |
+| PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | TODO — **Phase 8** |
+| PACK-018 | Conflict pack type (resolution context bundle) | TODO — **Phase 8** |
+| PACK-019 | Plan pack type (versioned planning documents) | TODO — **Phase 8** |
 
 ### Narrative & Intelligence
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-020 | Narrative editing (user override of auto-generated content) | TODO |
-| PACK-021 | LLM-powered narrative generation (hosted agent integration) | TODO |
+| PACK-020 | Narrative editing (user override of auto-generated content) | TODO — **Phase 8** |
+| PACK-021 | LLM-powered narrative generation (hosted agent integration) | TODO — depends on **Phase 6** (Cloud + LLM Gateway); integrated in **Phase 8** |
 
 ### Operations & Management
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | TODO |
-| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | TODO |
-| PACK-025 | Pack privacy controls (redaction rules for sensitive content) | TODO |
-| PACK-026 | Pack export (standalone markdown file with all context) | TODO |
+| PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | TODO — **Phase 6** (Cloud Infrastructure) |
+| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | TODO — **Phase 6** (Cloud Infrastructure) |
+| PACK-025 | Pack privacy controls (redaction rules for sensitive content) | TODO — **Phase 6** (Cloud Infrastructure) |
+| PACK-026 | Pack export (standalone markdown file with all context) | TODO — **Phase 9** (Advanced Features) |
 
 ### Initial Pack Generation
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-027 | Initial project pack bootstrap (codebase scan + git history analysis) | TODO |
-| PACK-028 | Documentation-seeded pack generation (import existing docs for richer Project Pack) | TODO |
-| PACK-029 | Existing lane pack hydration (generate Lane Packs for pre-existing branches) | TODO |
-| PACK-030 | Guest mode template narratives (template-based fallback when no LLM provider) | DONE |
+| PACK-027 | Initial project pack bootstrap (codebase scan + git history analysis) | TODO — **Phase 8** (Onboarding) |
+| PACK-028 | Documentation-seeded pack generation (import existing docs for richer Project Pack) | TODO — **Phase 8** (Onboarding) |
+| PACK-029 | Existing lane pack hydration (generate Lane Packs for pre-existing branches) | TODO — **Phase 8** (Onboarding) |
+| PACK-030 | Guest mode template narratives (template-based fallback when no LLM provider) | DONE (Phase 3) |
+
+### Current State
+
+> **Note**: The pack service currently generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for all local workflows. LLM-powered narratives will be introduced when the LLM gateway is available in Phase 6, and integrated into the pack pipeline in Phase 8.

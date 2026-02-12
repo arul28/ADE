@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle, Archive, ExternalLink, GitBranch, Layers3, Pencil, TerminalSquare, Trash2 } from "lucide-react";
 import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
@@ -15,6 +15,14 @@ function conflictDotClass(status: ConflictStatus["status"] | null | undefined): 
   return "bg-muted-fg";
 }
 
+function conflictSeverity(status: ConflictStatus["status"] | null | undefined): number {
+  if (status === "conflict-active") return 5;
+  if (status === "conflict-predicted") return 4;
+  if (status === "behind-base") return 3;
+  if (status === "unknown") return 2;
+  return 1;
+}
+
 function chipText(kind: ConflictChip["kind"]): string {
   return kind === "new-overlap" ? "new overlap" : "high risk";
 }
@@ -24,6 +32,7 @@ export function LaneRow({
   selected,
   primary,
   onSelect,
+  isLastSibling,
   conflictStatus,
   conflictChips
 }: {
@@ -31,6 +40,7 @@ export function LaneRow({
   selected: boolean;
   primary?: boolean;
   onSelect: (args: { extend: boolean }) => void;
+  isLastSibling?: boolean;
   conflictStatus?: ConflictStatus | null;
   conflictChips?: ConflictChip[];
 }) {
@@ -45,14 +55,35 @@ export function LaneRow({
   const [draftName, setDraftName] = useState(lane.name);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleteForce, setDeleteForce] = useState(false);
+  const [statusAnimClass, setStatusAnimClass] = useState<string | null>(null);
+  const previousStatusRef = useRef<ConflictStatus["status"] | null>(conflictStatus?.status ?? null);
 
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const isPrimaryLane = lane.laneType === "primary";
   const stackIndentPx = lane.stackDepth * 16;
-  const connectorLeft = 9 + stackIndentPx;
+  const connectorLeft = 8 + Math.max(0, lane.stackDepth - 1) * 16;
 
   const confirmationPhrase = `delete ${lane.name}`;
+
+  useEffect(() => {
+    const prev = previousStatusRef.current;
+    const next = conflictStatus?.status ?? null;
+    previousStatusRef.current = next;
+    if (!prev || !next || prev === next) return;
+    const nextSeverity = conflictSeverity(next);
+    const prevSeverity = conflictSeverity(prev);
+    if (nextSeverity > prevSeverity) {
+      setStatusAnimClass("ade-conflict-badge-worse");
+      const timer = window.setTimeout(() => setStatusAnimClass(null), 1900);
+      return () => window.clearTimeout(timer);
+    }
+    if (nextSeverity < prevSeverity) {
+      setStatusAnimClass("ade-conflict-badge-better");
+      const timer = window.setTimeout(() => setStatusAnimClass(null), 420);
+      return () => window.clearTimeout(timer);
+    }
+  }, [conflictStatus?.status]);
 
   return (
     <div
@@ -72,11 +103,15 @@ export function LaneRow({
       {lane.parentLaneId ? (
         <>
           <div
-            className="pointer-events-none absolute w-px bg-border/70"
-            style={{ left: `${connectorLeft}px`, top: "0px", bottom: "50%" }}
+            className="pointer-events-none absolute w-px bg-border/50"
+            style={
+              isLastSibling
+                ? { left: `${connectorLeft}px`, top: "0px", bottom: "50%" }
+                : { left: `${connectorLeft}px`, top: "0px", bottom: "0px" }
+            }
           />
           <div
-            className="pointer-events-none absolute h-px bg-border/70"
+            className="pointer-events-none absolute h-px bg-border/50"
             style={{ left: `${connectorLeft}px`, top: "20px", width: "10px" }}
           />
         </>
@@ -94,7 +129,7 @@ export function LaneRow({
               </span>
             ) : null}
             {isPrimaryLane ? <span className="rounded border border-emerald-400 px-1.5 py-0.5 text-[10px] uppercase text-emerald-700">home</span> : null}
-            <span className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-fg">
+            <span className={cn("inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-fg transition-colors duration-400", statusAnimClass)}>
               <span className={cn("inline-block h-2 w-2 rounded-full", conflictDotClass(conflictStatus?.status))} />
               {conflictStatus?.status ?? "unknown"}
             </span>
@@ -380,7 +415,7 @@ export function LaneRow({
 
       <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border pt-2 text-[10px] font-mono uppercase tracking-wider text-muted-fg">
         <div className="flex flex-col">
-          <span className="opacity-50">{lane.parentLaneId ? "Vs Parent" : "Sync"}</span>
+          <span className="opacity-50">{lane.parentLaneId ? "Vs Parent" : "Pull"}</span>
           <span className={cn("font-bold", lane.status.ahead > 0 || lane.status.behind > 0 ? "text-accent" : "text-fg")}>
             {lane.status.ahead}↑ {lane.status.behind}↓
           </span>

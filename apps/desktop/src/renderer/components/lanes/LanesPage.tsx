@@ -185,6 +185,22 @@ export function LanesPage() {
     return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
   }, [sortedLanes, laneFilter, pinnedLaneIds]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
+  const stackGraphIsLastSiblingByLaneId = useMemo(() => {
+    const siblingsByParent = new Map<string, string[]>();
+    for (const lane of stackGraphLanes) {
+      if (!lane.parentLaneId) continue;
+      const list = siblingsByParent.get(lane.parentLaneId) ?? [];
+      list.push(lane.id);
+      siblingsByParent.set(lane.parentLaneId, list);
+    }
+    const out = new Map<string, boolean>();
+    for (const siblingIds of siblingsByParent.values()) {
+      siblingIds.forEach((id, index) => {
+        out.set(id, index === siblingIds.length - 1);
+      });
+    }
+    return out;
+  }, [stackGraphLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
 
@@ -243,7 +259,12 @@ export function LanesPage() {
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
-    if (laneId) selectLane(laneId);
+    if (laneId) {
+      selectLane(laneId);
+      if (params.get("focus") === "single") {
+        setActiveLaneIds([laneId]);
+      }
+    }
     if (sessionId) focusSession(sessionId);
   }, [params, selectLane, focusSession]);
 
@@ -672,10 +693,20 @@ export function LanesPage() {
             >
               <span className="relative inline-flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${4 + lane.stackDepth * 16}px` }}>
                 {lane.parentLaneId ? (
-                  <span
-                    className="pointer-events-none absolute h-px bg-border/70"
-                    style={{ left: `${lane.stackDepth * 16 - 8}px`, width: "8px" }}
-                  />
+                  <>
+                    <span
+                      className="pointer-events-none absolute w-px bg-accent/55"
+                      style={
+                        stackGraphIsLastSiblingByLaneId.get(lane.id)
+                          ? { left: `${(lane.stackDepth - 1) * 16 + 8}px`, top: "0px", bottom: "50%" }
+                          : { left: `${(lane.stackDepth - 1) * 16 + 8}px`, top: "0px", bottom: "0px" }
+                      }
+                    />
+                    <span
+                      className="pointer-events-none absolute h-px bg-accent/55"
+                      style={{ left: `${lane.stackDepth * 16 - 10}px`, width: "10px" }}
+                    />
+                  </>
                 ) : null}
                 <span
                   className={cn(
@@ -708,9 +739,9 @@ export function LanesPage() {
               const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
               return (
                 <React.Fragment key={laneId}>
-                  <Panel id={`lane-column:${laneId}`} minSize={18} defaultSize={defaultSize} className="min-w-0">
-                    <Group id={`lane-stack:${laneId}`} orientation="horizontal" className="h-full w-full">
-                      <Panel id={`lane-changes:${laneId}`} minSize={30} defaultSize={58}>
+                  <Panel id={`lane-column:${laneId}`} minSize={18} defaultSize={defaultSize} className="h-full min-h-0 min-w-0">
+                    <Group id={`lane-stack:${laneId}`} orientation="horizontal" className="h-full min-h-0 w-full">
+                      <Panel id={`lane-changes:${laneId}`} minSize={30} defaultSize={58} className="h-full min-h-0">
                         <LaneDetail overrideLaneId={laneId} isPrimary={lane?.laneType === "primary"} />
                       </Panel>
                       <Separator className="relative w-2 shrink-0 cursor-col-resize bg-border/60 transition-colors hover:bg-accent data-[resize-handle-active]:bg-accent">
@@ -719,7 +750,7 @@ export function LanesPage() {
                           <GripVertical className="h-3 w-3" />
                         </div>
                       </Separator>
-                      <Panel id={`lane-inspector:${laneId}`} minSize={22} defaultSize={42}>
+                      <Panel id={`lane-inspector:${laneId}`} minSize={22} defaultSize={42} className="h-full min-h-0">
                         <LaneInspector overrideLaneId={laneId} hideHeader />
                       </Panel>
                     </Group>

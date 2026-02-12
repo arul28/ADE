@@ -152,6 +152,9 @@ function migrate(db: Database) {
       attached_root_path text,
       is_edit_protected integer not null default 0,
       parent_lane_id text,
+      color text,
+      icon text,
+      tags_json text,
       status text not null,
       created_at text not null,
       archived_at text,
@@ -163,6 +166,9 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "lanes", "attached_root_path text", "attached_root_path");
   addColumnIfMissing(db, "lanes", "is_edit_protected integer not null default 0", "is_edit_protected");
   addColumnIfMissing(db, "lanes", "parent_lane_id text", "parent_lane_id");
+  addColumnIfMissing(db, "lanes", "color text", "color");
+  addColumnIfMissing(db, "lanes", "icon text", "icon");
+  addColumnIfMissing(db, "lanes", "tags_json text", "tags_json");
   createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
   createIndexIfColumnsExist(
     db,

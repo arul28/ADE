@@ -54,7 +54,7 @@ export function TopBar({
         <ProjectSelector />
 
         <Chip className="hidden sm:inline-flex">base: {baseRef ?? "?"}</Chip>
-        <Chip className="hidden md:inline-flex">sync: idle</Chip>
+        <Chip className="hidden md:inline-flex">pull: idle</Chip>
         <Chip className="hidden md:inline-flex">jobs: 0</Chip>
         <Chip className="hidden md:inline-flex">procs: 0</Chip>
       </div>

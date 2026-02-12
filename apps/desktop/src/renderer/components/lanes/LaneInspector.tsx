@@ -35,6 +35,29 @@ export function LaneInspector({
   );
   const [restackBusy, setRestackBusy] = useState(false);
   const [restackError, setRestackError] = useState<string | null>(null);
+  const [reparentBusy, setReparentBusy] = useState(false);
+  const [reparentError, setReparentError] = useState<string | null>(null);
+  const [reparentTargetId, setReparentTargetId] = useState("");
+
+  const descendantIds = useMemo(() => {
+    if (!lane) return new Set<string>();
+    const out = new Set<string>();
+    const queue = [lane.id];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const child of lanes.filter((entry) => entry.parentLaneId === current)) {
+        if (out.has(child.id)) continue;
+        out.add(child.id);
+        queue.push(child.id);
+      }
+    }
+    return out;
+  }, [lane, lanes]);
+
+  const reparentOptions = useMemo(() => {
+    if (!lane) return [];
+    return lanes.filter((entry) => entry.id !== lane.id && !descendantIds.has(entry.id));
+  }, [descendantIds, lane, lanes]);
 
   return (
     <div className="flex h-full flex-col">
@@ -133,19 +156,65 @@ export function LaneInspector({
                       }}
                     >
                       <Layers3 className="mr-1 h-3.5 w-3.5" />
-                      {restackBusy ? "Restacking..." : "Restack"}
+                      {restackBusy ? "Rebasing..." : "Rebase"}
                     </Button>
                     {restackError ? <div className="mt-2 text-[11px] text-red-400">{restackError}</div> : null}
                   </div>
                 ) : null}
+                <div className="rounded border border-border bg-card/50 p-2">
+                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Reparent</div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={reparentTargetId}
+                      onChange={(event) => setReparentTargetId(event.target.value)}
+                      className="h-8 flex-1 rounded border border-border bg-bg px-2 text-xs"
+                    >
+                      <option value="">Select new parent…</option>
+                      {reparentOptions.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!reparentTargetId || reparentBusy}
+                      onClick={() => {
+                        if (!lane || !reparentTargetId) return;
+                        setReparentBusy(true);
+                        setReparentError(null);
+                        window.ade.lanes
+                          .reparent({ laneId: lane.id, newParentLaneId: reparentTargetId })
+                          .then(async () => {
+                            setReparentTargetId("");
+                            await refreshLanes();
+                          })
+                          .catch((error) => {
+                            setReparentError(error instanceof Error ? error.message : String(error));
+                          })
+                          .finally(() => {
+                            setReparentBusy(false);
+                          });
+                      }}
+                    >
+                      {reparentBusy ? "Working..." : "Reparent"}
+                    </Button>
+                  </div>
+                  {reparentError ? <div className="mt-2 text-[11px] text-red-400">{reparentError}</div> : null}
+                </div>
               </div>
             )}
           </Tabs.Content>
           <Tabs.Content value="conflicts" className="h-full">
-            <EmptyState title="Conflicts (stub)" description="Phase 4 adds conflict radar and guided resolution." />
+            <div className="flex h-full items-center justify-center p-3">
+              <EmptyState title="Conflicts (stub)" description="Phase 4 adds conflict radar and guided resolution." />
+            </div>
           </Tabs.Content>
           <Tabs.Content value="pr" className="h-full">
-            <EmptyState title="PR (stub)" description="Phase 1+ adds PR linkage and checks." />
+            <div className="flex h-full items-center justify-center p-3">
+              <EmptyState title="PR (stub)" description="Phase 1+ adds PR linkage and checks." />
+            </div>
           </Tabs.Content>
         </div>
       </Tabs.Root>

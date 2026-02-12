@@ -6,6 +6,8 @@ import type { Readable } from "node:stream";
 import type {
   EffectiveProjectConfig,
   GetTestLogTailArgs,
+  LaneOverlayOverrides,
+  LaneSummary,
   ListTestRunsArgs,
   RunTestSuiteArgs,
   StopTestRunArgs,
@@ -18,6 +20,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 
 type ActiveRunEntry = {
   laneId: string;
@@ -109,6 +112,25 @@ export function createTestService({
   };
 
   const getSuiteMap = (config: EffectiveProjectConfig) => new Map(config.testSuites.map((s) => [s.id, s] as const));
+
+  const getLaneSummary = async (laneId: string): Promise<LaneSummary> => {
+    const lanes = await laneService.list({ includeArchived: false });
+    const lane = lanes.find((entry) => entry.id === laneId);
+    if (!lane) throw new Error(`Lane not found: ${laneId}`);
+    return lane;
+  };
+
+  const getLaneOverlay = async (laneId: string, config: EffectiveProjectConfig): Promise<LaneOverlayOverrides> => {
+    const lane = await getLaneSummary(laneId);
+    return matchLaneOverlayPolicies(lane, config.laneOverlayPolicies);
+  };
+
+  const applySuiteFilter = (suiteIds: string[], overlay: LaneOverlayOverrides): string[] => {
+    const allowed = overlay.testSuiteIds;
+    if (!allowed || allowed.length === 0) return suiteIds;
+    const allowedSet = new Set(allowed);
+    return suiteIds.filter((id) => allowedSet.has(id));
+  };
 
   const emitRun = (run: TestRunSummary) => broadcastEvent({ type: "run", run });
   const emitLog = (runId: string, suiteId: string, stream: "stdout" | "stderr", chunk: string) =>
@@ -213,11 +235,12 @@ export function createTestService({
     });
   };
 
-  const spawnSuite = (laneId: string, suite: TestSuiteDefinition): TestRunSummary => {
+  const spawnSuite = (laneId: string, suite: TestSuiteDefinition, overlay: LaneOverlayOverrides): TestRunSummary => {
     const runId = randomUUID();
     const startedAt = nowIso();
     const laneRoot = laneService.getLaneWorktreePath(laneId);
-    const cwd = path.isAbsolute(suite.cwd) ? suite.cwd : path.join(laneRoot, suite.cwd);
+    const configuredCwd = overlay.cwd?.trim() ? overlay.cwd : suite.cwd;
+    const cwd = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
 
     if (!suite.command.length) throw new Error(`Suite '${suite.id}' has an empty command`);
 
@@ -229,7 +252,7 @@ export function createTestService({
 
     const child: ChildProcessByStdio<null, Readable, Readable> = spawn(suite.command[0]!, suite.command.slice(1), {
       cwd,
-      env: { ...process.env, ...suite.env },
+      env: { ...process.env, ...suite.env, ...(overlay.env ?? {}) },
       shell: false,
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -316,9 +339,14 @@ export function createTestService({
       return projectConfigService.get().effective.testSuites;
     },
 
-    run(arg: RunTestSuiteArgs): TestRunSummary {
+    async run(arg: RunTestSuiteArgs): Promise<TestRunSummary> {
       const config = projectConfigService.getExecutableConfig();
+      const overlay = await getLaneOverlay(arg.laneId, config);
       const suiteMap = getSuiteMap(config);
+      const availableSuiteIds = applySuiteFilter(Array.from(suiteMap.keys()), overlay);
+      if (!availableSuiteIds.includes(arg.suiteId)) {
+        throw new Error(`Test suite '${arg.suiteId}' is disabled by lane overlay policy for this lane`);
+      }
       const suite = suiteMap.get(arg.suiteId);
       if (!suite) throw new Error(`Test suite not found: ${arg.suiteId}`);
 
@@ -327,7 +355,7 @@ export function createTestService({
         const summary = getRunById(existing.runId, new Map([[suite.id, suite.name]]));
         if (summary) return summary;
       }
-      return spawnSuite(arg.laneId, suite);
+      return spawnSuite(arg.laneId, suite, overlay);
     },
 
     stop(arg: StopTestRunArgs): void {
@@ -432,4 +460,3 @@ export function createTestService({
     }
   };
 }
-

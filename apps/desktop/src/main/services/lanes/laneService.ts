@@ -9,12 +9,16 @@ import type {
   CreateChildLaneArgs,
   CreateLaneArgs,
   DeleteLaneArgs,
+  LaneIcon,
   LaneStatus,
   LaneSummary,
   LaneType,
+  ReparentLaneArgs,
+  ReparentLaneResult,
   RestackArgs,
   RestackResult,
-  StackChainItem
+  StackChainItem,
+  UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 
 type LaneRow = {
@@ -29,6 +33,9 @@ type LaneRow = {
   attached_root_path: string | null;
   is_edit_protected: number;
   parent_lane_id: string | null;
+  color: string | null;
+  icon: string | null;
+  tags_json: string | null;
   created_at: string;
   archived_at: string | null;
   status: string;
@@ -45,6 +52,29 @@ function slugify(input: string): string {
 
 function normAbs(p: string): string {
   return path.resolve(p);
+}
+
+function parseLaneIcon(value: string | null): LaneIcon {
+  if (!value) return null;
+  if (value === "star" || value === "flag" || value === "bolt" || value === "shield" || value === "tag") {
+    return value;
+  }
+  return null;
+}
+
+function parseLaneTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, 24);
+  } catch {
+    return [];
+  }
 }
 
 function toLaneSummary(args: {
@@ -70,6 +100,9 @@ function toLaneSummary(args: {
     parentStatus,
     isEditProtected: row.is_edit_protected === 1,
     status,
+    color: row.color,
+    icon: parseLaneIcon(row.icon),
+    tags: parseLaneTags(row.tags_json),
     createdAt: row.created_at,
     archivedAt: row.archived_at
   };
@@ -217,9 +250,9 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, null, null, null, null, 'active', ?, null)
       `,
       [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, projectRoot, now]
     );
@@ -294,9 +327,9 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
       `,
       [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, now]
     );
@@ -323,6 +356,24 @@ export function createLaneService({
       childCount: 0,
       stackDepth: computeStackDepth({ laneId: laneId, rowsById, memo: new Map() })
     });
+  };
+
+  const getRowsById = (includeArchived = true): Map<string, LaneRow> =>
+    new Map(getAllLaneRows(includeArchived).map((row) => [row.id, row] as const));
+
+  const isDescendant = (rowsById: Map<string, LaneRow>, laneId: string, possibleDescendantId: string): boolean => {
+    const queue = [laneId];
+    const visited = new Set<string>();
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (current === possibleDescendantId) return true;
+      for (const row of rowsById.values()) {
+        if (row.parent_lane_id === current) queue.push(row.id);
+      }
+    }
+    return false;
   };
 
   return {
@@ -596,8 +647,133 @@ export function createLaneService({
       };
     },
 
+    async reparent({ laneId, newParentLaneId }: ReparentLaneArgs): Promise<ReparentLaneResult> {
+      const lane = getLaneRow(laneId);
+      if (!lane) throw new Error(`Lane not found: ${laneId}`);
+      if (lane.lane_type === "primary") throw new Error("Primary lane cannot be reparented");
+
+      const newParent = getLaneRow(newParentLaneId);
+      if (!newParent) throw new Error(`Parent lane not found: ${newParentLaneId}`);
+      if (newParent.status === "archived") throw new Error("Parent lane is archived");
+      if (lane.id === newParent.id) throw new Error("Cannot reparent lane to itself");
+
+      const rowsById = getRowsById(true);
+      if (isDescendant(rowsById, lane.id, newParent.id)) {
+        throw new Error("Cannot reparent lane under one of its descendants");
+      }
+
+      const previousParentLaneId = lane.parent_lane_id;
+      const previousBaseRef = lane.base_ref;
+      const newBaseRef = newParent.branch_ref;
+      const preHeadSha = await getHeadSha(lane.worktree_path);
+      const newParentHead = await getHeadSha(newParent.worktree_path);
+      if (!newParentHead) throw new Error(`Unable to resolve parent HEAD for lane ${newParent.name}`);
+
+      const operation = operationService?.start({
+        laneId: lane.id,
+        kind: "lane_reparent",
+        preHeadSha,
+        metadata: {
+          previousParentLaneId,
+          newParentLaneId: newParent.id,
+          previousBaseRef,
+          newBaseRef,
+          parentHeadSha: newParentHead
+        }
+      });
+
+      db.run(
+        "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
+        [newParent.id, newBaseRef, lane.id, projectId]
+      );
+
+      try {
+        await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+      } catch (error) {
+        try {
+          await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 20_000 });
+        } catch {
+          // ignore
+        }
+        db.run(
+          "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
+          [previousParentLaneId, previousBaseRef, lane.id, projectId]
+        );
+        const message = error instanceof Error ? error.message : String(error);
+        if (operation?.operationId) {
+          const postHeadSha = await getHeadSha(lane.worktree_path);
+          operationService?.finish({
+            operationId: operation.operationId,
+            status: "failed",
+            postHeadSha,
+            metadataPatch: { error: message }
+          });
+        }
+        throw new Error(message);
+      }
+
+      const postHeadSha = await getHeadSha(lane.worktree_path);
+      if (operation?.operationId) {
+        operationService?.finish({
+          operationId: operation.operationId,
+          status: "succeeded",
+          postHeadSha
+        });
+      }
+      if (preHeadSha !== postHeadSha && onHeadChanged) {
+        try {
+          onHeadChanged({
+            laneId: lane.id,
+            reason: "reparent",
+            preHeadSha,
+            postHeadSha
+          });
+        } catch {
+          // ignore callback failures
+        }
+      }
+
+      return {
+        laneId: lane.id,
+        previousParentLaneId,
+        newParentLaneId: newParent.id,
+        previousBaseRef,
+        newBaseRef,
+        preHeadSha,
+        postHeadSha
+      };
+    },
+
     rename({ laneId, name }: { laneId: string; name: string }): void {
       db.run("update lanes set name = ? where id = ? and project_id = ?", [name, laneId, projectId]);
+    },
+
+    updateAppearance({ laneId, color, icon, tags }: UpdateLaneAppearanceArgs): void {
+      const lane = getLaneRow(laneId);
+      if (!lane) throw new Error(`Lane not found: ${laneId}`);
+      const normalizedTags = tags == null
+        ? parseLaneTags(lane.tags_json)
+        : tags
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+            .slice(0, 24);
+      const normalizedColor = color === undefined ? lane.color : color;
+      const normalizedIcon = icon === undefined ? parseLaneIcon(lane.icon) : icon;
+
+      db.run(
+        `
+          update lanes
+          set color = ?, icon = ?, tags_json = ?
+          where id = ? and project_id = ?
+        `,
+        [
+          normalizedColor ?? null,
+          normalizedIcon ?? null,
+          JSON.stringify(normalizedTags),
+          laneId,
+          projectId
+        ]
+      );
     },
 
     archive({ laneId }: { laneId: string }): void {
@@ -749,14 +925,14 @@ export function createLaneService({
 
       db.run(
         `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, status, created_at, archived_at
-          )
-          values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, null, 'active', ?, null)
-        `,
-        [laneId, projectId, args.name, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
-      );
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        )
+        values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, null, null, null, null, 'active', ?, null)
+      `,
+      [laneId, projectId, args.name, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, now]
+    );
 
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Failed to attach lane: ${laneId}`);

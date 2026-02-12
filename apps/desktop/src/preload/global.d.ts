@@ -11,6 +11,7 @@ import type {
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
+  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -72,6 +73,8 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  ReparentLaneArgs,
+  ReparentLaneResult,
   RestackArgs,
   RestackResult,
   RiskMatrixEntry,
@@ -85,6 +88,7 @@ import type {
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
+  UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs
 } from "../shared/types";
 
@@ -108,6 +112,8 @@ declare global {
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
+        reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
+        updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
         delete: (args: DeleteLaneArgs) => Promise<void>;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
@@ -187,6 +193,10 @@ declare global {
       layout: {
         get: (layoutId: string) => Promise<DockLayout | null>;
         set: (layoutId: string, layout: DockLayout) => Promise<void>;
+      };
+      graphState: {
+        get: (projectId: string) => Promise<GraphPersistedState | null>;
+        set: (projectId: string, state: GraphPersistedState) => Promise<void>;
       };
       processes: {
         listDefinitions: () => Promise<ProcessDefinition[]>;

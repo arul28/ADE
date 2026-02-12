@@ -65,8 +65,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </aside>
 
         {/* Main Workspace - Canvas for Lanes/Content */}
-        <main className="flex-1 min-w-0 bg-bg relative">
-          {children}
+        <main className="relative flex min-h-0 min-w-0 flex-1 bg-bg">
+          <div className="h-full min-h-0 w-full">
+            {children}
+          </div>
         </main>
       </div>
 

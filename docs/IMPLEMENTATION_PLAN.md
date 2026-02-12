@@ -13,17 +13,14 @@
    - [Phase 0: Terminals + Session Tracking](#phase-0-terminals--session-tracking)
    - [Phase 1: Lanes Cockpit + Diffs + Git Operations](#phase-1-lanes-cockpit--diffs--git-operations)
    - [Phase 2: Project Home (Processes + Tests + Config)](#phase-2-project-home-processes--tests--config)
-4. [Upcoming Phases](#upcoming-phases)
    - [Phase 3: Files Tab + UI Polish](#phase-3-files-tab--ui-polish)
    - [Phase 4: Stacks + Restack](#phase-4-stacks--restack)
    - [Phase 5: Conflict Radar + Resolution](#phase-5-conflict-radar--resolution)
-   - [Phase 6: Pull Requests + GitHub + Stack-Conflict Integration](#phase-6-pull-requests--github--stack-conflict-integration)
-   - [Phase 7: Packs V2 (Checkpoints + Versioning + Events)](#phase-7-packs-v2-checkpoints--versioning--events)
-   - [Phase 8: Workspace Graph](#phase-8-workspace-graph)
-   - [Phase 9: Automations](#phase-9-automations)
-   - [Phase 10: Onboarding Wizard + Settings Polish](#phase-10-onboarding-wizard--settings-polish)
-   - [Phase 11: Hosted Agent + Cloud Backend](#phase-11-hosted-agent--cloud-backend)
-   - [Phase 12: Advanced Features + Polish](#phase-12-advanced-features--polish)
+4. [Upcoming Phases](#upcoming-phases)
+   - [Phase 6: Cloud Infrastructure + Auth + LLM Gateway](#phase-6-cloud-infrastructure--auth--llm-gateway)
+   - [Phase 7: GitHub Integration + Workspace Graph](#phase-7-github-integration--workspace-graph)
+   - [Phase 8: Automations + Onboarding + Packs V2](#phase-8-automations--onboarding--packs-v2)
+   - [Phase 9: Advanced Features + Polish + Runtime Isolation](#phase-9-advanced-features--polish--runtime-isolation)
 5. [Cross-Cutting Concerns](#cross-cutting-concerns)
 6. [Risk Register](#risk-register)
 
@@ -79,15 +76,12 @@ This document is the master implementation plan for ADE (Agentic Development Env
 | 1 | Lanes Cockpit + Diffs + Git Operations | DONE | Lane CRUD, 3-pane layout, diff viewer, git ops, stash, push |
 | 2 | Project Home (Processes + Tests + Config) | DONE | Process manager, test runner, config editor, packs, job engine |
 | 3 | Files Tab + UI Polish | DONE | File explorer (Zed-inspired), Monaco editor, diff modes, Run tab rename, lane selector, guest mode, untracked sessions |
-| 4 | Stacks + Restack | NOT STARTED | Parent-child lanes, stack graph, restack operations |
-| 5 | Conflict Radar + Resolution | NOT STARTED | Conflict prediction, risk matrix, merge simulation |
-| 6 | Pull Requests + GitHub + Stack-Conflict Integration | NOT STARTED | GitHub auth, PR CRUD, stacked PRs, land flow, stack-aware conflicts (CONF-022) |
-| 7 | Packs V2 (Checkpoints + Versioning + Events) | NOT STARTED | Checkpoint creation, pack versions, event log, new pack types |
-| 8 | Workspace Graph | NOT STARTED | React Flow canvas, lane nodes, risk edges, environment mapping, PR edge overlays, minimap |
-| 9 | Automations | NOT STARTED | Trigger-action rules, action chaining, automation UI |
-| 10 | Onboarding Wizard + Settings Polish | NOT STARTED | Default detection, setup wizard, initial pack generation, CI/CD import, provider config, keybindings |
-| 11 | Hosted Agent + Cloud Backend | NOT STARTED | AWS infra, auth, mirror sync, LLM gateway, proposals |
-| 12 | Advanced Features + Polish | NOT STARTED | History graph, checkpoint browser, undo, tiling, advanced git, agent CLI tools, AI-suggested run prompts |
+| 4 | Stacks + Restack | DONE | Parent-child lanes, stack graph, restack operations, overlay policies, vertical connectors |
+| 5 | Conflict Radar + Resolution | DONE | Conflict prediction, risk matrix, merge simulation, Monaco conflict diff, risk tooltips, status badges |
+| 6 | Cloud Infrastructure + Auth + LLM Gateway | NOT STARTED | AWS SST stack, Cognito auth, LLM gateway, mirror sync, pack narratives, conflict proposals |
+| 7 | GitHub Integration + Workspace Graph | NOT STARTED | GitHub PR CRUD, stacked PRs, land flow, React Flow canvas, graph interactions, view modes |
+| 8 | Automations + Onboarding + Packs V2 | NOT STARTED | Trigger-action rules, onboarding wizard, CI/CD import, checkpoints, pack versioning |
+| 9 | Advanced Features + Polish + Runtime Isolation | NOT STARTED | History graph, terminal tiling, advanced git, agent CLI tools, runtime isolation |
 
 ---
 
@@ -207,8 +201,6 @@ This document is the master implementation plan for ADE (Agentic Development Env
 
 ---
 
-## Upcoming Phases
-
 ### Phase 3: Files Tab + UI Polish
 
 **Status**: DONE (2026-02-11)
@@ -293,11 +285,9 @@ Phase 3 development is complete. The following major deliverables are complete:
 
 ### Phase 4: Stacks + Restack
 
-**Status**: NOT STARTED
+**Status**: DONE (2026-02-11, merged in `codex/ade-phase-4-5` branch, commit `65b7a6b`)
 
 **Goal**: Enable stacked development workflows where child lanes build on parent lanes, with visualization and restack operations to propagate parent changes downstream.
-
-**Parallel development note**: This phase can be developed in a separate worktree lane simultaneously with Phase 5 (Conflicts). The two phases share no services and only have minor additive overlaps in `types.ts`, `ipc.ts`, and `LaneRow.tsx` (different visual regions). Merge Phase 4 first (smaller scope), then Phase 5, resolving trivial additive conflicts.
 
 **Scope**:
 - Stack model: `parent_lane_id` in lanes table (schema column already exists, currently unused)
@@ -443,11 +433,9 @@ Implementation: Use CSS indentation + connector lines (similar to the file tree 
 
 ### Phase 5: Conflict Radar + Resolution
 
-**Status**: NOT STARTED
+**Status**: DONE (2026-02-11, merged in `codex/ade-phase-4-5` branch, commit `65b7a6b`)
 
 **Goal**: Surface integration risk proactively by predicting merge conflicts before they happen, displaying risk across all lanes, and enabling merge simulation between any pair of lanes.
-
-**Parallel development note**: This phase can be developed in a separate worktree lane simultaneously with Phase 4 (Stacks). The two phases have no service dependencies. CONF-022 (stack-aware conflict resolution) has been moved to Phase 6 where both phases will be merged. The only shared-file overlaps are additive additions to `types.ts`, `ipc.ts`, and `LaneRow.tsx` (conflict badges go in a different region than stack depth indicators).
 
 **Scope**:
 - New `conflictService` with dry-merge engine using `git merge-tree`
@@ -694,7 +682,7 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - CONF-016: Conflict pack generation
 - CONF-023: Batch conflict assessment
 
-**Note**: CONF-022 (Stack-aware conflict resolution) has been moved to Phase 6. It requires Phase 4's stack model and will be implemented after both Phase 4 and Phase 5 are merged.
+**Note**: CONF-022 (Stack-aware conflict resolution) has been moved to Phase 7 (GitHub Integration + Workspace Graph). It requires Phase 4's stack model and Phase 5's conflict engine, both of which are now complete.
 
 **New Services Required**:
 - `conflictService`: dry-merge simulation, prediction storage, risk matrix computation, merge simulation, batch assessment
@@ -705,303 +693,19 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 ---
 
-### Phase 6: Pull Requests + GitHub Integration + Stack-Conflict Integration
+## Upcoming Phases
+
+### Phase 6: Cloud Infrastructure + Auth + LLM Gateway
 
 **Status**: NOT STARTED
 
-**Goal**: Connect ADE lanes to GitHub pull requests, enabling PR creation, monitoring, and landing directly from the development cockpit, with full support for stacked PR chains. Also integrates Phase 4 (stacks) and Phase 5 (conflicts) by adding stack-aware conflict resolution.
+**Goal**: Stand up the AWS cloud infrastructure and desktop integration that enables authenticated access, persistent cloud storage, and LLM-powered features — the foundation all subsequent phases build on. This is prioritized first because pack narratives, conflict resolution proposals, and PR description drafting all depend on having a working LLM gateway and auth layer.
 
-**Scope**:
-- CONF-022: Stack-aware conflict resolution — resolve parent lane conflicts before children (requires both Phase 4 stacks and Phase 5 conflicts to be merged)
-- GitHub authentication: OS keychain token storage and retrieval (macOS Keychain, Windows Credential Manager)
-- GitHub API integration service (`githubService`): wraps `gh` CLI or GitHub REST/GraphQL API
-- PR creation from lane (GitHub API call, local record in SQLite)
-- PR link to existing (by URL or number, fetch and store)
-- PR status display (state badge, checks icon, review icon)
-- PR status polling (periodic refresh from GitHub)
-- Pack-generated PR description drafting (from lane pack content)
-- PR description update (push regenerated description to GitHub)
-- Lane PR panel component (sub-tab in Lane detail)
-- PR creation form (title, body, base branch, draft toggle, labels, reviewers)
-- PR status view (checks, reviews, conflicts)
-- "Open in GitHub" action (launch external browser)
-- PRs tab page layout (stacked chains view, all PRs list with sortable columns and filters)
-- Stacked PR chain visualization (node graph showing parent-child PR relationships)
-- Base retargeting for stacked PRs (update via GitHub API when parent merges)
-- Land single PR (merge, delete remote branch, archive lane)
-- Land stack flow (ordered merge with retarget, cleanup, progress UI)
-- PR checks integration (CI status detail view)
-- PR review status integration (reviewer list, comments preview)
-- PR notifications (check failures, review requests, merge ready)
-- PR template support (load from `.github/PULL_REQUEST_TEMPLATE.md`)
-
-**Feature Doc References**: `PULL_REQUESTS.md`
-
-**Architecture References**: `SECURITY_AND_PRIVACY.md` (secret protection -- tokens in keychain only), `DATA_MODEL.md` (pull_requests table)
-
-**Task References**:
-- CONF-022: Stack-aware conflict resolution (resolve parent lane conflicts first) — moved from Phase 5
-- PR-001: GitHub authentication (OS keychain)
-- PR-002: GitHub API integration service
-- PR-003: PR creation from lane
-- PR-004: PR link to existing
-- PR-005: PR status display
-- PR-006: PR status polling
-- PR-007: Pack-generated PR description drafting
-- PR-008: PR description update
-- PR-009: Lane PR panel component
-- PR-010: PR creation form and PRs tab page layout
-- PR-011: PR status view and all PRs list
-- PR-012: "Open in GitHub" action
-- PR-013: Stacked PR chain visualization
-- PR-014: Base retargeting for stacked PRs
-- PR-015: Land single PR
-- PR-016: Land stack flow
-- PR-017: Land progress UI and PR checks integration
-- PR-018: PR review status integration
-- PR-019: PR notifications
-- PR-020: PR template support
-
-**New Services Required**:
-- `githubService`: GitHub API wrapper (authentication, PR CRUD, checks, reviews, merge)
-- `prService`: PR lifecycle management, stack chain logic, land flow orchestration
-
-**Dependencies**: Phase 1 (lane service, git push). Phase 4 (stacks) required for stacked PR features (PR-013, PR-014, PR-016). Phase 2 (pack service) required for PR-007.
-
-**Exit Criteria**: GitHub token is securely stored in OS keychain. PRs can be created and linked from lanes. PR status (state, checks, reviews) is displayed and polled. Stacked PRs correctly target parent branches. Landing a single PR and a full stack works end-to-end with progress tracking.
-
----
-
-### Phase 7: Packs V2 (Checkpoints + Versioning + Events)
-
-**Status**: NOT STARTED
-
-**Goal**: Evolve the pack system from simple snapshots to a versioned, event-driven context history with checkpoint creation, immutable versions, and new pack types for features, conflicts, and planning.
-
-**Scope**:
-- Checkpoint creation at session boundaries (immutable snapshot with SHA, diff stat, session reference)
-- Checkpoint storage and indexing (SQLite `checkpoints` table + filesystem at `.ade/history/checkpoints/`)
-- Pack event logging (append-only event log in `pack_events` table)
-- Pack version snapshots (immutable rendered markdown files with content hashes)
-- Pack head pointers (mutable, atomic updates pointing to latest version)
-- Feature pack type (issue-scoped, cross-lane aggregation)
-- Conflict pack type (resolution context bundle for hosted agent)
-- Plan pack type (versioned planning documents)
-- Narrative editing (user override of auto-generated content)
-- Pack diff (compare two versions side by side)
-- Checkpoint creation on session end (terminal integration)
-
-**Feature Doc References**: `PACKS.md`, `HISTORY.md` (HIST-011 through HIST-014), `TERMINALS_AND_SESSIONS.md` (TERM-029)
-
-**Architecture References**: `DATA_MODEL.md` (checkpoints, pack_events, pack_versions, pack_heads tables), `JOB_ENGINE.md` (checkpoint creation job)
-
-**Task References**:
-- PACK-012: Checkpoint creation at session boundaries
-- PACK-013: Checkpoint storage and indexing
-- PACK-014: Pack event logging (append-only)
-- PACK-015: Pack version snapshots (immutable)
-- PACK-016: Pack head pointers (mutable, atomic)
-- PACK-017: Feature pack type
-- PACK-018: Conflict pack type
-- PACK-019: Plan pack type
-- PACK-020: Narrative editing (user override)
-- PACK-022: Pack diff (compare versions)
-- HIST-011: Checkpoint creation on session end
-- HIST-012: Checkpoint storage and indexing
-- HIST-013: Pack event logging
-- HIST-014: Pack version tracking
-- TERM-029: Checkpoint creation on session end
-
-**Dependencies**: Phase 0 (session service), Phase 2 (pack service, job engine). Phase 5 (conflict service) for PACK-018.
-
-**Exit Criteria**: Checkpoints are created automatically when sessions end. Pack versions are immutable snapshots with content hashes. Pack heads track the latest version atomically. Event log records all pack state changes. Feature, conflict, and plan pack types can be generated. Users can edit narratives and diff between pack versions.
-
----
-
-### Phase 8: Workspace Graph
-
-**Status**: NOT STARTED
-
-**Goal**: Provide a visual, interactive canvas that externalizes the mental model of lane relationships and integration risk, enabling at-a-glance understanding of the project topology.
-
-**Scope**:
-- React Flow canvas setup (`@xyflow/react` installation, `WorkspaceGraphPage` route)
-- Primary lane node component (larger size, distinct border, centered position)
-- Worktree lane node component (standard size, solid border)
-- Attached lane node component (dashed border, muted label)
-- Node status badges (dirty indicator, ahead/behind counts, conflict indicator)
-- Active session indicator (pulsing dot on nodes with running terminals)
-- Topology edges (solid lines from primary to each worktree)
-- Stack edges (arrow edges from parent to child, thicker stroke)
-- Risk overlay edges (dashed lines colored by conflict risk level)
-- Edge state coloring from risk matrix data (green/blue/red/gray)
-- Pan and zoom controls (zoom buttons, fit-to-view, scroll-wheel zoom)
-- Auto-layout algorithm (initial positioning based on lane relationships)
-- Manual node repositioning with drag (position persistence on drop)
-- Layout persistence via kvDb (save/restore across app restarts)
-- Click node to navigate to lane detail view
-- Click edge to open merge simulation panel
-- Merge simulation result display (prediction badge, conflicting files, diff preview)
-- Node context menu (right-click: Open, Archive, Delete, Create Child)
-- Minimap (React Flow minimap in bottom-right corner)
-- Multi-select (Shift+click, drag-box selection)
-- Zoom-to-fit button
-- Theme-aware styling (colors adapt to dark/light themes)
-- Environment mapping configuration (branch-to-environment in ade.yaml: main=PROD, develop=STAGING, etc.)
-- Environment badge rendering on nodes (badge label + configured color)
-- Environment-aware auto-layout (environment branches centered, feature branches radiate outward)
-- PR edge overlays (PR icon badge on edges, colored by PR state, check status dot)
-- PR + risk edge coexistence (both visible simultaneously on same lane pair)
-- Environment legend (color key panel in canvas corner)
-
-**Feature Doc References**: `WORKSPACE_GRAPH.md`
-
-**Architecture References**: `UI_FRAMEWORK.md` (React Flow integration), `DATA_MODEL.md` (layout persistence in kvDb)
-
-**Task References**:
-- GRAPH-001 through GRAPH-028: All TODO
-  - Canvas setup: GRAPH-001
-  - Node components: GRAPH-002, GRAPH-003, GRAPH-004, GRAPH-005, GRAPH-006
-  - Edge components: GRAPH-007, GRAPH-008, GRAPH-009, GRAPH-010
-  - Canvas controls: GRAPH-011, GRAPH-012, GRAPH-013, GRAPH-014
-  - Interactions: GRAPH-015, GRAPH-016, GRAPH-017, GRAPH-018, GRAPH-019, GRAPH-020, GRAPH-021
-  - Theming: GRAPH-022
-  - Environment mapping: GRAPH-023, GRAPH-024, GRAPH-025, GRAPH-028
-  - PR overlays: GRAPH-026, GRAPH-027
-
-**Dependencies**: Phase 1 (lane service for node data). Phase 2 (config service) for GRAPH-023 through GRAPH-025. Phase 4 (stacks) for GRAPH-008. Phase 5 (conflict service) for GRAPH-009, GRAPH-010, GRAPH-016, GRAPH-017. Phase 6 (PR service) for GRAPH-026, GRAPH-027.
-
-**Exit Criteria**: The workspace graph renders all lanes as interactive nodes with correct types, status badges, and environment labels. Edges show topology, stack, risk, and PR relationships. Environment-mapped branches are positioned centrally with feature branches radiating outward. PR edge overlays show state and check status. Pan, zoom, and minimap work. Node positions persist across restarts. Clicking nodes navigates to lane detail. Clicking edges opens merge simulation.
-
----
-
-### Phase 9: Automations
-
-**Status**: NOT STARTED
-
-**Goal**: Enable user-configurable trigger-action workflows that automate repetitive development tasks, building on the existing job engine's core pipeline.
-
-**Scope**:
-- Automation rule schema definition and validation in config (`automations` key in `ade.yaml` / `local.yaml`)
-- Automation service: parse rules from config, register trigger listeners, evaluate conditions
-- Session-end trigger (subscribe to session events, dispatch matching rules)
-- Commit trigger (watch `.git/refs/heads/`, dispatch matching rules)
-- Schedule trigger (cron-based timer using `node-cron`)
-- Update-packs action (wire to pack service)
-- Predict-conflicts action (wire to conflict service)
-- Sync-to-mirror action (wire to hosted agent service)
-- Run-tests action (execute test suite by ID)
-- Run-command action (execute arbitrary shell command via PTY service)
-- Action chaining (sequential execution with failure handling)
-- Conditional execution (evaluate conditions per action, skip when false)
-- Automation management UI (list view with status, toggles, detail view with history)
-- Enable/disable toggle (IPC + UI, persisted to config)
-- Manual trigger button ("Run Now" for immediate execution)
-- Execution history display (recent runs with expandable per-action details)
-- Automation run logging (write run/action records to SQLite `automation_runs` and `automation_action_results` tables)
-- Error handling and retry (configurable retry count, backoff, failure notifications)
-
-**Feature Doc References**: `AUTOMATIONS.md`
-
-**Architecture References**: `JOB_ENGINE.md` (extends existing queue), `CONFIGURATION.md` (automations config schema)
-
-**Task References**:
-- AUTO-003: Automation rule schema
-- AUTO-004: Automation service
-- AUTO-005: Session-end trigger
-- AUTO-006: Commit trigger
-- AUTO-007: Schedule trigger
-- AUTO-008: Update-packs action
-- AUTO-009: Predict-conflicts action
-- AUTO-010: Sync-to-mirror action
-- AUTO-011: Run-tests action
-- AUTO-012: Run-command action
-- AUTO-013: Action chaining
-- AUTO-014: Conditional execution
-- AUTO-015: Automation management UI
-- AUTO-016: Enable/disable toggle
-- AUTO-017: Manual trigger button
-- AUTO-018: Execution history display
-- AUTO-019: Automation run logging
-- AUTO-020: Error handling and retry
-
-**Dependencies**: Phase 0 (session service for session-end trigger), Phase 2 (job engine, pack service, test service, config service). Phase 5 (conflict service) for AUTO-009. Phase 11 (hosted agent) for AUTO-010.
-
-**Exit Criteria**: Automation rules can be defined in YAML and managed in the UI. Session-end, commit, and schedule triggers fire correctly. Actions execute in sequence with failure handling. Execution history is recorded and displayed. Enable/disable and manual trigger work.
-
----
-
-### Phase 10: Onboarding Wizard + Settings Polish
-
-**Status**: NOT STARTED
-
-**Goal**: Provide a smooth first-run experience with project defaults detection and guided configuration, plus complete the settings page with provider configuration, keybindings, and data management.
-
-**Scope**:
-- Project defaults detection: scan for `package.json`, `Makefile`, `docker-compose.yml`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `.github/workflows/`
-- Onboarding wizard UI: step-by-step modal with progress indicator
-- Suggested process definitions from detection results
-- Suggested test definitions from detection results
-- Config review step: editable form showing suggested config before saving
-- Hosted agent consent flow: explanation of data residency, consent options (Hosted / BYOK / CLI / Decide Later)
-- "What ADE will do" previews (pre-execution dialogs for shared config commands)
-- Provider configuration UI: Hosted / BYOK / CLI radio selector with config forms
-- API key management: secure input, local.yaml storage, validation
-- Keybindings viewer: read-only shortcut table organized by scope
-- Keybindings customization: click-to-record editor with conflict detection
-- Data management: clear local data, export project config, delete hosted mirror data
-- Welcome guide: in-app getting started with feature highlights
-- Project switching: recent projects list with quick-switch
-- Initial codebase scan for pack seeding (analyze repo structure, key files, git history)
-- Existing documentation import (ask user for docs directory/files, ingest via LLM for richer pack seeding)
-- Existing lane/branch detection (scan for existing branches/worktrees, offer to create lanes and generate Lane Packs)
-- Initial pack generation trigger (bootstrap project and lane packs during onboarding)
-- CI/CD workflow scan and import (parse GitHub Actions, GitLab CI, etc. into run buttons)
-- CI/CD sync mode (auto-detect workflow file changes, suggest updated run definitions)
-
-**Feature Doc References**: `ONBOARDING_AND_SETTINGS.md`
-
-**Architecture References**: `CONFIGURATION.md` (config schema, trust model), `SECURITY_AND_PRIVACY.md` (secret protection, consent)
-
-**Task References**:
-- ONBOARD-007: Project defaults detection
-- ONBOARD-008: Onboarding wizard UI
-- ONBOARD-009: Suggested process definitions
-- ONBOARD-010: Suggested test definitions
-- ONBOARD-011: Config review step
-- ONBOARD-012: Hosted agent consent flow
-- ONBOARD-013: "What ADE will do" previews
-- ONBOARD-014: Provider configuration UI
-- ONBOARD-015: API key management
-- ONBOARD-016: Keybindings viewer
-- ONBOARD-017: Keybindings customization
-- ONBOARD-018: Data management
-- ONBOARD-019: Welcome guide
-- ONBOARD-020: Project switching
-- ONBOARD-021: Initial codebase scan for pack seeding
-- ONBOARD-022: Existing documentation import for pack seeding
-- ONBOARD-023: Existing lane/branch detection
-- ONBOARD-024: Initial pack generation trigger
-- PACK-027: Initial project pack bootstrap (codebase scan + git history)
-- PACK-028: Documentation-seeded pack generation
-- PACK-029: Existing lane pack hydration
-- PROJ-036: CI/CD workflow scan and import
-- PROJ-037: CI/CD sync mode
-
-**New Services Required**:
-- `onboardingService`: detection of project defaults, suggested config generation, wizard state management
-
-**Dependencies**: Phase -1 (settings page shell), Phase 2 (config service). ONBOARD-012 depends on Phase 11 (hosted agent). ONBOARD-020 requires a project registry service.
-
-**Exit Criteria**: First-run wizard detects project type and suggests sensible defaults. Initial packs are generated from codebase scan and optional documentation import. Existing branches can be imported as lanes with hydrated Lane Packs. CI/CD workflows can be scanned and imported as run definitions. User can review and edit config before saving. Provider can be configured (Hosted, BYOK, or CLI). Keybindings are displayed and customizable. Data management operations work. Project switching allows opening recent projects.
-
----
-
-### Phase 11: Hosted Agent + Cloud Backend
-
-**Status**: NOT STARTED
-
-**Goal**: Build the AWS cloud infrastructure and desktop integration that enables LLM-powered features: narrative generation, conflict resolution proposals, and PR description drafting, all operating under a strict read-only contract.
+**AWS Deployment Context:**
+- Account: `695094375923` (shared account — all resources MUST be prefixed with `ade-` and tagged with `project: ade`)
+- IAM User: `ArulSharma` (AWS profile: `arulsharma`)
+- Deployment: SST (Serverless Stack) with TypeScript
+- See `docs/architecture/CLOUD_BACKEND.md` for full naming conventions, resource tagging, and architecture details
 
 **Scope**:
 - AWS infrastructure via SST (Serverless Stack):
@@ -1014,18 +718,20 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - Repo mirror sync: content-addressed blobs + per-lane manifests uploaded from desktop
 - Cloud job processing: SQS queue consumer Lambda workers
 - LLM gateway module: prompt templates, model selection (Claude, GPT, etc.), token budgets, provider swapping
-- Pack narrative augmentation via LLM (hosted agent generates human-quality narratives from deterministic data)
+- Hosted agent telemetry pipeline (per-job token usage, latency, model usage, error rates)
+- Pack narrative augmentation via LLM (replace template narratives with human-quality AI narratives)
 - Conflict resolution proposals via LLM (agent receives Conflict Pack, returns resolution diff with confidence score)
-- PR description drafting via LLM (agent receives lane pack, returns formatted PR description)
 - Proposal review and apply workflow in desktop (preview diff, apply, undo)
-- Hosted agent consent flow integration (wire to onboarding wizard consent step)
+- Hosted agent consent flow integration (wire to settings page)
 - Pack sync to hosted mirror (push pack content to cloud storage)
 - Secret redaction rules (prevent sensitive data from being uploaded -- .env, credentials, API keys)
 - Exclude rules configuration (per-project control over what is mirrored)
+- Provider configuration UI: Hosted / BYOK / CLI radio selector with config forms
+- API key management: secure input, local.yaml storage, validation
 
-**Feature Doc References**: `CONFLICTS.md` (CONF-017 through CONF-021), `PACKS.md` (PACK-021, PACK-023 through PACK-025), `ONBOARDING_AND_SETTINGS.md` (ONBOARD-012), `TERMINALS_AND_SESSIONS.md` (TERM-028)
+**Feature Doc References**: `CONFLICTS.md` (CONF-017 through CONF-021), `PACKS.md` (PACK-021, PACK-023 through PACK-025), `ONBOARDING_AND_SETTINGS.md` (ONBOARD-012, ONBOARD-014, ONBOARD-015)
 
-**Architecture References**: `CLOUD_BACKEND.md`, `HOSTED_AGENT.md`, `SECURITY_AND_PRIVACY.md` (hosted mirror security, transcript privacy, proposal safety)
+**Architecture References**: `CLOUD_BACKEND.md`, `HOSTED_AGENT.md`, `SECURITY_AND_PRIVACY.md`
 
 **Task References**:
 - CONF-017: Hosted agent proposal integration (ProposeConflictResolution job)
@@ -1038,40 +744,191 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - PACK-024: Pack retention and cleanup policy
 - PACK-025: Pack privacy controls (redaction rules)
 - ONBOARD-012: Hosted agent consent flow
+- ONBOARD-014: Provider configuration UI
+- ONBOARD-015: API key management
 - TERM-028: Transcript upload opt-in (hosted mirror)
 
 **New Services Required**:
 - `hostedAgentService`: mirror sync protocol, job submission, result polling, artifact download
 - `llmGatewayModule` (cloud): prompt templates, model routing, token budgets
-- AWS Lambda workers for each job type (NarrativeGeneration, ConflictResolution, PrDescriptionDraft)
+- AWS Lambda workers for each job type (NarrativeGeneration, ConflictResolution)
 
-**Dependencies**: Phase 2 (pack service), Phase 5 (conflict service, conflict packs), Phase 6 (PR service for description drafting), Phase 10 (onboarding consent flow)
+**Dependencies**: Phase 2 (pack service), Phase 5 (conflict service, conflict packs)
 
-**Exit Criteria**: AWS infrastructure deploys via SST. Desktop authenticates via Cognito. Mirror sync uploads content-addressed blobs with exclude rules. Cloud jobs process pack narratives, conflict resolutions, and PR descriptions. Desktop polls for results and presents proposals for user review. Apply and undo workflows function correctly. Secret redaction prevents sensitive data from being uploaded.
+**Exit Criteria**: AWS infrastructure deploys via SST with all resources prefixed `ade-` and tagged `project: ade`. Desktop authenticates via Cognito. Mirror sync uploads content-addressed blobs with exclude rules. Cloud jobs process pack narratives and conflict resolutions. Desktop polls for results and presents proposals for user review. Apply and undo workflows function correctly. Provider can be configured (Hosted, BYOK, or CLI). Secret redaction prevents sensitive data from being uploaded.
 
 ---
 
-### Phase 12: Advanced Features + Polish
+### Phase 7: GitHub Integration + Workspace Graph
 
 **Status**: NOT STARTED
 
-**Goal**: Complete the product with advanced history features, terminal enhancements, additional git operations, and final polish across all surfaces.
+**Goal**: Connect ADE to GitHub for PR lifecycle management and build the interactive workspace graph canvas for visualizing lane topology, risk, and activity. These two features have no dependency on each other and can be developed in parallel.
 
 **Scope**:
 
-**History Enhancements**:
-- Feature history: filtered timeline by feature/issue tag across lanes
-- History graph view: visual timeline with parallel lane tracks
-- Checkpoint browser: navigate to past repo state, read-only file browser at checkpoint SHA
-- Undo operation: reverse a git action via history (using pre/post SHA)
-- Replay operation sequence: dry-run re-execution of past operations
-- Plan version history: track planning document iterations
-- Jump-to-lane link from operation detail
-- Jump-to-session link from operation detail
-- Export history as CSV or JSON with filters
+**GitHub Integration:**
+- CONF-022: Stack-aware conflict resolution (resolve parent lane conflicts before children)
+- GitHub authentication: OS keychain token storage and retrieval (macOS Keychain, Windows Credential Manager)
+- GitHub API integration service (`githubService`): wraps `gh` CLI or GitHub REST/GraphQL API
+- PR creation from lane, PR link to existing, PR status display and polling
+- Pack-generated PR description drafting via LLM (uses Phase 6 LLM gateway)
+- PR description update (push regenerated description to GitHub)
+- Lane PR panel component (sub-tab in Lane detail)
+- PR creation form, PR status view, "Open in GitHub" action
+- PRs tab page layout (stacked chains view, all PRs list)
+- Stacked PR chain visualization, base retargeting
+- Land single PR and land stack flow with progress UI
+- PR checks integration, PR review status integration
+- PR notifications with lane-aware context and deep links
+- PR template support (load from `.github/PULL_REQUEST_TEMPLATE.md`)
 
-**Terminal Enhancements**:
-- Tiling layout for multiple terminals (split horizontal/vertical)
+**Workspace Graph:**
+- React Flow canvas setup (`@xyflow/react`) with route `/graph` and nav entry
+- 3 node type components (Primary, Worktree, Attached) with hover effects
+- Node status badges (dirty, ahead/behind, conflict) and active session indicator (pulsing dot)
+- 4 edge types (Topology, Stack, Risk overlay, PR overlay) with hover effects
+- Auto-layout algorithm (tree + force-directed positioning)
+- Multiple view modes (Stack/Risk/Activity/All) with segmented control and transitions
+- Manual node repositioning with drag + layout persistence (kvDb)
+- Click node to navigate, click edge to merge simulation
+- Extended context menu (Open, Archive, Delete, Create Child, Restack, Push, Fetch, Sync, Reparent, Rename, Customize Appearance, Collapse/Expand Stack)
+- Multi-select (Shift+click, drag-box) with batch operations (Restack, Push, Fetch, Archive, Delete)
+- Drag-and-drop lane reparenting with cycle detection, pre-drop conflict preview, confirmation dialog
+- Collapsible sub-graphs with collapse/expand animations
+- Custom node appearance (color, tags, icon) with picker UI
+- Graph-level filtering (status, type, tag, stack, search)
+- Multiple saved layout presets with CRUD
+- Graph toolbar (view modes, filter, presets, zoom controls)
+- Minimap, pan/zoom controls, fit-to-view
+- Theme-aware styling
+- Environment mapping configuration and badges
+- Loading states (skeleton risk matrix, graph loading sequence, merge sim spinner)
+- Batch operation progress UI and failure handling
+- Conflict status animations (badge transitions, matrix cell updates)
+- Performance safeguards for large workspaces (15-lane limit for auto-assessment)
+
+**Service-layer work already completed (ahead of schedule):**
+- `laneService.reparent()` method
+- `laneService.updateAppearance()` method (color, icon, tags)
+- IPC channels `lanesReparent` and `lanesUpdateAppearance`
+- Preload bridge methods for reparent and updateAppearance
+- Types: `ReparentLaneArgs`, `AppearanceUpdate`, `GraphState`
+
+**Feature Doc References**: `PULL_REQUESTS.md`, `WORKSPACE_GRAPH.md`, `CONFLICTS.md` (CONF-022)
+
+**Architecture References**: `UI_FRAMEWORK.md`, `DATA_MODEL.md`, `SECURITY_AND_PRIVACY.md`
+
+**Task References**:
+- CONF-022: Stack-aware conflict resolution
+- PR-001 through PR-020: All PR tasks
+- GRAPH-001 through GRAPH-028: All graph tasks
+- WG1 through WG25: Extended graph scope (see `docs/PHASE_4_5_UPDATES.md` Part 3)
+
+**New Services Required**:
+- `githubService`: GitHub API wrapper (authentication, PR CRUD, checks, reviews, merge)
+- `prService`: PR lifecycle management, stack chain logic, land flow orchestration
+
+**Dependencies**: Phase 1 (lane service, git push), Phase 4 (stacks), Phase 5 (conflict service), Phase 6 (LLM gateway for PR descriptions, Cognito for auth)
+
+**Exit Criteria**: GitHub token is securely stored in OS keychain. PRs can be created and linked from lanes. PR status is displayed and polled. Stacked PRs correctly target parent branches. Landing works end-to-end. Workspace graph renders all lanes as interactive nodes with edges, risk overlays, and PR overlays. All graph interactions work (drag, click, context menu, multi-select, reparent). View modes and layout presets function correctly.
+
+---
+
+### Phase 8: Automations + Onboarding + Packs V2
+
+**Status**: NOT STARTED
+
+**Goal**: Add user-configurable automation workflows, a guided onboarding experience with intelligent project detection, and evolve the pack system to support versioning, checkpoints, and new pack types.
+
+**Scope**:
+
+**Automations:**
+- Automation rule schema definition and validation in config (`automations` key in `ade.yaml` / `local.yaml`)
+- Automation service: parse rules, register trigger listeners, evaluate conditions
+- Triggers: session-end, commit, schedule (cron via node-cron)
+- Actions: update-packs, predict-conflicts, sync-to-mirror, run-tests, run-command
+- Action chaining with sequential execution and failure handling
+- Conditional execution (evaluate conditions per action)
+- Automation management UI (list, toggles, detail with history)
+- Enable/disable toggle, manual trigger button
+- Execution history display
+- Automation run logging (SQLite `automation_runs` and `automation_action_results` tables)
+- Error handling, retry, and lane-aware failure notifications
+
+**Onboarding:**
+- Project defaults detection (scan for `package.json`, `Makefile`, `docker-compose.yml`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `.github/workflows/`)
+- Onboarding wizard UI (step-by-step modal with progress)
+- Suggested process and test definitions from detection results
+- Config review step (editable form before saving)
+- "What ADE will do" previews (pre-execution dialogs for shared config commands)
+- Initial codebase scan for pack seeding
+- Existing documentation import for richer pack seeding
+- Existing lane/branch detection (scan for branches/worktrees)
+- Initial pack generation trigger
+- CI/CD workflow scan and import (parse GitHub Actions, GitLab CI, etc.)
+- CI/CD sync mode
+- Welcome guide with feature highlights
+- Project switching (recent projects list)
+- Keybindings viewer and customization
+- Data management (clear local data, export config, delete mirror data)
+
+**Packs V2:**
+- Checkpoint creation at session boundaries (immutable snapshot with SHA, diff stat)
+- Checkpoint storage and indexing (SQLite `checkpoints` table + filesystem)
+- Pack event logging (append-only event log)
+- Pack version snapshots (immutable rendered markdown with content hashes)
+- Pack head pointers (mutable, atomic updates)
+- Feature pack type (issue-scoped, cross-lane aggregation)
+- Conflict pack type (resolution context bundle)
+- Plan pack type (versioned planning documents)
+- Narrative editing (user override of auto-generated content)
+- Pack diff (compare two versions)
+- Checkpoint creation on session end (terminal integration)
+
+**Feature Doc References**: `AUTOMATIONS.md`, `ONBOARDING_AND_SETTINGS.md`, `PACKS.md`, `HISTORY.md`
+
+**Architecture References**: `JOB_ENGINE.md`, `CONFIGURATION.md`, `DATA_MODEL.md`
+
+**Task References**:
+- AUTO-003 through AUTO-020: All automation tasks
+- ONBOARD-007 through ONBOARD-024: All remaining onboarding tasks
+- PACK-012 through PACK-022: Packs V2 tasks
+- PACK-027 through PACK-029: Initial pack generation
+- PROJ-036, PROJ-037: CI/CD import
+- HIST-011 through HIST-014: History/checkpoint tasks
+- TERM-029: Checkpoint on session end
+
+**New Services Required**:
+- `automationService`: rule parsing, trigger registration, condition evaluation, run logging
+- `onboardingService`: project defaults detection, suggested config, wizard state
+
+**Dependencies**: Phase 0 (session service), Phase 2 (job engine, pack service, config service), Phase 5 (conflict service), Phase 6 (cloud backend, LLM gateway for PACK-021 and AUTO-010)
+
+**Exit Criteria**: Automation rules can be defined in YAML and managed in the UI. Triggers fire and actions execute with history tracking. First-run wizard detects project type and suggests defaults. Initial packs are generated from codebase scan. CI/CD workflows are importable. Checkpoints are created automatically. Pack versions are immutable with content hashes. New pack types work. Users can edit narratives and diff pack versions.
+
+---
+
+### Phase 9: Advanced Features + Polish + Runtime Isolation
+
+**Status**: NOT STARTED
+
+**Goal**: Complete the product with advanced history features, terminal enhancements, agent tooling, performance optimization, and per-lane runtime isolation for parallel development.
+
+**Scope**:
+
+**History Enhancements:**
+- Feature history (filtered by feature/issue tag across lanes)
+- History graph view (visual timeline with parallel lane tracks)
+- Checkpoint browser (navigate to past repo state, read-only file browser)
+- Undo operation (reverse git action via history)
+- Replay operation sequence (dry-run re-execution)
+- Plan version history
+- Jump-to-lane and jump-to-session links from operation detail
+- Export history as CSV/JSON
+
+**Terminal Enhancements:**
+- Tiling layout (split horizontal/vertical)
 - Drag to rearrange tiles
 - Grid view (multi-terminal overview)
 - Session goal/purpose tagging
@@ -1079,85 +936,65 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - Session transcript search
 - Pin important sessions
 
-**Advanced Git Operations**:
+**Advanced Git Operations:**
 - Primary lane support (main repo dir, no separate worktree)
 - Attached lane support (link existing external worktree)
 - Amend commit
 - Branch create/delete/rename from lane
 - Reset (soft/mixed/hard) with confirmation dialog
 - Lane profiles (preset configs per lane type)
-- Conflict prediction indicators in lane rows (integration with Phase 5)
-- Merge simulation from lane context menu
 
-**Run Tab Enhancements**:
-- AI-suggested run prompts (detect new test suites/services on merge, propose new run buttons)
-- Run prompt suggestion cards UI (accept/dismiss flow)
+**Run Tab Enhancements:**
+- AI-suggested run prompts (detect new suites/services)
+- Run prompt suggestion cards UI
 - Agent CLI tools detection (Claude Code, Codex, Cursor, Aider, Continue)
-- Agent commands and skills viewer (read .claude/commands/, etc.)
-- Agent command editing (add/edit/delete commands and skills in-app)
-- Agent tool quick-launch (open tracked terminal with tool in selected lane)
-- Process restart policies (on-failure, always) with backoff
-- Process health monitoring (periodic readiness checks)
-- Process environment variable editor
-- Test suite tags and filtering
-- Test result diff (compare runs)
-- Config diff viewer (before save)
-- Config import/export
+- Agent commands and skills viewer
+- Agent command editing
+- Agent tool quick-launch
+- Process restart policies, health monitoring, env var editor
+- Test suite tags/filtering, test result diff
+- Config diff viewer, config import/export
 
-**Performance and Error Handling**:
-- Performance optimization (render batching, virtual scrolling for large lists)
-- Error handling hardening (graceful degradation, user-facing error messages)
+**Cross-Surface UX:**
+- Global identity bar (project, lane, branch, cwd, environment)
+- PR attention queue ("needs human action")
+- Mission-control overview for project switching
+
+**Performance and Quality:**
+- Render batching, virtual scrolling for large lists
+- Error handling hardening, graceful degradation
 - Cross-platform testing and fixes (macOS, Windows, Linux)
 
-**Feature Doc References**: `HISTORY.md`, `TERMINALS_AND_SESSIONS.md`, `LANES.md`, `PROJECT_HOME.md`, `PACKS.md`, `CONFLICTS.md`
+**Local Runtime Isolation:**
+- Lane runtime identity model (stable hostname, deterministic ports)
+- Deterministic port allocation service with lane/process leases
+- Local host orchestration layer (reverse proxy)
+- Preview launcher (correct lane URL from ADE)
+- Optional per-lane browser profile integration
+- Per-lane runtime diagnostics
+- Fallback mode and escape hatches
+
+**Feature Doc References**: `HISTORY.md`, `TERMINALS_AND_SESSIONS.md`, `LANES.md`, `PROJECT_HOME.md`
 
 **Architecture References**: `UI_FRAMEWORK.md`, `GIT_ENGINE.md`, `DESKTOP_APP.md`
 
 **Task References**:
-- HIST-015: Feature history (filtered by feature/issue tag)
-- HIST-016: Graph view (visual timeline with parallel lane tracks)
-- HIST-017: Checkpoint browser
-- HIST-018: Undo operation
-- HIST-019: Replay operation sequence
-- HIST-020: Plan version history
-- HIST-021: Jump to lane from operation detail
-- HIST-022: Jump to session from operation detail
-- HIST-023: Export history (CSV/JSON)
-- TERM-021: Tiling layout for multiple terminals
-- TERM-022: Split horizontal/vertical
-- TERM-023: Drag to rearrange tiles
-- TERM-025: Session goal/purpose tagging
-- TERM-026: Tool type detection
-- TERM-027: Session transcript search
-- TERM-030: Pin important sessions
-- TERM-031: Grid view (multi-terminal overview)
-- LANES-024: Primary lane support
-- LANES-025: Attached lane support
-- LANES-030: Conflict prediction indicators in lane rows
-- LANES-031: Merge simulation from lane context menu
-- LANES-032: Lane profiles
-- LANES-036: Amend commit
-- LANES-037: Branch create/delete/rename
-- LANES-038: Reset (soft/mixed/hard)
-- PROJ-026: Process restart policies
-- PROJ-027: Process health monitoring
-- PROJ-028: Process environment variable editor
-- PROJ-029: Test suite tags and filtering
-- PROJ-030: Test result diff
-- PROJ-031: Config diff viewer
-- PROJ-032: Config import/export
-- PROJ-035: AI-suggested run prompts
-- PROJ-038: Agent CLI tools detection
-- PROJ-039: Agent commands and skills viewer
-- PROJ-040: Agent command editing
-- PROJ-041: Agent tool quick-launch
-- PROJ-042: Run prompt suggestion cards UI
+- HIST-015 through HIST-023: History enhancements
+- TERM-021 through TERM-031: Terminal enhancements
+- LANES-024, LANES-025, LANES-030 through LANES-038: Advanced lane operations
+- PROJ-026 through PROJ-032, PROJ-035, PROJ-038 through PROJ-042: Run tab enhancements
 - PACK-026: Pack export
 - CONF-024: Conflict notification/alerts
 
-**Dependencies**: All prior phases. Specifically: Phase 5 for LANES-030/LANES-031, Phase 7 for HIST-017/HIST-019/HIST-020, Phase 0 for TERM-021 through TERM-031.
+**New Services Required**:
+- `laneRuntimeService`: lane runtime identity, port leasing, diagnostics
+- `laneProxyService`: local reverse proxy and host-to-port routing
+- `browserProfileService`: per-lane browser profile lifecycle
+- `previewLaunchService`: lane-aware URL and browser launch
 
-**Exit Criteria**: All task IDs across all feature docs are marked DONE. History graph view renders parallel lane tracks. Checkpoint browser allows navigating to past states. Undo reverses git operations. Terminal tiling layout enables split views. All advanced git operations work. Agent CLI tools are detected and launchable from the Run tab. AI-suggested run prompts detect and propose new buttons on merge. Performance is smooth with large repositories. Error handling is robust across all features. Cross-platform compatibility is verified.
+**Dependencies**: All prior phases
+
+**Exit Criteria**: All task IDs across all feature docs are marked DONE. History graph view renders parallel tracks. Checkpoint browser works. Terminal tiling enables split views. Agent CLI tools detected and launchable. Performance smooth with large repos. Cross-platform verified. Runtime isolation enables 3+ active lanes without port conflicts.
 
 ---
 
@@ -1186,7 +1023,7 @@ Each phase's exit criteria implicitly include tests for all new services and cri
 | Diff view render (large file) | < 500ms | Phase 1, Phase 3 |
 | Conflict prediction (10 lanes) | < 5 seconds | Phase 5 |
 | Pack generation (single lane) | < 3 seconds | Phase 2 |
-| Graph canvas render (50 nodes) | < 100ms | Phase 8 |
+| Graph canvas render (50 nodes) | < 100ms | Phase 7 |
 | SQLite query (any single query) | < 50ms | All phases |
 
 ### Security Considerations
@@ -1196,11 +1033,11 @@ Security is not a separate phase; it is enforced at every layer from Phase -1 on
 | Concern | Implementation | Enforced From |
 |---------|---------------|---------------|
 | **Process isolation** | Renderer has zero Node.js access; all system calls go through typed IPC allowlist | Phase -1 |
-| **Secret protection** | API keys in `local.yaml` (gitignored); GitHub tokens in OS keychain only; never in SQLite or config files | Phase 6, Phase 10 |
+| **Secret protection** | API keys in `local.yaml` (gitignored); GitHub tokens in OS keychain only; never in SQLite or config files | Phase 6, Phase 7 |
 | **Configuration trust** | SHA-based trust model for shared config; user approval before executing any commands from `ade.yaml` | Phase 2 |
-| **Hosted mirror redaction** | Secret redaction rules strip `.env`, credentials, API keys before upload; user-configurable exclude patterns | Phase 11 |
-| **Transcript privacy** | Terminal output may contain secrets; transcripts are local-only unless user explicitly opts in to hosted upload | Phase 0, Phase 11 |
-| **Proposal safety** | LLM-generated diffs are previewed before application; all applications create operation records for undo | Phase 11 |
+| **Hosted mirror redaction** | Secret redaction rules strip `.env`, credentials, API keys before upload; user-configurable exclude patterns | Phase 6 |
+| **Transcript privacy** | Terminal output may contain secrets; transcripts are local-only unless user explicitly opts in to hosted upload | Phase 0, Phase 6 |
+| **Proposal safety** | LLM-generated diffs are previewed before application; all applications create operation records for undo | Phase 6 |
 | **Git safety** | Destructive operations (force push, hard reset) require confirmation dialog; all operations tracked with pre/post SHA | Phase 1 |
 | **IPC allowlist** | Only explicitly registered IPC channels are accessible from the renderer; no wildcard patterns | Phase -1 |
 
@@ -1230,15 +1067,15 @@ Every phase follows a consistent error handling pattern:
 | R-01 | `node-pty` native module compatibility across Electron versions | Medium | High | Pin Electron and node-pty versions together; test upgrades in isolation; maintain fallback to basic shell spawn | Phase 0 |
 | R-02 | Monaco Editor bundle size impacts startup time | Medium | Medium | Lazy-load Monaco only when Files or Diff tabs are activated; use code splitting; monitor startup metrics | Phase 3 |
 | R-03 | `git merge-tree` behavior varies across git versions | Medium | Medium | Require git >= 2.38 (when merge-tree gained the 3-way merge mode); document minimum version; fall back to temp-index approach for older git | Phase 5 |
-| R-04 | GitHub API rate limiting impacts PR status polling | High | Low | Implement exponential backoff; cache responses; use conditional requests (ETag/If-Modified-Since); allow user-configurable poll interval | Phase 6 |
-| R-05 | LLM output quality varies unpredictably for narrative generation | High | Medium | Always pair LLM narratives with deterministic data; show confidence scores; allow user override/editing; implement human-in-the-loop review | Phase 11 |
+| R-04 | GitHub API rate limiting impacts PR status polling | High | Low | Implement exponential backoff; cache responses; use conditional requests (ETag/If-Modified-Since); allow user-configurable poll interval | Phase 7 |
+| R-05 | LLM output quality varies unpredictably for narrative generation | High | Medium | Always pair LLM narratives with deterministic data; show confidence scores; allow user override/editing; implement human-in-the-loop review | Phase 6 |
 | R-06 | Large repositories (100K+ files) cause file tree performance issues | Medium | Medium | Lazy loading with depth limiting; virtual scrolling; gitignore filtering; debounced file watching; avoid full-tree loads | Phase 3 |
 | R-07 | Stacked rebase operations can fail in complex merge scenarios | Medium | High | Validate stack integrity before restack; provide clear error messages with recovery instructions; record all SHA transitions for manual recovery | Phase 4 |
-| R-08 | AWS cold start latency for Lambda workers impacts job response time | Medium | Low | Use provisioned concurrency for critical job types; implement client-side polling with exponential backoff; show progress indicators | Phase 11 |
-| R-09 | Cross-platform differences in PTY behavior (Windows vs macOS vs Linux) | Medium | Medium | Test on all three platforms per release; use platform-specific shell detection; handle signal differences (SIGTERM vs TerminateProcess) | Phase 0, Phase 12 |
+| R-08 | AWS cold start latency for Lambda workers impacts job response time | Medium | Low | Use provisioned concurrency for critical job types; implement client-side polling with exponential backoff; show progress indicators | Phase 6 |
+| R-09 | Cross-platform differences in PTY behavior (Windows vs macOS vs Linux) | Medium | Medium | Test on all three platforms per release; use platform-specific shell detection; handle signal differences (SIGTERM vs TerminateProcess) | Phase 0, Phase 9 |
 | R-10 | sql.js (WASM) write performance under heavy operation recording | Low | Medium | Debounced flush strategy (125ms); batch writes during rapid operations; monitor flush frequency; fall back to native SQLite if needed | All phases |
-| R-11 | React Flow performance degrades with many nodes and edges (50+ lanes) | Low | Medium | Virtualize off-screen nodes; throttle edge recomputation; limit risk overlay edges to top-N risks; implement level-of-detail rendering | Phase 8 |
-| R-12 | Secret leakage via terminal transcripts uploaded to hosted mirror | Medium | High | Transcript upload is opt-in only; apply redaction rules before upload; scan for common secret patterns; provide audit log of uploaded content | Phase 11 |
+| R-11 | React Flow performance degrades with many nodes and edges (50+ lanes) | Low | Medium | Virtualize off-screen nodes; throttle edge recomputation; limit risk overlay edges to top-N risks; implement level-of-detail rendering | Phase 7 |
+| R-12 | Secret leakage via terminal transcripts uploaded to hosted mirror | Medium | High | Transcript upload is opt-in only; apply redaction rules before upload; scan for common secret patterns; provide audit log of uploaded content | Phase 6 |
 | R-13 | Concurrent worktree operations cause git lock contention | Medium | Medium | Serialize git operations per-worktree via job engine; implement lock file detection with retry; provide clear "repository locked" error messages | Phase 1, Phase 4 |
 
 ---

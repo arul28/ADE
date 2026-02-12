@@ -11,6 +11,7 @@ import type {
   CreateChildLaneArgs,
   DeleteLaneArgs,
   DockLayout,
+  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileTreeNode,
@@ -66,6 +67,8 @@ import type {
   ProjectInfo,
   PtyCreateArgs,
   PtyCreateResult,
+  ReparentLaneArgs,
+  ReparentLaneResult,
   RenameLaneArgs,
   RestackArgs,
   RestackResult,
@@ -79,6 +82,7 @@ import type {
   TerminalSessionSummary,
   TestRunSummary,
   TestSuiteDefinition,
+  UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -192,6 +196,18 @@ export function registerIpc({
     ctx.logger.debug("layout.set", { key, panels: Object.keys(safe).length });
   });
 
+  ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
+    const ctx = getCtx();
+    const key = `graph_state:${arg.projectId}`;
+    return ctx.db.getJson<GraphPersistedState>(key);
+  });
+
+  ipcMain.handle(IPC.graphStateSet, async (_event, arg: { projectId: string; state: GraphPersistedState }): Promise<void> => {
+    const ctx = getCtx();
+    const key = `graph_state:${arg.projectId}`;
+    ctx.db.setJson(key, arg.state);
+  });
+
   ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = getCtx();
     return await ctx.laneService.list(arg);
@@ -215,6 +231,16 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
     const ctx = getCtx();
     ctx.laneService.rename(arg);
+  });
+
+  ipcMain.handle(IPC.lanesReparent, async (_event, arg: ReparentLaneArgs): Promise<ReparentLaneResult> => {
+    const ctx = getCtx();
+    return await ctx.laneService.reparent(arg);
+  });
+
+  ipcMain.handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.laneService.updateAppearance(arg);
   });
 
   ipcMain.handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {

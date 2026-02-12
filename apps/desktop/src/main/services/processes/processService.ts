@@ -6,6 +6,8 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import type {
   EffectiveProjectConfig,
+  LaneOverlayOverrides,
+  LaneSummary,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -20,6 +22,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
+import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 
 type ManagedTerminationReason = "stopped" | "killed" | "crashed" | "restart";
 
@@ -310,6 +313,25 @@ export function createProcessService({
     }
   };
 
+  const getLaneSummary = async (laneId: string): Promise<LaneSummary> => {
+    const lanes = await laneService.list({ includeArchived: false });
+    const lane = lanes.find((entry) => entry.id === laneId);
+    if (!lane) throw new Error(`Lane not found: ${laneId}`);
+    return lane;
+  };
+
+  const getLaneOverlay = async (laneId: string, config: EffectiveProjectConfig): Promise<LaneOverlayOverrides> => {
+    const lane = await getLaneSummary(laneId);
+    return matchLaneOverlayPolicies(lane, config.laneOverlayPolicies);
+  };
+
+  const applyProcessFilter = (processIds: string[], overlay: LaneOverlayOverrides): string[] => {
+    const allowed = overlay.processIds;
+    if (!allowed || allowed.length === 0) return processIds;
+    const allowedSet = new Set(allowed);
+    return processIds.filter((id) => allowedSet.has(id));
+  };
+
   const markReadinessReady = (entry: ManagedProcessEntry) => {
     clearReadinessTimers(entry);
     entry.runtime.readiness = "ready";
@@ -451,7 +473,7 @@ export function createProcessService({
   const startByDefinition = async (
     laneId: string,
     definition: ProcessDefinition,
-    opts: { skipTrust?: boolean } = {}
+    opts: { skipTrust?: boolean; overlay?: LaneOverlayOverrides } = {}
   ): Promise<ProcessRuntime> => {
     if (!opts.skipTrust) projectConfigService.getExecutableConfig();
     const entry = ensureEntry(laneId, definition.id, definition);
@@ -460,7 +482,13 @@ export function createProcessService({
     if (!definition.command.length) throw new Error(`Process '${definition.id}' has an empty command`);
 
     const laneRoot = laneService.getLaneWorktreePath(laneId);
-    const cwd = path.isAbsolute(definition.cwd) ? definition.cwd : path.join(laneRoot, definition.cwd);
+    const configuredCwd = opts.overlay?.cwd?.trim() ? opts.overlay.cwd : definition.cwd;
+    const cwd = path.isAbsolute(configuredCwd) ? configuredCwd : path.join(laneRoot, configuredCwd);
+    const env = {
+      ...process.env,
+      ...definition.env,
+      ...(opts.overlay?.env ?? {})
+    };
     fs.mkdirSync(path.dirname(processLogPath(laneId, definition.id)), { recursive: true });
 
     const startedAt = nowIso();
@@ -473,7 +501,7 @@ export function createProcessService({
     try {
       child = spawn(definition.command[0]!, definition.command.slice(1), {
         cwd,
-        env: { ...process.env, ...definition.env },
+        env,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"]
       });
@@ -526,10 +554,15 @@ export function createProcessService({
 
   const startById = async (laneId: string, processId: string, opts: { skipTrust?: boolean } = {}) => {
     const config = opts.skipTrust ? projectConfigService.getEffective() : projectConfigService.getExecutableConfig();
+    const overlay = await getLaneOverlay(laneId, config);
     ensureEntriesForLane(laneId, config);
+    const allowedIds = applyProcessFilter(config.processes.map((proc) => proc.id), overlay);
+    if (!allowedIds.includes(processId)) {
+      throw new Error(`Process '${processId}' is disabled by lane overlay policy for this lane`);
+    }
     const definition = config.processes.find((p) => p.id === processId);
     if (!definition) throw new Error(`Process not found: ${processId}`);
-    return await startByDefinition(laneId, definition, opts);
+    return await startByDefinition(laneId, definition, { ...opts, overlay });
   };
 
   const stopById = async (laneId: string, processId: string, intent: ManagedTerminationReason, force: boolean): Promise<ProcessRuntime> => {
@@ -573,24 +606,26 @@ export function createProcessService({
 
   const runStartSet = async (laneId: string, processIds: string[], startOrder: StackStartOrder): Promise<void> => {
     const config = projectConfigService.getExecutableConfig();
+    const overlay = await getLaneOverlay(laneId, config);
     ensureEntriesForLane(laneId, config);
     const byId = new Map(config.processes.map((p) => [p.id, p] as const));
-    const known = processIds.filter((id) => byId.has(id));
+    const known = applyProcessFilter(processIds.filter((id) => byId.has(id)), overlay);
     const ordered = startOrder === "dependency" ? resolveDependencyOrder(known, byId) : sortByDefinitions(known, byId);
     if (startOrder === "dependency") {
       for (const id of ordered) {
-        await startByDefinition(laneId, byId.get(id)!, {});
+        await startByDefinition(laneId, byId.get(id)!, { overlay });
       }
       return;
     }
-    await Promise.all(ordered.map((id) => startByDefinition(laneId, byId.get(id)!, {})));
+    await Promise.all(ordered.map((id) => startByDefinition(laneId, byId.get(id)!, { overlay })));
   };
 
   const runStopSet = async (laneId: string, processIds: string[], startOrder: StackStartOrder): Promise<void> => {
     const config = projectConfigService.get();
+    const overlay = await getLaneOverlay(laneId, config.effective);
     ensureEntriesForLane(laneId, config.effective);
     const byId = new Map(config.effective.processes.map((p) => [p.id, p] as const));
-    const known = processIds.filter((id) => byId.has(id));
+    const known = applyProcessFilter(processIds.filter((id) => byId.has(id)), overlay);
     const ordered = startOrder === "dependency" ? resolveDependencyOrder(known, byId).reverse() : sortByDefinitions(known, byId).reverse();
     await Promise.all(ordered.map((id) => stopById(laneId, id, "stopped", false).catch(() => {})));
   };
@@ -699,4 +734,3 @@ export function createProcessService({
     }
   };
 }
-

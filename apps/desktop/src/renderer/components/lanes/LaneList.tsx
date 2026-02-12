@@ -92,6 +92,23 @@ export function LaneList({
     });
   }, [stackOrderedLanes, effectiveFilter]);
 
+  const isLastSiblingByLaneId = useMemo(() => {
+    const siblingsByParent = new Map<string, string[]>();
+    for (const lane of visibleLanes) {
+      if (!lane.parentLaneId) continue;
+      const list = siblingsByParent.get(lane.parentLaneId) ?? [];
+      list.push(lane.id);
+      siblingsByParent.set(lane.parentLaneId, list);
+    }
+    const out = new Map<string, boolean>();
+    for (const siblingIds of siblingsByParent.values()) {
+      siblingIds.forEach((id, index) => {
+        out.set(id, index === siblingIds.length - 1);
+      });
+    }
+    return out;
+  }, [visibleLanes]);
+
   return (
     <div className="flex h-full flex-col">
       <PaneHeader
@@ -143,6 +160,7 @@ export function LaneList({
                 lane={lane}
                 selected={selectedIdSet.has(lane.id)}
                 primary={lane.id === effectivePrimaryId}
+                isLastSibling={isLastSiblingByLaneId.get(lane.id) ?? false}
                 onSelect={(args) => {
                   if (onLaneSelect) {
                     onLaneSelect(lane.id, args);
@@ -173,10 +191,20 @@ export function LaneList({
               >
                 <span className="relative inline-flex items-center gap-1.5 truncate" style={{ paddingLeft: `${2 + lane.stackDepth * 16}px` }}>
                   {lane.parentLaneId ? (
-                    <span
-                      className="pointer-events-none absolute h-px bg-border/70"
-                      style={{ left: `${lane.stackDepth * 16 - 8}px`, width: "8px" }}
-                    />
+                    <>
+                      <span
+                        className="pointer-events-none absolute w-px bg-border/50"
+                        style={
+                          isLastSiblingByLaneId.get(lane.id)
+                            ? { left: `${(lane.stackDepth - 1) * 16 + 8}px`, top: "0px", bottom: "50%" }
+                            : { left: `${(lane.stackDepth - 1) * 16 + 8}px`, top: "0px", bottom: "0px" }
+                        }
+                      />
+                      <span
+                        className="pointer-events-none absolute h-px bg-border/50"
+                        style={{ left: `${lane.stackDepth * 16 - 8}px`, width: "8px" }}
+                      />
+                    </>
                   ) : null}
                   <span
                     className={cn(

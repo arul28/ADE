@@ -1,6 +1,6 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Bug, FileCode2, GitPullRequest, History, LayoutGrid, Play, Settings, TerminalSquare } from "lucide-react";
+import { Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Settings, TerminalSquare } from "lucide-react";
 import { cn } from "../ui/cn";
 
 const items = [
@@ -9,6 +9,7 @@ const items = [
   { to: "/files", label: "Files", icon: FileCode2 },
   { to: "/terminals", label: "Terminals", icon: TerminalSquare },
   { to: "/conflicts", label: "Conflicts", icon: Bug },
+  { to: "/graph", label: "Graph", icon: Network },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: History },
   { to: "/settings", label: "Settings", icon: Settings }

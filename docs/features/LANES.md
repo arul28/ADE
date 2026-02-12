@@ -26,7 +26,7 @@
   - [Phase 1 — Core Lane Management (DONE)](#phase-1--core-lane-management-done)
   - [Phase 2 — Git Operations (DONE)](#phase-2--git-operations-done)
   - [Phase 3 — Advanced UI (DONE)](#phase-3--advanced-ui-done)
-  - [Phase 4 — Stacks & Advanced Features (TODO)](#phase-4--stacks--advanced-features-todo)
+  - [Phase 4 — Stacks & Advanced Features (DONE)](#phase-4--stacks--advanced-features-done)
 
 ---
 
@@ -327,22 +327,32 @@ lanes (
 | LANES-022 | Multi-lane tabs (open multiple lanes) | DONE |
 | LANES-023 | Lane sub-tabs (Terminals, Packs, Conflicts, PR) | DONE |
 
-### Phase 4 — Stacks & Advanced Features (TODO)
+### Phase 4 — Stacks & Advanced Features (DONE)
 
 | ID | Task | Status |
 |----|------|--------|
-| LANES-024 | Primary lane support (main repo dir, no worktree) | TODO |
-| LANES-025 | Attached lane support (link existing worktree) | TODO |
-| LANES-026 | Stack creation (parent-child relationships) | TODO |
-| LANES-027 | Stack graph visualization in lane list | TODO |
-| LANES-028 | Restack operations (propagate parent to children) | TODO |
-| LANES-029 | Stack-aware status indicators | TODO |
-| LANES-030 | Conflict prediction indicators in lane rows | TODO |
-| LANES-031 | Merge simulation from lane context menu | TODO |
-| LANES-032 | Lane profiles (preset configs per lane type) | TODO |
-| LANES-033 | Lane overlay policies | TODO |
+| LANES-024 | Primary lane support (main repo dir, no worktree) | TODO — **moved to Phase 7** (Workspace Graph) |
+| LANES-025 | Attached lane support (link existing worktree) | TODO — **moved to Phase 7** (Workspace Graph) |
+| LANES-026 | Stack creation (parent-child relationships) | DONE |
+| LANES-027 | Stack graph visualization in lane list | DONE |
+| LANES-028 | Restack operations (propagate parent to children) | DONE |
+| LANES-029 | Stack-aware status indicators | DONE |
+| LANES-030 | Conflict prediction indicators in lane rows | DONE (implemented in Phase 5) |
+| LANES-031 | Merge simulation from lane context menu | TODO — **moved to Phase 7** (Workspace Graph) |
+| LANES-032 | Lane profiles (preset configs per lane type) | TODO — **moved to Phase 9** (Advanced Features) |
+| LANES-033 | Lane overlay policies | DONE |
 | LANES-034 | Keyboard shortcuts for lane navigation | DONE |
 | LANES-035 | Lane search/filter | DONE |
-| LANES-036 | Amend commit | TODO |
-| LANES-037 | Branch create/delete/rename from lane | TODO |
-| LANES-038 | Reset (soft/mixed/hard) with confirmation | TODO |
+| LANES-036 | Amend commit | TODO — **moved to Phase 9** (Advanced Features) |
+| LANES-037 | Branch create/delete/rename from lane | TODO — **moved to Phase 9** (Advanced Features) |
+| LANES-038 | Reset (soft/mixed/hard) with confirmation | TODO — **moved to Phase 9** (Advanced Features) |
+
+---
+
+### Completion Notes
+
+**Phase 4 completed** as part of the `codex/ade-phase-4-5` branch merge (commit `65b7a6b`). Core stack management (LANES-026–029), lane overlay policies (LANES-033), and conflict prediction indicators (LANES-030, via Phase 5) are all operational.
+
+**Remaining tasks** are scheduled as follows:
+- **Phase 7 (Workspace Graph)**: LANES-024, LANES-025, LANES-030 enhancements, LANES-031
+- **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038

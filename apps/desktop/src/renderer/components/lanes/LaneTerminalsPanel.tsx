@@ -160,7 +160,11 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   }, [focusSession, focusedSessionId, refresh, refreshLanes]);
 
   if (!laneId) {
-    return <EmptyState title="No lane selected" description="Select a lane to view its sessions." />;
+    return (
+      <div className="flex h-full min-h-0 items-center justify-center p-3">
+        <EmptyState title="No lane selected" description="Select a lane to view its sessions." />
+      </div>
+    );
   }
 
   const current = sessions.find((s) => s.id === focusedSessionId) ?? sessions[0] ?? null;
@@ -243,7 +247,9 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
       </div>
 
       {sessions.length === 0 ? (
-        <EmptyState title="No sessions yet" description="Start a terminal session for this lane." />
+        <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+          <EmptyState title="No sessions yet" description="Start a terminal session for this lane." />
+        </div>
       ) : viewMode === "tabs" ? (
         <Tabs.Root
           value={current?.id ?? ""}

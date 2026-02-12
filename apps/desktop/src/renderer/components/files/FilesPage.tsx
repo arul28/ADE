@@ -55,11 +55,36 @@ type ContextMenuState = {
   nodeType: "file" | "directory";
 };
 
+type TextPromptState = {
+  title: string;
+  message?: string;
+  value: string;
+  placeholder?: string;
+  confirmLabel: string;
+  validate?: (value: string) => string | null;
+  resolve: (value: string | null) => void;
+};
+
+let monacoInit: Promise<typeof import("monaco-editor")> | null = null;
+
 async function loadMonaco(): Promise<typeof import("monaco-editor")> {
-  if (!(globalThis as any).__adeMonacoFiles) {
-    (globalThis as any).__adeMonacoFiles = import("monaco-editor");
+  if (!monacoInit) {
+    monacoInit = (async () => {
+      const EditorWorker = (await import("monaco-editor/esm/vs/editor/editor.worker?worker")).default;
+      const globalAny = globalThis as typeof globalThis & {
+        MonacoEnvironment?: {
+          getWorker?: (workerId: string, label: string) => Worker;
+        };
+      };
+      const existing = globalAny.MonacoEnvironment;
+      globalAny.MonacoEnvironment = {
+        ...existing,
+        getWorker: existing?.getWorker ?? (() => new EditorWorker())
+      };
+      return await import("monaco-editor");
+    })();
   }
-  return (globalThis as any).__adeMonacoFiles;
+  return await monacoInit;
 }
 
 function parseConflictHunks(text: string): ConflictHunk[] {
@@ -206,6 +231,8 @@ export function FilesPage() {
   const [showSearch, setShowSearch] = useState(false);
 
   const [resolvedConflictKeys, setResolvedConflictKeys] = useState<Set<string>>(new Set());
+  const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
+  const [textPromptError, setTextPromptError] = useState<string | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -214,6 +241,7 @@ export function FilesPage() {
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<import("monaco-editor").editor.ITextModel | null>(null);
+  const modelKeyRef = useRef<string | null>(null);
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
@@ -227,6 +255,55 @@ export function FilesPage() {
     () => openTabs.some((tab) => tab.content !== tab.savedContent),
     [openTabs]
   );
+
+  const requestTextInput = useCallback(
+    (args: {
+      title: string;
+      message?: string;
+      defaultValue?: string;
+      placeholder?: string;
+      confirmLabel?: string;
+      validate?: (value: string) => string | null;
+    }): Promise<string | null> => {
+      return new Promise((resolve) => {
+        const defaultValue = args.defaultValue ?? "";
+        setTextPromptError(null);
+        setTextPrompt({
+          title: args.title,
+          message: args.message,
+          value: defaultValue,
+          placeholder: args.placeholder,
+          confirmLabel: args.confirmLabel ?? "Confirm",
+          validate: args.validate,
+          resolve
+        });
+      });
+    },
+    []
+  );
+
+  const cancelTextPrompt = useCallback(() => {
+    setTextPrompt((prev) => {
+      if (prev) prev.resolve(null);
+      return null;
+    });
+    setTextPromptError(null);
+  }, []);
+
+  const submitTextPrompt = useCallback(() => {
+    setTextPrompt((prev) => {
+      if (!prev) return prev;
+      const trimmed = prev.value.trim();
+      const validationError = prev.validate?.(trimmed) ?? null;
+      if (validationError) {
+        setTextPromptError(validationError);
+        return prev;
+      }
+      setTextPromptError(null);
+      prev.resolve(trimmed);
+      return null;
+    });
+  }, []);
 
   const switchWorkspace = useCallback((nextWorkspaceId: string) => {
     if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
@@ -401,14 +478,24 @@ export function FilesPage() {
       return;
     }
     if (!workspaceId) return;
-    const next = window.prompt("Rename path", targetPath);
+    const next = await requestTextInput({
+      title: "Rename path",
+      message: "Enter the new path.",
+      defaultValue: targetPath,
+      confirmLabel: "Rename",
+      validate: (value) => {
+        if (!value) return "Path is required.";
+        if (value === targetPath) return "Path is unchanged.";
+        return null;
+      }
+    });
     if (!next || next === targetPath) return;
     await window.ade.files.rename({ workspaceId, oldPath: targetPath, newPath: next });
     setOpenTabs((prev) => prev.map((tab) => (tab.path === targetPath ? { ...tab, path: next } : tab)));
     if (activeTabPath === targetPath) setActiveTabPath(next);
     setSelectedNodePath(next);
     await refreshTree();
-  }, [canEdit, workspaceId, activeTabPath, refreshTree]);
+  }, [canEdit, workspaceId, requestTextInput, activeTabPath, refreshTree]);
 
   const deletePath = useCallback(async (targetPath: string) => {
     if (!canEdit) {
@@ -432,12 +519,18 @@ export function FilesPage() {
     }
     if (!workspaceId) return;
     const defaultPath = basePath ? `${basePath.replace(/\/$/, "")}/new-file.txt` : "new-file.txt";
-    const next = window.prompt("New file path", defaultPath);
+    const next = await requestTextInput({
+      title: "New file",
+      message: "Enter file path relative to workspace.",
+      defaultValue: defaultPath,
+      confirmLabel: "Create file",
+      validate: (value) => (value ? null : "File path is required.")
+    });
     if (!next) return;
     await window.ade.files.createFile({ workspaceId, path: next, content: "" });
     await refreshTree();
     await openFile(next);
-  }, [canEdit, workspaceId, refreshTree, openFile]);
+  }, [canEdit, workspaceId, requestTextInput, refreshTree, openFile]);
 
   const createDirectoryAt = useCallback(async (basePath?: string) => {
     if (!canEdit) {
@@ -446,11 +539,17 @@ export function FilesPage() {
     }
     if (!workspaceId) return;
     const defaultPath = basePath ? `${basePath.replace(/\/$/, "")}/new-folder` : "new-folder";
-    const next = window.prompt("New directory path", defaultPath);
+    const next = await requestTextInput({
+      title: "New folder",
+      message: "Enter folder path relative to workspace.",
+      defaultValue: defaultPath,
+      confirmLabel: "Create folder",
+      validate: (value) => (value ? null : "Folder path is required.")
+    });
     if (!next) return;
     await window.ade.files.createDirectory({ workspaceId, path: next });
     await refreshTree();
-  }, [canEdit, workspaceId, refreshTree]);
+  }, [canEdit, workspaceId, requestTextInput, refreshTree]);
 
   useEffect(() => {
     window.ade.files.listWorkspaces()
@@ -614,6 +713,11 @@ export function FilesPage() {
     return () => {
       disposed = true;
       try {
+        editorRef.current?.setModel(null);
+      } catch {
+        // ignore
+      }
+      try {
         modelRef.current?.dispose();
       } catch {
         // ignore
@@ -624,6 +728,7 @@ export function FilesPage() {
         // ignore
       }
       modelRef.current = null;
+      modelKeyRef.current = null;
       editorRef.current = null;
     };
   }, [mode, canEdit]);
@@ -635,20 +740,45 @@ export function FilesPage() {
 
   useEffect(() => {
     if (!editorRef.current || !monacoRef.current || mode !== "edit") return;
+    const editor = editorRef.current;
     if (!activeTab) {
-      editorRef.current.setValue("");
+      try {
+        editor.setModel(null);
+      } catch {
+        // ignore
+      }
+      try {
+        modelRef.current?.dispose();
+      } catch {
+        // ignore
+      }
+      modelRef.current = null;
+      modelKeyRef.current = null;
       return;
     }
     const monaco = monacoRef.current;
+    const language = activeTab.languageId || "plaintext";
+    const modelKey = `${activeTab.path}::${language}`;
+    if (modelRef.current && modelKeyRef.current === modelKey) {
+      editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
+      return;
+    }
+
+    try {
+      editor.setModel(null);
+    } catch {
+      // ignore
+    }
     try {
       modelRef.current?.dispose();
     } catch {
       // ignore
     }
-    modelRef.current = monaco.editor.createModel(activeTab.content, activeTab.languageId || "plaintext");
-    editorRef.current.setModel(modelRef.current);
-    editorRef.current.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
-  }, [activeTab, mode, canEdit]);
+    modelRef.current = monaco.editor.createModel(activeTab.content, language);
+    modelKeyRef.current = modelKey;
+    editor.setModel(modelRef.current);
+    editor.updateOptions({ readOnly: !canEdit || activeTab.isBinary });
+  }, [activeTab?.path, activeTab?.languageId, activeTab?.isBinary, mode, canEdit]);
 
   useEffect(() => {
     if (!activeTab || !editorRef.current || mode !== "edit") return;
@@ -657,7 +787,7 @@ export function FilesPage() {
     editorApplyingRef.current = true;
     editorRef.current.setValue(activeTab.content);
     editorApplyingRef.current = false;
-  }, [activeTab, mode]);
+  }, [activeTab?.path, activeTab?.content, mode]);
 
   useEffect(() => {
     setResolvedConflictKeys(new Set());
@@ -1053,6 +1183,46 @@ export function FilesPage() {
                 </button>
               ))}
               {!searchResults.length ? <div className="px-3 py-2 text-xs text-muted-fg">No matches</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {textPrompt ? (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-[min(520px,100%)] rounded border border-border bg-card p-3 shadow-2xl">
+            <div className="mb-1 text-sm font-semibold text-fg">{textPrompt.title}</div>
+            {textPrompt.message ? <div className="mb-2 text-xs text-muted-fg">{textPrompt.message}</div> : null}
+            <input
+              autoFocus
+              value={textPrompt.value}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setTextPrompt((prev) => (prev ? { ...prev, value: nextValue } : prev));
+                if (textPromptError) setTextPromptError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelTextPrompt();
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitTextPrompt();
+                }
+              }}
+              placeholder={textPrompt.placeholder}
+              className="h-9 w-full rounded border border-border bg-bg px-2 text-sm outline-none"
+            />
+            {textPromptError ? <div className="mt-2 text-xs text-red-300">{textPromptError}</div> : null}
+            <div className="mt-3 flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={cancelTextPrompt}>
+                Cancel
+              </Button>
+              <Button size="sm" variant="primary" onClick={submitTextPrompt}>
+                {textPrompt.confirmLabel}
+              </Button>
             </div>
           </div>
         </div>

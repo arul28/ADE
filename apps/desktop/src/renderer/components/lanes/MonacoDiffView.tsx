@@ -13,14 +13,43 @@ async function loadMonaco(): Promise<typeof import("monaco-editor")> {
     monacoInit = (async () => {
       // Configure the base editor worker (good enough for plain text + basic languages).
       const EditorWorker = (await import("monaco-editor/esm/vs/editor/editor.worker?worker")).default;
-      (self as any).MonacoEnvironment = {
-        getWorker: () => new EditorWorker()
+      const globalAny = globalThis as typeof globalThis & {
+        MonacoEnvironment?: {
+          getWorker?: (workerId: string, label: string) => Worker;
+        };
+      };
+      const existing = globalAny.MonacoEnvironment;
+      globalAny.MonacoEnvironment = {
+        ...existing,
+        getWorker: existing?.getWorker ?? (() => new EditorWorker())
       };
 
       return await import("monaco-editor");
     })();
   }
   return await monacoInit;
+}
+
+function disposeDiffModels(editor: import("monaco-editor").editor.IStandaloneDiffEditor | null, models: {
+  original: import("monaco-editor").editor.ITextModel;
+  modified: import("monaco-editor").editor.ITextModel;
+} | null): void {
+  try {
+    editor?.setModel(null);
+  } catch {
+    // ignore
+  }
+  if (!models) return;
+  try {
+    models.original.dispose();
+  } catch {
+    // ignore
+  }
+  try {
+    models.modified.dispose();
+  } catch {
+    // ignore
+  }
 }
 
 export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; editable?: boolean; className?: string }>(
@@ -30,6 +59,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const modelsRef = useRef<{ original: import("monaco-editor").editor.ITextModel; modified: import("monaco-editor").editor.ITextModel } | null>(
       null
     );
+    const modelIdentityRef = useRef<string | null>(null);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
 
@@ -66,20 +96,15 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
 
       return () => {
         cancelled = true;
+        disposeDiffModels(diffEditorRef.current, modelsRef.current);
+        modelsRef.current = null;
+        modelIdentityRef.current = null;
         try {
           diffEditorRef.current?.dispose();
         } catch {
           // ignore
         }
         diffEditorRef.current = null;
-
-        try {
-          modelsRef.current?.original.dispose();
-          modelsRef.current?.modified.dispose();
-        } catch {
-          // ignore
-        }
-        modelsRef.current = null;
       };
     }, []);
 
@@ -91,17 +116,20 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
           const editor = diffEditorRef.current;
           if (!editor) return;
 
-          try {
-            modelsRef.current?.original.dispose();
-            modelsRef.current?.modified.dispose();
-          } catch {
-            // ignore
+          const identity = `${diff.path}::${diff.language ?? ""}::${diff.original.text ?? ""}::${diff.modified.text ?? ""}`;
+          if (modelIdentityRef.current === identity) {
+            editor.getModifiedEditor().updateOptions({ readOnly: !editable });
+            editor.getOriginalEditor().updateOptions({ readOnly: true });
+            return;
           }
+
+          disposeDiffModels(editor, modelsRef.current);
 
           const lang = diff.language ?? undefined;
           const original = monaco.editor.createModel(diff.original.text ?? "", lang);
           const modified = monaco.editor.createModel(diff.modified.text ?? "", lang);
           modelsRef.current = { original, modified };
+          modelIdentityRef.current = identity;
           editor.setModel({ original, modified });
           editor.getModifiedEditor().updateOptions({ readOnly: !editable });
           editor.getOriginalEditor().updateOptions({ readOnly: true });

@@ -13,6 +13,7 @@ import type {
   DeleteLaneArgs,
   DiffChanges,
   DockLayout,
+  GraphPersistedState,
   FileChangeEvent,
   FileContent,
   FileDiff,
@@ -76,8 +77,11 @@ import type {
   RunConflictPredictionArgs,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  ReparentLaneArgs,
+  ReparentLaneResult,
   RestackArgs,
   RestackResult,
+  UpdateLaneAppearanceArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -106,6 +110,9 @@ contextBridge.exposeInMainWorld("ade", {
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
+    reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => ipcRenderer.invoke(IPC.lanesReparent, args),
+    updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesUpdateAppearance, args),
     archive: async (args: ArchiveLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesArchive, args),
     delete: async (args: DeleteLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesDelete, args),
     getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
@@ -218,6 +225,12 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (layoutId: string): Promise<DockLayout | null> => ipcRenderer.invoke(IPC.layoutGet, { layoutId }),
     set: async (layoutId: string, layout: DockLayout): Promise<void> =>
       ipcRenderer.invoke(IPC.layoutSet, { layoutId, layout })
+  },
+  graphState: {
+    get: async (projectId: string): Promise<GraphPersistedState | null> =>
+      ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
+    set: async (projectId: string, state: GraphPersistedState): Promise<void> =>
+      ipcRenderer.invoke(IPC.graphStateSet, { projectId, state })
   },
   processes: {
     listDefinitions: async (): Promise<ProcessDefinition[]> => ipcRenderer.invoke(IPC.processesListDefinitions),

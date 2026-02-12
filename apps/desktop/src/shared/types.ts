@@ -46,9 +46,14 @@ export type LaneSummary = {
   parentStatus: LaneStatus | null;
   isEditProtected: boolean;
   status: LaneStatus;
+  color: string | null;
+  icon: LaneIcon | null;
+  tags: string[];
   createdAt: string;
   archivedAt?: string | null;
 };
+
+export type LaneIcon = "star" | "flag" | "bolt" | "shield" | "tag" | null;
 
 export type ConflictStatusValue =
   | "merge-ready"
@@ -85,6 +90,14 @@ export type RiskMatrixEntry = {
   riskLevel: ConflictRiskLevel;
   overlapCount: number;
   hasConflict: boolean;
+  computedAt: string | null;
+  stale: boolean;
+};
+
+export type BatchOverlapEntry = {
+  laneAId: string;
+  laneBId: string;
+  files: string[];
 };
 
 export type MergeSimulationArgs = {
@@ -122,12 +135,21 @@ export type ConflictPrediction = {
 export type BatchAssessmentResult = {
   lanes: ConflictStatus[];
   matrix: RiskMatrixEntry[];
+  overlaps: BatchOverlapEntry[];
   computedAt: string;
+  progress?: {
+    completedPairs: number;
+    totalPairs: number;
+  };
+  truncated?: boolean;
+  maxAutoLanes?: number;
+  totalLanes?: number;
+  comparedLaneIds?: string[];
 };
 
 export type GetLaneConflictStatusArgs = { laneId: string };
 export type ListOverlapsArgs = { laneId: string };
-export type RunConflictPredictionArgs = { laneId?: string };
+export type RunConflictPredictionArgs = { laneId?: string; laneIds?: string[] };
 
 export type ConflictChipKind = "new-overlap" | "high-risk";
 
@@ -138,12 +160,23 @@ export type ConflictChip = {
   overlapCount: number;
 };
 
-export type ConflictEventPayload = {
-  type: "prediction-complete";
-  computedAt: string;
-  laneIds: string[];
-  chips: ConflictChip[];
-};
+export type ConflictEventPayload =
+  | {
+      type: "prediction-progress";
+      computedAt: string;
+      laneIds: string[];
+      completedPairs: number;
+      totalPairs: number;
+      pair?: { laneAId: string; laneBId: string };
+    }
+  | {
+      type: "prediction-complete";
+      computedAt: string;
+      laneIds: string[];
+      chips: ConflictChip[];
+      completedPairs: number;
+      totalPairs: number;
+    };
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
@@ -230,6 +263,28 @@ export type AttachLaneArgs = {
 export type RenameLaneArgs = {
   laneId: string;
   name: string;
+};
+
+export type ReparentLaneArgs = {
+  laneId: string;
+  newParentLaneId: string;
+};
+
+export type ReparentLaneResult = {
+  laneId: string;
+  previousParentLaneId: string | null;
+  newParentLaneId: string;
+  previousBaseRef: string;
+  newBaseRef: string;
+  preHeadSha: string | null;
+  postHeadSha: string | null;
+};
+
+export type UpdateLaneAppearanceArgs = {
+  laneId: string;
+  color?: string | null;
+  icon?: LaneIcon;
+  tags?: string[] | null;
 };
 
 export type ArchiveLaneArgs = {
@@ -426,6 +481,45 @@ export type FilesSearchTextMatch = {
 
 // react-resizable-panels uses a map of panel id -> percentage (0..100)
 export type DockLayout = Record<string, number>;
+
+export type GraphViewMode = "stack" | "risk" | "activity" | "all";
+
+export type GraphNodePosition = {
+  x: number;
+  y: number;
+};
+
+export type GraphStatusFilter = "conflict" | "at-risk" | "clean" | "unknown";
+
+export type GraphFilterState = {
+  status: GraphStatusFilter[];
+  laneTypes: LaneType[];
+  tags: string[];
+  hidePrimary: boolean;
+  hideAttached: boolean;
+  hideArchived: boolean;
+  rootLaneId: string | null;
+  search: string;
+};
+
+export type GraphLayoutSnapshot = {
+  nodePositions: Record<string, GraphNodePosition>;
+  collapsedLaneIds: string[];
+  viewMode: GraphViewMode;
+  filters: GraphFilterState;
+  updatedAt: string;
+};
+
+export type GraphLayoutPreset = {
+  name: string;
+  byViewMode: Record<GraphViewMode, GraphLayoutSnapshot>;
+  updatedAt: string;
+};
+
+export type GraphPersistedState = {
+  presets: GraphLayoutPreset[];
+  activePreset: string;
+};
 
 export type ProcessRestartPolicy = "never" | "on_crash";
 export type StackStartOrder = "parallel" | "dependency";

@@ -5,7 +5,7 @@
   "type": "module",
   "main": "electron.cjs",
   "scripts": {
-    "dev": "concurrently -k -n renderer,main,electron \"vite --port 5173\" \"tsup --watch\" \"wait-on tcp:5173 && wait-on file:dist/main/main.cjs && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "dev": "node ./scripts/ensure-electron.cjs && concurrently -k -n renderer,main,electron \"vite --port 5173\" \"tsup --watch\" \"wait-on tcp:5173 && wait-on file:dist/main/main.cjs && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "tsup && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo \"(todo)\"",
@@ -15,6 +15,7 @@
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-tabs": "^1.1.13",
+    "@xyflow/react": "^12.5.0",
     "chokidar": "^4.0.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.563.0",

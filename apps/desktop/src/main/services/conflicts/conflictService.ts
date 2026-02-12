@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  BatchOverlapEntry,
   BatchAssessmentResult,
   ConflictChip,
   ConflictEventPayload,
@@ -52,6 +53,9 @@ const RISK_SCORE: Record<ConflictRiskLevel, number> = {
   high: 3
 };
 
+const MAX_AUTO_LANES = 15;
+const STALE_MS = 5 * 60_000;
+
 function safeJsonArray<T>(raw: string | null): T[] {
   if (!raw) return [];
   try {
@@ -88,6 +92,23 @@ function riskFromPrediction(status: PredictionStatus, overlapCount: number, conf
   if (overlapCount <= 2) return "low";
   if (overlapCount <= 6) return "medium";
   return "high";
+}
+
+function isStalePrediction(predictedAt: string | null | undefined): boolean {
+  if (!predictedAt) return true;
+  const ts = Date.parse(predictedAt);
+  if (Number.isNaN(ts)) return true;
+  return Date.now() - ts > STALE_MS;
+}
+
+function extractOverlapFiles(row: ConflictPredictionRow | undefined): string[] {
+  if (!row) return [];
+  const overlaps = safeJsonArray<string>(row.overlap_files_json ?? null);
+  const conflicting = safeJsonArray<StoredConflictFile>(row.conflicting_files_json ?? null);
+  return uniqueSorted([
+    ...overlaps.map((value) => value.trim()).filter(Boolean),
+    ...conflicting.map((value) => value.path?.trim() ?? "").filter(Boolean)
+  ]);
 }
 
 function parseDiffNameOnly(stdout: string): string[] {
@@ -248,6 +269,36 @@ export function createConflictService({
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
+  const pairLocks = new Map<string, Promise<void>>();
+  const pairQueued = new Set<string>();
+
+  const runSerializedPairTask = async (pairId: string, task: () => Promise<void>): Promise<void> => {
+    const active = pairLocks.get(pairId);
+    if (active) {
+      pairQueued.add(pairId);
+      await active;
+      if (!pairQueued.has(pairId)) return;
+      pairQueued.delete(pairId);
+    }
+
+    const running = (async () => {
+      await task();
+    })().finally(() => {
+      const current = pairLocks.get(pairId);
+      if (current === running) {
+        pairLocks.delete(pairId);
+      }
+    });
+
+    pairLocks.set(pairId, running);
+    await running;
+
+    if (pairQueued.has(pairId)) {
+      pairQueued.delete(pairId);
+      await runSerializedPairTask(pairId, task);
+    }
+  };
+
   const listActiveLanes = async (): Promise<LaneSummary[]> => {
     const lanes = await laneService.list({ includeArchived: false });
     return lanes.filter((lane) => !lane.archivedAt);
@@ -550,23 +601,31 @@ export function createConflictService({
     };
   };
 
-  const getRiskMatrixInternal = async (lanes: LaneSummary[]): Promise<RiskMatrixEntry[]> => {
+  const getRiskMatrixAndOverlaps = async (lanes: LaneSummary[]): Promise<{
+    matrix: RiskMatrixEntry[];
+    overlaps: BatchOverlapEntry[];
+  }> => {
     const latest = getLatestRows();
     const matrix: RiskMatrixEntry[] = [];
+    const overlapEntries: BatchOverlapEntry[] = [];
 
     for (const lane of lanes) {
       const row = latest.get(`base:${lane.id}`);
-      const overlaps = safeJsonArray<string>(row?.overlap_files_json ?? null);
+      const overlapFiles = extractOverlapFiles(row);
       const conflicting = safeJsonArray<StoredConflictFile>(row?.conflicting_files_json ?? null);
       matrix.push({
         laneAId: lane.id,
         laneBId: lane.id,
-        riskLevel: riskFromPrediction(row?.status ?? "unknown", overlaps.length, conflicting.length),
-        overlapCount: new Set([
-          ...overlaps,
-          ...conflicting.map((entry) => entry.path)
-        ]).size,
-        hasConflict: (row?.status ?? "unknown") === "conflict" || conflicting.length > 0
+        riskLevel: riskFromPrediction(row?.status ?? "unknown", overlapFiles.length, conflicting.length),
+        overlapCount: overlapFiles.length,
+        hasConflict: (row?.status ?? "unknown") === "conflict" || conflicting.length > 0,
+        computedAt: row?.predicted_at ?? null,
+        stale: isStalePrediction(row?.predicted_at)
+      });
+      overlapEntries.push({
+        laneAId: lane.id,
+        laneBId: lane.id,
+        files: overlapFiles
       });
     }
 
@@ -576,32 +635,51 @@ export function createConflictService({
         const laneB = lanes[j]!;
         const key = `pair:${pairKey(laneA.id, laneB.id)}`;
         const row = latest.get(key);
-        const overlaps = safeJsonArray<string>(row?.overlap_files_json ?? null);
+        const overlapFiles = extractOverlapFiles(row);
         const conflicting = safeJsonArray<StoredConflictFile>(row?.conflicting_files_json ?? null);
         matrix.push({
           laneAId: laneA.id,
           laneBId: laneB.id,
-          riskLevel: riskFromPrediction(row?.status ?? "unknown", overlaps.length, conflicting.length),
-          overlapCount: new Set([
-            ...overlaps,
-            ...conflicting.map((entry) => entry.path)
-          ]).size,
-          hasConflict: (row?.status ?? "unknown") === "conflict" || conflicting.length > 0
+          riskLevel: riskFromPrediction(row?.status ?? "unknown", overlapFiles.length, conflicting.length),
+          overlapCount: overlapFiles.length,
+          hasConflict: (row?.status ?? "unknown") === "conflict" || conflicting.length > 0,
+          computedAt: row?.predicted_at ?? null,
+          stale: isStalePrediction(row?.predicted_at)
+        });
+        overlapEntries.push({
+          laneAId: laneA.id,
+          laneBId: laneB.id,
+          files: overlapFiles
         });
       }
     }
 
-    return matrix;
+    return {
+      matrix,
+      overlaps: overlapEntries
+    };
   };
 
-  const buildBatchAssessment = async (): Promise<BatchAssessmentResult> => {
+  const buildBatchAssessment = async (options: {
+    progress?: { completedPairs: number; totalPairs: number };
+    truncated?: boolean;
+    comparedLaneIds?: string[];
+    maxAutoLanes?: number;
+    totalLanes?: number;
+  } = {}): Promise<BatchAssessmentResult> => {
     const lanes = await listActiveLanes();
     const statuses = await Promise.all(lanes.map((lane) => getLaneStatusInternal(lane)));
-    const matrix = await getRiskMatrixInternal(lanes);
+    const { matrix, overlaps } = await getRiskMatrixAndOverlaps(lanes);
     return {
       lanes: statuses,
       matrix,
-      computedAt: new Date().toISOString()
+      overlaps,
+      computedAt: new Date().toISOString(),
+      progress: options.progress,
+      truncated: options.truncated,
+      comparedLaneIds: options.comparedLaneIds,
+      maxAutoLanes: options.maxAutoLanes,
+      totalLanes: options.totalLanes
     };
   };
 
@@ -723,7 +801,7 @@ export function createConflictService({
 
   const getRiskMatrix = async (): Promise<RiskMatrixEntry[]> => {
     const lanes = await listActiveLanes();
-    return await getRiskMatrixInternal(lanes);
+    return (await getRiskMatrixAndOverlaps(lanes)).matrix;
   };
 
   const simulateMerge = async (args: MergeSimulationArgs): Promise<MergeSimulationResult> => {
@@ -817,7 +895,9 @@ export function createConflictService({
         return {
           lanes: [],
           matrix: [],
-          computedAt: new Date().toISOString()
+          overlaps: [],
+          computedAt: new Date().toISOString(),
+          progress: { completedPairs: 0, totalPairs: 0 }
         };
       }
 
@@ -827,10 +907,56 @@ export function createConflictService({
         throw new Error(`Lane not found: ${args.laneId}`);
       }
 
-      const predictionLanes = targetLane ? [targetLane] : lanes;
-      for (const lane of predictionLanes) {
+      const requestedLaneIds = uniqueSorted(
+        (args.laneIds ?? [])
+          .map((laneId) => laneId.trim())
+          .filter(Boolean)
+      );
+
+      let autoLimited = false;
+      let comparisonLanes: LaneSummary[] = [];
+      let basePredictionLanes: LaneSummary[] = [];
+      let totalPairs = 0;
+
+      if (targetLane) {
+        comparisonLanes = lanes;
+        basePredictionLanes = [targetLane];
+        totalPairs = Math.max(0, lanes.length - 1);
+      } else if (requestedLaneIds.length > 0) {
+        const requestedSet = new Set(requestedLaneIds);
+        const selected = lanes.filter((lane) => requestedSet.has(lane.id));
+        if (selected.length === 0) {
+          throw new Error("No valid lanes selected for conflict prediction");
+        }
+        autoLimited = selected.length > MAX_AUTO_LANES;
+        comparisonLanes = selected.slice(0, autoLimited ? MAX_AUTO_LANES : selected.length);
+        basePredictionLanes = comparisonLanes;
+        totalPairs = Math.max(0, (comparisonLanes.length * (comparisonLanes.length - 1)) / 2);
+      } else {
+        autoLimited = lanes.length > MAX_AUTO_LANES;
+        comparisonLanes = lanes.slice(0, autoLimited ? MAX_AUTO_LANES : lanes.length);
+        basePredictionLanes = comparisonLanes;
+        totalPairs = Math.max(0, (comparisonLanes.length * (comparisonLanes.length - 1)) / 2);
+      }
+      let completedPairs = 0;
+
+      const emitProgress = (pair?: { laneAId: string; laneBId: string }) => {
+        if (!onEvent) return;
+        onEvent({
+          type: "prediction-progress",
+          computedAt: new Date().toISOString(),
+          laneIds: comparisonLanes.map((lane) => lane.id),
+          completedPairs,
+          totalPairs,
+          pair
+        });
+      };
+
+      for (const lane of basePredictionLanes) {
         try {
-          await predictLaneVsBase(lane);
+          await runSerializedPairTask(`base:${lane.id}`, async () => {
+            await predictLaneVsBase(lane);
+          });
         } catch (error) {
           logger.warn("conflicts.predict_lane_base_failed", {
             laneId: lane.id,
@@ -843,7 +969,10 @@ export function createConflictService({
         for (const peer of lanes) {
           if (peer.id === targetLane.id) continue;
           try {
-            await predictPairwise(targetLane, peer);
+            const pairId = `pair:${pairKey(targetLane.id, peer.id)}`;
+            await runSerializedPairTask(pairId, async () => {
+              await predictPairwise(targetLane, peer);
+            });
           } catch (error) {
             logger.warn("conflicts.predict_pair_failed", {
               laneId: targetLane.id,
@@ -851,14 +980,19 @@ export function createConflictService({
               error: error instanceof Error ? error.message : String(error)
             });
           }
+          completedPairs += 1;
+          emitProgress({ laneAId: targetLane.id, laneBId: peer.id });
         }
       } else {
-        for (let i = 0; i < lanes.length; i++) {
-          for (let j = i + 1; j < lanes.length; j++) {
-            const laneA = lanes[i]!;
-            const laneB = lanes[j]!;
+        for (let i = 0; i < comparisonLanes.length; i++) {
+          for (let j = i + 1; j < comparisonLanes.length; j++) {
+            const laneA = comparisonLanes[i]!;
+            const laneB = comparisonLanes[j]!;
             try {
-              await predictPairwise(laneA, laneB);
+              const pairId = `pair:${pairKey(laneA.id, laneB.id)}`;
+              await runSerializedPairTask(pairId, async () => {
+                await predictPairwise(laneA, laneB);
+              });
             } catch (error) {
               logger.warn("conflicts.predict_pair_failed", {
                 laneId: laneA.id,
@@ -866,11 +1000,19 @@ export function createConflictService({
                 error: error instanceof Error ? error.message : String(error)
               });
             }
+            completedPairs += 1;
+            emitProgress({ laneAId: laneA.id, laneBId: laneB.id });
           }
         }
       }
 
-      const after = await buildBatchAssessment();
+      const after = await buildBatchAssessment({
+        progress: { completedPairs, totalPairs },
+        truncated: targetLane ? false : autoLimited,
+        comparedLaneIds: comparisonLanes.map((lane) => lane.id),
+        maxAutoLanes: targetLane ? undefined : autoLimited ? MAX_AUTO_LANES : undefined,
+        totalLanes: lanes.length
+      });
       await writeConflictPacks(after);
       const chips = buildChips(before.matrix, after.matrix);
       if (onEvent) {
@@ -879,12 +1021,14 @@ export function createConflictService({
           .filter((peerId): peerId is string => Boolean(peerId));
         const laneIds = targetLane
           ? uniqueSorted([targetLane.id, ...relatedPeerIds])
-          : lanes.map((lane) => lane.id);
+          : comparisonLanes.map((lane) => lane.id);
         onEvent({
           type: "prediction-complete",
           computedAt: after.computedAt,
           laneIds,
-          chips
+          chips,
+          completedPairs,
+          totalPairs
         });
       }
       return after;
@@ -898,7 +1042,15 @@ export function createConflictService({
       if (!hasAny) {
         return await runPrediction({});
       }
-      return await buildBatchAssessment();
+      const lanes = await listActiveLanes();
+      const autoLimited = lanes.length > MAX_AUTO_LANES;
+      const comparedLaneIds = lanes.slice(0, autoLimited ? MAX_AUTO_LANES : lanes.length).map((lane) => lane.id);
+      return await buildBatchAssessment({
+        truncated: autoLimited,
+        comparedLaneIds,
+        maxAutoLanes: autoLimited ? MAX_AUTO_LANES : undefined,
+        totalLanes: lanes.length
+      });
     };
 
   return {
