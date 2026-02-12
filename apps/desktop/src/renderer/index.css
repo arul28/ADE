@@ -10,45 +10,113 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-:root {
-  /* LIGHT Theme ("Clean Paper") */
-  --color-bg: hsl(40 20% 98%);
-  /* #FDFBF7 */
-  --color-fg: hsl(30 10% 10%);
-  /* #1C1917 */
+:root,
+[data-theme="e-paper"] {
+  /* E-PAPER Theme (Warm/Light) - DEFAULT */
+  --color-bg: #fdfbf7;
+  --color-fg: #1c1917;
 
-  --color-card: hsl(40 20% 98%);
-  --color-card-fg: hsl(30 10% 10%);
+  --color-card: #fdfbf7;
+  --color-card-fg: #1c1917;
 
-  --color-muted: hsl(40 10% 94%);
-  /* #F2F0ED */
-  --color-muted-fg: hsl(30 5% 40%);
-  /* #6B665E */
+  --color-muted: #f2f0ed;
+  --color-muted-fg: #6b665e;
 
-  --color-border: hsl(30 8% 85%);
-  /* #DBD8D3 */
+  --color-border: #dbd8d3;
 
-  --color-accent: hsl(10 70% 45%);
-  /* #C22323 */
-  --color-accent-fg: hsl(0 0% 100%);
+  --color-accent: #c22323;
+  --color-accent-fg: #ffffff;
 }
 
-[data-theme="dark"] {
-  /* DARK Theme ("Bloomberg Terminal") */
+[data-theme="bloomberg"] {
+  /* BLOOMBERG Theme (Dark Terminal) */
   --color-bg: #0a0a0a;
-  --color-fg: #ededed;
+  --color-fg: #ff9900;
 
   --color-card: #111111;
-  --color-card-fg: #ededed;
+  --color-card-fg: #ff9900;
 
   --color-muted: #1a1a1a;
   --color-muted-fg: #888888;
 
   --color-border: #333333;
 
-  --color-accent: #f59e0b;
-  /* Amber */
+  --color-accent: #ff6600;
   --color-accent-fg: #000000;
+}
+
+[data-theme="github"] {
+  /* GITHUB Theme (Dark Navy) */
+  --color-bg: #0d1117;
+  --color-fg: #c9d1d9;
+
+  --color-card: #161b22;
+  --color-card-fg: #c9d1d9;
+
+  --color-muted: #21262d;
+  --color-muted-fg: #8b949e;
+
+  --color-border: #30363d;
+
+  --color-accent: #58a6ff;
+  --color-accent-fg: #ffffff;
+}
+
+[data-theme="rainbow"] {
+  /* RAINBOW Theme (Vibrant Dark) */
+  --color-bg: #1b1f23;
+  --color-fg: #e6edf3;
+
+  --color-card: #24292e;
+  --color-card-fg: #e6edf3;
+
+  --color-muted: #2f363d;
+  --color-muted-fg: #959da5;
+
+  --color-border: #444c56;
+
+  --color-accent: #c084fc;
+  /* Purple/Pink vibe */
+  --color-accent-fg: #ffffff;
+}
+
+[data-theme="sky"] {
+  /* SKY Theme (Light / Analytical) */
+  --color-bg: #f0f6ff;
+  --color-fg: #1e3a8a;
+
+  --color-card: #ffffff;
+  --color-card-fg: #1e3a8a;
+
+  --color-muted: #dbeafe;
+  --color-muted-fg: #60a5fa;
+
+  --color-border: #bfdbfe;
+
+  --color-accent: #3b82f6;
+  --color-accent-fg: #ffffff;
+}
+
+[data-theme="pats"] {
+  /* PATS Theme (Navy/Red/Silver) */
+  --color-bg: #002244;
+  /* Navy */
+  --color-fg: #ffffff;
+
+  --color-card: #001122;
+  --color-card-fg: #b0b7bc;
+  /* Silverish text */
+
+  --color-muted: #b0b7bc;
+  /* Silver */
+  --color-muted-fg: #002244;
+
+  --color-border: #c60c30;
+  /* Red border */
+
+  --color-accent: #c60c30;
+  /* Red */
+  --color-accent-fg: #ffffff;
 }
 
 /* 

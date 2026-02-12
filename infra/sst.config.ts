@@ -261,6 +261,54 @@ export default $config({
       }
     });
 
+    const githubConnectStatesTable = new sst.aws.Dynamo("GitHubConnectStates", {
+      fields: {
+        state: "string"
+      },
+      primaryIndex: {
+        hashKey: "state"
+      },
+      ttl: "expiresAt",
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-github-connect-states`;
+        }
+      }
+    });
+
+    const githubInstallationsTable = new sst.aws.Dynamo("GitHubInstallations", {
+      fields: {
+        installationId: "string",
+        projectId: "string"
+      },
+      primaryIndex: {
+        hashKey: "installationId",
+        rangeKey: "projectId"
+      },
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-github-installations`;
+        }
+      }
+    });
+
+    const githubEventsTable = new sst.aws.Dynamo("GitHubEvents", {
+      fields: {
+        projectId: "string",
+        eventId: "string"
+      },
+      primaryIndex: {
+        hashKey: "projectId",
+        rangeKey: "eventId"
+      },
+      ttl: "expiresAt",
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-github-events`;
+        }
+      }
+    });
+
     const jobsDlq = new sst.aws.Queue("JobsDlq", {
       visibilityTimeout: "5 minutes",
       transform: {
@@ -304,7 +352,14 @@ export default $config({
       RATE_LIMITS_TABLE_NAME: rateLimitsTable.name,
       RATE_LIMIT_JOBS_PER_MINUTE: process.env.ADE_RATE_LIMIT_JOBS_PER_MINUTE ?? "20",
       RATE_LIMIT_DAILY_JOBS: process.env.ADE_RATE_LIMIT_DAILY_JOBS ?? "500",
-      RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000"
+      RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000",
+      GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
+      GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
+      GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
+      GITHUB_APP_ID: process.env.ADE_GITHUB_APP_ID ?? "",
+      GITHUB_APP_SLUG: process.env.ADE_GITHUB_APP_SLUG ?? "",
+      GITHUB_APP_PRIVATE_KEY_BASE64: process.env.ADE_GITHUB_APP_PRIVATE_KEY_BASE64 ?? "",
+      GITHUB_WEBHOOK_SECRET: process.env.ADE_GITHUB_WEBHOOK_SECRET ?? ""
     };
 
     const apiLinkedResources = [
@@ -313,6 +368,9 @@ export default $config({
       jobsTable,
       artifactsTable,
       rateLimitsTable,
+      githubConnectStatesTable,
+      githubInstallationsTable,
+      githubEventsTable,
       blobsBucket,
       manifestsBucket,
       artifactsBucket,
@@ -391,6 +449,30 @@ export default $config({
     api.route("DELETE /projects/{id}", "packages/functions/src/api/handlers.deleteProject", {
       auth: protectedAuth
     });
+
+    api.route("POST /projects/{id}/github/connect/start", "packages/functions/src/api/github.connectStart", {
+      auth: protectedAuth
+    });
+
+    api.route("GET /projects/{id}/github/status", "packages/functions/src/api/github.getStatus", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/github/disconnect", "packages/functions/src/api/github.disconnect", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/github/api", "packages/functions/src/api/github.proxy", {
+      auth: protectedAuth
+    });
+
+    api.route("GET /projects/{id}/github/events", "packages/functions/src/api/github.listEvents", {
+      auth: protectedAuth
+    });
+
+    // Webhooks + setup callbacks originate from GitHub, not the desktop client.
+    api.route("GET /github/connect/callback", "packages/functions/src/api/github.connectCallback");
+    api.route("POST /github/webhooks", "packages/functions/src/api/github.webhook");
 
     const worker = jobsQueue.subscribe(
       {

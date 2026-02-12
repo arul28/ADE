@@ -8,8 +8,9 @@ import type {
   ProviderMode,
   ProjectConfigSnapshot
 } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
 import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 
 type ProviderDraft = {
   mode: ProviderMode;
@@ -144,6 +145,74 @@ function validateProviderDraft(draft: ProviderDraft, hasBootstrapConfig: boolean
   return null;
 }
 
+const THEME_META: Record<ThemeId, { label: string; colors: { bg: string; fg: string; card: string; border: string; accent: string } }> = {
+  "e-paper": {
+    label: "E-Paper",
+    colors: { bg: "#fdfbf7", fg: "#1c1917", card: "#fdfbf7", border: "#dbd8d3", accent: "#c22323" }
+  },
+  bloomberg: {
+    label: "Bloomberg",
+    colors: { bg: "#0a0a0a", fg: "#ff9900", card: "#111111", border: "#333333", accent: "#ff6600" }
+  },
+  github: {
+    label: "GitHub",
+    colors: { bg: "#0d1117", fg: "#c9d1d9", card: "#161b22", border: "#30363d", accent: "#58a6ff" }
+  },
+  rainbow: {
+    label: "Rainbow",
+    colors: { bg: "#1b1f23", fg: "#e6edf3", card: "#24292e", border: "#444c56", accent: "#c084fc" }
+  },
+  sky: {
+    label: "Sky",
+    colors: { bg: "#f0f6ff", fg: "#1e3a8a", card: "#ffffff", border: "#bfdbfe", accent: "#3b82f6" }
+  },
+  pats: {
+    label: "Pats",
+    colors: { bg: "#002244", fg: "#ffffff", card: "#001122", border: "#c60c30", accent: "#c60c30" }
+  }
+};
+
+function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selected: boolean; onClick: () => void }) {
+  const { label, colors } = THEME_META[themeId];
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group relative flex flex-col items-center gap-1.5 rounded-lg p-2 transition-all",
+        "hover:bg-muted/40",
+        selected && "ring-2 ring-accent ring-offset-1"
+      )}
+      style={{ "--tw-ring-offset-color": "var(--color-bg)" } as React.CSSProperties}
+      title={label}
+    >
+      {/* Preview square */}
+      <div
+        className="h-12 w-12 rounded-md border overflow-hidden"
+        style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+      >
+        {/* Mini layout: top bar */}
+        <div className="h-2 w-full" style={{ backgroundColor: colors.card }} />
+        {/* Accent stripe */}
+        <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accent }} />
+        {/* Text lines */}
+        <div className="mx-1 mt-1 space-y-0.5">
+          <div className="h-0.5 w-6 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.6 }} />
+          <div className="h-0.5 w-4 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.35 }} />
+          <div className="h-0.5 w-5 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.35 }} />
+        </div>
+      </div>
+      {/* Label */}
+      <span className="text-[10px] font-medium leading-none">{label}</span>
+      {/* Selected indicator */}
+      {selected && (
+        <div className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-fg text-[8px] font-bold">
+          ✓
+        </div>
+      )}
+    </button>
+  );
+}
+
 export function SettingsPage() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -158,6 +227,8 @@ export function SettingsPage() {
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
   const providerMode = useAppStore((s) => s.providerMode);
+  const theme = useAppStore((s) => s.theme);
+  const setTheme = useAppStore((s) => s.setTheme);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
 
   useEffect(() => {
@@ -188,21 +259,21 @@ export function SettingsPage() {
       .then((status) => {
         if (!cancelled) setHostedStatus(status);
       })
-      .catch(() => {});
+      .catch(() => { });
 
     window.ade.hosted
       .getBootstrapConfig()
       .then((config) => {
         if (!cancelled) setHostedBootstrapConfig(config);
       })
-      .catch(() => {});
+      .catch(() => { });
 
     window.ade.github
       .getStatus()
       .then((status) => {
         if (!cancelled) setGithubStatus(status);
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       cancelled = true;
@@ -312,6 +383,15 @@ export function SettingsPage() {
 
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
+      <div className="text-sm font-semibold">Theme</div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {THEME_IDS.map((id) => (
+          <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
+        ))}
+      </div>
+
+      <div className="my-6 h-px w-full bg-border" />
+
       <div className="text-sm font-semibold">Environment</div>
       {saveNotice ? (
         <div className="mt-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
@@ -349,9 +429,9 @@ export function SettingsPage() {
                 setProviderDraft((prev) =>
                   prev
                     ? {
-                        ...prev,
-                        mode: nextMode
-                      }
+                      ...prev,
+                      mode: nextMode
+                    }
                     : prev
                 );
               }}
@@ -385,12 +465,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            consentGiven: e.target.checked
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          consentGiven: e.target.checked
                         }
+                      }
                       : prev
                   )
                 }
@@ -406,12 +486,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            githubRepoConsent: e.target.checked
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          githubRepoConsent: e.target.checked
                         }
+                      }
                       : prev
                   )
                 }
@@ -427,12 +507,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            uploadTranscripts: e.target.checked
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          uploadTranscripts: e.target.checked
                         }
+                      }
                       : prev
                   )
                 }
@@ -551,12 +631,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            mirrorExcludePatternsText: e.target.value
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          mirrorExcludePatternsText: e.target.value
                         }
+                      }
                       : prev
                   )
                 }
@@ -580,12 +660,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              apiBaseUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            apiBaseUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -598,12 +678,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              region: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            region: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -616,12 +696,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkPublishableKey: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkPublishableKey: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -634,12 +714,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthClientId: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthClientId: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -652,12 +732,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkIssuer: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkIssuer: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -670,12 +750,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkFrontendApiUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkFrontendApiUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -688,12 +768,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthMetadataUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthMetadataUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -706,12 +786,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthAuthorizeUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthAuthorizeUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -724,12 +804,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthTokenUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthTokenUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -742,12 +822,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthRevocationUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthRevocationUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -760,12 +840,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthUserInfoUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthUserInfoUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -778,12 +858,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthScopes: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthScopes: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -808,13 +888,13 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          byok: {
-                            ...prev.byok,
-                            provider:
-                              e.target.value === "openai" ? "openai" : e.target.value === "gemini" ? "gemini" : "anthropic"
-                          }
+                        ...prev,
+                        byok: {
+                          ...prev.byok,
+                          provider:
+                            e.target.value === "openai" ? "openai" : e.target.value === "gemini" ? "gemini" : "anthropic"
                         }
+                      }
                       : prev
                   )
                 }
@@ -831,12 +911,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          byok: {
-                            ...prev.byok,
-                            model: e.target.value
-                          }
+                        ...prev,
+                        byok: {
+                          ...prev.byok,
+                          model: e.target.value
                         }
+                      }
                       : prev
                   )
                 }
@@ -850,12 +930,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          byok: {
-                            ...prev.byok,
-                            apiKey: e.target.value
-                          }
+                        ...prev,
+                        byok: {
+                          ...prev.byok,
+                          apiKey: e.target.value
                         }
+                      }
                       : prev
                   )
                 }
@@ -960,11 +1040,11 @@ export function SettingsPage() {
                 setProviderDraft((prev) =>
                   prev
                     ? {
-                        ...prev,
-                        cli: {
-                          command: e.target.value
-                        }
+                      ...prev,
+                      cli: {
+                        command: e.target.value
                       }
+                    }
                     : prev
                 )
               }

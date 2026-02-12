@@ -1,19 +1,20 @@
 import { create } from "zustand";
 import type { LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 
-type ThemeMode = "dark" | "light";
+export type ThemeId = "e-paper" | "bloomberg" | "github" | "rainbow" | "sky" | "pats";
+export const THEME_IDS: ThemeId[] = ["e-paper", "bloomberg", "github", "rainbow", "sky", "pats"];
 
-function readInitialTheme(): ThemeMode {
+function readInitialTheme(): ThemeId {
   try {
-    const raw = window.localStorage.getItem("ade.theme");
-    if (raw === "dark" || raw === "light") return raw;
+    const raw = window.localStorage.getItem("ade.theme") as ThemeId;
+    if (THEME_IDS.includes(raw)) return raw;
   } catch {
     // ignore
   }
-  return "dark";
+  return "e-paper";
 }
 
-function persistTheme(theme: ThemeMode) {
+function persistTheme(theme: ThemeId) {
   try {
     window.localStorage.setItem("ade.theme", theme);
   } catch {
@@ -27,7 +28,7 @@ type AppState = {
   selectedLaneId: string | null;
   runLaneId: string | null;
   focusedSessionId: string | null;
-  theme: ThemeMode;
+  theme: ThemeId;
   providerMode: ProviderMode;
 
   setProject: (project: ProjectInfo) => void;
@@ -35,8 +36,7 @@ type AppState = {
   selectLane: (laneId: string | null) => void;
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
-  setTheme: (theme: ThemeMode) => void;
-  toggleTheme: () => void;
+  setTheme: (theme: ThemeId) => void;
   refreshProviderMode: () => Promise<void>;
 
   refreshProject: () => Promise<void>;
@@ -62,12 +62,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistTheme(theme);
     set({ theme });
   },
-  toggleTheme: () =>
-    set((state) => {
-      const next = state.theme === "dark" ? "light" : "dark";
-      persistTheme(next);
-      return { theme: next };
-    }),
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
@@ -93,6 +87,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null });
     // Refresh lanes for the newly opened project.
     await get().refreshLanes();
-    await get().refreshProviderMode().catch(() => {});
+    await get().refreshProviderMode().catch(() => { });
   }
 }));
