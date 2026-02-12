@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
 import type {
   AppInfo,
+  GitHubStatus,
   HostedBootstrapConfig,
   HostedStatus,
   ProviderMode,
@@ -31,7 +32,7 @@ type ProviderDraft = {
     mirrorExcludePatternsText: string;
   };
   byok: {
-    provider: "openai" | "anthropic";
+    provider: "openai" | "anthropic" | "gemini";
     model: string;
     apiKey: string;
   };
@@ -100,7 +101,12 @@ function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
       mirrorExcludePatternsText: asStringArray(hosted.mirrorExcludePatterns).join("\n")
     },
     byok: {
-      provider: asString(byok.provider) === "openai" ? "openai" : "anthropic",
+      provider:
+        asString(byok.provider) === "openai"
+          ? "openai"
+          : asString(byok.provider) === "gemini"
+            ? "gemini"
+            : "anthropic",
       model: asString(byok.model),
       apiKey: asString(byok.apiKey)
     },
@@ -148,6 +154,9 @@ export function SettingsPage() {
   const [hostedBootstrapConfig, setHostedBootstrapConfig] = useState<HostedBootstrapConfig | null>(null);
   const [hostedBusy, setHostedBusy] = useState(false);
   const [showAdvancedHostedFields, setShowAdvancedHostedFields] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [githubTokenDraft, setGithubTokenDraft] = useState("");
+  const [githubBusy, setGithubBusy] = useState(false);
   const providerMode = useAppStore((s) => s.providerMode);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
 
@@ -185,6 +194,13 @@ export function SettingsPage() {
       .getBootstrapConfig()
       .then((config) => {
         if (!cancelled) setHostedBootstrapConfig(config);
+      })
+      .catch(() => {});
+
+    window.ade.github
+      .getStatus()
+      .then((status) => {
+        if (!cancelled) setGithubStatus(status);
       })
       .catch(() => {});
 
@@ -795,7 +811,8 @@ export function SettingsPage() {
                           ...prev,
                           byok: {
                             ...prev.byok,
-                            provider: e.target.value === "openai" ? "openai" : "anthropic"
+                            provider:
+                              e.target.value === "openai" ? "openai" : e.target.value === "gemini" ? "gemini" : "anthropic"
                           }
                         }
                       : prev
@@ -804,6 +821,7 @@ export function SettingsPage() {
               >
                 <option value="anthropic">Anthropic</option>
                 <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
               </select>
               <input
                 className="h-9 rounded border border-border bg-bg px-3 text-sm"
@@ -846,6 +864,90 @@ export function SettingsPage() {
             <div className="mt-2 text-xs text-muted-fg">API key is stored in `.ade/local.yaml` and excluded from git.</div>
           </div>
         ) : null}
+
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">GitHub (Phase 7)</div>
+          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+            <input
+              type="password"
+              className="h-9 rounded border border-border bg-bg px-3 text-sm md:col-span-2"
+              placeholder="GitHub token (PAT or App installation token)"
+              value={githubTokenDraft}
+              onChange={(e) => setGithubTokenDraft(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={githubBusy}
+                onClick={() => {
+                  const token = githubTokenDraft.trim();
+                  if (!token) {
+                    setActionError("GitHub token is empty.");
+                    return;
+                  }
+                  setGithubBusy(true);
+                  setActionError(null);
+                  window.ade.github
+                    .setToken(token)
+                    .then((status) => {
+                      setGithubStatus(status);
+                      setGithubTokenDraft("");
+                      setSaveNotice("GitHub token saved.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setGithubBusy(false));
+                }}
+              >
+                Save Token
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={githubBusy}
+                onClick={() => {
+                  setGithubBusy(true);
+                  setActionError(null);
+                  window.ade.github
+                    .clearToken()
+                    .then((status) => {
+                      setGithubStatus(status);
+                      setSaveNotice("GitHub token cleared.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setGithubBusy(false));
+                }}
+              >
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={githubBusy}
+                onClick={() => {
+                  setGithubBusy(true);
+                  setActionError(null);
+                  window.ade.github
+                    .getStatus()
+                    .then((status) => setGithubStatus(status))
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setGithubBusy(false));
+                }}
+              >
+                Refresh
+              </Button>
+            </div>
+          </div>
+          <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+            <div>token stored: {githubStatus?.tokenStored ? "yes" : "no"}</div>
+            <div>repo: {githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "unknown"}</div>
+            <div>user: {githubStatus?.userLogin ?? "unknown"}</div>
+            <div>scopes: {(githubStatus?.scopes ?? []).join(", ") || "unknown"}</div>
+            <div>checked: {githubStatus?.checkedAt ?? "never"}</div>
+          </div>
+          <div className="mt-2 text-xs text-muted-fg">
+            GitHub token is encrypted using OS secure storage and stored locally under `.ade/`.
+          </div>
+        </div>
 
         {providerDraft.mode === "cli" ? (
           <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">

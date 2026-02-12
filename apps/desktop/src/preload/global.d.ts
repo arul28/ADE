@@ -51,6 +51,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
@@ -58,6 +59,17 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubStatus,
+  CreatePrFromLaneArgs,
+  LinkPrToLaneArgs,
+  PrCheck,
+  PrReview,
+  PrStatus,
+  PrSummary,
+  UpdatePrDescriptionArgs,
+  LandPrArgs,
+  LandStackArgs,
+  LandResult,
   ListOverlapsArgs,
   LaneSummary,
   MergeSimulationArgs,
@@ -176,6 +188,7 @@ declare global {
         restoreStagedFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;
         listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
+        listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
         stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
@@ -205,6 +218,27 @@ declare global {
         getLanePack: (laneId: string) => Promise<PackSummary>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
         applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
+        generateNarrative: (laneId: string) => Promise<PackSummary>;
+      };
+      github: {
+        getStatus: () => Promise<GitHubStatus>;
+        setToken: (token: string) => Promise<GitHubStatus>;
+        clearToken: () => Promise<GitHubStatus>;
+      };
+      prs: {
+        createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
+        linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
+        getForLane: (laneId: string) => Promise<PrSummary | null>;
+        listAll: () => Promise<PrSummary[]>;
+        refresh: (args?: { prId?: string }) => Promise<PrSummary[]>;
+        getStatus: (prId: string) => Promise<PrStatus>;
+        getChecks: (prId: string) => Promise<PrCheck[]>;
+        getReviews: (prId: string) => Promise<PrReview[]>;
+        updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
+        draftDescription: (laneId: string) => Promise<{ title: string; body: string }>;
+        land: (args: LandPrArgs) => Promise<LandResult>;
+        landStack: (args: LandStackArgs) => Promise<LandResult[]>;
+        openInGitHub: (prId: string) => Promise<void>;
       };
       hosted: {
         getStatus: () => Promise<HostedStatus>;

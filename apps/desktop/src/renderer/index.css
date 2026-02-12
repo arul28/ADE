@@ -280,7 +280,73 @@ h6 {
 }
 
 .ade-edge-path {
-  transition: opacity 200ms ease, stroke-width 200ms ease;
+  transition: opacity 200ms ease, stroke-width 200ms ease, stroke 260ms ease;
+}
+
+@keyframes ade-pr-badge-pulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-pr-badge-pulse {
+  animation: ade-pr-badge-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes ade-pr-ci-pending {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-pr-ci-pending {
+  animation: ade-pr-ci-pending 800ms ease-in-out infinite;
+}
+
+@keyframes ade-node-merging-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
+  }
+
+  100% {
+    box-shadow: 0 0 0 12px rgba(56, 189, 248, 0);
+  }
+}
+
+.ade-node-merging {
+  animation: ade-node-merging-pulse 1200ms ease-out infinite;
+}
+
+@keyframes ade-node-disappear {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+.ade-node-disappear {
+  animation: ade-node-disappear 520ms ease-in forwards;
 }
 
 @keyframes ade-node-failed-pulse {

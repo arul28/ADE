@@ -206,11 +206,119 @@ export type RequestConflictProposalArgs = {
 export type ApplyConflictProposalArgs = {
   laneId: string;
   proposalId: string;
+  applyMode?: "unstaged" | "staged" | "commit";
+  commitMessage?: string;
 };
 
 export type UndoConflictProposalArgs = {
   laneId: string;
   proposalId: string;
+};
+
+export type GitHubRepoRef = {
+  owner: string;
+  name: string;
+};
+
+export type GitHubStatus = {
+  tokenStored: boolean;
+  repo: GitHubRepoRef | null;
+  userLogin: string | null;
+  scopes: string[];
+  checkedAt: string | null;
+};
+
+export type PrState = "draft" | "open" | "merged" | "closed";
+export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
+export type PrReviewStatus = "none" | "requested" | "approved" | "changes_requested";
+export type MergeMethod = "merge" | "squash" | "rebase";
+
+export type PrSummary = {
+  id: string;
+  laneId: string;
+  projectId: string;
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+  githubUrl: string;
+  githubNodeId: string | null;
+  title: string;
+  state: PrState;
+  baseBranch: string;
+  headBranch: string;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  additions: number;
+  deletions: number;
+  lastSyncedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PrStatus = {
+  prId: string;
+  state: PrState;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  isMergeable: boolean;
+  mergeConflicts: boolean;
+  behindBaseBy: number;
+};
+
+export type PrCheck = {
+  name: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
+  detailsUrl: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type PrReview = {
+  reviewer: string;
+  state: "pending" | "approved" | "changes_requested" | "commented" | "dismissed";
+  body: string | null;
+  submittedAt: string | null;
+};
+
+export type LandResult = {
+  prId: string;
+  prNumber: number;
+  success: boolean;
+  mergeCommitSha: string | null;
+  branchDeleted: boolean;
+  laneArchived: boolean;
+  error: string | null;
+};
+
+export type CreatePrFromLaneArgs = {
+  laneId: string;
+  title: string;
+  body: string;
+  draft: boolean;
+  baseBranch?: string;
+  labels?: string[];
+  reviewers?: string[];
+};
+
+export type LinkPrToLaneArgs = {
+  laneId: string;
+  prUrlOrNumber: string;
+};
+
+export type UpdatePrDescriptionArgs = {
+  prId: string;
+  body: string;
+};
+
+export type LandPrArgs = {
+  prId: string;
+  method: MergeMethod;
+};
+
+export type LandStackArgs = {
+  rootLaneId: string;
+  method: MergeMethod;
 };
 
 export type HostedJobType =
@@ -484,6 +592,7 @@ export type GetFileDiffArgs = {
   path: string; // repo-relative path
   mode: DiffMode;
   compareRef?: string;
+  compareTo?: "worktree" | "parent";
 };
 
 export type DiffSide = {
@@ -1004,9 +1113,15 @@ export type GitActionResult = {
 export type GitCommitSummary = {
   sha: string;
   shortSha: string;
+  parents: string[];
   authorName: string;
   authoredAt: string;
   subject: string;
+};
+
+export type GitListCommitFilesArgs = {
+  laneId: string;
+  commitSha: string;
 };
 
 export type GitStashSummary = {

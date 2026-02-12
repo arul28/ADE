@@ -19,6 +19,9 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createHostedAgentService } from "./services/hosted/hostedAgentService";
+import { createByokLlmService } from "./services/byok/byokLlmService";
+import { createGithubService } from "./services/github/githubService";
+import { createPrService } from "./services/prs/prService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -176,14 +179,27 @@ app.whenReady().then(async () => {
       }
     });
 
+    const byokLlmService = createByokLlmService({
+      logger,
+      projectConfigService
+    });
+
+    const githubService = createGithubService({
+      logger,
+      adeDir: adePaths.adeDir,
+      projectRoot
+    });
+
     const conflictService = createConflictService({
       db,
       logger,
       projectId,
       projectRoot,
       laneService,
+      projectConfigService,
       operationService,
       hostedAgentService,
+      byokLlmService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => broadcast(IPC.conflictsEvent, event)
     });
@@ -193,6 +209,23 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       hostedAgentService
+    });
+
+    const prService = createPrService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      operationService,
+      githubService,
+      packService,
+      hostedAgentService,
+      byokLlmService,
+      projectConfigService,
+      openExternal: async (url) => {
+        await shell.openExternal(url);
+      }
     });
 
     const fileService = createFileService({
@@ -271,6 +304,9 @@ app.whenReady().then(async () => {
       gitService,
       conflictService,
       hostedAgentService,
+      byokLlmService,
+      githubService,
+      prService,
       jobEngine,
       packService,
       projectConfigService,

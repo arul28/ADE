@@ -540,6 +540,47 @@ function migrate(db: Database) {
     "conflict_proposals",
     ["project_id", "status"]
   );
+
+  // Phase 7 GitHub PR tracking (lane -> PR mapping).
+  db.run(`
+    create table if not exists pull_requests (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      repo_owner text not null,
+      repo_name text not null,
+      github_pr_number integer not null,
+      github_url text not null,
+      github_node_id text,
+      title text,
+      state text not null,
+      base_branch text not null,
+      head_branch text not null,
+      checks_status text,
+      review_status text,
+      additions integer not null default 0,
+      deletions integer not null default 0,
+      last_synced_at text,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, lane_id),
+      unique(project_id, repo_owner, repo_name, github_pr_number),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_pull_requests_lane_id on pull_requests(lane_id)",
+    "pull_requests",
+    ["lane_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_pull_requests_project_id on pull_requests(project_id)",
+    "pull_requests",
+    ["project_id"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

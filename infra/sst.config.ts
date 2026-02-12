@@ -1,3 +1,4 @@
+/// <reference path="./.sst/platform/config.d.ts" />
 
 function sanitizeStage(stage: string): string {
   return stage.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
@@ -70,6 +71,15 @@ export default $config({
     const region = process.env.ADE_AWS_REGION ?? "us-east-1";
     const accountId = process.env.ADE_ALLOWED_AWS_ACCOUNT_ID ?? "695094375923";
     const enableAwsDefaultTags = isTruthy(process.env.ADE_ENABLE_AWS_DEFAULT_TAGS);
+    const defaultTags = enableAwsDefaultTags
+      ? {
+          tags: {
+            project: "ade",
+            environment: stage,
+            "managed-by": "sst"
+          }
+        }
+      : undefined;
 
     return {
       name: "ade",
@@ -80,19 +90,9 @@ export default $config({
       providers: {
         aws: {
           profile: resolveAwsProfile(),
-          region,
-          allowedAccountIds: [accountId],
-          defaultTags: enableAwsDefaultTags
-            ? {
-                tags: {
-                  project: "ade",
-                  environment: stage,
-                  "managed-by": "sst"
-                }
-              }
-            : {
-                tags: {}
-              }
+          // Pulumi's Region type is a string union; env vars are untyped.
+          region: region as any,
+          ...(defaultTags ? { defaultTags } : {})
         }
       }
     };
@@ -151,23 +151,25 @@ export default $config({
       }
     });
 
-    const artifactsBucket = new sst.aws.Bucket("Artifacts", {
-      versioning: false,
-      lifecycleRules: [
-        {
-          id: "artifact-expiry-30d",
-          enabled: true,
-          expiration: {
-            days: 30
-          }
-        }
-      ],
-      transform: {
-        bucket: (args: any) => {
-          args.bucket = $interpolate`ade-${stage}-artifacts-${caller.accountId}`;
-        }
-      }
-    });
+	    const artifactsBucket = new sst.aws.Bucket("Artifacts", {
+	      versioning: false,
+	      transform: {
+	        bucket: (args: any) => {
+	          args.bucket = $interpolate`ade-${stage}-artifacts-${caller.accountId}`;
+	          args.lifecycleRules = [
+	            {
+	              id: "artifact-expiry-30d",
+	              enabled: true,
+	              expirations: [
+	                {
+	                  days: 30
+	                }
+	              ]
+	            }
+	          ];
+	        }
+	      }
+	    });
 
     const projectsTable = new sst.aws.Dynamo("Projects", {
       fields: {
@@ -294,8 +296,8 @@ export default $config({
       ARTIFACTS_BUCKET_NAME: artifactsBucket.name,
       JOBS_QUEUE_URL: jobsQueue.url,
       API_CORS_ORIGIN: apiCorsOrigin,
-      LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "mock",
-      LLM_MODEL: process.env.ADE_LLM_MODEL ?? "claude-3-5-sonnet-latest",
+      LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "gemini",
+      LLM_MODEL: process.env.ADE_LLM_MODEL ?? "gemini-3-flash-preview",
       LLM_MAX_INPUT_TOKENS: process.env.ADE_LLM_MAX_INPUT_TOKENS ?? "200000",
       LLM_MAX_OUTPUT_TOKENS: process.env.ADE_LLM_MAX_OUTPUT_TOKENS ?? "4000",
       LLM_SECRET_ARN: llmSecretName,
@@ -327,17 +329,18 @@ export default $config({
       transform: {
         api: (args: any) => {
           args.name = `ade-${stage}-api`;
+        },
+        route: {
+          handler: {
+            timeout: "30 seconds",
+            memory: "1024 MB",
+            architecture: "arm64" as const,
+            environment: apiEnvironment,
+            link: apiLinkedResources
+          }
         }
       }
     });
-
-    const handlerDefaults = {
-      timeout: "30 seconds",
-      memory: "1024 MB",
-      architecture: "arm64" as const,
-      environment: apiEnvironment,
-      link: apiLinkedResources
-    };
 
     const clerkJwtAuthorizer = api.addAuthorizer({
       name: "clerkJwt",
@@ -353,51 +356,39 @@ export default $config({
       }
     };
 
-    api.route("OPTIONS /{proxy+}", "packages/functions/src/api/handlers.options", {
-      ...handlerDefaults
-    });
+    api.route("OPTIONS /{proxy+}", "packages/functions/src/api/handlers.options");
 
-    api.route("GET /health", "packages/functions/src/api/handlers.health", {
-      ...handlerDefaults
-    });
+    api.route("GET /health", "packages/functions/src/api/handlers.health");
 
     api.route("POST /projects", "packages/functions/src/api/handlers.createProject", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("GET /projects/{id}", "packages/functions/src/api/handlers.getProject", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("POST /projects/{id}/upload", "packages/functions/src/api/handlers.uploadBlobs", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("POST /projects/{id}/lanes/{lid}/manifest", "packages/functions/src/api/handlers.updateLaneManifest", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("POST /projects/{id}/jobs", "packages/functions/src/api/handlers.submitJob", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("GET /projects/{id}/jobs/{jid}", "packages/functions/src/api/handlers.getJob", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("GET /projects/{id}/artifacts/{aid}", "packages/functions/src/api/handlers.getArtifact", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("DELETE /projects/{id}", "packages/functions/src/api/handlers.deleteProject", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
@@ -416,8 +407,8 @@ export default $config({
           BLOBS_BUCKET_NAME: blobsBucket.name,
           MANIFESTS_BUCKET_NAME: manifestsBucket.name,
           ARTIFACTS_BUCKET_NAME: artifactsBucket.name,
-          LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "mock",
-          LLM_MODEL: process.env.ADE_LLM_MODEL ?? "claude-3-5-sonnet-latest",
+          LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "gemini",
+          LLM_MODEL: process.env.ADE_LLM_MODEL ?? "gemini-3-flash-preview",
           LLM_MAX_INPUT_TOKENS: process.env.ADE_LLM_MAX_INPUT_TOKENS ?? "200000",
           LLM_MAX_OUTPUT_TOKENS: process.env.ADE_LLM_MAX_OUTPUT_TOKENS ?? "4000",
           LLM_SECRET_ARN: llmSecretName,
@@ -446,45 +437,45 @@ export default $config({
       }
     );
 
-    const dlqAlarm = new aws.cloudwatch.MetricAlarm("JobsDlqVisibleAlarm", {
-      alarmName: `ade-${stage}-jobs-dlq-visible`,
-      alarmDescription: "ADE jobs dead-letter queue has visible messages.",
-      namespace: "AWS/SQS",
-      metricName: "ApproximateNumberOfMessagesVisible",
-      statistic: "Average",
-      period: 60,
-      evaluationPeriods: 1,
-      threshold: 0,
-      comparisonOperator: "GreaterThanThreshold",
-      treatMissingData: "notBreaching",
-      dimensions: {
-        QueueName: jobsDlq.name
-      }
-    });
+	    const dlqAlarm = new aws.cloudwatch.MetricAlarm("JobsDlqVisibleAlarm", {
+	      name: `ade-${stage}-jobs-dlq-visible`,
+	      alarmDescription: "ADE jobs dead-letter queue has visible messages.",
+	      namespace: "AWS/SQS",
+	      metricName: "ApproximateNumberOfMessagesVisible",
+	      statistic: "Average",
+	      period: 60,
+	      evaluationPeriods: 1,
+	      threshold: 0,
+	      comparisonOperator: "GreaterThanThreshold",
+	      treatMissingData: "notBreaching",
+	      dimensions: {
+	        QueueName: jobsDlq.nodes.queue.name
+	      }
+	    });
 
-    const queueAgeAlarm = new aws.cloudwatch.MetricAlarm("JobsQueueAgeAlarm", {
-      alarmName: `ade-${stage}-jobs-queue-age`,
-      alarmDescription: "ADE jobs queue oldest message age is above 5 minutes.",
-      namespace: "AWS/SQS",
-      metricName: "ApproximateAgeOfOldestMessage",
-      statistic: "Maximum",
+	    const queueAgeAlarm = new aws.cloudwatch.MetricAlarm("JobsQueueAgeAlarm", {
+	      name: `ade-${stage}-jobs-queue-age`,
+	      alarmDescription: "ADE jobs queue oldest message age is above 5 minutes.",
+	      namespace: "AWS/SQS",
+	      metricName: "ApproximateAgeOfOldestMessage",
+	      statistic: "Maximum",
       period: 60,
       evaluationPeriods: 3,
-      threshold: 300,
-      comparisonOperator: "GreaterThanOrEqualToThreshold",
-      treatMissingData: "notBreaching",
-      dimensions: {
-        QueueName: jobsQueue.name
-      }
-    });
+	      threshold: 300,
+	      comparisonOperator: "GreaterThanOrEqualToThreshold",
+	      treatMissingData: "notBreaching",
+	      dimensions: {
+	        QueueName: jobsQueue.nodes.queue.name
+	      }
+	    });
 
-    return {
+	    return {
       stage,
       region,
-      accountId: caller.accountId,
-      apiUrl: api.url,
-      apiId: api.id,
-      clerk: {
+	      accountId: caller.accountId,
+	      apiUrl: api.url,
+	      apiId: api.nodes.api.id,
+	      clerk: {
         publishableKey: clerkPublishableKey.value,
         oauthClientId: clerkOauthClientId.value,
         issuer: clerkIssuer,
@@ -508,11 +499,11 @@ export default $config({
         artifacts: artifactsTable.name,
         rateLimits: rateLimitsTable.name
       },
-      queues: {
-        jobs: jobsQueue.name,
-        jobsUrl: jobsQueue.url,
-        jobsDlq: jobsDlq.name
-      },
+	      queues: {
+	        jobs: jobsQueue.nodes.queue.name,
+	        jobsUrl: jobsQueue.url,
+	        jobsDlq: jobsDlq.nodes.queue.name
+	      },
       llmProviderSecretArn: llmSecretResourceArn,
       alarms: {
         jobsDlqVisible: dlqAlarm.arn,

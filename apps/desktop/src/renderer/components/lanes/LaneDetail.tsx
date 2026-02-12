@@ -16,6 +16,7 @@ import type {
   GitSyncMode
 } from "../../../shared/types";
 import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
+import { CommitTimeline } from "./CommitTimeline";
 
 function formatTs(ts: string): string {
   const date = new Date(ts);
@@ -73,6 +74,10 @@ export function LaneDetail({
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
+  const [commitFiles, setCommitFiles] = useState<string[]>([]);
+  const [selectedCommitFilePath, setSelectedCommitFilePath] = useState<string | null>(null);
+  const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
 
   const [commitMessage, setCommitMessage] = useState("");
   const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
@@ -192,6 +197,10 @@ export function LaneDetail({
   useEffect(() => {
     setSelectedPath(null);
     setDiff(null);
+    setSelectedCommit(null);
+    setCommitFiles([]);
+    setSelectedCommitFilePath(null);
+    setCommitDiff(null);
     setChanges({ staged: [], unstaged: [] });
     setStashes([]);
     setRecentCommits([]);
@@ -218,6 +227,53 @@ export function LaneDetail({
       .then((value) => setDiff(value))
       .catch(() => setDiff(null));
   }, [laneId, selectedPath, selectedFileMode]);
+
+  useEffect(() => {
+    setCommitFiles([]);
+    setSelectedCommitFilePath(null);
+    setCommitDiff(null);
+    if (!laneId || !selectedCommit) return;
+
+    let cancelled = false;
+    window.ade.git
+      .listCommitFiles({ laneId, commitSha: selectedCommit.sha })
+      .then((files) => {
+        if (cancelled) return;
+        setCommitFiles(files);
+        setSelectedCommitFilePath(files[0] ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCommitFiles([]);
+        setSelectedCommitFilePath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId, selectedCommit]);
+
+  useEffect(() => {
+    setCommitDiff(null);
+    if (!laneId || !selectedCommit || !selectedCommitFilePath) return;
+    let cancelled = false;
+    window.ade.diff
+      .getFile({
+        laneId,
+        path: selectedCommitFilePath,
+        mode: "commit",
+        compareRef: selectedCommit.sha,
+        compareTo: "parent"
+      })
+      .then((value) => {
+        if (!cancelled) setCommitDiff(value);
+      })
+      .catch(() => {
+        if (!cancelled) setCommitDiff(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId, selectedCommit, selectedCommitFilePath]);
 
   const stageFile = async (path: string) => {
     if (!laneId) return;
@@ -268,7 +324,13 @@ export function LaneDetail({
               "group flex items-center justify-between gap-2 px-2 py-1 rounded cursor-pointer text-xs border border-transparent",
               selectedPath === file.path ? "bg-accent/10 border-accent/20 text-fg" : "hover:bg-muted/50 text-muted-fg hover:text-fg"
             )}
-            onClick={() => setSelectedPath(file.path)}
+            onClick={() => {
+              setSelectedCommit(null);
+              setCommitFiles([]);
+              setSelectedCommitFilePath(null);
+              setCommitDiff(null);
+              setSelectedPath(file.path);
+            }}
           >
             <div className="flex items-center gap-2 min-w-0 flex-1">
               <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
@@ -434,15 +496,15 @@ export function LaneDetail({
       ) : null}
 
       <div className="flex-1 flex flex-col min-h-0">
-        {/* Top Section: 2 Columns for Staging */}
-        <div className="flex-none h-[42%] min-h-[180px] flex border-b border-border">
+        {/* Top Section: Unstaged / Staged+Commit / Commit Timeline */}
+        <div className="flex-none h-[44%] min-h-[220px] flex border-b border-border">
           {/* Unstaged Column */}
           <div className="flex-1 flex flex-col border-r border-border min-w-0">
             {renderFileList("Unstaged", changes.unstaged, "Stage", stageFile, stageAll)}
           </div>
 
           {/* Staged Column + Commit */}
-          <div className="flex-1 flex flex-col min-w-0 bg-muted/10">
+          <div className="flex-1 flex flex-col min-w-0 bg-muted/10 border-r border-border">
             <div className="flex-1 min-h-0">
               {renderFileList("Staged", changes.staged, "Unstage", unstageFile, unstageAll)}
             </div>
@@ -483,6 +545,19 @@ export function LaneDetail({
               </div>
             </div>
           </div>
+
+          {/* Commit Timeline */}
+          <div className="basis-[340px] shrink-0 min-w-[260px] max-w-[420px]">
+            <CommitTimeline
+              laneId={laneId ?? null}
+              selectedSha={selectedCommit?.sha ?? null}
+              onSelectCommit={(commit) => {
+                setSelectedPath(null);
+                setDiff(null);
+                setSelectedCommit(commit);
+              }}
+            />
+          </div>
         </div>
 
         {/* Bottom Section: Diff View */}
@@ -491,9 +566,43 @@ export function LaneDetail({
             <div className="flex h-full items-center justify-center p-3">
               <EmptyState title="No lane selected" />
             </div>
+          ) : selectedCommit ? (
+            <div className="h-full flex flex-col">
+              <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-border bg-card/30">
+                <div className="min-w-0 flex items-center gap-2 text-xs">
+                  <span className="font-mono text-muted-fg">Commit</span>
+                  <span className="text-muted-fg">/</span>
+                  <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
+                  <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
+                </div>
+                {commitFiles.length ? (
+                  <select
+                    value={selectedCommitFilePath ?? ""}
+                    onChange={(event) => setSelectedCommitFilePath(event.target.value)}
+                    className="h-7 max-w-[55%] rounded border border-border bg-card/70 px-2 text-[11px]"
+                    title="File changed in this commit"
+                  >
+                    {commitFiles.map((file) => (
+                      <option key={file} value={file}>
+                        {file}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+              </div>
+              {!selectedCommitFilePath ? (
+                <div className="flex h-full items-center justify-center p-3">
+                  <EmptyState title="No files found" description="This commit may be empty or metadata-only." />
+                </div>
+              ) : !commitDiff ? (
+                <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading commit diff...</div>
+              ) : (
+                <MonacoDiffView diff={commitDiff} editable={false} className="flex-1" />
+              )}
+            </div>
           ) : !selectedPath ? (
             <div className="flex h-full items-center justify-center p-3">
-              <EmptyState title="Select a file" description="View diff and quick edit" />
+              <EmptyState title="Select a file or commit" description="Choose a working tree file (unstaged/staged) or pick a commit from the timeline." />
             </div>
           ) : !diff ? (
             <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading diff...</div>

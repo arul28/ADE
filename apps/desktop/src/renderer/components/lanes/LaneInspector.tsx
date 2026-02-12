@@ -8,6 +8,8 @@ import { PackViewer } from "../packs/PackViewer";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Layers3 } from "lucide-react";
+import { LaneConflictsPanel } from "./LaneConflictsPanel";
+import { LanePrPanel } from "../prs/LanePrPanel";
 
 const tabTrigger =
   "px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:border-b-2 data-[state=active]:border-accent";
@@ -207,14 +209,10 @@ export function LaneInspector({
             )}
           </Tabs.Content>
           <Tabs.Content value="conflicts" className="h-full">
-            <div className="flex h-full items-center justify-center p-3">
-              <EmptyState title="Conflicts (stub)" description="Phase 4 adds conflict radar and guided resolution." />
-            </div>
+            <LaneConflictsPanel laneId={laneId ?? null} />
           </Tabs.Content>
           <Tabs.Content value="pr" className="h-full">
-            <div className="flex h-full items-center justify-center p-3">
-              <EmptyState title="PR (stub)" description="Phase 1+ adds PR linkage and checks." />
-            </div>
+            <LanePrPanel laneId={laneId ?? null} />
           </Tabs.Content>
         </div>
       </Tabs.Root>

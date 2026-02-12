@@ -24,6 +24,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
   const [lanePack, setLanePack] = useState<PackSummary | null>(null);
   const [projectPack, setProjectPack] = useState<PackSummary | null>(null);
   const [loading, setLoading] = useState(false);
+  const [narrativeBusy, setNarrativeBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refreshLanePack = async () => {
@@ -37,6 +38,20 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const generateNarrative = async () => {
+    if (!laneId) return;
+    setNarrativeBusy(true);
+    setError(null);
+    try {
+      const pack = await window.ade.packs.generateNarrative(laneId);
+      setLanePack(pack);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNarrativeBusy(false);
     }
   };
 
@@ -92,6 +107,15 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
           <Button variant="ghost" size="sm" title="Refresh lane pack" onClick={() => refreshLanePack().catch(() => {})}>
             <RefreshCw className="h-4 w-4" />
             {loading ? "Refreshing" : "Refresh"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={narrativeBusy}
+            title="Generate AI narrative for lane pack"
+            onClick={() => generateNarrative().catch(() => {})}
+          >
+            {narrativeBusy ? "Generating…" : "Generate AI Summary"}
           </Button>
           <Dialog.Root>
             <Dialog.Trigger asChild>

@@ -772,25 +772,29 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 ## Upcoming Phases
 
-### Phase 7: GitHub Integration + Workspace Graph
+### Phase 7: GitHub Integration + Canvas PR Workflow + Lane Commit Graph
 
 **Status**: NOT STARTED
 
-**Goal**: Connect ADE to GitHub for PR lifecycle management and build the interactive workspace graph canvas for visualizing lane topology, risk, and activity. These two features have no dependency on each other and can be developed in parallel.
+**Goal**: Connect ADE to GitHub for PR lifecycle management, extend the existing workspace canvas into an interactive PR orchestration surface where developers can open PRs, merge, and resolve conflicts visually, rework the lane detail UI with an inline commit graph, and ensure the conflict resolution pipeline is fully operational end-to-end.
+
+Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane Commit Graph) have no mutual dependency and can be developed in parallel. 7B (Canvas PR Workflow) depends on 7A. 7C (Conflict Resolution Polish) is independent.
+
+---
+
+#### Phase 7A: GitHub Integration (Foundation)
+
+**Goal**: Build the GitHub service layer and basic PR CRUD so lanes can create, track, and land pull requests.
 
 **Scope**:
 
-**Phase 6 Deferred Items:**
-- PACK-024: Pack retention and cleanup policy (age-based, count-based)
-
-**GitHub Integration:**
 - CONF-022: Stack-aware conflict resolution (resolve parent lane conflicts before children)
 - GitHub authentication: OS keychain token storage and retrieval (macOS Keychain, Windows Credential Manager)
 - GitHub API integration service (`githubService`): wraps `gh` CLI or GitHub REST/GraphQL API
 - PR creation from lane, PR link to existing, PR status display and polling
 - Pack-generated PR description drafting via LLM (uses Phase 6 LLM gateway)
 - PR description update (push regenerated description to GitHub)
-- Lane PR panel component (sub-tab in Lane detail)
+- Lane PR panel component (sub-tab in Lane detail, replacing current stub)
 - PR creation form, PR status view, "Open in GitHub" action
 - PRs tab page layout (stacked chains view, all PRs list)
 - Stacked PR chain visualization, base retargeting
@@ -799,47 +803,207 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - PR notifications with lane-aware context and deep links
 - PR template support (load from `.github/PULL_REQUEST_TEMPLATE.md`)
 
-**Workspace Graph:**
-- React Flow canvas setup (`@xyflow/react`) with route `/graph` and nav entry
-- 3 node type components (Primary, Worktree, Attached) with hover effects
-- Node status badges (dirty, ahead/behind, conflict) and active session indicator (pulsing dot)
-- 4 edge types (Topology, Stack, Risk overlay, PR overlay) with hover effects
-- Auto-layout algorithm (tree + force-directed positioning)
-- Multiple view modes (Stack/Risk/Activity/All) with segmented control and transitions
-- Manual node repositioning with drag + layout persistence (kvDb)
-- Click node to navigate, click edge to merge simulation
-- Extended context menu (Open, Archive, Delete, Create Child, Restack, Push, Fetch, Sync, Reparent, Rename, Customize Appearance, Collapse/Expand Stack)
-- Multi-select (Shift+click, drag-box) with batch operations (Restack, Push, Fetch, Archive, Delete)
-- Drag-and-drop lane reparenting with cycle detection, pre-drop conflict preview, confirmation dialog
-- Collapsible sub-graphs with collapse/expand animations
-- Custom node appearance (color, tags, icon) with picker UI
-- Graph-level filtering (status, type, tag, stack, search)
-- Multiple saved layout presets with CRUD
-- Graph toolbar (view modes, filter, presets, zoom controls)
-- Minimap, pan/zoom controls, fit-to-view
-- Theme-aware styling
-- Environment mapping configuration and badges
-- Loading states (skeleton risk matrix, graph loading sequence, merge sim spinner)
-- Batch operation progress UI and failure handling
-- Conflict status animations (badge transitions, matrix cell updates)
-- Performance safeguards for large workspaces (15-lane limit for auto-assessment)
-
-**Service-layer work already completed (ahead of schedule):**
-- `laneService.reparent()` method
-- `laneService.updateAppearance()` method (color, icon, tags)
-- IPC channels `lanesReparent` and `lanesUpdateAppearance`
-- Preload bridge methods for reparent and updateAppearance
-- Types: `ReparentLaneArgs`, `AppearanceUpdate`, `GraphState`
-
-**Feature Doc References**: `PULL_REQUESTS.md`, `WORKSPACE_GRAPH.md`, `CONFLICTS.md` (CONF-022)
-
-**Architecture References**: `UI_FRAMEWORK.md`, `DATA_MODEL.md`, `SECURITY_AND_PRIVACY.md`
+**New Services Required**:
+- `githubService`: GitHub API wrapper (authentication, PR CRUD, checks, reviews, merge)
+- `prService`: PR lifecycle management, stack chain logic, land flow orchestration
 
 **Task References**:
 - CONF-022: Stack-aware conflict resolution
 - PR-001 through PR-020: All PR tasks
-- GRAPH-001 through GRAPH-028: All graph tasks
-- WG1 through WG25: Extended graph scope (see `docs/PHASE_4_5_UPDATES.md` Part 3)
+
+---
+
+#### Phase 7B: Canvas PR Workflow (Interactive Graph Orchestration)
+
+**Goal**: Transform the existing workspace canvas from a visualization tool into an interactive PR orchestration surface where developers can open PRs, monitor CI, merge, and resolve conflicts — all through visual graph interactions.
+
+**Prerequisite**: Phase 7A (githubService and prService must exist).
+
+**Already completed (canvas foundation from Phase 4/5/6):**
+- React Flow canvas with custom nodes (Primary, Worktree, Attached) and edges (Topology, Stack, Risk)
+- 4 view modes (Stack/Risk/Activity/All) with layout algorithms
+- Full interactivity: drag reparent, right-click context menu (12 actions), multi-select, batch operations
+- Risk edge coloring from conflict service risk matrix
+- Merge simulation on edge click
+- Layout presets, filters, minimap, theme-aware styling
+- Node appearance customization (color, icon, tags)
+- Collapsible sub-graphs, environment mapping, loading states
+
+**New scope — PR edge overlays:**
+- PR edge type: When a lane has an open PR, render a PR icon badge on the connecting edge to the PR's base (primary or parent lane)
+- PR edge color by state: green = open/passing, purple = draft, yellow = changes requested, red = failing checks
+- PR edge CI status dot: tiny check/X/spinner icon beside the PR badge
+- PR + risk edge coexistence: both visible simultaneously on the same lane pair
+- Merged PR edge: solid green with fade-out animation before lane node disappears
+
+**New scope — drag-to-open-PR workflow:**
+- Drag a lane node onto the primary node (or any target lane node) to initiate PR creation
+- Drop triggers a PR creation modal pre-filled with: title (from branch name), body (auto-drafted from lane pack), base (drop target's branch)
+- On PR creation, edge between source and target transitions from risk edge to PR edge with animation
+- PR details shown on edge hover: PR number, title, checks summary, review status
+
+**New scope — merge-from-graph workflow:**
+- Click a PR edge or drag lane onto target again to open a merge action panel
+- Panel shows: PR status summary, checks, reviews, merge readiness
+- Actions: "View on GitHub", "Merge PR" (with merge method selector: merge/squash/rebase)
+- On successful merge: lane node plays disappearance animation (fade + shrink), edge dissolves
+- Remaining risk edges re-evaluate and update colors in real-time (conflict service re-prediction triggered)
+- If merge creates new conflicts with other lanes, those edges animate from green to red
+
+**New scope — conflict resolution from graph:**
+- Click a red (conflict) risk edge between any two lanes to open an inline conflict resolution panel
+- Panel shows: overlapping files, conflict type, risk level
+- "Resolve with AI" button: invokes `conflictService.requestProposal()` for the lane pair
+- AI proposal displayed inline: explanation, diff preview, confidence score
+- Apply actions: "Apply to lane" (stages changes), "Move to unstaged", "Commit directly"
+- After applying resolution, edge color animates from red to green as conflict is resolved
+- Supports resolution between: lane-to-primary, lane-to-lane, and lane-to-parent
+
+**New scope — integration lane creation:**
+- Multi-select several lanes on the canvas, right-click → "Create Integration Lane"
+- Creates a new lane branched from primary that merges all selected lanes into one
+- Conflict resolution UI opens for any merge conflicts across the combined changes
+- After all conflicts resolved, user can open a single PR from the integration lane against main
+- Integration lane appears on canvas connected to all source lanes with special "integration" edge type
+
+**New scope — real-time visual feedback:**
+- Edge color transitions animate smoothly (CSS transitions on stroke color, ~300ms)
+- Merge-in-progress: pulsing animation on the PR edge while merge is executing
+- Post-merge cascade: after a lane is merged and removed, all remaining risk edges re-evaluate with a brief loading shimmer
+- Conflict resolution: edge animates through yellow (resolving) to green (resolved)
+- Lane node removal: fade-out + scale-down animation (~500ms) after successful merge and archive
+
+**New scope — enhanced edge hover details:**
+- Hover any edge to see a tooltip with: edge type label, risk level, overlap count, file names
+- PR edges show on hover: PR number, title, checks count (pass/fail), review status, last updated
+- Risk edges show on hover: conflicting file list, conflict types, staleness indicator
+- Tooltip persists while hovering (400ms delay before show, 200ms delay before hide)
+
+**Task References**:
+- GRAPH-026: PR edge overlays
+- GRAPH-027: PR + risk edge coexistence
+- CANVAS-001: Drag-to-open-PR workflow
+- CANVAS-002: PR edge state visualization (color, CI dot, merge animation)
+- CANVAS-003: Merge-from-graph panel and workflow
+- CANVAS-004: Lane disappearance animation on merge
+- CANVAS-005: Conflict resolution panel from edge click
+- CANVAS-006: AI conflict resolution invocation from graph
+- CANVAS-007: Post-resolution edge color animation
+- CANVAS-008: Integration lane creation (multi-lane merge)
+- CANVAS-009: Real-time edge re-evaluation after merge
+- CANVAS-010: Merge-in-progress pulse animation
+- CANVAS-011: Enhanced edge hover tooltips (PR details, conflict files)
+
+---
+
+#### Phase 7C: Conflict Resolution Polish
+
+**Goal**: Ensure the full conflict detection → AI resolution → apply pipeline is robust and accessible from both the Conflicts tab and the canvas. Improve pack collection depth for better AI context.
+
+**Scope**:
+
+**Conflict resolution completeness:**
+- Verify end-to-end flow: detect conflict → generate AI proposal → review diff → apply → undo
+- Lane-to-lane conflict resolution (currently focused on lane-vs-base; extend to arbitrary pairs)
+- Apply resolution with choice: move to unstaged, move to staged, or commit directly
+- Post-apply conflict re-prediction (trigger immediate re-evaluation of affected pairs)
+- Conflict resolution from canvas edges (wired in 7B) with same apply options
+
+**Pack collection improvements:**
+- PACK-024: Pack retention and cleanup policy (age-based, count-based)
+- Ensure conflict packs include full context for AI: both sides' changed files, base version, overlap analysis, lane pack summaries
+- On-demand AI narrative generation: user can click "Generate AI Summary" on any lane pack to request narrative even in hosted mode without waiting for session-end trigger
+- Pack freshness indicators in canvas node tooltips (show last pack update time)
+
+**BYOK provider mode (new):**
+- Implement actual BYOK code path: direct LLM API calls from the desktop Electron app (no AWS round-trip)
+- Support Gemini, Anthropic, and OpenAI providers for BYOK
+- Use API key from `.ade/local.yaml` `providers.byok.apiKey`
+- Same prompt templates as hosted mode but executed locally
+- Eliminates dependency on AWS infrastructure for AI features
+
+**Task References**:
+- CONF-022: Stack-aware conflict resolution
+- PACK-024: Pack retention and cleanup policy
+- BYOK-001: BYOK LLM provider implementation (desktop-direct API calls)
+- RESOLVE-001: Lane-to-lane conflict resolution (arbitrary pair)
+- RESOLVE-002: Apply resolution with staging choice (unstaged/staged/commit)
+- RESOLVE-003: Post-apply conflict re-prediction trigger
+
+---
+
+#### Phase 7D: Lane Commit Graph + Detail UI Rework
+
+**Goal**: Add an inline commit timeline to the lane detail view so developers can see the commit history of each lane at a glance, and rework the lane detail layout to accommodate the new visualization alongside existing unstaged/staged views.
+
+**Scope**:
+
+**Commit timeline component (`CommitTimeline.tsx`):**
+- Vertical timeline of commits for the active lane, most recent at top
+- Each commit rendered as a node on a vertical line: dot + short SHA + subject
+- Hover a commit: tooltip with full SHA, author, date, full message, file count
+- Click a commit: select it for diff viewing in the Monaco diff pane (compare commit vs parent)
+- Merge commits shown with branching visual (two parent lines converging)
+- HEAD indicator: special styling on the top commit (current HEAD)
+- Scroll within a fixed-height panel; lazy-loads older commits on scroll
+- Extend `git.listRecentCommits` to return parent SHAs for merge line rendering
+
+**Lane detail layout rework:**
+- Current layout (top: unstaged/staged split, bottom: Monaco diff) replaced with a 3-column horizontal flow:
+  ```
+  ┌──────────────┬──────────────┬──────────────────────────┐
+  │  Unstaged     │  Staged      │  Commit Timeline         │
+  │  files list   │  files list  │  (vertical scrollable)   │
+  │               │  + commit    │                          │
+  │               │    box       │  ● abc123 Fix auth bug   │
+  │               │              │  │                       │
+  │               │              │  ● def456 Add tests      │
+  │               │              │  │                       │
+  │               │              │  ● 789abc Initial commit │
+  ├──────────────┴──────────────┴──────────────────────────┤
+  │  Monaco Diff Viewer / Git Operations                    │
+  │  (shows diff for selected file OR selected commit)      │
+  └─────────────────────────────────────────────────────────┘
+  ```
+- Unstaged column: file list with stage buttons (same as current)
+- Staged column: file list with unstage buttons + commit message textarea + commit button (same as current)
+- Commit timeline column: new `CommitTimeline` component
+- Bottom pane: Monaco diff viewer that responds to both file selection (from unstaged/staged) AND commit selection (from timeline)
+- When a commit is selected in the timeline, diff viewer shows that commit's changes (commit vs parent)
+- When a file is selected from unstaged/staged, diff viewer shows working tree or index diff (same as current)
+- Git operation buttons (fetch, pull, push, stash, revert, cherry-pick) remain in the header bar
+
+**Inspector sub-tab updates:**
+- Replace Conflicts stub tab with live conflict status (uses existing `conflictService.getLaneStatus()`)
+- Replace PR stub tab with live PR panel (uses new `prService` from 7A)
+
+**Task References**:
+- COMMIT-001: CommitTimeline component (vertical line, commit nodes, hover details)
+- COMMIT-002: Extend listRecentCommits API to include parent SHAs
+- COMMIT-003: Click commit to view diff in Monaco
+- COMMIT-004: Merge commit branching visual
+- COMMIT-005: Lazy-load older commits on scroll
+- LANE-UI-001: Lane detail 3-column layout rework (unstaged / staged / commit timeline)
+- LANE-UI-002: Dual-mode diff viewer (file selection + commit selection)
+- LANE-UI-003: Inspector Conflicts sub-tab (live, replaces stub)
+- LANE-UI-004: Inspector PR sub-tab (live, replaces stub)
+
+---
+
+#### Phase 7 — Cross-Cutting Notes
+
+**Service-layer work already completed (ahead of schedule):**
+- Full workspace canvas: `WorkspaceGraphPage.tsx` (2,738 lines) with React Flow, custom nodes/edges, 4 view modes, drag reparent, context menus, multi-select, batch operations, layout presets, filters, minimap
+- `laneService.reparent()` method and `laneService.updateAppearance()` method
+- IPC channels `lanesReparent` and `lanesUpdateAppearance`
+- Preload bridge methods for reparent and updateAppearance
+- Types: `ReparentLaneArgs`, `AppearanceUpdate`, `GraphState`
+- Full conflict detection and AI resolution pipeline (conflictService, hostedAgentService)
+- Pack system: lane packs, project packs, conflict packs all generating and syncing
+
+**Feature Doc References**: `PULL_REQUESTS.md`, `WORKSPACE_GRAPH.md`, `CONFLICTS.md` (CONF-022)
+
+**Architecture References**: `UI_FRAMEWORK.md`, `DATA_MODEL.md`, `SECURITY_AND_PRIVACY.md`
 
 **New Services Required**:
 - `githubService`: GitHub API wrapper (authentication, PR CRUD, checks, reviews, merge)
@@ -847,7 +1011,12 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 **Dependencies**: Phase 1 (lane service, git push), Phase 4 (stacks), Phase 5 (conflict service), Phase 6 (LLM gateway for PR descriptions, Clerk for auth)
 
-**Exit Criteria**: GitHub token is securely stored in OS keychain. PRs can be created and linked from lanes. PR status is displayed and polled. Stacked PRs correctly target parent branches. Landing works end-to-end. Workspace graph renders all lanes as interactive nodes with edges, risk overlays, and PR overlays. All graph interactions work (drag, click, context menu, multi-select, reparent). View modes and layout presets function correctly.
+**Implementation Order**:
+1. **7A + 7D in parallel**: GitHub service build-out and lane commit graph are independent
+2. **7B after 7A**: Canvas PR workflow depends on prService existing
+3. **7C any time**: Conflict resolution polish and BYOK can be done at any point
+
+**Exit Criteria**: GitHub token is securely stored in OS keychain. PRs can be created from lanes and from the canvas via drag-to-open-PR. PR status is displayed and polled. PR edges on the canvas show CI status and review state. Stacked PRs correctly target parent branches. Landing works from both the PRs tab and the canvas (drag-to-merge or click-edge). Lane nodes animate out on merge; risk edges re-evaluate in real-time. Conflict resolution is launchable from canvas edge clicks with AI proposal generation, apply, and undo. Integration lanes can be created from multi-select. Lane detail shows a 3-column layout with inline commit timeline. Commits are clickable for diff viewing. BYOK provider mode makes direct API calls without AWS round-trip. Pack retention policies are enforced.
 
 ---
 

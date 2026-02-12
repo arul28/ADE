@@ -657,13 +657,13 @@ export function createHostedAgentService({
     return config;
   };
 
-  const refreshAccessTokenIfNeeded = async (): Promise<string> => {
+  const refreshAccessTokenIfNeeded = async (force = false): Promise<string> => {
     const config = ensureHostedConfigured();
     const accessToken = config.auth.accessToken;
     const expiresAt = config.auth.expiresAt ? Date.parse(config.auth.expiresAt) : Number.NaN;
     const hasValidToken = !!accessToken && Number.isFinite(expiresAt) && Date.now() < expiresAt - 60_000;
 
-    if (hasValidToken && accessToken) {
+    if (!force && hasValidToken && accessToken) {
       return accessToken;
     }
 
@@ -726,11 +726,14 @@ export function createHostedAgentService({
     let config = ensureHostedConfigured();
     await refreshAccessTokenIfNeeded();
     config = ensureHostedConfigured();
-    const token = tokenHasIdentityClaim(config.auth.accessToken)
-      ? asString(config.auth.accessToken)
-      : tokenHasIdentityClaim(config.auth.idToken)
-        ? asString(config.auth.idToken)
-        : asString(config.auth.accessToken);
+    // Prefer idToken for API calls — its aud matches the API Gateway's
+    // configured OAuth client_id audience, while the access_token may have
+    // a different audience that the JWT authorizer rejects.
+    const token = tokenHasIdentityClaim(config.auth.idToken)
+      ? asString(config.auth.idToken)
+      : tokenHasIdentityClaim(config.auth.accessToken)
+        ? asString(config.auth.accessToken)
+        : asString(config.auth.idToken || config.auth.accessToken);
 
     const doRequest = async (authToken: string) => {
       const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}${args.path}`, {
@@ -748,13 +751,13 @@ export function createHostedAgentService({
 
     const first = await doRequest(token);
     if (first.response.status === 401 && args.retryOnUnauthorized !== false) {
-      await refreshAccessTokenIfNeeded();
+      await refreshAccessTokenIfNeeded(true);
       config = ensureHostedConfigured();
-      const nextToken = tokenHasIdentityClaim(config.auth.accessToken)
-        ? asString(config.auth.accessToken)
-        : tokenHasIdentityClaim(config.auth.idToken)
-          ? asString(config.auth.idToken)
-          : asString(config.auth.accessToken);
+      const nextToken = tokenHasIdentityClaim(config.auth.idToken)
+        ? asString(config.auth.idToken)
+        : tokenHasIdentityClaim(config.auth.accessToken)
+          ? asString(config.auth.accessToken)
+          : asString(config.auth.idToken || config.auth.accessToken);
       const second = await doRequest(nextToken);
       if (!second.response.ok) {
         throw new Error(parseErrorMessage(second.payload));
@@ -1489,6 +1492,44 @@ export function createHostedAgentService({
         jobId: submission.jobId,
         artifactId: artifact.artifactId,
         narrative
+      };
+    },
+
+    async requestPrDescription(args: {
+      laneId: string;
+      prContext: Record<string, unknown>;
+    }): Promise<{
+      jobId: string;
+      artifactId: string;
+      title: string;
+      body: string;
+    }> {
+      await syncMirror({ laneId: args.laneId, includeTranscripts: false });
+
+      const submission = await submitJob({
+        type: "DraftPrDescription" as HostedJobType,
+        laneId: args.laneId,
+        params: args.prContext
+      });
+
+      const status = await pollJob(submission.jobId, 120_000);
+      if (status.status !== "completed" || !status.artifactId) {
+        const message = status.error?.message ?? `PR drafting job ${status.jobId} did not complete successfully.`;
+        throw new Error(message);
+      }
+
+      const artifact = await getArtifact(status.artifactId);
+      const body = isRecord(artifact.content) && typeof artifact.content.content === "string"
+        ? (artifact.content.content as string)
+        : typeof artifact.content === "string"
+          ? artifact.content
+          : JSON.stringify(artifact.content, null, 2);
+
+      return {
+        jobId: submission.jobId,
+        artifactId: artifact.artifactId,
+        title: "",
+        body
       };
     }
   };
