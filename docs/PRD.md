@@ -189,7 +189,7 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 | Layer | Technology |
 |-------|-----------|
 | Infrastructure as Code | SST (deploys to AWS) |
-| Authentication | Amazon Cognito User Pool + Hosted UI, GitHub OAuth federation |
+| Authentication | Clerk OAuth (GitHub), desktop PKCE loopback, API Gateway JWT authorizer |
 | API | API Gateway (HTTP API) + AWS Lambda |
 | Queue | Amazon SQS (job ingestion, retries, DLQ) |
 | Workers | AWS Lambda (SQS-triggered) |
@@ -286,7 +286,7 @@ Each architecture area is specified in detail in the following documents. These 
 | 4 | Git Engine | [architecture/GIT_ENGINE.md](architecture/GIT_ENGINE.md) | Git worktree management, drift status computation (ahead/behind/dirty), sync operations (merge and rebase with undo), dry-run conflict prediction, and stack-aware restack operations. |
 | 5 | Job Engine | [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md) | Event-driven pipeline with coalescing rules. Covers all event types, idempotent job definitions, the lane refresh pipeline (checkpoint through hosted sync), real-time conflict pass, re-plan pipeline, and failure handling. |
 | 6 | Hosted Agent | [architecture/HOSTED_AGENT.md](architecture/HOSTED_AGENT.md) | Read-only cloud mirror architecture. Covers the repo mirror model with sync policies, cloud job types (narrative augmentation, conflict proposals, PR descriptions), security/trust requirements, cost controls, and provider swappability. |
-| 7 | Cloud Backend | [architecture/CLOUD_BACKEND.md](architecture/CLOUD_BACKEND.md) | Concrete AWS stack specification. Covers Cognito authentication with GitHub OAuth, API Gateway/Lambda endpoints, SQS job queuing, S3 mirror storage with content-addressed blobs, DynamoDB metadata, LLM gateway design, and SST deployment. |
+| 7 | Cloud Backend | [architecture/CLOUD_BACKEND.md](architecture/CLOUD_BACKEND.md) | Concrete AWS stack specification. Covers Clerk authentication (GitHub/Google social sign-in), API Gateway/Lambda endpoints, SQS job queuing, S3 mirror storage with content-addressed blobs, DynamoDB metadata, LLM gateway design, and SST deployment. |
 | 8 | Configuration | [architecture/CONFIGURATION.md](architecture/CONFIGURATION.md) | `.ade/` folder structure, config layering (app defaults, `ade.yaml` shared baseline, `local.yaml` machine overrides), schemas for processes, stack buttons, test suites, lane profiles, overlay policies, validation rules, and trust/change confirmation. |
 | 9 | Security and Privacy | [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) | Default security posture. Covers the trust boundary model, secret/exclude defaults for hosted mirrors, terminal transcript privacy, process/test command trust confirmation, and the safety contract for proposals (diff review before apply, undo points). |
 | 10 | UI Framework | [architecture/UI_FRAMEWORK.md](architecture/UI_FRAMEWORK.md) | Locked UI technology decisions, visual direction (Clean Paper light and Bloomberg Terminal dark themes), app shell layout, typography system (serif headers, monospace data), and high-density console design principles. |
@@ -369,7 +369,7 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 **Authentication**:
 
-- Cognito with GitHub OAuth federation for hosted agent access.
+- Clerk OAuth with GitHub/Google social sign-in for hosted agent access.
 - Tokens stored in the OS keychain, never in plaintext.
 - All mirror and job operations scoped to `(user, project)`.
 
@@ -442,7 +442,7 @@ The implementation plan is divided into phases with explicit exit criteria. Each
 | 2.5 | In-App Git Operations | Not Started | Stage/unstage, commit/amend, stash, push, revert, cherry-pick, branch management with safety checks |
 | 3 | Packs + Checkpoints + Plan Versioning | Not Started | Full packs system: checkpoints, pack events, pack versions, pack heads, all materializers, plan versioning, history foundation |
 | 4 | Conflict Radar + Guided Sync | Not Started | Conflict prediction (lane vs base, pairwise), merge simulation, staged/dirty watchers, sync with undo, conflict packs |
-| 5 | Hosted Agent + Auth + Mirror Sync | Not Started | AWS backend (SST), Cognito auth, S3 mirror sync, job queue, proposal flow |
+| 5 | Hosted Agent + Auth + Mirror Sync | Not Started | AWS backend (SST), Clerk auth, S3 mirror sync, job queue, proposal flow |
 | 6 | GitHub PR Integration | Not Started | PR create/link per lane, checks/review status, pack-drafted descriptions |
 | 7 | Stacks + Restack + Land Stack | Not Started | Stack model persistence, restack operation, stacked PR chain view, land stack guided flow |
 | 8 | Automations + Actions | Not Started | Trigger-action engine, scheduler, action runner, `.ade/actions.yaml` schema |

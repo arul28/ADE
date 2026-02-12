@@ -205,6 +205,18 @@ function extractSection(existing: string, start: string, end: string, fallback: 
   return body.length ? body : fallback;
 }
 
+function replaceNarrativeSection(existing: string, narrative: string): string {
+  const cleanNarrative = narrative.trim().length ? narrative.trim() : "Narrative generation returned empty content.";
+  const marker = "\n## Narrative\n";
+  const idx = existing.indexOf(marker);
+  if (idx < 0) {
+    const trimmed = existing.trimEnd();
+    return `${trimmed}\n\n## Narrative\n${cleanNarrative}\n`;
+  }
+  const before = existing.slice(0, idx + marker.length);
+  return `${before}${cleanNarrative}\n`;
+}
+
 function statusFromCode(status: TestRunStatus): string {
   if (status === "passed") return "PASS";
   if (status === "failed") return "FAIL";
@@ -907,6 +919,63 @@ export function createPackService({
         });
         throw error;
       }
+    },
+
+    applyHostedNarrative(args: {
+      laneId: string;
+      narrative: string;
+      metadata?: Record<string, unknown>;
+    }): PackSummary {
+      const lanePackPath = getLanePackPath(args.laneId);
+      const existing = readFileIfExists(lanePackPath);
+      if (!existing.trim().length) {
+        throw new Error(`Lane pack not found for lane ${args.laneId}`);
+      }
+
+      const updatedBody = replaceNarrativeSection(existing, args.narrative);
+      ensureDirFor(lanePackPath);
+      fs.writeFileSync(lanePackPath, updatedBody, "utf8");
+
+      const now = new Date().toISOString();
+      const existingRow = db.get<{
+        deterministic_updated_at: string | null;
+        last_head_sha: string | null;
+      }>(
+        `
+          select deterministic_updated_at, last_head_sha
+          from packs_index
+          where pack_key = ?
+            and project_id = ?
+          limit 1
+        `,
+        [`lane:${args.laneId}`, projectId]
+      );
+
+      upsertPackIndex({
+        db,
+        projectId,
+        packKey: `lane:${args.laneId}`,
+        laneId: args.laneId,
+        packType: "lane",
+        packPath: lanePackPath,
+        deterministicUpdatedAt: existingRow?.deterministic_updated_at ?? now,
+        narrativeUpdatedAt: now,
+        lastHeadSha: existingRow?.last_head_sha ?? null,
+        metadata: {
+          source: "hosted",
+          ...(args.metadata ?? {})
+        }
+      });
+
+      return {
+        packType: "lane",
+        path: lanePackPath,
+        exists: true,
+        deterministicUpdatedAt: existingRow?.deterministic_updated_at ?? now,
+        narrativeUpdatedAt: now,
+        lastHeadSha: existingRow?.last_head_sha ?? null,
+        body: updatedBody
+      };
     }
   };
 }

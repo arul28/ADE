@@ -2,9 +2,11 @@ import { contextBridge, ipcRenderer } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
   BatchAssessmentResult,
+  ApplyConflictProposalArgs,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictProposal,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -48,6 +50,16 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  HostedArtifactResult,
+  HostedBootstrapConfig,
+  HostedJobStatusResult,
+  HostedJobSubmissionArgs,
+  HostedJobSubmissionResult,
+  HostedMirrorSyncArgs,
+  HostedMirrorSyncResult,
+  HostedSignInArgs,
+  HostedSignInResult,
+  HostedStatus,
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -75,6 +87,8 @@ import type {
   PtyExitEvent,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
+  RequestConflictProposalArgs,
+  UndoConflictProposalArgs,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   ReparentLaneArgs,
@@ -206,6 +220,14 @@ contextBridge.exposeInMainWorld("ade", {
     runPrediction: async (args: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> =>
       ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
     getBatchAssessment: async (): Promise<BatchAssessmentResult> => ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
+    listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
+      ipcRenderer.invoke(IPC.conflictsListProposals, { laneId }),
+    requestProposal: async (args: RequestConflictProposalArgs): Promise<ConflictProposal> =>
+      ipcRenderer.invoke(IPC.conflictsRequestProposal, args),
+    applyProposal: async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> =>
+      ipcRenderer.invoke(IPC.conflictsApplyProposal, args),
+    undoProposal: async (args: UndoConflictProposalArgs): Promise<ConflictProposal> =>
+      ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ConflictEventPayload) => cb(payload);
       ipcRenderer.on(IPC.conflictsEvent, listener);
@@ -215,7 +237,24 @@ contextBridge.exposeInMainWorld("ade", {
   packs: {
     getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
     getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
-    refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId })
+    refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
+    applyHostedNarrative: async (args: { laneId: string; narrative: string }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args)
+  },
+  hosted: {
+    getStatus: async (): Promise<HostedStatus> => ipcRenderer.invoke(IPC.hostedGetStatus),
+    getBootstrapConfig: async (): Promise<HostedBootstrapConfig | null> => ipcRenderer.invoke(IPC.hostedGetBootstrapConfig),
+    applyBootstrapConfig: async (): Promise<HostedBootstrapConfig> => ipcRenderer.invoke(IPC.hostedApplyBootstrapConfig),
+    signIn: async (args: HostedSignInArgs = {}): Promise<HostedSignInResult> => ipcRenderer.invoke(IPC.hostedSignIn, args),
+    signOut: async (): Promise<void> => ipcRenderer.invoke(IPC.hostedSignOut),
+    syncMirror: async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> =>
+      ipcRenderer.invoke(IPC.hostedSyncMirror, args),
+    submitJob: async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> =>
+      ipcRenderer.invoke(IPC.hostedSubmitJob, args),
+    getJob: async (jobId: string): Promise<HostedJobStatusResult> =>
+      ipcRenderer.invoke(IPC.hostedGetJob, { jobId }),
+    getArtifact: async (artifactId: string): Promise<HostedArtifactResult> =>
+      ipcRenderer.invoke(IPC.hostedGetArtifact, { artifactId })
   },
   history: {
     listOperations: async (args: ListOperationsArgs = {}): Promise<OperationRecord[]> =>

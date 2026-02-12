@@ -502,6 +502,44 @@ function migrate(db: Database) {
     "conflict_predictions",
     ["predicted_at"]
   );
+
+  db.run(`
+    create table if not exists conflict_proposals (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      peer_lane_id text,
+      prediction_id text,
+      source text not null,
+      confidence real,
+      explanation text,
+      diff_patch text not null,
+      status text not null,
+      job_id text,
+      artifact_id text,
+      applied_operation_id text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(peer_lane_id) references lanes(id),
+      foreign key(prediction_id) references conflict_predictions(id),
+      foreign key(applied_operation_id) references operations(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_conflict_proposals_lane on conflict_proposals(project_id, lane_id)",
+    "conflict_proposals",
+    ["project_id", "lane_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_conflict_proposals_status on conflict_proposals(project_id, status)",
+    "conflict_proposals",
+    ["project_id", "status"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

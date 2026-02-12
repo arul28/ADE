@@ -1,6 +1,12 @@
 import React from "react";
 import { useAppStore } from "../../state/appStore";
-import type { BatchAssessmentResult, ConflictOverlap, ConflictStatus, RiskMatrixEntry } from "../../../shared/types";
+import type {
+  BatchAssessmentResult,
+  ConflictOverlap,
+  ConflictProposal,
+  ConflictStatus,
+  RiskMatrixEntry
+} from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { RiskMatrix } from "./RiskMatrix";
@@ -56,8 +62,11 @@ export function ConflictsPage() {
   const [loading, setLoading] = React.useState(false);
   const [progress, setProgress] = React.useState<{ completedPairs: number; totalPairs: number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [proposalError, setProposalError] = React.useState<string | null>(null);
   const [comparisonLaneIds, setComparisonLaneIds] = React.useState<string[]>([]);
   const [runningSelectedCompare, setRunningSelectedCompare] = React.useState(false);
+  const [proposals, setProposals] = React.useState<ConflictProposal[]>([]);
+  const [proposalBusy, setProposalBusy] = React.useState(false);
 
   const statusByLane = React.useMemo(() => {
     const map = new Map<string, ConflictStatus>();
@@ -142,6 +151,16 @@ export function ConflictsPage() {
     }
   }, []);
 
+  const loadProposals = React.useCallback(async (laneId: string) => {
+    try {
+      const next = await window.ade.conflicts.listProposals(laneId);
+      setProposals(next);
+    } catch (err) {
+      setProposalError(err instanceof Error ? err.message : String(err));
+      setProposals([]);
+    }
+  }, []);
+
   React.useEffect(() => {
     void loadBatch();
   }, [loadBatch]);
@@ -164,7 +183,8 @@ export function ConflictsPage() {
       return;
     }
     void loadLaneOverlaps(selectedLaneId);
-  }, [selectedLaneId, loadLaneOverlaps]);
+    void loadProposals(selectedLaneId);
+  }, [selectedLaneId, loadLaneOverlaps, loadProposals]);
 
   React.useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -224,6 +244,49 @@ export function ConflictsPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRunningSelectedCompare(false);
+    }
+  };
+
+  const requestProposal = async () => {
+    if (!selectedLaneId) return;
+    setProposalBusy(true);
+    setProposalError(null);
+    try {
+      await window.ade.conflicts.requestProposal({ laneId: selectedLaneId });
+      await loadProposals(selectedLaneId);
+      await loadBatch();
+    } catch (err) {
+      setProposalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProposalBusy(false);
+    }
+  };
+
+  const applyProposal = async (proposalId: string) => {
+    if (!selectedLaneId) return;
+    setProposalBusy(true);
+    setProposalError(null);
+    try {
+      await window.ade.conflicts.applyProposal({ laneId: selectedLaneId, proposalId });
+      await Promise.all([loadProposals(selectedLaneId), loadBatch(), refreshLanes()]);
+    } catch (err) {
+      setProposalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProposalBusy(false);
+    }
+  };
+
+  const undoProposal = async (proposalId: string) => {
+    if (!selectedLaneId) return;
+    setProposalBusy(true);
+    setProposalError(null);
+    try {
+      await window.ade.conflicts.undoProposal({ laneId: selectedLaneId, proposalId });
+      await Promise.all([loadProposals(selectedLaneId), loadBatch(), refreshLanes()]);
+    } catch (err) {
+      setProposalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProposalBusy(false);
     }
   };
 
@@ -410,10 +473,72 @@ export function ConflictsPage() {
         <aside className="min-h-0 overflow-auto bg-card/10 p-3">
           <div className="rounded border border-border bg-card/50 p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Resolution Proposals</div>
-            <div className="mt-2 text-xs text-muted-fg">
-              Hosted proposal generation is intentionally deferred. This panel reserves the Phase 5 layout surface and
-              currently focuses on prediction, matrix analysis, and merge simulation.
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!selectedLaneId || proposalBusy}
+                onClick={() => void requestProposal()}
+              >
+                {proposalBusy ? "Working..." : "Generate Proposal"}
+              </Button>
             </div>
+            {proposalError ? (
+              <div className="mt-2 rounded border border-red-700 bg-red-900/30 px-2 py-1 text-xs text-red-200">
+                {proposalError}
+              </div>
+            ) : null}
+
+            {!selectedLaneId ? (
+              <div className="mt-2 text-xs text-muted-fg">Select a lane to view hosted proposals.</div>
+            ) : proposals.length === 0 ? (
+              <div className="mt-2 text-xs text-muted-fg">No proposals for this lane yet.</div>
+            ) : (
+              <div className="mt-2 space-y-2">
+                {proposals.map((proposal) => (
+                  <div key={proposal.id} className="rounded border border-border bg-card/40 p-2">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-fg">{proposal.source}</span>
+                      <span className="text-muted-fg">
+                        {proposal.confidence != null
+                          ? `confidence ${Math.round(proposal.confidence * 100)}%`
+                          : "confidence n/a"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-fg">status: {proposal.status}</div>
+                    {proposal.explanation.trim().length ? (
+                      <div className="mt-1 text-xs text-fg whitespace-pre-wrap">
+                        {proposal.explanation.slice(0, 300)}
+                        {proposal.explanation.length > 300 ? "..." : ""}
+                      </div>
+                    ) : null}
+                    {proposal.diffPatch.trim().length ? (
+                      <pre className="mt-1 max-h-28 overflow-auto rounded border border-border bg-bg/50 p-1 text-[10px] text-fg">
+                        {proposal.diffPatch.slice(0, 1200)}
+                      </pre>
+                    ) : null}
+                    <div className="mt-2 flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={proposalBusy || proposal.status !== "pending"}
+                        onClick={() => void applyProposal(proposal.id)}
+                      >
+                        Apply
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={proposalBusy || proposal.status !== "applied"}
+                        onClick={() => void undoProposal(proposal.id)}
+                      >
+                        Undo
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </aside>
       </div>

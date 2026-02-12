@@ -1,8 +1,10 @@
 import type {
   BatchAssessmentResult,
+  ApplyConflictProposalArgs,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictProposal,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -35,6 +37,16 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  HostedArtifactResult,
+  HostedBootstrapConfig,
+  HostedJobStatusResult,
+  HostedJobSubmissionArgs,
+  HostedJobSubmissionResult,
+  HostedMirrorSyncArgs,
+  HostedMirrorSyncResult,
+  HostedSignInArgs,
+  HostedSignInResult,
+  HostedStatus,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -79,6 +91,7 @@ import type {
   RestackResult,
   RiskMatrixEntry,
   RunTestSuiteArgs,
+  RequestConflictProposalArgs,
   RunConflictPredictionArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -89,6 +102,7 @@ import type {
   TestRunSummary,
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
+  UndoConflictProposalArgs,
   WriteTextAtomicArgs
 } from "../shared/types";
 
@@ -180,12 +194,28 @@ declare global {
         simulateMerge: (args: MergeSimulationArgs) => Promise<MergeSimulationResult>;
         runPrediction: (args?: RunConflictPredictionArgs) => Promise<BatchAssessmentResult>;
         getBatchAssessment: () => Promise<BatchAssessmentResult>;
+        listProposals: (laneId: string) => Promise<ConflictProposal[]>;
+        requestProposal: (args: RequestConflictProposalArgs) => Promise<ConflictProposal>;
+        applyProposal: (args: ApplyConflictProposalArgs) => Promise<ConflictProposal>;
+        undoProposal: (args: UndoConflictProposalArgs) => Promise<ConflictProposal>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
       packs: {
         getProjectPack: () => Promise<PackSummary>;
         getLanePack: (laneId: string) => Promise<PackSummary>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
+        applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
+      };
+      hosted: {
+        getStatus: () => Promise<HostedStatus>;
+        getBootstrapConfig: () => Promise<HostedBootstrapConfig | null>;
+        applyBootstrapConfig: () => Promise<HostedBootstrapConfig>;
+        signIn: (args?: HostedSignInArgs) => Promise<HostedSignInResult>;
+        signOut: () => Promise<void>;
+        syncMirror: (args?: HostedMirrorSyncArgs) => Promise<HostedMirrorSyncResult>;
+        submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
+        getJob: (jobId: string) => Promise<HostedJobStatusResult>;
+        getArtifact: (artifactId: string) => Promise<HostedArtifactResult>;
       };
       history: {
         listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;

@@ -62,7 +62,7 @@ This document is the master implementation plan for ADE (Agentic Development Env
 | `UI_FRAMEWORK.md` | React 18, Zustand, Tailwind CSS, theming, component inventory |
 | `CONFIGURATION.md` | YAML config layering, trust model, lane profiles |
 | `SECURITY_AND_PRIVACY.md` | Process isolation, IPC security, secret protection, audit trail |
-| `CLOUD_BACKEND.md` | AWS serverless stack (SST, Cognito, S3, SQS, DynamoDB, Lambda) |
+| `CLOUD_BACKEND.md` | AWS serverless stack (SST, Clerk auth, S3, SQS, DynamoDB, Lambda) |
 | `HOSTED_AGENT.md` | Mirror sync protocol, LLM gateway, job types, provider swapping |
 
 ---
@@ -78,7 +78,7 @@ This document is the master implementation plan for ADE (Agentic Development Env
 | 3 | Files Tab + UI Polish | DONE | File explorer (Zed-inspired), Monaco editor, diff modes, Run tab rename, lane selector, guest mode, untracked sessions |
 | 4 | Stacks + Restack | DONE | Parent-child lanes, stack graph, restack operations, overlay policies, vertical connectors |
 | 5 | Conflict Radar + Resolution | DONE | Conflict prediction, risk matrix, merge simulation, Monaco conflict diff, risk tooltips, status badges |
-| 6 | Cloud Infrastructure + Auth + LLM Gateway | NOT STARTED | AWS SST stack, Cognito auth, LLM gateway, mirror sync, pack narratives, conflict proposals |
+| 6 | Cloud Infrastructure + Auth + LLM Gateway | IN PROGRESS | AWS SST stack, Clerk auth, LLM gateway, mirror sync, pack narratives, conflict proposals |
 | 7 | GitHub Integration + Workspace Graph | NOT STARTED | GitHub PR CRUD, stacked PRs, land flow, React Flow canvas, graph interactions, view modes |
 | 8 | Automations + Onboarding + Packs V2 | NOT STARTED | Trigger-action rules, onboarding wizard, CI/CD import, checkpoints, pack versioning |
 | 9 | Advanced Features + Polish + Runtime Isolation | NOT STARTED | History graph, terminal tiling, advanced git, agent CLI tools, runtime isolation |
@@ -709,12 +709,12 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 **Scope**:
 - AWS infrastructure via SST (Serverless Stack):
-  - Cognito user pool for authentication
+  - API Gateway + Clerk JWT authentication for desktop hosted access
   - S3 buckets for mirror storage and job artifacts
   - SQS queues for job processing
   - DynamoDB tables for job metadata, manifests, and results
   - Lambda functions for API endpoints and job workers
-- Auth flow: Cognito + GitHub OAuth with desktop loopback redirect (localhost callback)
+- Auth flow: Clerk OAuth (GitHub/Google social sign-in, public client + PKCE) with desktop loopback redirect (localhost callback)
 - Repo mirror sync: content-addressed blobs + per-lane manifests uploaded from desktop
 - Cloud job processing: SQS queue consumer Lambda workers
 - LLM gateway module: prompt templates, model selection (Claude, GPT, etc.), token budgets, provider swapping
@@ -755,7 +755,7 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 **Dependencies**: Phase 2 (pack service), Phase 5 (conflict service, conflict packs)
 
-**Exit Criteria**: AWS infrastructure deploys via SST with all resources prefixed `ade-` and tagged `project: ade`. Desktop authenticates via Cognito. Mirror sync uploads content-addressed blobs with exclude rules. Cloud jobs process pack narratives and conflict resolutions. Desktop polls for results and presents proposals for user review. Apply and undo workflows function correctly. Provider can be configured (Hosted, BYOK, or CLI). Secret redaction prevents sensitive data from being uploaded.
+**Exit Criteria**: AWS infrastructure deploys via SST with all resources prefixed `ade-` and tagged `project: ade`. Desktop authenticates via Clerk social sign-in (GitHub or Google). Mirror sync uploads content-addressed blobs with exclude rules. Cloud jobs process pack narratives and conflict resolutions. Desktop polls for results and presents proposals for user review. Apply and undo workflows function correctly. Provider can be configured (Hosted, BYOK, or CLI). Secret redaction prevents sensitive data from being uploaded.
 
 ---
 
@@ -829,7 +829,7 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - `githubService`: GitHub API wrapper (authentication, PR CRUD, checks, reviews, merge)
 - `prService`: PR lifecycle management, stack chain logic, land flow orchestration
 
-**Dependencies**: Phase 1 (lane service, git push), Phase 4 (stacks), Phase 5 (conflict service), Phase 6 (LLM gateway for PR descriptions, Cognito for auth)
+**Dependencies**: Phase 1 (lane service, git push), Phase 4 (stacks), Phase 5 (conflict service), Phase 6 (LLM gateway for PR descriptions, Clerk for auth)
 
 **Exit Criteria**: GitHub token is securely stored in OS keychain. PRs can be created and linked from lanes. PR status is displayed and polled. Stacked PRs correctly target parent branches. Landing works end-to-end. Workspace graph renders all lanes as interactive nodes with edges, risk overlays, and PR overlays. All graph interactions work (drag, click, context menu, multi-select, reparent). View modes and layout presets function correctly.
 

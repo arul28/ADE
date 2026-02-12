@@ -178,6 +178,144 @@ export type ConflictEventPayload =
       totalPairs: number;
     };
 
+export type ConflictProposalSource = "hosted" | "local";
+export type ConflictProposalStatus = "pending" | "applied" | "rejected";
+
+export type ConflictProposal = {
+  id: string;
+  laneId: string;
+  peerLaneId: string | null;
+  predictionId: string | null;
+  source: ConflictProposalSource;
+  confidence: number | null;
+  explanation: string;
+  diffPatch: string;
+  status: ConflictProposalStatus;
+  jobId: string | null;
+  artifactId: string | null;
+  appliedOperationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RequestConflictProposalArgs = {
+  laneId: string;
+  peerLaneId?: string | null;
+};
+
+export type ApplyConflictProposalArgs = {
+  laneId: string;
+  proposalId: string;
+};
+
+export type UndoConflictProposalArgs = {
+  laneId: string;
+  proposalId: string;
+};
+
+export type HostedJobType =
+  | "NarrativeGeneration"
+  | "ConflictResolution"
+  | "ProposeConflictResolution"
+  | "DraftPrDescription";
+
+export type HostedMirrorSyncArgs = {
+  laneId?: string;
+  includeTranscripts?: boolean;
+};
+
+export type HostedMirrorSyncResult = {
+  remoteProjectId: string;
+  lanesSynced: string[];
+  uploaded: number;
+  deduplicated: number;
+  excluded: number;
+  manifestCount: number;
+  transcriptCount: number;
+  packCount: number;
+  syncedAt: string;
+};
+
+export type HostedJobSubmissionArgs = {
+  type: HostedJobType;
+  laneId: string;
+  params?: Record<string, unknown>;
+};
+
+export type HostedJobSubmissionResult = {
+  remoteProjectId: string;
+  jobId: string;
+  status: "queued" | "processing" | "completed" | "failed";
+};
+
+export type HostedJobStatusResult = {
+  jobId: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  artifactId?: string;
+  completedAt?: string;
+  error?: {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+  };
+};
+
+export type HostedArtifactResult = {
+  artifactId: string;
+  type: string;
+  content: unknown;
+  createdAt: string;
+  contentHash: string;
+};
+
+export type HostedAuthStatus = {
+  signedIn: boolean;
+  expiresAt: string | null;
+  hasRefreshToken: boolean;
+  userId: string | null;
+  email: string | null;
+  displayName: string | null;
+};
+
+export type HostedBootstrapConfig = {
+  stage: string;
+  apiBaseUrl: string;
+  region: string;
+  clerkPublishableKey: string;
+  clerkOauthClientId: string;
+  clerkIssuer: string;
+  clerkFrontendApiUrl: string;
+  clerkOauthMetadataUrl: string;
+  clerkOauthAuthorizeUrl: string;
+  clerkOauthTokenUrl: string;
+  clerkOauthRevocationUrl: string;
+  clerkOauthUserInfoUrl: string;
+  clerkOauthScopes: string;
+  generatedAt?: string;
+};
+
+export type HostedStatus = {
+  enabled: boolean;
+  mode: ProviderMode;
+  consentGiven: boolean;
+  apiConfigured: boolean;
+  remoteProjectId: string | null;
+  auth: HostedAuthStatus;
+  mirrorExcludePatterns: string[];
+  transcriptUploadEnabled: boolean;
+};
+
+export type HostedSignInResult = {
+  signedIn: boolean;
+  expiresAt: string;
+};
+
+export type HostedSignInProvider = "github" | "google";
+
+export type HostedSignInArgs = {
+  provider?: HostedSignInProvider;
+};
+
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
 export type TerminalSessionSummary = {

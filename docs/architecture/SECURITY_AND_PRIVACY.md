@@ -180,9 +180,9 @@ The following patterns are excluded from hosted mirror uploads by default:
 
 | Secret Type | Storage Location | Encryption |
 |-------------|-----------------|------------|
-| GitHub OAuth tokens | OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) | OS-level encryption |
+| Hosted Clerk OAuth tokens | OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) | OS-level encryption |
 | BYOK API keys | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
-| Cognito tokens | Memory (access/ID) + OS keychain (refresh) | OS-level encryption for refresh token |
+| Clerk OAuth tokens | Memory (access/ID) + OS keychain (refresh) | OS-level encryption for refresh token |
 
 **Important**: API keys for BYOK providers must ONLY be placed in `local.yaml`, never in `ade.yaml`. The config validation system warns if it detects an `apiKey` field in the shared config file.
 
@@ -218,14 +218,14 @@ Each user's data is fully isolated:
 
 - **S3**: Blobs stored under `<projectId>/` prefix. IAM policies prevent cross-tenant access at the bucket policy level.
 - **DynamoDB**: All queries include `userId` as the partition key. Lambda functions operate within the authenticated user's scope only.
-- **API Gateway**: Cognito authorizer validates JWT on every request. User identity extracted from token claims, not request parameters.
+- **API Gateway**: JWT authorizer validates Clerk-issued JWT on every request. User identity extracted from token claims, not request parameters.
 
 #### Access Logging
 
 All API access is logged with:
 
 - Timestamp (ISO 8601)
-- User ID (Cognito sub)
+- User ID (JWT `sub`)
 - Action type (upload, download, job-submit, delete)
 - Resource identifiers (project ID, lane ID, blob hash)
 - Request metadata (IP address, user agent)
@@ -356,7 +356,7 @@ The audit trail provides a complete record of significant operations for debuggi
 
 ### Cloud Backend
 
-- **Cognito JWT**: All API requests authenticated and authorized
+- **Clerk JWT**: All API requests authenticated and authorized
 - **CloudWatch logging**: All access logged with user identity and action type
 - **Data deletion**: Recursive, confirmed deletion via API (see [CLOUD_BACKEND.md](./CLOUD_BACKEND.md))
 

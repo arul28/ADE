@@ -54,7 +54,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {providerMode === "guest" ? (
         <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
-          Running in Guest Mode - context tracking uses template narratives. <Link to="/settings" className="underline">Set up provider</Link>
+          Running in Guest Mode - context tracking disabled. <Link to="/settings" className="underline">Set up provider</Link>
         </div>
       ) : null}
 

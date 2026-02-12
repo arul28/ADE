@@ -1,10 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../../../shared/ipc";
 import type {
+  ApplyConflictProposalArgs,
   BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  ConflictProposal,
   ConflictOverlap,
   ConflictStatus,
   CreateLaneArgs,
@@ -45,6 +47,16 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  HostedArtifactResult,
+  HostedBootstrapConfig,
+  HostedJobStatusResult,
+  HostedJobSubmissionArgs,
+  HostedJobSubmissionResult,
+  HostedMirrorSyncArgs,
+  HostedMirrorSyncResult,
+  HostedSignInArgs,
+  HostedSignInResult,
+  HostedStatus,
   LaneSummary,
   ListOperationsArgs,
   ListOverlapsArgs,
@@ -73,7 +85,9 @@ import type {
   RestackArgs,
   RestackResult,
   RiskMatrixEntry,
+  RequestConflictProposalArgs,
   RunConflictPredictionArgs,
+  UndoConflictProposalArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -100,6 +114,7 @@ import type { createPackService } from "../packs/packService";
 import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
+import type { createHostedAgentService } from "../hosted/hostedAgentService";
 
 export type AppContext = {
   db: AdeDb;
@@ -115,6 +130,7 @@ export type AppContext = {
   operationService: ReturnType<typeof createOperationService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   conflictService: ReturnType<typeof createConflictService>;
+  hostedAgentService: ReturnType<typeof createHostedAgentService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -514,6 +530,26 @@ export function registerIpc({
     return await ctx.conflictService.getBatchAssessment();
   });
 
+  ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.listProposals({ laneId: arg.laneId });
+  });
+
+  ipcMain.handle(IPC.conflictsRequestProposal, async (_event, arg: RequestConflictProposalArgs): Promise<ConflictProposal> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.requestProposal(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsApplyProposal, async (_event, arg: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.applyProposal(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsUndoProposal, async (_event, arg: UndoConflictProposalArgs): Promise<ConflictProposal> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.undoProposal(arg);
+  });
+
   ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {
     const ctx = getCtx();
     return ctx.packService.getProjectPack();
@@ -535,6 +571,59 @@ export function registerIpc({
       laneId: arg.laneId
     });
     return lanePack;
+  });
+
+  ipcMain.handle(IPC.packsApplyHostedNarrative, async (_event, arg: { laneId: string; narrative: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.applyHostedNarrative({
+      laneId: arg.laneId,
+      narrative: arg.narrative
+    });
+  });
+
+  ipcMain.handle(IPC.hostedGetStatus, async (): Promise<HostedStatus> => {
+    const ctx = getCtx();
+    return ctx.hostedAgentService.getStatus();
+  });
+
+  ipcMain.handle(IPC.hostedGetBootstrapConfig, async (): Promise<HostedBootstrapConfig | null> => {
+    const ctx = getCtx();
+    return ctx.hostedAgentService.getBootstrapConfig();
+  });
+
+  ipcMain.handle(IPC.hostedApplyBootstrapConfig, async (): Promise<HostedBootstrapConfig> => {
+    const ctx = getCtx();
+    return ctx.hostedAgentService.applyBootstrapConfig();
+  });
+
+  ipcMain.handle(IPC.hostedSignIn, async (_event, arg: HostedSignInArgs = {}): Promise<HostedSignInResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.signIn(arg);
+  });
+
+  ipcMain.handle(IPC.hostedSignOut, async (): Promise<void> => {
+    const ctx = getCtx();
+    ctx.hostedAgentService.signOut();
+  });
+
+  ipcMain.handle(IPC.hostedSyncMirror, async (_event, arg: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.syncMirror(arg);
+  });
+
+  ipcMain.handle(IPC.hostedSubmitJob, async (_event, arg: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.submitJob(arg);
+  });
+
+  ipcMain.handle(IPC.hostedGetJob, async (_event, arg: { jobId: string }): Promise<HostedJobStatusResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.getJob(arg.jobId);
+  });
+
+  ipcMain.handle(IPC.hostedGetArtifact, async (_event, arg: { artifactId: string }): Promise<HostedArtifactResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.getArtifact(arg.artifactId);
   });
 
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {

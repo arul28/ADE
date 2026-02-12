@@ -1,3 +1,5 @@
 .ade/
 .DS_Store
-
+infra/node_modules/
+infra/.sst/
+infra/.pulumi/

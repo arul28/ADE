@@ -1,6 +1,7 @@
 import type { Logger } from "../logging/logger";
 import type { createPackService } from "../packs/packService";
 import type { createConflictService } from "../conflicts/conflictService";
+import type { createHostedAgentService } from "../hosted/hostedAgentService";
 
 type RefreshRequest = {
   laneId: string;
@@ -17,11 +18,13 @@ type LaneQueueState = {
 export function createJobEngine({
   logger,
   packService,
-  conflictService
+  conflictService,
+  hostedAgentService
 }: {
   logger: Logger;
   packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
 }) {
   const laneQueue = new Map<string, LaneQueueState>();
   const dirtyLaneQueue = new Set<string>();
@@ -59,6 +62,32 @@ export function createJobEngine({
           reason: payload.reason,
           laneId: payload.laneId
         });
+
+        if (hostedAgentService?.getStatus().enabled) {
+          try {
+            const lanePack = packService.getLanePack(payload.laneId);
+            if (lanePack.exists && lanePack.body.trim().length) {
+              const narrative = await hostedAgentService.requestLaneNarrative({
+                laneId: payload.laneId,
+                packBody: lanePack.body
+              });
+              packService.applyHostedNarrative({
+                laneId: payload.laneId,
+                narrative: narrative.narrative,
+                metadata: {
+                  jobId: narrative.jobId,
+                  artifactId: narrative.artifactId
+                }
+              });
+            }
+            await hostedAgentService.syncMirror({ laneId: payload.laneId, includeTranscripts: false });
+          } catch (hostedError) {
+            logger.warn("jobs.hosted_refresh.failed", {
+              laneId: payload.laneId,
+              error: hostedError instanceof Error ? hostedError.message : String(hostedError)
+            });
+          }
+        }
         logger.info("jobs.refresh_lane.done", payload);
       } catch (error) {
         logger.error("jobs.refresh_lane.failed", {

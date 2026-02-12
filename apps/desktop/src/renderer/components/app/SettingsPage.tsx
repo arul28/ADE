@@ -1,55 +1,318 @@
 import React, { useEffect, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
-import type { AppInfo, ProviderMode } from "../../../shared/types";
+import type {
+  AppInfo,
+  HostedBootstrapConfig,
+  HostedStatus,
+  ProviderMode,
+  ProjectConfigSnapshot
+} from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 
+type ProviderDraft = {
+  mode: ProviderMode;
+  hosted: {
+    consentGiven: boolean;
+    githubRepoConsent: boolean;
+    apiBaseUrl: string;
+    region: string;
+    clerkPublishableKey: string;
+    clerkOauthClientId: string;
+    clerkIssuer: string;
+    clerkFrontendApiUrl: string;
+    clerkOauthMetadataUrl: string;
+    clerkOauthAuthorizeUrl: string;
+    clerkOauthTokenUrl: string;
+    clerkOauthRevocationUrl: string;
+    clerkOauthUserInfoUrl: string;
+    clerkOauthScopes: string;
+    uploadTranscripts: boolean;
+    mirrorExcludePatternsText: string;
+  };
+  byok: {
+    provider: "openai" | "anthropic";
+    model: string;
+    apiKey: string;
+  };
+  cli: {
+    command: string;
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function asBoolean(value: unknown): boolean {
+  return typeof value === "boolean" ? value : false;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function toPatternsFromTextarea(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
+  const localProviders = isRecord(snapshot.local.providers) ? snapshot.local.providers : {};
+  const effectiveProviders = isRecord(snapshot.effective.providers) ? snapshot.effective.providers : {};
+  const providers = { ...effectiveProviders, ...localProviders };
+
+  const hosted = isRecord(providers.hosted) ? providers.hosted : {};
+  const byok = isRecord(providers.byok) ? providers.byok : {};
+  const cli = isRecord(providers.cli) ? providers.cli : {};
+
+  const modeRaw = asString(providers.mode);
+  const mode: ProviderMode =
+    modeRaw === "hosted" || modeRaw === "byok" || modeRaw === "cli" || modeRaw === "guest"
+      ? modeRaw
+      : snapshot.effective.providerMode ?? "guest";
+
+  return {
+    mode,
+    hosted: {
+      consentGiven: asBoolean(hosted.consentGiven),
+      githubRepoConsent: asBoolean(hosted.githubRepoConsent),
+      apiBaseUrl: asString(hosted.apiBaseUrl),
+      region: asString(hosted.region),
+      clerkPublishableKey: asString(hosted.clerkPublishableKey),
+      clerkOauthClientId: asString(hosted.clerkOauthClientId),
+      clerkIssuer: asString(hosted.clerkIssuer),
+      clerkFrontendApiUrl: asString(hosted.clerkFrontendApiUrl),
+      clerkOauthMetadataUrl: asString(hosted.clerkOauthMetadataUrl),
+      clerkOauthAuthorizeUrl: asString(hosted.clerkOauthAuthorizeUrl),
+      clerkOauthTokenUrl: asString(hosted.clerkOauthTokenUrl),
+      clerkOauthRevocationUrl: asString(hosted.clerkOauthRevocationUrl),
+      clerkOauthUserInfoUrl: asString(hosted.clerkOauthUserInfoUrl),
+      clerkOauthScopes: asString(hosted.clerkOauthScopes) || "openid profile email offline_access",
+      uploadTranscripts: asBoolean(hosted.uploadTranscripts),
+      mirrorExcludePatternsText: asStringArray(hosted.mirrorExcludePatterns).join("\n")
+    },
+    byok: {
+      provider: asString(byok.provider) === "openai" ? "openai" : "anthropic",
+      model: asString(byok.model),
+      apiKey: asString(byok.apiKey)
+    },
+    cli: {
+      command: asString(cli.command)
+    }
+  };
+}
+
+function validateProviderDraft(draft: ProviderDraft, hasBootstrapConfig: boolean): string | null {
+  if (draft.mode === "hosted" && !draft.hosted.consentGiven) {
+    return "Hosted mode requires consent before saving.";
+  }
+
+  if (draft.mode === "hosted" && !draft.hosted.githubRepoConsent) {
+    return "Enable repository connection consent before signing in.";
+  }
+
+  if (draft.mode === "hosted" && !draft.hosted.apiBaseUrl.trim() && !hasBootstrapConfig) {
+    return "Hosted mode requires an API base URL (or an applied bootstrap file).";
+  }
+
+  if (draft.mode === "hosted" && !draft.hosted.clerkOauthClientId.trim() && !hasBootstrapConfig) {
+    return "Hosted mode requires a Clerk OAuth client ID (or an applied bootstrap file).";
+  }
+
+  if (draft.mode === "byok" && !draft.byok.apiKey.trim()) {
+    return "BYOK mode requires an API key.";
+  }
+
+  if (draft.mode === "byok" && !draft.byok.model.trim()) {
+    return "BYOK mode requires a model name.";
+  }
+
+  return null;
+}
+
 export function SettingsPage() {
   const [info, setInfo] = useState<AppInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
-  const [providerModeDraft, setProviderModeDraft] = useState<ProviderMode>("guest");
+  const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
+  const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
+  const [hostedBootstrapConfig, setHostedBootstrapConfig] = useState<HostedBootstrapConfig | null>(null);
+  const [hostedBusy, setHostedBusy] = useState(false);
+  const [showAdvancedHostedFields, setShowAdvancedHostedFields] = useState(false);
   const providerMode = useAppStore((s) => s.providerMode);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
 
   useEffect(() => {
     let cancelled = false;
+
     window.ade.app
       .getInfo()
       .then((v) => {
         if (!cancelled) setInfo(v);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setLoadError(String(e));
       });
-    window.ade.projectConfig.get().then((snapshot) => {
-      if (!cancelled) {
-        setProviderModeDraft(snapshot.effective.providerMode ?? "guest");
-      }
-    }).catch(() => {});
+
+    window.ade.projectConfig
+      .get()
+      .then((snapshot) => {
+        if (!cancelled) {
+          setProviderDraft(readProviderDraft(snapshot));
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadError(String(e));
+      });
+
+    window.ade.hosted
+      .getStatus()
+      .then((status) => {
+        if (!cancelled) setHostedStatus(status);
+      })
+      .catch(() => {});
+
+    window.ade.hosted
+      .getBootstrapConfig()
+      .then((config) => {
+        if (!cancelled) setHostedBootstrapConfig(config);
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
   }, []);
 
-  if (error) {
-    return <EmptyState title="Settings" description={`Failed to load app info: ${error}`} />;
+  if (loadError) {
+    return <EmptyState title="Settings" description={`Failed to load settings: ${loadError}`} />;
   }
 
-  if (!info) {
-    return <EmptyState title="Settings" description="Loading…" />;
+  if (!info || !providerDraft) {
+    return <EmptyState title="Settings" description="Loading..." />;
   }
+
+  const refreshProviderDraftAndHostedState = async () => {
+    const snapshot = await window.ade.projectConfig.get();
+    setProviderDraft(readProviderDraft(snapshot));
+    const [status, bootstrap] = await Promise.all([
+      window.ade.hosted.getStatus().catch(() => null),
+      window.ade.hosted.getBootstrapConfig().catch(() => null)
+    ]);
+    if (status) setHostedStatus(status);
+    setHostedBootstrapConfig(bootstrap ?? null);
+  };
+
+  const saveProvider = async () => {
+    setActionError(null);
+    setSaveNotice(null);
+
+    const validationError = validateProviderDraft(providerDraft, Boolean(hostedBootstrapConfig));
+    if (validationError) {
+      setActionError(validationError);
+      return;
+    }
+
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const localProviders = isRecord(snapshot.local.providers) ? snapshot.local.providers : {};
+
+      const nextProviders: Record<string, unknown> = {
+        ...localProviders,
+        mode: providerDraft.mode,
+        hosted: {
+          consentGiven: providerDraft.hosted.consentGiven,
+          githubRepoConsent: providerDraft.hosted.githubRepoConsent,
+          apiBaseUrl: providerDraft.hosted.apiBaseUrl.trim(),
+          region: providerDraft.hosted.region.trim(),
+          clerkPublishableKey: providerDraft.hosted.clerkPublishableKey.trim(),
+          clerkOauthClientId: providerDraft.hosted.clerkOauthClientId.trim(),
+          clerkIssuer: providerDraft.hosted.clerkIssuer.trim(),
+          clerkFrontendApiUrl: providerDraft.hosted.clerkFrontendApiUrl.trim(),
+          clerkOauthMetadataUrl: providerDraft.hosted.clerkOauthMetadataUrl.trim(),
+          clerkOauthAuthorizeUrl: providerDraft.hosted.clerkOauthAuthorizeUrl.trim(),
+          clerkOauthTokenUrl: providerDraft.hosted.clerkOauthTokenUrl.trim(),
+          clerkOauthRevocationUrl: providerDraft.hosted.clerkOauthRevocationUrl.trim(),
+          clerkOauthUserInfoUrl: providerDraft.hosted.clerkOauthUserInfoUrl.trim(),
+          clerkOauthScopes: providerDraft.hosted.clerkOauthScopes.trim() || "openid profile email offline_access",
+          uploadTranscripts: providerDraft.hosted.uploadTranscripts,
+          mirrorExcludePatterns: toPatternsFromTextarea(providerDraft.hosted.mirrorExcludePatternsText)
+        },
+        byok: {
+          provider: providerDraft.byok.provider,
+          model: providerDraft.byok.model.trim(),
+          apiKey: providerDraft.byok.apiKey.trim()
+        },
+        cli: {
+          command: providerDraft.cli.command.trim()
+        },
+        updatedAt: new Date().toISOString()
+      };
+
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          providers: nextProviders
+        }
+      });
+
+      await refreshProviderMode();
+      await refreshProviderDraftAndHostedState();
+      setSaveNotice("Provider configuration saved to .ade/local.yaml.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const applyHostedBootstrap = async () => {
+    setActionError(null);
+    setSaveNotice(null);
+    setHostedBusy(true);
+    try {
+      const bootstrap = await window.ade.hosted.applyBootstrapConfig();
+      setHostedBootstrapConfig(bootstrap);
+      await refreshProviderDraftAndHostedState();
+      setSaveNotice(`Applied hosted bootstrap for stage '${bootstrap.stage}'.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHostedBusy(false);
+    }
+  };
+
+  const authSummary = hostedStatus?.auth.signedIn
+    ? hostedStatus.auth.email || hostedStatus.auth.displayName || hostedStatus.auth.userId || "Signed in"
+    : "signed out";
 
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
       <div className="text-sm font-semibold">Environment</div>
-      {saveNotice ? <div className="mt-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{saveNotice}</div> : null}
+      {saveNotice ? (
+        <div className="mt-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          {saveNotice}
+        </div>
+      ) : null}
+      {actionError ? (
+        <div className="mt-2 rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">{actionError}</div>
+      ) : null}
+
       <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
         <div className="rounded-lg border border-border bg-card/70 p-3">
           <div className="text-xs text-muted-fg">App</div>
           <div className="mt-1 text-sm font-medium">v{info.appVersion}</div>
           <div className="mt-1 text-xs text-muted-fg">{info.isPackaged ? "packaged" : "dev"}</div>
         </div>
+
         <div className="rounded-lg border border-border bg-card/70 p-3">
           <div className="text-xs text-muted-fg">Runtime</div>
           <div className="mt-1 text-sm">
@@ -59,33 +322,23 @@ export function SettingsPage() {
             node {info.versions.node} · electron {info.versions.electron}
           </div>
         </div>
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
-          <div className="text-xs text-muted-fg">Versions</div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
-            <div>
-              <div className="text-xs text-muted-fg">Electron</div>
-              <div>{info.versions.electron}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-fg">Chrome</div>
-              <div>{info.versions.chrome}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-fg">Node</div>
-              <div>{info.versions.node}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-fg">V8</div>
-              <div>{info.versions.v8}</div>
-            </div>
-          </div>
-        </div>
+
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
           <div className="text-xs text-muted-fg">Provider Mode</div>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <select
-              value={providerModeDraft}
-              onChange={(e) => setProviderModeDraft(e.target.value as ProviderMode)}
+              value={providerDraft.mode}
+              onChange={(e) => {
+                const nextMode = e.target.value as ProviderMode;
+                setProviderDraft((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        mode: nextMode
+                      }
+                    : prev
+                );
+              }}
               className="h-9 rounded-md border border-border bg-card/80 px-3 text-sm"
             >
               <option value="guest">Guest (local templates)</option>
@@ -93,37 +346,529 @@ export function SettingsPage() {
               <option value="byok">BYOK</option>
               <option value="cli">CLI</option>
             </select>
-            <Button
-              size="sm"
-              onClick={() => {
-                setError(null);
-                setSaveNotice(null);
-                window.ade.projectConfig.get()
-                  .then((snapshot) => {
-                    const nextLocal = {
-                      ...snapshot.local,
-                      providers: {
-                        ...(snapshot.local.providers ?? {}),
-                        mode: providerModeDraft
-                      }
-                    };
-                    return window.ade.projectConfig.save({
-                      shared: snapshot.shared,
-                      local: nextLocal
-                    });
-                  })
-                  .then(async () => {
-                    await refreshProviderMode();
-                    setSaveNotice("Provider mode updated.");
-                  })
-                  .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-              }}
-            >
+            <Button size="sm" onClick={() => void saveProvider()}>
               Save Provider
             </Button>
             <div className="text-xs text-muted-fg">Current: {providerMode}</div>
           </div>
         </div>
+
+        {providerDraft.mode === "hosted" ? (
+          <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+            <div className="text-xs text-muted-fg">Hosted Agent (Clerk + GitHub/Google)</div>
+            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Hosted mode uploads redacted mirror data and job payloads to ADE cloud. You can authenticate through Clerk with
+              GitHub or Google. Repo linking is consent-only in Phase 6; full GitHub repo connection lands in Phase 7.
+            </div>
+
+            <label className="mt-3 flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={providerDraft.hosted.consentGiven}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            consentGiven: e.target.checked
+                          }
+                        }
+                      : prev
+                  )
+                }
+              />
+              <span>I accept hosted processing and cloud mirror sync for this project.</span>
+            </label>
+
+            <label className="mt-2 flex items-start gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={providerDraft.hosted.githubRepoConsent}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            githubRepoConsent: e.target.checked
+                          }
+                        }
+                      : prev
+                  )
+                }
+              />
+              <span>I allow ADE to connect to my repositories for hosted features (connection flow is stubbed in Phase 6).</span>
+            </label>
+
+            <label className="mt-2 flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={providerDraft.hosted.uploadTranscripts}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            uploadTranscripts: e.target.checked
+                          }
+                        }
+                      : prev
+                  )
+                }
+              />
+              Upload transcript logs during hosted mirror sync.
+            </label>
+
+            <div className="mt-3 rounded border border-border bg-card/30 p-2 text-xs">
+              <div className="font-medium text-fg">Bootstrap Config</div>
+              {hostedBootstrapConfig ? (
+                <div className="mt-1 text-muted-fg">
+                  stage: {hostedBootstrapConfig.stage} · api: {hostedBootstrapConfig.apiBaseUrl}
+                  {hostedBootstrapConfig.generatedAt ? ` · generated ${hostedBootstrapConfig.generatedAt}` : ""}
+                </div>
+              ) : (
+                <div className="mt-1 text-muted-fg">
+                  No bootstrap file detected at `.ade/hosted/bootstrap.json`.
+                </div>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="outline" disabled={hostedBusy} onClick={() => void applyHostedBootstrap()}>
+                  Apply Bootstrap
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={hostedBusy}
+                  onClick={() => {
+                    setHostedBusy(true);
+                    setActionError(null);
+                    window.ade.hosted
+                      .getBootstrapConfig()
+                      .then((config) => setHostedBootstrapConfig(config))
+                      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                      .finally(() => setHostedBusy(false));
+                  }}
+                >
+                  Refresh Bootstrap
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedBusy}
+                onClick={() => {
+                  setHostedBusy(true);
+                  setActionError(null);
+                  window.ade.hosted
+                    .signIn()
+                    .then(() => window.ade.hosted.getStatus())
+                    .then((status) => {
+                      setHostedStatus(status);
+                      setSaveNotice("Hosted sign-in completed.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedBusy(false));
+                }}
+              >
+                {hostedBusy ? "Working..." : "Sign in / Sign up (GitHub or Google)"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedBusy}
+                onClick={() => {
+                  setHostedBusy(true);
+                  setActionError(null);
+                  window.ade.hosted
+                    .signOut()
+                    .then(() => window.ade.hosted.getStatus())
+                    .then((status) => {
+                      setHostedStatus(status);
+                      setSaveNotice("Hosted auth session cleared.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedBusy(false));
+                }}
+              >
+                Sign Out
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedBusy}
+                onClick={() => {
+                  setHostedBusy(true);
+                  setActionError(null);
+                  window.ade.hosted
+                    .syncMirror({ includeTranscripts: providerDraft.hosted.uploadTranscripts })
+                    .then((result) => {
+                      setSaveNotice(
+                        `Mirror sync complete. Uploaded ${result.uploaded} blobs (${result.deduplicated} deduplicated, ${result.excluded} excluded).`
+                      );
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedBusy(false));
+                }}
+              >
+                Sync Mirror
+              </Button>
+              <div className="text-xs text-muted-fg">
+                Auth: {authSummary}
+                {hostedStatus?.auth.expiresAt ? ` · access token exp ${hostedStatus.auth.expiresAt}` : ""}
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <div className="mb-1 text-xs text-muted-fg">Mirror exclude patterns (one per line)</div>
+              <textarea
+                className="min-h-[90px] w-full rounded border border-border bg-bg px-3 py-2 text-xs"
+                value={providerDraft.hosted.mirrorExcludePatternsText}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            mirrorExcludePatternsText: e.target.value
+                          }
+                        }
+                      : prev
+                  )
+                }
+                placeholder=".env\nsecrets/\n*.pem"
+              />
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setShowAdvancedHostedFields((prev) => !prev)}>
+                {showAdvancedHostedFields ? "Hide Advanced Fields" : "Show Advanced Fields"}
+              </Button>
+            </div>
+
+            {showAdvancedHostedFields ? (
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="API Base URL"
+                  value={providerDraft.hosted.apiBaseUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              apiBaseUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="AWS Region"
+                  value={providerDraft.hosted.region}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              region: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk Publishable Key"
+                  value={providerDraft.hosted.clerkPublishableKey}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkPublishableKey: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk OAuth Client ID"
+                  value={providerDraft.hosted.clerkOauthClientId}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthClientId: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk JWT Issuer"
+                  value={providerDraft.hosted.clerkIssuer}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkIssuer: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk Frontend API URL"
+                  value={providerDraft.hosted.clerkFrontendApiUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkFrontendApiUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk OAuth Metadata URL"
+                  value={providerDraft.hosted.clerkOauthMetadataUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthMetadataUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk OAuth Authorize URL"
+                  value={providerDraft.hosted.clerkOauthAuthorizeUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthAuthorizeUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk OAuth Token URL"
+                  value={providerDraft.hosted.clerkOauthTokenUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthTokenUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk OAuth Revocation URL"
+                  value={providerDraft.hosted.clerkOauthRevocationUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthRevocationUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                  placeholder="Clerk OAuth UserInfo URL"
+                  value={providerDraft.hosted.clerkOauthUserInfoUrl}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthUserInfoUrl: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+                <input
+                  className="h-9 rounded border border-border bg-bg px-3 text-sm md:col-span-2"
+                  placeholder="Clerk OAuth scopes"
+                  value={providerDraft.hosted.clerkOauthScopes}
+                  onChange={(e) =>
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              clerkOauthScopes: e.target.value
+                            }
+                          }
+                        : prev
+                    )
+                  }
+                />
+              </div>
+            ) : null}
+
+            <div className="mt-2 text-xs text-muted-fg">
+              Hosted tokens are stored in OS secure storage. Existing sessions are restored across app restarts.
+            </div>
+          </div>
+        ) : null}
+
+        {providerDraft.mode === "byok" ? (
+          <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+            <div className="text-xs text-muted-fg">BYOK (ONBOARD-015)</div>
+            <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+              <select
+                className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                value={providerDraft.byok.provider}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          byok: {
+                            ...prev.byok,
+                            provider: e.target.value === "openai" ? "openai" : "anthropic"
+                          }
+                        }
+                      : prev
+                  )
+                }
+              >
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+              </select>
+              <input
+                className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                placeholder="Model"
+                value={providerDraft.byok.model}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          byok: {
+                            ...prev.byok,
+                            model: e.target.value
+                          }
+                        }
+                      : prev
+                  )
+                }
+              />
+              <input
+                type="password"
+                className="h-9 rounded border border-border bg-bg px-3 text-sm"
+                placeholder="API Key"
+                value={providerDraft.byok.apiKey}
+                onChange={(e) =>
+                  setProviderDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          byok: {
+                            ...prev.byok,
+                            apiKey: e.target.value
+                          }
+                        }
+                      : prev
+                  )
+                }
+              />
+            </div>
+            <div className="mt-2 text-xs text-muted-fg">API key is stored in `.ade/local.yaml` and excluded from git.</div>
+          </div>
+        ) : null}
+
+        {providerDraft.mode === "cli" ? (
+          <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+            <div className="text-xs text-muted-fg">CLI Provider</div>
+            <input
+              className="mt-2 h-9 w-full rounded border border-border bg-bg px-3 text-sm"
+              placeholder="CLI command (for example: claude, codex, aider)"
+              value={providerDraft.cli.command}
+              onChange={(e) =>
+                setProviderDraft((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        cli: {
+                          command: e.target.value
+                        }
+                      }
+                    : prev
+                )
+              }
+            />
+          </div>
+        ) : null}
 
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
           <div className="text-xs text-muted-fg">Env</div>

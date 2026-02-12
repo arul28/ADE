@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import path from "node:path";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
@@ -18,6 +18,7 @@ import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
 import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
+import { createHostedAgentService } from "./services/hosted/hostedAgentService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -162,12 +163,27 @@ app.whenReady().then(async () => {
       operationService
     });
 
+    const hostedAgentService = createHostedAgentService({
+      logger,
+      projectId,
+      projectRoot,
+      projectDisplayName: project.displayName,
+      adeDir: adePaths.adeDir,
+      laneService,
+      projectConfigService,
+      openExternal: async (url) => {
+        await shell.openExternal(url);
+      }
+    });
+
     const conflictService = createConflictService({
       db,
       logger,
       projectId,
       projectRoot,
       laneService,
+      operationService,
+      hostedAgentService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => broadcast(IPC.conflictsEvent, event)
     });
@@ -175,7 +191,8 @@ app.whenReady().then(async () => {
     jobEngine = createJobEngine({
       logger,
       packService,
-      conflictService
+      conflictService,
+      hostedAgentService
     });
 
     const fileService = createFileService({
@@ -253,6 +270,7 @@ app.whenReady().then(async () => {
       operationService,
       gitService,
       conflictService,
+      hostedAgentService,
       jobEngine,
       packService,
       projectConfigService,

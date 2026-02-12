@@ -1,0 +1,25 @@
+{
+  "name": "ade-infra",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "sst dev",
+    "deploy": "sst deploy",
+    "remove": "sst remove",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.922.0",
+    "@aws-sdk/client-s3": "^3.922.0",
+    "@aws-sdk/client-secrets-manager": "^3.922.0",
+    "@aws-sdk/client-sqs": "^3.922.0",
+    "@aws-sdk/lib-dynamodb": "^3.922.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "@types/node": "^20.19.16",
+    "sst": "^3.17.38",
+    "typescript": "^5.9.3"
+  }
+}

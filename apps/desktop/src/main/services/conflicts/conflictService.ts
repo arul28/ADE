@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import type {
+  ApplyConflictProposalArgs,
   BatchOverlapEntry,
   BatchAssessmentResult,
   ConflictChip,
   ConflictEventPayload,
   ConflictFileType,
   ConflictOverlap,
+  ConflictProposal,
+  ConflictProposalStatus,
   ConflictPrediction,
   ConflictRiskLevel,
   ConflictStatus,
@@ -17,12 +21,16 @@ import type {
   ListOverlapsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
+  RequestConflictProposalArgs,
   RiskMatrixEntry,
-  RunConflictPredictionArgs
+  RunConflictPredictionArgs,
+  UndoConflictProposalArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
+import type { createOperationService } from "../history/operationService";
+import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
@@ -44,6 +52,23 @@ type StoredConflictFile = {
   path: string;
   conflictType: string;
   markerPreview?: string;
+};
+
+type ConflictProposalRow = {
+  id: string;
+  lane_id: string;
+  peer_lane_id: string | null;
+  prediction_id: string | null;
+  source: "hosted" | "local";
+  confidence: number | null;
+  explanation: string | null;
+  diff_patch: string;
+  status: ConflictProposalStatus;
+  job_id: string | null;
+  artifact_id: string | null;
+  applied_operation_id: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 const RISK_SCORE: Record<ConflictRiskLevel, number> = {
@@ -252,12 +277,47 @@ function dedupeChips(chips: ConflictChip[]): ConflictChip[] {
   return Array.from(map.values());
 }
 
+function rowToProposal(row: ConflictProposalRow): ConflictProposal {
+  return {
+    id: row.id,
+    laneId: row.lane_id,
+    peerLaneId: row.peer_lane_id,
+    predictionId: row.prediction_id,
+    source: row.source,
+    confidence: row.confidence,
+    explanation: row.explanation ?? "",
+    diffPatch: row.diff_patch,
+    status: row.status,
+    jobId: row.job_id,
+    artifactId: row.artifact_id,
+    appliedOperationId: row.applied_operation_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function writePatchFile(content: string): string {
+  const filePath = path.join(os.tmpdir(), `ade-proposal-${randomUUID()}.patch`);
+  fs.writeFileSync(filePath, content, "utf8");
+  return filePath;
+}
+
+function deletePatchFile(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+  } catch {
+    // ignore
+  }
+}
+
 export function createConflictService({
   db,
   logger,
   projectId,
   projectRoot,
   laneService,
+  operationService,
+  hostedAgentService,
   conflictPacksDir,
   onEvent
 }: {
@@ -266,6 +326,8 @@ export function createConflictService({
   projectId: string;
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
+  operationService?: ReturnType<typeof createOperationService>;
+  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
@@ -1053,12 +1115,349 @@ export function createConflictService({
       });
     };
 
+  const getProposalRow = (proposalId: string): ConflictProposalRow | null => {
+    return db.get<ConflictProposalRow>(
+      `
+        select
+          id,
+          lane_id,
+          peer_lane_id,
+          prediction_id,
+          source,
+          confidence,
+          explanation,
+          diff_patch,
+          status,
+          job_id,
+          artifact_id,
+          applied_operation_id,
+          created_at,
+          updated_at
+        from conflict_proposals
+        where id = ?
+          and project_id = ?
+        limit 1
+      `,
+      [proposalId, projectId]
+    );
+  };
+
+  const listProposals = async (args: { laneId: string }): Promise<ConflictProposal[]> => {
+    const rows = db.all<ConflictProposalRow>(
+      `
+        select
+          id,
+          lane_id,
+          peer_lane_id,
+          prediction_id,
+          source,
+          confidence,
+          explanation,
+          diff_patch,
+          status,
+          job_id,
+          artifact_id,
+          applied_operation_id,
+          created_at,
+          updated_at
+        from conflict_proposals
+        where project_id = ?
+          and lane_id = ?
+        order by created_at desc
+      `,
+      [projectId, args.laneId]
+    );
+    return rows.map(rowToProposal);
+  };
+
+  const getLatestPredictionId = (laneId: string, peerLaneId: string | null): string | null => {
+    if (!peerLaneId) {
+      const row = db.get<{ id: string }>(
+        `
+          select id
+          from conflict_predictions
+          where project_id = ?
+            and lane_a_id = ?
+            and lane_b_id is null
+          order by predicted_at desc
+          limit 1
+        `,
+        [projectId, laneId]
+      );
+      return row?.id ?? null;
+    }
+
+    const [laneAId, laneBId] = laneId < peerLaneId ? [laneId, peerLaneId] : [peerLaneId, laneId];
+    const row = db.get<{ id: string }>(
+      `
+        select id
+        from conflict_predictions
+        where project_id = ?
+          and lane_a_id = ?
+          and lane_b_id = ?
+        order by predicted_at desc
+        limit 1
+      `,
+      [projectId, laneAId, laneBId]
+    );
+    return row?.id ?? null;
+  };
+
+  const requestProposal = async (args: RequestConflictProposalArgs): Promise<ConflictProposal> => {
+    const lane = (await listActiveLanes()).find((entry) => entry.id === args.laneId);
+    if (!lane) {
+      throw new Error(`Lane not found: ${args.laneId}`);
+    }
+
+    if (!hostedAgentService || !hostedAgentService.getStatus().enabled) {
+      throw new Error("Hosted provider is not configured. Set Provider Mode to Hosted and sign in first.");
+    }
+
+    let conflictContext: Record<string, unknown> = {
+      laneId: args.laneId,
+      peerLaneId: args.peerLaneId ?? null,
+      overlaps: await listOverlaps({ laneId: args.laneId }),
+      status: await getLaneStatus({ laneId: args.laneId })
+    };
+
+    if (conflictPacksDir) {
+      const packPath = path.join(conflictPacksDir, `${args.laneId}.json`);
+      if (fs.existsSync(packPath)) {
+        try {
+          const raw = fs.readFileSync(packPath, "utf8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            conflictContext = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // Ignore malformed conflict pack and fall back to runtime context.
+        }
+      }
+    }
+
+    const hostedResult = await hostedAgentService.requestConflictProposal({
+      laneId: args.laneId,
+      peerLaneId: args.peerLaneId ?? null,
+      conflictContext
+    });
+
+    const createdAt = new Date().toISOString();
+    const proposalId = randomUUID();
+    const predictionId = getLatestPredictionId(args.laneId, args.peerLaneId ?? null);
+
+    db.run(
+      `
+        insert into conflict_proposals(
+          id,
+          project_id,
+          lane_id,
+          peer_lane_id,
+          prediction_id,
+          source,
+          confidence,
+          explanation,
+          diff_patch,
+          status,
+          job_id,
+          artifact_id,
+          applied_operation_id,
+          metadata_json,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, 'hosted', ?, ?, ?, 'pending', ?, ?, null, ?, ?, ?)
+      `,
+      [
+        proposalId,
+        projectId,
+        args.laneId,
+        args.peerLaneId ?? null,
+        predictionId,
+        hostedResult.confidence,
+        hostedResult.explanation,
+        hostedResult.diffPatch,
+        hostedResult.jobId,
+        hostedResult.artifactId,
+        JSON.stringify({
+          rawContent: hostedResult.rawContent
+        }),
+        createdAt,
+        createdAt
+      ]
+    );
+
+    const row = getProposalRow(proposalId);
+    if (!row) {
+      throw new Error("Failed to persist conflict proposal");
+    }
+    return rowToProposal(row);
+  };
+
+  const applyProposal = async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
+    const row = getProposalRow(args.proposalId);
+    if (!row || row.lane_id !== args.laneId) {
+      throw new Error(`Proposal not found: ${args.proposalId}`);
+    }
+    if (!row.diff_patch.trim()) {
+      throw new Error("Proposal does not include a diff patch");
+    }
+
+    const lane = laneService.getLaneBaseAndBranch(args.laneId);
+    const preHeadSha = await readHeadSha(lane.worktreePath);
+    const operation = operationService?.start({
+      laneId: args.laneId,
+      kind: "conflict_proposal_apply",
+      preHeadSha,
+      metadata: {
+        proposalId: args.proposalId
+      }
+    });
+
+    const patchFile = writePatchFile(row.diff_patch);
+    try {
+      const applyResult = await runGit(
+        ["apply", "--3way", "--whitespace=nowarn", patchFile],
+        { cwd: lane.worktreePath, timeoutMs: 60_000 }
+      );
+      if (applyResult.exitCode !== 0) {
+        throw new Error(applyResult.stderr.trim() || "Failed to apply conflict proposal patch");
+      }
+
+      const postHeadSha = await readHeadSha(lane.worktreePath);
+      if (operationService && operation) {
+        operationService.finish({
+          operationId: operation.operationId,
+          status: "succeeded",
+          postHeadSha,
+          metadataPatch: {
+            proposalId: args.proposalId
+          }
+        });
+      }
+
+      const now = new Date().toISOString();
+      db.run(
+        `
+          update conflict_proposals
+          set status = 'applied',
+              applied_operation_id = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [operation?.operationId ?? null, now, args.proposalId, projectId]
+      );
+    } catch (error) {
+      const postHeadSha = await readHeadSha(lane.worktreePath);
+      if (operationService && operation) {
+        operationService.finish({
+          operationId: operation.operationId,
+          status: "failed",
+          postHeadSha,
+          metadataPatch: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+      throw error;
+    } finally {
+      deletePatchFile(patchFile);
+    }
+
+    const updated = getProposalRow(args.proposalId);
+    if (!updated) {
+      throw new Error(`Proposal not found after apply: ${args.proposalId}`);
+    }
+    return rowToProposal(updated);
+  };
+
+  const undoProposal = async (args: UndoConflictProposalArgs): Promise<ConflictProposal> => {
+    const row = getProposalRow(args.proposalId);
+    if (!row || row.lane_id !== args.laneId) {
+      throw new Error(`Proposal not found: ${args.proposalId}`);
+    }
+    if (row.status !== "applied") {
+      throw new Error("Only applied proposals can be undone");
+    }
+
+    const lane = laneService.getLaneBaseAndBranch(args.laneId);
+    const preHeadSha = await readHeadSha(lane.worktreePath);
+    const operation = operationService?.start({
+      laneId: args.laneId,
+      kind: "conflict_proposal_undo",
+      preHeadSha,
+      metadata: {
+        proposalId: args.proposalId
+      }
+    });
+
+    const patchFile = writePatchFile(row.diff_patch);
+    try {
+      const undoResult = await runGit(
+        ["apply", "-R", "--3way", "--whitespace=nowarn", patchFile],
+        { cwd: lane.worktreePath, timeoutMs: 60_000 }
+      );
+      if (undoResult.exitCode !== 0) {
+        throw new Error(undoResult.stderr.trim() || "Failed to undo applied proposal patch");
+      }
+
+      const postHeadSha = await readHeadSha(lane.worktreePath);
+      if (operationService && operation) {
+        operationService.finish({
+          operationId: operation.operationId,
+          status: "succeeded",
+          postHeadSha,
+          metadataPatch: {
+            proposalId: args.proposalId
+          }
+        });
+      }
+
+      const now = new Date().toISOString();
+      db.run(
+        `
+          update conflict_proposals
+          set status = 'pending',
+              applied_operation_id = null,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [now, args.proposalId, projectId]
+      );
+    } catch (error) {
+      const postHeadSha = await readHeadSha(lane.worktreePath);
+      if (operationService && operation) {
+        operationService.finish({
+          operationId: operation.operationId,
+          status: "failed",
+          postHeadSha,
+          metadataPatch: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+      throw error;
+    } finally {
+      deletePatchFile(patchFile);
+    }
+
+    const updated = getProposalRow(args.proposalId);
+    if (!updated) {
+      throw new Error(`Proposal not found after undo: ${args.proposalId}`);
+    }
+    return rowToProposal(updated);
+  };
+
   return {
     getLaneStatus,
     listOverlaps,
     getRiskMatrix,
     simulateMerge,
     runPrediction,
-    getBatchAssessment
+    getBatchAssessment,
+    listProposals,
+    requestProposal,
+    applyProposal,
+    undoProposal
   };
 }
