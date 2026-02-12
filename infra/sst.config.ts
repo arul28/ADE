@@ -339,67 +339,64 @@ export default $config({
       link: apiLinkedResources
     };
 
-    const protectedAuth = {
+    const clerkJwtAuthorizer = api.addAuthorizer({
+      name: "clerkJwt",
       jwt: {
         issuer: clerkIssuer,
         audiences: [clerkOauthClientId.value]
       }
+    });
+
+    const protectedAuth = {
+      jwt: {
+        authorizer: clerkJwtAuthorizer.id
+      }
     };
 
-    api.route("OPTIONS /{proxy+}", {
-      handler: "packages/functions/src/api/handlers.options",
+    api.route("OPTIONS /{proxy+}", "packages/functions/src/api/handlers.options", {
       ...handlerDefaults
     });
 
-    api.route("GET /health", {
-      handler: "packages/functions/src/api/handlers.health",
+    api.route("GET /health", "packages/functions/src/api/handlers.health", {
       ...handlerDefaults
     });
 
-    api.route("POST /projects", {
-      handler: "packages/functions/src/api/handlers.createProject",
+    api.route("POST /projects", "packages/functions/src/api/handlers.createProject", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("GET /projects/{id}", {
-      handler: "packages/functions/src/api/handlers.getProject",
+    api.route("GET /projects/{id}", "packages/functions/src/api/handlers.getProject", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("POST /projects/{id}/upload", {
-      handler: "packages/functions/src/api/handlers.uploadBlobs",
+    api.route("POST /projects/{id}/upload", "packages/functions/src/api/handlers.uploadBlobs", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("POST /projects/{id}/lanes/{lid}/manifest", {
-      handler: "packages/functions/src/api/handlers.updateLaneManifest",
+    api.route("POST /projects/{id}/lanes/{lid}/manifest", "packages/functions/src/api/handlers.updateLaneManifest", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("POST /projects/{id}/jobs", {
-      handler: "packages/functions/src/api/handlers.submitJob",
+    api.route("POST /projects/{id}/jobs", "packages/functions/src/api/handlers.submitJob", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("GET /projects/{id}/jobs/{jid}", {
-      handler: "packages/functions/src/api/handlers.getJob",
+    api.route("GET /projects/{id}/jobs/{jid}", "packages/functions/src/api/handlers.getJob", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("GET /projects/{id}/artifacts/{aid}", {
-      handler: "packages/functions/src/api/handlers.getArtifact",
+    api.route("GET /projects/{id}/artifacts/{aid}", "packages/functions/src/api/handlers.getArtifact", {
       ...handlerDefaults,
       auth: protectedAuth
     });
 
-    api.route("DELETE /projects/{id}", {
-      handler: "packages/functions/src/api/handlers.deleteProject",
+    api.route("DELETE /projects/{id}", "packages/functions/src/api/handlers.deleteProject", {
       ...handlerDefaults,
       auth: protectedAuth
     });

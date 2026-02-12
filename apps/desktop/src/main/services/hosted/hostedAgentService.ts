@@ -278,6 +278,23 @@ function extractProfileFromClaims(claims: Record<string, unknown> | null): {
   };
 }
 
+function hasIdentityClaim(claims: Record<string, unknown> | null): boolean {
+  if (!claims) return false;
+  for (const key of ["sub", "user_id", "userId", "uid"]) {
+    const value = claims[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function tokenHasIdentityClaim(token: string | undefined): boolean {
+  const clean = asString(token).trim();
+  if (!clean) return false;
+  return hasIdentityClaim(decodeJwtClaims(clean));
+}
+
 function sanitizeAuthTokens(tokens: HostedAuthTokens): HostedAuthTokens {
   const clean: HostedAuthTokens = {};
   const accessToken = asString(tokens.accessToken).trim();
@@ -706,8 +723,14 @@ export function createHostedAgentService({
     body?: unknown;
     retryOnUnauthorized?: boolean;
   }): Promise<T> => {
-    const config = ensureHostedConfigured();
-    const token = await refreshAccessTokenIfNeeded();
+    let config = ensureHostedConfigured();
+    await refreshAccessTokenIfNeeded();
+    config = ensureHostedConfigured();
+    const token = tokenHasIdentityClaim(config.auth.accessToken)
+      ? asString(config.auth.accessToken)
+      : tokenHasIdentityClaim(config.auth.idToken)
+        ? asString(config.auth.idToken)
+        : asString(config.auth.accessToken);
 
     const doRequest = async (authToken: string) => {
       const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}${args.path}`, {
@@ -725,7 +748,13 @@ export function createHostedAgentService({
 
     const first = await doRequest(token);
     if (first.response.status === 401 && args.retryOnUnauthorized !== false) {
-      const nextToken = await refreshAccessTokenIfNeeded();
+      await refreshAccessTokenIfNeeded();
+      config = ensureHostedConfigured();
+      const nextToken = tokenHasIdentityClaim(config.auth.accessToken)
+        ? asString(config.auth.accessToken)
+        : tokenHasIdentityClaim(config.auth.idToken)
+          ? asString(config.auth.idToken)
+          : asString(config.auth.accessToken);
       const second = await doRequest(nextToken);
       if (!second.response.ok) {
         throw new Error(parseErrorMessage(second.payload));

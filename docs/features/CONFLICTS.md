@@ -429,11 +429,11 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 | ID | Task | Status |
 |----|------|--------|
 | CONF-016 | Conflict pack generation (context bundle for agent) | DONE (conflict pack generation is implemented; pack content is generated) |
-| CONF-017 | Hosted agent proposal integration (ProposeConflictResolution job) | TODO — **moved to Phase 6** (requires hosted agent) |
-| CONF-018 | Proposal diff preview in UI | TODO — **moved to Phase 6** |
-| CONF-019 | Proposal apply with operation record | TODO — **moved to Phase 6** |
-| CONF-020 | Proposal confidence scoring display | TODO — **moved to Phase 6** |
-| CONF-021 | Proposal undo via operation timeline | TODO — **moved to Phase 6** |
+| CONF-017 | Hosted agent proposal integration (ProposeConflictResolution job) | DONE — Phase 6 (`hostedAgentService.requestConflictProposal()`, `conflictService.requestProposal()`) |
+| CONF-018 | Proposal diff preview in UI | DONE — Phase 6 (ConflictsPage right panel shows diff patch preview) |
+| CONF-019 | Proposal apply with operation record | DONE — Phase 6 (`conflictService.applyProposal()` with `git apply --3way`, operation tracking) |
+| CONF-020 | Proposal confidence scoring display | DONE — Phase 6 (confidence percentage shown in ConflictsPage proposal list) |
+| CONF-021 | Proposal undo via operation timeline | DONE — Phase 6 (`conflictService.undoProposal()` with `git apply -R`, operation tracking) |
 
 ### Advanced Features
 
@@ -449,7 +449,8 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 
 **Phase 5 (Conflict Detection) completed** as part of the `codex/ade-phase-4-5` branch merge. The core conflict engine (CONF-001 through CONF-016) and batch assessment (CONF-023) are fully operational.
 
+**Phase 6 (Hosted Agent) completed**: CONF-017 through CONF-021 (LLM-powered resolution proposals) are fully implemented. The desktop hosted agent service submits `ProposeConflictResolution` jobs to the cloud, polls for results, and presents proposals in the Conflicts tab with diff preview, confidence scoring, apply (with operation record), and undo capabilities.
+
 **Remaining tasks** are scheduled as follows:
-- **Phase 6 (Hosted Agent)**: CONF-017 through CONF-021 (LLM-powered resolution proposals)
 - **Phase 7 (Workspace Graph)**: CONF-022 (stack-aware conflict resolution)
 - **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)

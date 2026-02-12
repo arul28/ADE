@@ -1,6 +1,6 @@
 # ADE Implementation Plan
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-12
 
 ---
 
@@ -78,7 +78,7 @@ This document is the master implementation plan for ADE (Agentic Development Env
 | 3 | Files Tab + UI Polish | DONE | File explorer (Zed-inspired), Monaco editor, diff modes, Run tab rename, lane selector, guest mode, untracked sessions |
 | 4 | Stacks + Restack | DONE | Parent-child lanes, stack graph, restack operations, overlay policies, vertical connectors |
 | 5 | Conflict Radar + Resolution | DONE | Conflict prediction, risk matrix, merge simulation, Monaco conflict diff, risk tooltips, status badges |
-| 6 | Cloud Infrastructure + Auth + LLM Gateway | IN PROGRESS | AWS SST stack, Clerk auth, LLM gateway, mirror sync, pack narratives, conflict proposals |
+| 6 | Cloud Infrastructure + Auth + LLM Gateway | DONE | AWS SST stack, Clerk auth, LLM gateway, mirror sync, pack narratives, conflict proposals |
 | 7 | GitHub Integration + Workspace Graph | NOT STARTED | GitHub PR CRUD, stacked PRs, land flow, React Flow canvas, graph interactions, view modes |
 | 8 | Automations + Onboarding + Packs V2 | NOT STARTED | Trigger-action rules, onboarding wizard, CI/CD import, checkpoints, pack versioning |
 | 9 | Advanced Features + Polish + Runtime Isolation | NOT STARTED | History graph, terminal tiling, advanced git, agent CLI tools, runtime isolation |
@@ -693,13 +693,13 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 ---
 
-## Upcoming Phases
+## Completed Phases (continued)
 
 ### Phase 6: Cloud Infrastructure + Auth + LLM Gateway
 
-**Status**: NOT STARTED
+**Status**: DONE (2026-02-12, commit `030ed04`)
 
-**Goal**: Stand up the AWS cloud infrastructure and desktop integration that enables authenticated access, persistent cloud storage, and LLM-powered features — the foundation all subsequent phases build on. This is prioritized first because pack narratives, conflict resolution proposals, and PR description drafting all depend on having a working LLM gateway and auth layer.
+**Goal**: Stand up the AWS cloud infrastructure and desktop integration that enables authenticated access, persistent cloud storage, and LLM-powered features — the foundation all subsequent phases build on.
 
 **AWS Deployment Context:**
 - Account: `695094375923` (shared account — all resources MUST be prefixed with `ade-` and tagged with `project: ade`)
@@ -707,57 +707,70 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - Deployment: SST (Serverless Stack) with TypeScript
 - See `docs/architecture/CLOUD_BACKEND.md` for full naming conventions, resource tagging, and architecture details
 
-**Scope**:
+**Scope** (all delivered):
 - AWS infrastructure via SST (Serverless Stack):
   - API Gateway + Clerk JWT authentication for desktop hosted access
-  - S3 buckets for mirror storage and job artifacts
-  - SQS queues for job processing
-  - DynamoDB tables for job metadata, manifests, and results
+  - S3 buckets for mirror storage and job artifacts (blobs, manifests, artifacts)
+  - SQS queues for job processing (with DLQ and CloudWatch alarms)
+  - DynamoDB tables for projects, lanes, jobs, artifacts, and rate limits
   - Lambda functions for API endpoints and job workers
-- Auth flow: Clerk OAuth (GitHub/Google social sign-in, public client + PKCE) with desktop loopback redirect (localhost callback)
+- Auth flow: Clerk OAuth (GitHub/Google social sign-in, public client + PKCE) with desktop loopback redirect (`127.0.0.1:42420/callback`)
 - Repo mirror sync: content-addressed blobs + per-lane manifests uploaded from desktop
-- Cloud job processing: SQS queue consumer Lambda workers
-- LLM gateway module: prompt templates, model selection (Claude, GPT, etc.), token budgets, provider swapping
-- Hosted agent telemetry pipeline (per-job token usage, latency, model usage, error rates)
-- Pack narrative augmentation via LLM (replace template narratives with human-quality AI narratives)
-- Conflict resolution proposals via LLM (agent receives Conflict Pack, returns resolution diff with confidence score)
-- Proposal review and apply workflow in desktop (preview diff, apply, undo)
-- Hosted agent consent flow integration (wire to settings page)
-- Pack sync to hosted mirror (push pack content to cloud storage)
-- Secret redaction rules (prevent sensitive data from being uploaded -- .env, credentials, API keys)
-- Exclude rules configuration (per-project control over what is mirrored)
+- Cloud job processing: SQS queue consumer Lambda workers (NarrativeGeneration, ProposeConflictResolution, DraftPrDescription)
+- LLM gateway module: prompt templates, model routing (Anthropic, OpenAI, Gemini, Mock), token budgets
+- Rate limiting: per-minute, daily jobs, and daily estimated token budgets via DynamoDB
+- Pack narrative augmentation via LLM (`hostedAgentService.requestLaneNarrative()`)
+- Conflict resolution proposals via LLM (`hostedAgentService.requestConflictProposal()`)
+- Proposal review and apply workflow in desktop (preview diff, apply with `git apply --3way`, undo with `git apply -R`)
+- Hosted agent consent flow integration (consent checkboxes in SettingsPage + StartupAuthPage)
+- Pack sync to hosted mirror (`hostedAgentService.syncPacks()`)
+- Secret redaction rules (`redactSecrets()` in desktop + cloud — API keys, tokens, PEM keys, GitHub PATs)
+- Exclude rules configuration (default + user-configurable patterns in SettingsPage)
 - Provider configuration UI: Hosted / BYOK / CLI radio selector with config forms
-- API key management: secure input, local.yaml storage, validation
+- API key management: secure password input, local.yaml storage, validation
+- Transcript upload opt-in toggle with conditional sync
+- Startup auth page for first-run sign-in/guest decision
+- OS secure storage for auth tokens via `safeStorage`
 
-**Feature Doc References**: `CONFLICTS.md` (CONF-017 through CONF-021), `PACKS.md` (PACK-021, PACK-023 through PACK-025), `ONBOARDING_AND_SETTINGS.md` (ONBOARD-012, ONBOARD-014, ONBOARD-015)
+**Feature Doc References**: `CONFLICTS.md` (CONF-017 through CONF-021), `PACKS.md` (PACK-021, PACK-023, PACK-025), `ONBOARDING_AND_SETTINGS.md` (ONBOARD-012, ONBOARD-014, ONBOARD-015)
 
 **Architecture References**: `CLOUD_BACKEND.md`, `HOSTED_AGENT.md`, `SECURITY_AND_PRIVACY.md`
 
 **Task References**:
-- CONF-017: Hosted agent proposal integration (ProposeConflictResolution job)
-- CONF-018: Proposal diff preview in UI
-- CONF-019: Proposal apply with operation record
-- CONF-020: Proposal confidence scoring display
-- CONF-021: Proposal undo via operation timeline
-- PACK-021: LLM-powered narrative generation
-- PACK-023: Pack sync to hosted mirror
-- PACK-024: Pack retention and cleanup policy
-- PACK-025: Pack privacy controls (redaction rules)
-- ONBOARD-012: Hosted agent consent flow
-- ONBOARD-014: Provider configuration UI
-- ONBOARD-015: API key management
-- TERM-028: Transcript upload opt-in (hosted mirror)
+- CONF-017: Hosted agent proposal integration — DONE
+- CONF-018: Proposal diff preview in UI — DONE
+- CONF-019: Proposal apply with operation record — DONE
+- CONF-020: Proposal confidence scoring display — DONE
+- CONF-021: Proposal undo via operation timeline — DONE
+- PACK-021: LLM-powered narrative generation — DONE
+- PACK-023: Pack sync to hosted mirror — DONE
+- PACK-025: Pack privacy controls (redaction rules) — DONE
+- ONBOARD-012: Hosted agent consent flow — DONE
+- ONBOARD-014: Provider configuration UI — DONE
+- ONBOARD-015: API key management — DONE
+- TERM-028: Transcript upload opt-in (hosted mirror) — DONE
 
-**New Services Required**:
-- `hostedAgentService`: mirror sync protocol, job submission, result polling, artifact download
-- `llmGatewayModule` (cloud): prompt templates, model routing, token budgets
-- AWS Lambda workers for each job type (NarrativeGeneration, ConflictResolution)
+**Deferred to Phase 7**: PACK-024 (pack retention and cleanup policy) — not implemented; moved to Phase 7.
+
+**Services Implemented**:
+- `hostedAgentService` (desktop): Clerk OAuth PKCE sign-in, mirror sync (blobs/manifests/packs/transcripts), job submission/polling, conflict proposal orchestration, narrative generation orchestration, auth token management via OS secure storage
+- `llmGateway` (cloud): Multi-provider LLM routing (Anthropic, OpenAI, Gemini, Mock), token budget enforcement, prompt templates
+- Lambda API handlers: createProject, getProject, uploadBlobs, updateLaneManifest, submitJob, getJob, getArtifact, deleteProject
+- Lambda job worker: NarrativeGeneration, ProposeConflictResolution, DraftPrDescription processing
+
+**IPC Channels** (implemented):
+- `ade.hosted.getStatus`, `ade.hosted.getBootstrapConfig`, `ade.hosted.applyBootstrapConfig`
+- `ade.hosted.signIn`, `ade.hosted.signOut`
+- `ade.hosted.syncMirror`
+- `ade.hosted.submitJob`, `ade.hosted.getJob`, `ade.hosted.getArtifact`
 
 **Dependencies**: Phase 2 (pack service), Phase 5 (conflict service, conflict packs)
 
-**Exit Criteria**: AWS infrastructure deploys via SST with all resources prefixed `ade-` and tagged `project: ade`. Desktop authenticates via Clerk social sign-in (GitHub or Google). Mirror sync uploads content-addressed blobs with exclude rules. Cloud jobs process pack narratives and conflict resolutions. Desktop polls for results and presents proposals for user review. Apply and undo workflows function correctly. Provider can be configured (Hosted, BYOK, or CLI). Secret redaction prevents sensitive data from being uploaded.
+**Exit Criteria**: All met. AWS infrastructure deploys via SST with all resources prefixed `ade-` and tagged `project: ade`. Desktop authenticates via Clerk social sign-in (GitHub or Google). Mirror sync uploads content-addressed blobs with exclude rules. Cloud jobs process pack narratives and conflict resolutions. Desktop polls for results and presents proposals for user review. Apply and undo workflows function correctly. Provider can be configured (Hosted, BYOK, or CLI). Secret redaction prevents sensitive data from being uploaded.
 
 ---
+
+## Upcoming Phases
 
 ### Phase 7: GitHub Integration + Workspace Graph
 
@@ -766,6 +779,9 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 **Goal**: Connect ADE to GitHub for PR lifecycle management and build the interactive workspace graph canvas for visualizing lane topology, risk, and activity. These two features have no dependency on each other and can be developed in parallel.
 
 **Scope**:
+
+**Phase 6 Deferred Items:**
+- PACK-024: Pack retention and cleanup policy (age-based, count-based)
 
 **GitHub Integration:**
 - CONF-022: Stack-aware conflict resolution (resolve parent lane conflicts before children)

@@ -247,16 +247,21 @@ providers:
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Architecture design | Complete | Documented in this file |
-| Mirror sync protocol | Not started | Desktop upload logic not implemented |
-| S3 blob storage | Not started | AWS stack not provisioned |
-| SQS job queue | Not started | AWS stack not provisioned |
-| Lambda workers | Not started | Job processing logic not implemented |
-| LLM gateway module | Not started | Prompt templates not authored |
-| `UpdatePackNarrative` job | Not started | Depends on LLM gateway |
-| `ProposeConflictResolution` job | Not started | Depends on LLM gateway |
-| `DraftPrDescription` job | Not started | Depends on LLM gateway |
-| Provider swapping (BYOK/CLI) | Not started | Config schema defined, runtime not implemented |
-| Exclude rules enforcement | Not started | Pattern list defined, filter not implemented |
-| Cost controls | Not started | Token budgets defined, enforcement not implemented |
+| Mirror sync protocol | Complete | `hostedAgentService.syncMirror()` — content-addressed blob upload, manifest upsert, pack sync, transcript sync |
+| S3 blob storage | Complete | SST-provisioned `ade-<stage>-blobs`, `ade-<stage>-manifests`, `ade-<stage>-artifacts` buckets |
+| SQS job queue | Complete | SST-provisioned `ade-<stage>-jobs` queue with DLQ and CloudWatch alarms |
+| Lambda workers | Complete | `jobWorker.handler` processes NarrativeGeneration, ProposeConflictResolution, DraftPrDescription |
+| LLM gateway module | Complete | `infra/packages/core/src/llmGateway.ts` — supports Anthropic, OpenAI, Gemini, Mock providers |
+| `NarrativeGeneration` job | Complete | Cloud worker + desktop `requestLaneNarrative()` + job engine integration |
+| `ProposeConflictResolution` job | Complete | Cloud worker + desktop `requestConflictProposal()` + conflict service integration |
+| `DraftPrDescription` job | Complete | Cloud worker + prompt template ready; desktop PR integration planned for Phase 7 |
+| Provider swapping (BYOK/CLI) | Complete | SettingsPage UI for Hosted/BYOK/CLI selection; API key management in local.yaml |
+| Exclude rules enforcement | Complete | Default + user-configurable exclude patterns; `redactSecrets()` for content redaction |
+| Cost controls | Complete | Rate limiting (per-minute, daily jobs, daily tokens) via DynamoDB `ade-<stage>-rate-limits` |
+| Clerk OAuth auth flow | Complete | Desktop PKCE loopback sign-in, token refresh, OS secure storage for tokens |
+| API Gateway + JWT auth | Complete | Clerk JWT authorizer on all protected routes; tenant isolation via `sub` claim |
+| DynamoDB tables | Complete | projects, lanes, jobs, artifacts, rate-limits tables all provisioned |
+| Desktop settings UI | Complete | Provider mode selector, consent flow, bootstrap config, sign-in/sign-out, mirror sync |
+| Startup auth page | Complete | `StartupAuthPage.tsx` — consent, sign-in with Clerk, continue as guest |
 
-**Overall status**: NOT YET STARTED. Architecture fully designed, no implementation work has begun.
+**Overall status**: COMPLETE. Phase 6 is fully implemented across cloud infrastructure and desktop integration.

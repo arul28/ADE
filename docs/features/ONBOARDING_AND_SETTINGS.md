@@ -35,7 +35,7 @@ behavior before any changes are made. The settings page provides ongoing control
 over those same concerns. Together, these features establish the trust foundation
 that every other ADE feature builds on.
 
-**Current status**: Basic onboarding (ONBOARD-001 through ONBOARD-006) and guest mode (ONBOARD-025, ONBOARD-026) are **implemented**. The full onboarding wizard, provider configuration UI, and initial pack generation are planned for **Phase 8** (Automations + Onboarding + Packs V2). Provider configuration (ONBOARD-014, ONBOARD-015) and hosted agent consent (ONBOARD-012) are planned for **Phase 6** (Cloud Infrastructure + Auth + LLM Gateway).
+**Current status**: Basic onboarding (ONBOARD-001 through ONBOARD-006), guest mode (ONBOARD-025, ONBOARD-026), hosted agent consent flow (ONBOARD-012), provider configuration UI (ONBOARD-014), and API key management (ONBOARD-015) are **implemented**. The full onboarding wizard and initial pack generation are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 
 ---
 
@@ -290,10 +290,10 @@ interface DetectionResult {
 | ONBOARD-009 | Suggested process definitions | Generate entries from detection results | TODO — **Phase 8** |
 | ONBOARD-010 | Suggested test definitions | Generate test entries from detection | TODO — **Phase 8** |
 | ONBOARD-011 | Config review step | Edit suggested config before saving | TODO — **Phase 8** |
-| ONBOARD-012 | Hosted agent consent flow | Consent screen with data explanation | TODO — **Phase 6** (Cloud Infrastructure) |
+| ONBOARD-012 | Hosted agent consent flow | Consent screen with data explanation | DONE — Phase 6 (consent checkboxes in SettingsPage + StartupAuthPage) |
 | ONBOARD-013 | "What ADE will do" previews | Pre-execution dialogs for shared config | TODO — **Phase 8** |
-| ONBOARD-014 | Provider configuration UI | Hosted/BYOK/CLI selector with config forms | TODO — **Phase 6** (Cloud Infrastructure) |
-| ONBOARD-015 | API key management | Secure input, local.yaml storage, validation | TODO — **Phase 6** (Cloud Infrastructure) |
+| ONBOARD-014 | Provider configuration UI | Hosted/BYOK/CLI selector with config forms | DONE — Phase 6 (SettingsPage radio selector with hosted/BYOK/CLI config forms) |
+| ONBOARD-015 | API key management | Secure input, local.yaml storage, validation | DONE — Phase 6 (password input in SettingsPage, stored in local.yaml, validated before save) |
 | ONBOARD-016 | Keybindings viewer | Read-only shortcut table by scope | TODO — **Phase 8** |
 | ONBOARD-017 | Keybindings customization | Click-to-record editor with conflict detection | TODO — **Phase 8** |
 | ONBOARD-018 | Data management | Clear local data, export config, delete hosted data | TODO — **Phase 8** |
@@ -311,8 +311,7 @@ interface DetectionResult {
 - ONBOARD-007 is prerequisite for ONBOARD-009 and ONBOARD-010.
 - ONBOARD-008 depends on ONBOARD-007 for detection step content.
 - ONBOARD-011 depends on ONBOARD-009/010 for suggested config.
-- ONBOARD-012 depends on the hosted agent service from **Phase 6** (Cloud Infrastructure).
-- ONBOARD-014/015 (provider config, API keys) depend on **Phase 6** (Cloud Infrastructure).
+- ONBOARD-012, ONBOARD-014, ONBOARD-015 completed in **Phase 6** (Cloud Infrastructure).
 - ONBOARD-016/017 are independent of all other tasks.
 - ONBOARD-020 requires a project registry service (**Phase 8**).
 - ONBOARD-021 through ONBOARD-024 require a configured LLM provider from **Phase 6** (skipped in Guest Mode); scheduled for **Phase 8**.

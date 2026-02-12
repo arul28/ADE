@@ -59,9 +59,10 @@ facts (file changes, diff stats, test results) and a **narrative section** with
 human-readable summaries (initially template-based, eventually LLM-generated).
 
 **Current status**: Core pack functionality (generation, storage, display, refresh)
-is **implemented and working**. Advanced features (checkpoints, versioning, event
-logging) are planned for **Phase 8**. LLM-powered narratives are planned for
-**Phase 6** (Cloud Infrastructure + Auth + LLM Gateway).
+is **implemented and working**. LLM-powered narratives, pack sync to hosted mirror,
+and pack privacy controls (redaction) are **implemented** (Phase 6). Advanced features
+(checkpoints, versioning, event logging) are planned for **Phase 8**. Pack retention
+and cleanup policy is planned for **Phase 7**.
 
 ---
 
@@ -625,15 +626,15 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 | ID | Task | Status |
 |----|------|--------|
 | PACK-020 | Narrative editing (user override of auto-generated content) | TODO — **Phase 8** |
-| PACK-021 | LLM-powered narrative generation (hosted agent integration) | TODO — depends on **Phase 6** (Cloud + LLM Gateway); integrated in **Phase 8** |
+| PACK-021 | LLM-powered narrative generation (hosted agent integration) | DONE — Phase 6 (`hostedAgentService.requestLaneNarrative()`, cloud `NarrativeGeneration` job worker) |
 
 ### Operations & Management
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | TODO — **Phase 6** (Cloud Infrastructure) |
-| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | TODO — **Phase 6** (Cloud Infrastructure) |
-| PACK-025 | Pack privacy controls (redaction rules for sensitive content) | TODO — **Phase 6** (Cloud Infrastructure) |
+| PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | DONE — Phase 6 (`hostedAgentService.syncPacks()`, uploaded via mirror sync pipeline) |
+| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | TODO — **moved to Phase 7** (not yet implemented) |
+| PACK-025 | Pack privacy controls (redaction rules for sensitive content) | DONE — Phase 6 (`redactSecrets()` in desktop + cloud, exclude patterns for `.env`/creds/keys) |
 | PACK-026 | Pack export (standalone markdown file with all context) | TODO — **Phase 9** (Advanced Features) |
 
 ### Initial Pack Generation
