@@ -1185,7 +1185,7 @@ export function createHostedAgentService({
         continue;
       }
 
-      const normalizedStatus = status.status === "in_progress" ? "processing" : status.status;
+      const normalizedStatus = status.status;
 
       if (normalizedStatus !== lastStatus) {
         lastStatus = normalizedStatus;

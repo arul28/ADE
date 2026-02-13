@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as Tabs from "@radix-ui/react-tabs";
 import { Grid, LayoutList, Plus, RefreshCw, Square } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { TerminalProfilesSnapshot, TerminalSessionSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
@@ -57,6 +57,8 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(new Set());
   const [localFocusedSessionId, setLocalFocusedSessionId] = useState<string | null>(null);
+  const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfilesSnapshot | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("shell");
   const laneSessionIdsRef = useRef<Set<string>>(new Set());
 
   const focusedSessionId = overrideLaneId != null ? localFocusedSessionId : globalFocusedSessionId;
@@ -103,6 +105,22 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     if (overrideLaneId == null) return;
     setLocalFocusedSessionId((current) => current ?? globalFocusedSessionId ?? null);
   }, [overrideLaneId, globalFocusedSessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.ade.terminalProfiles
+      .get()
+      .then((snapshot) => {
+        if (cancelled) return;
+        setTerminalProfiles(snapshot);
+        const first = snapshot.profiles[0]?.id ?? "shell";
+        setSelectedProfileId(snapshot.defaultProfileId ?? first);
+      })
+      .catch(() => { });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!laneId) return;
@@ -169,6 +187,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
 
   const current = sessions.find((s) => s.id === focusedSessionId) ?? sessions[0] ?? null;
   const canCloseCurrent = Boolean(current?.ptyId) && !closingSessionIds.has(current?.id ?? "");
+  const selectedProfile = terminalProfiles?.profiles.find((profile) => profile.id === selectedProfileId) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -195,6 +214,18 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           <Chip className="text-[10px]">{sessions.length}</Chip>
         </div>
         <div className="flex items-center gap-2">
+          <select
+            className="h-8 max-w-[220px] rounded border border-border bg-card/60 px-2 text-xs text-fg"
+            value={selectedProfileId}
+            onChange={(e) => setSelectedProfileId(e.target.value)}
+            title="Terminal profile"
+          >
+            {(terminalProfiles?.profiles ?? [{ id: "shell", name: "Shell", command: "", tracked: true }]).map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
           <Button variant="ghost" size="sm" title="Refresh sessions" onClick={() => refresh().catch(() => {})}>
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           </Button>
@@ -213,13 +244,20 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           <Button
             variant="primary"
             size="sm"
-            title="New session"
+            title={selectedProfile ? `New session (${selectedProfile.name})` : "New session"}
             onClick={() => {
+              const profile = selectedProfile;
+              const title = profile?.name ?? "Shell";
+              const tracked = profile?.tracked ?? true;
+              const initialCommand = (profile?.command ?? "").trim();
               window.ade.pty
-                .create({ laneId, cols: 100, rows: 30, title: "Shell" })
-                .then(({ sessionId }) => {
+                .create({ laneId, cols: 100, rows: 30, title, tracked })
+                .then(({ sessionId, ptyId }) => {
                   focusSession(sessionId);
                   refresh().catch(() => {});
+                  if (initialCommand.length) {
+                    window.ade.pty.write({ ptyId, data: `${initialCommand}\r` }).catch(() => {});
+                  }
                 })
                 .catch(() => {});
             }}

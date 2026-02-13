@@ -51,6 +51,16 @@ import type {
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
+  AgentTool,
+  AutomationsEventPayload,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunDetail,
+  KeybindingOverride,
+  KeybindingsSnapshot,
+  OnboardingDetectionResult,
+  OnboardingExistingLaneCandidate,
+  OnboardingStatus,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -85,7 +95,11 @@ import type {
   ListSessionsArgs,
   ListTestRunsArgs,
   OperationRecord,
+  PackEvent,
   PackSummary,
+  PackVersion,
+  PackVersionSummary,
+  Checkpoint,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -97,6 +111,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
   PtyDataEvent,
@@ -115,6 +130,7 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
+  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   TestEvent,
   TestRunSummary,
@@ -138,6 +154,35 @@ declare global {
       project: {
         openRepo: () => Promise<ProjectInfo>;
         openAdeFolder: () => Promise<void>;
+        listRecent: () => Promise<RecentProjectSummary[]>;
+        switchToPath: (rootPath: string) => Promise<ProjectInfo>;
+        forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
+      };
+      keybindings: {
+        get: () => Promise<KeybindingsSnapshot>;
+        set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
+      };
+      agentTools: {
+        detect: () => Promise<AgentTool[]>;
+      };
+      terminalProfiles: {
+        get: () => Promise<TerminalProfilesSnapshot>;
+        set: (snapshot: TerminalProfilesSnapshot) => Promise<TerminalProfilesSnapshot>;
+      };
+      onboarding: {
+        getStatus: () => Promise<OnboardingStatus>;
+        detectDefaults: () => Promise<OnboardingDetectionResult>;
+        detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
+        generateInitialPacks: (args?: { laneIds?: string[] }) => Promise<void>;
+        complete: () => Promise<OnboardingStatus>;
+      };
+      automations: {
+        list: () => Promise<AutomationRuleSummary[]>;
+        toggle: (args: { id: string; enabled: boolean }) => Promise<AutomationRuleSummary[]>;
+        triggerManually: (args: { id: string; laneId?: string | null }) => Promise<AutomationRun>;
+        getHistory: (args: { id: string; limit?: number }) => Promise<AutomationRun[]>;
+        getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
+        onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
@@ -224,9 +269,21 @@ declare global {
       packs: {
         getProjectPack: () => Promise<PackSummary>;
         getLanePack: (laneId: string) => Promise<PackSummary>;
+        getFeaturePack: (featureKey: string) => Promise<PackSummary>;
+        getConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
+        getPlanPack: (laneId: string) => Promise<PackSummary>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
+        refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
+        refreshConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
+        savePlanPack: (args: { laneId: string; body: string }) => Promise<PackSummary>;
         applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
         generateNarrative: (laneId: string) => Promise<PackSummary>;
+        listVersions: (args: { packKey: string; limit?: number }) => Promise<PackVersionSummary[]>;
+        getVersion: (versionId: string) => Promise<PackVersion>;
+        diffVersions: (args: { fromId: string; toId: string }) => Promise<string>;
+        updateNarrative: (args: { packKey: string; narrative: string }) => Promise<PackSummary>;
+        listEvents: (args: { packKey: string; limit?: number }) => Promise<PackEvent[]>;
+        listCheckpoints: (args?: { laneId?: string; limit?: number }) => Promise<Checkpoint[]>;
       };
       github: {
         getStatus: () => Promise<GitHubStatus>;

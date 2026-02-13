@@ -6,6 +6,9 @@ import type {
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunDetail,
   ConflictProposal,
   ConflictOverlap,
   ConflictStatus,
@@ -74,6 +77,13 @@ import type {
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
+  AgentTool,
+  KeybindingOverride,
+  KeybindingsSnapshot,
+  ImportBranchLaneArgs,
+  OnboardingDetectionResult,
+  OnboardingExistingLaneCandidate,
+  OnboardingStatus,
   LaneSummary,
   ListOperationsArgs,
   ListOverlapsArgs,
@@ -83,7 +93,11 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
+  PackEvent,
   PackSummary,
+  PackVersion,
+  PackVersionSummary,
+  Checkpoint,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -94,6 +108,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
   ReparentLaneArgs,
@@ -110,6 +125,7 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
+  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   TestRunSummary,
   TestSuiteDefinition,
@@ -136,6 +152,12 @@ import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createByokLlmService } from "../byok/byokLlmService";
+import { readGlobalState, writeGlobalState } from "../state/globalState";
+import type { createKeybindingsService } from "../keybindings/keybindingsService";
+import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
+import type { createAgentToolsService } from "../agentTools/agentToolsService";
+import type { createOnboardingService } from "../onboarding/onboardingService";
+import type { createAutomationService } from "../automations/automationService";
 
 export type AppContext = {
   db: AdeDb;
@@ -143,6 +165,10 @@ export type AppContext = {
   project: ProjectInfo;
   projectId: string;
   adeDir: string;
+  keybindingsService: ReturnType<typeof createKeybindingsService>;
+  terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
+  agentToolsService: ReturnType<typeof createAgentToolsService>;
+  onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
@@ -157,6 +183,7 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   jobEngine: ReturnType<typeof createJobEngine>;
+  automationService: ReturnType<typeof createAutomationService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -174,10 +201,12 @@ function clampLayout(layout: DockLayout): DockLayout {
 
 export function registerIpc({
   getCtx,
-  switchProjectFromDialog
+  switchProjectFromDialog,
+  globalStatePath
 }: {
   getCtx: () => AppContext;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  globalStatePath: string;
 }) {
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
@@ -236,6 +265,121 @@ export function registerIpc({
     await shell.openPath(ctx.adeDir);
   });
 
+  ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
+    const state = readGlobalState(globalStatePath);
+    return (state.recentProjects ?? []).map((entry) => ({
+      rootPath: entry.rootPath,
+      displayName: entry.displayName,
+      lastOpenedAt: entry.lastOpenedAt
+    }));
+  });
+
+  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath: string }): Promise<RecentProjectSummary[]> => {
+    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    if (!rootPath) {
+      const state = readGlobalState(globalStatePath);
+      return (state.recentProjects ?? []).map((entry) => ({
+        rootPath: entry.rootPath,
+        displayName: entry.displayName,
+        lastOpenedAt: entry.lastOpenedAt
+      }));
+    }
+    const state = readGlobalState(globalStatePath);
+    const filtered = (state.recentProjects ?? []).filter((entry) => entry.rootPath !== rootPath);
+    const next = { ...state, recentProjects: filtered };
+    if (next.lastProjectRoot === rootPath) {
+      delete next.lastProjectRoot;
+    }
+    writeGlobalState(globalStatePath, next);
+    return filtered.map((entry) => ({
+      rootPath: entry.rootPath,
+      displayName: entry.displayName,
+      lastOpenedAt: entry.lastOpenedAt
+    }));
+  });
+
+  ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
+    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    if (!rootPath) return getCtx().project;
+    if (rootPath === getCtx().project.rootPath) return getCtx().project;
+    return await switchProjectFromDialog(rootPath);
+  });
+
+  ipcMain.handle(IPC.keybindingsGet, async (): Promise<KeybindingsSnapshot> => {
+    const ctx = getCtx();
+    return ctx.keybindingsService.get();
+  });
+
+  ipcMain.handle(IPC.keybindingsSet, async (_event, arg: { overrides: KeybindingOverride[] }): Promise<KeybindingsSnapshot> => {
+    const ctx = getCtx();
+    return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
+  });
+
+  ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
+    const ctx = getCtx();
+    return ctx.agentToolsService.detect();
+  });
+
+  ipcMain.handle(IPC.terminalProfilesGet, async (): Promise<TerminalProfilesSnapshot> => {
+    const ctx = getCtx();
+    return ctx.terminalProfilesService.get();
+  });
+
+  ipcMain.handle(IPC.terminalProfilesSet, async (_event, arg: TerminalProfilesSnapshot): Promise<TerminalProfilesSnapshot> => {
+    const ctx = getCtx();
+    return ctx.terminalProfilesService.set(arg);
+  });
+
+  ipcMain.handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {
+    const ctx = getCtx();
+    return ctx.onboardingService.getStatus();
+  });
+
+  ipcMain.handle(IPC.onboardingDetectDefaults, async (): Promise<OnboardingDetectionResult> => {
+    const ctx = getCtx();
+    return await ctx.onboardingService.detectDefaults();
+  });
+
+  ipcMain.handle(IPC.onboardingDetectExistingLanes, async (): Promise<OnboardingExistingLaneCandidate[]> => {
+    const ctx = getCtx();
+    return await ctx.onboardingService.detectExistingLanes();
+  });
+
+  ipcMain.handle(IPC.onboardingGenerateInitialPacks, async (_event, arg: { laneIds?: string[] } = {}): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.onboardingService.generateInitialPacks({ laneIds: arg.laneIds });
+  });
+
+  ipcMain.handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
+    const ctx = getCtx();
+    return ctx.onboardingService.complete();
+  });
+
+  ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.list();
+  });
+
+  ipcMain.handle(IPC.automationsToggle, async (_event, arg: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
+  });
+
+  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: { id: string; laneId?: string | null }): Promise<AutomationRun> => {
+    const ctx = getCtx();
+    return await ctx.automationService.triggerManually({ id: arg?.id ?? "", laneId: arg?.laneId ?? null });
+  });
+
+  ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
+  });
+
+  ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
     const ctx = getCtx();
     const key = `dock_layout:${arg.layoutId}`;
@@ -277,6 +421,11 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
     return await ctx.laneService.createChild(arg);
+  });
+
+  ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    return await ctx.laneService.importBranch(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
@@ -678,6 +827,88 @@ export function registerIpc({
     throw new Error("AI narrative generation requires Hosted or BYOK provider mode.");
   });
 
+  ipcMain.handle(IPC.packsGetFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getFeaturePack(arg.featureKey);
+  });
+
+  ipcMain.handle(
+    IPC.packsGetConflictPack,
+    async (_event, arg: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> => {
+      const ctx = getCtx();
+      return ctx.packService.getConflictPack({ laneId: arg.laneId, peerLaneId: arg.peerLaneId ?? null });
+    }
+  );
+
+  ipcMain.handle(IPC.packsGetPlanPack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getPlanPack(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.packsRefreshFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.refreshFeaturePack({ featureKey: arg.featureKey, reason: "manual_refresh" });
+  });
+
+  ipcMain.handle(
+    IPC.packsRefreshConflictPack,
+    async (_event, arg: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> => {
+      const ctx = getCtx();
+      return await ctx.packService.refreshConflictPack({
+        laneId: arg.laneId,
+        peerLaneId: arg.peerLaneId ?? null,
+        reason: "manual_refresh"
+      });
+    }
+  );
+
+  ipcMain.handle(IPC.packsSavePlanPack, async (_event, arg: { laneId: string; body: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.savePlanPack({ laneId: arg.laneId, body: arg.body, reason: "manual_save" });
+  });
+
+  ipcMain.handle(IPC.packsListVersions, async (_event, arg: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> => {
+    const ctx = getCtx();
+    return ctx.packService.listVersions({ packKey: arg.packKey, limit: arg.limit });
+  });
+
+  ipcMain.handle(IPC.packsGetVersion, async (_event, arg: { versionId: string }): Promise<PackVersion> => {
+    const ctx = getCtx();
+    return ctx.packService.getVersion(arg.versionId);
+  });
+
+  ipcMain.handle(
+    IPC.packsDiffVersions,
+    async (_event, arg: { fromId: string; toId: string }): Promise<string> => {
+      const ctx = getCtx();
+      return await ctx.packService.diffVersions(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsUpdateNarrative,
+    async (_event, arg: { packKey: string; narrative: string }): Promise<PackSummary> => {
+      const ctx = getCtx();
+      return ctx.packService.updateNarrative({ packKey: arg.packKey, narrative: arg.narrative, source: "user" });
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsListEvents,
+    async (_event, arg: { packKey: string; limit?: number }): Promise<PackEvent[]> => {
+      const ctx = getCtx();
+      return ctx.packService.listEvents({ packKey: arg.packKey, limit: arg.limit });
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsListCheckpoints,
+    async (_event, arg: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> => {
+      const ctx = getCtx();
+      return ctx.packService.listCheckpoints({ laneId: arg.laneId, limit: arg.limit });
+    }
+  );
+
   ipcMain.handle(IPC.hostedGetStatus, async (): Promise<HostedStatus> => {
     const ctx = getCtx();
     return ctx.hostedAgentService.getStatus();
@@ -930,7 +1161,13 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectConfigSave, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigSnapshot> => {
     const ctx = getCtx();
-    return ctx.projectConfigService.save(arg.candidate);
+    const next = ctx.projectConfigService.save(arg.candidate);
+    try {
+      ctx.automationService.syncFromConfig();
+    } catch {
+      // ignore schedule refresh failures
+    }
+    return next;
   });
 
   ipcMain.handle(IPC.projectConfigDiffAgainstDisk, async (): Promise<ProjectConfigDiff> => {

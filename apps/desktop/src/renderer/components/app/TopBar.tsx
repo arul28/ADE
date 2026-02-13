@@ -3,48 +3,7 @@ import { Folder, Plus, Search, X } from "lucide-react";
 import { Button } from "../ui/Button";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-
-type RecentProject = { name: string; rootPath: string };
-
-const STORAGE_KEY = "ade.recentProjects";
-const MAX_RECENT = 8;
-
-function loadRecentProjects(): RecentProject[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p: unknown): p is RecentProject =>
-      typeof p === "object" && p !== null && typeof (p as RecentProject).name === "string" && typeof (p as RecentProject).rootPath === "string"
-    ).slice(0, MAX_RECENT);
-  } catch {
-    return [];
-  }
-}
-
-function saveRecentProjects(projects: RecentProject[]) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(projects.slice(0, MAX_RECENT)));
-  } catch {
-    // ignore
-  }
-}
-
-function addToRecent(project: RecentProject) {
-  const existing = loadRecentProjects();
-  const filtered = existing.filter((p) => p.rootPath !== project.rootPath);
-  const next = [project, ...filtered].slice(0, MAX_RECENT);
-  saveRecentProjects(next);
-  return next;
-}
-
-function removeFromRecent(rootPath: string) {
-  const existing = loadRecentProjects();
-  const next = existing.filter((p) => p.rootPath !== rootPath);
-  saveRecentProjects(next);
-  return next;
-}
+import type { RecentProjectSummary } from "../../../shared/types";
 
 export function TopBar({
   onOpenCommandPalette,
@@ -55,15 +14,21 @@ export function TopBar({
 }) {
   const project = useAppStore((s) => s.project);
   const openRepo = useAppStore((s) => s.openRepo);
-  const [recentProjects, setRecentProjects] = useState<RecentProject[]>(loadRecentProjects);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
 
-  // When project changes, add it to recent list
   useEffect(() => {
-    if (project?.rootPath && project?.displayName) {
-      const next = addToRecent({ name: project.displayName, rootPath: project.rootPath });
-      setRecentProjects(next);
-    }
-  }, [project?.rootPath, project?.displayName]);
+    let cancelled = false;
+    window.ade.project
+      .listRecent()
+      .then((rows) => {
+        if (!cancelled) setRecentProjects(rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.rootPath]);
 
   const handleOpenNew = useCallback(() => {
     openRepo().catch(() => {});
@@ -72,16 +37,16 @@ export function TopBar({
   const handleSwitchProject = useCallback((rootPath: string) => {
     // If it's already the current project, do nothing
     if (project?.rootPath === rootPath) return;
-    // Open the project - openRepo will show file dialog, but we can try to hint
-    // For now, trigger the dialog. Full path-based switching needs backend support.
-    openRepo().catch(() => {});
-  }, [project?.rootPath, openRepo]);
+    switchProjectToPath(rootPath).catch(() => {});
+  }, [project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
     // Don't allow removing the current project
     if (project?.rootPath === rootPath) return;
-    const next = removeFromRecent(rootPath);
-    setRecentProjects(next);
+    window.ade.project
+      .forgetRecent(rootPath)
+      .then((rows) => setRecentProjects(rows))
+      .catch(() => {});
   }, [project?.rootPath]);
 
   return (
@@ -120,7 +85,7 @@ export function TopBar({
                   title={rp.rootPath}
                 >
                   <Folder className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{rp.name}</span>
+                  <span className="truncate">{rp.displayName}</span>
                   {canClose ? (
                     <span
                       className="inline-flex h-3.5 w-3.5 items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-muted/70"

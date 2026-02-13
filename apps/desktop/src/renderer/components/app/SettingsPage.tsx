@@ -13,6 +13,9 @@ import type {
 import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { AutomationsSection } from "../settings/AutomationsSection";
+import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
+import { KeybindingsSection } from "../settings/KeybindingsSection";
 
 type ProviderDraft = {
   mode: ProviderMode;
@@ -1447,6 +1450,10 @@ export function SettingsPage() {
             />
           </div>
         ) : null}
+
+        <AutomationsSection />
+        <TerminalProfilesSection />
+        <KeybindingsSection />
 
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
           <div className="text-xs text-muted-fg">Env</div>

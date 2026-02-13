@@ -3,6 +3,12 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import type {
+  AutomationAction,
+  AutomationActionType,
+  AutomationRule,
+  AutomationTrigger,
+  AutomationTriggerType,
+  ConfigAutomationRule,
   ConfigLaneOverlayPolicy,
   ConfigProcessDefinition,
   ConfigProcessReadiness,
@@ -88,6 +94,76 @@ function parseReadiness(value: unknown): ConfigProcessReadiness | undefined {
     return { type };
   }
   return undefined;
+}
+
+function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined {
+  if (!isRecord(value)) return undefined;
+  const typeRaw = asString(value.type)?.trim() ?? "";
+  const type: AutomationTriggerType | null =
+    typeRaw === "session-end" || typeRaw === "commit" || typeRaw === "schedule" || typeRaw === "manual"
+      ? (typeRaw as AutomationTriggerType)
+      : null;
+  if (!type) return undefined;
+
+  const out: AutomationTrigger = { type };
+  const cron = asString(value.cron);
+  const branch = asString(value.branch);
+  if (cron != null) out.cron = cron;
+  if (branch != null) out.branch = branch;
+  return out;
+}
+
+function coerceAutomationAction(value: unknown): AutomationAction | null {
+  if (!isRecord(value)) return null;
+  const typeRaw = asString(value.type)?.trim() ?? "";
+  const type: AutomationActionType | null =
+    typeRaw === "update-packs" ||
+    typeRaw === "sync-to-mirror" ||
+    typeRaw === "predict-conflicts" ||
+    typeRaw === "run-tests" ||
+    typeRaw === "run-command"
+      ? (typeRaw as AutomationActionType)
+      : null;
+  if (!type) return null;
+
+  const out: AutomationAction = { type };
+  const suiteId = asString(value.suiteId);
+  const command = asString(value.command);
+  const cwd = asString(value.cwd);
+  const condition = asString(value.condition);
+  const continueOnFailure = asBool(value.continueOnFailure);
+  const timeoutMs = asNumber(value.timeoutMs);
+  const retry = asNumber(value.retry);
+
+  if (suiteId != null) out.suiteId = suiteId;
+  if (command != null) out.command = command;
+  if (cwd != null) out.cwd = cwd;
+  if (condition != null) out.condition = condition;
+  if (continueOnFailure != null) out.continueOnFailure = continueOnFailure;
+  if (timeoutMs != null) out.timeoutMs = timeoutMs;
+  if (retry != null) out.retry = retry;
+
+  return out;
+}
+
+function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
+  if (!isRecord(value)) return null;
+  const id = asString(value.id)?.trim() ?? "";
+  const out: ConfigAutomationRule = { id };
+
+  const name = asString(value.name);
+  const enabled = asBool(value.enabled);
+  const trigger = coerceAutomationTrigger(value.trigger);
+  const actions = Array.isArray(value.actions)
+    ? value.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
+    : undefined;
+
+  if (name != null) out.name = name;
+  if (enabled != null) out.enabled = enabled;
+  if (trigger != null) out.trigger = trigger;
+  if (actions != null) out.actions = actions;
+
+  return out;
 }
 
 function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
@@ -203,7 +279,7 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
 
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
-    return { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [] };
+    return { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] };
   }
 
   const version = asNumber(value.version) ?? VERSION;
@@ -218,6 +294,9 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     : [];
   const laneOverlayPolicies = Array.isArray(value.laneOverlayPolicies)
     ? value.laneOverlayPolicies.map(coerceLaneOverlayPolicy).filter((x): x is ConfigLaneOverlayPolicy => x != null)
+    : [];
+  const automations = Array.isArray(value.automations)
+    ? value.automations.map(coerceAutomationRule).filter((x): x is ConfigAutomationRule => x != null)
     : [];
 
   const github =
@@ -235,6 +314,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     stackButtons,
     testSuites,
     laneOverlayPolicies,
+    automations,
     ...(github ? { github } : {}),
     ...(isRecord(value.providers) ? { providers: value.providers } : {})
   };
@@ -244,13 +324,19 @@ function readConfigFile(filePath: string): { config: ProjectConfigFile; raw: str
   try {
     const raw = fs.readFileSync(filePath, "utf8");
     if (!raw.trim().length) {
-      return { config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [] }, raw };
+      return {
+        config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] },
+        raw
+      };
     }
     const parsed = YAML.parse(raw);
     return { config: coerceConfigFile(parsed), raw };
   } catch (err: any) {
     if (err?.code === "ENOENT") {
-      return { config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [] }, raw: "" };
+      return {
+        config: { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] },
+        raw: ""
+      };
     }
     throw err;
   }
@@ -263,6 +349,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     stackButtons: config.stackButtons ?? [],
     testSuites: config.testSuites ?? [],
     laneOverlayPolicies: config.laneOverlayPolicies ?? [],
+    automations: config.automations ?? [],
     ...(config.github ? { github: config.github } : {}),
     ...(config.providers ? { providers: config.providers } : {})
   };
@@ -345,6 +432,13 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     })
   );
 
+  const mergedAutomations = mergeById(shared.automations ?? [], local.automations ?? [], (base, over) => ({
+    ...base,
+    ...over,
+    ...(over.trigger != null ? { trigger: over.trigger } : base.trigger != null ? { trigger: base.trigger } : {}),
+    ...(over.actions != null ? { actions: over.actions } : base.actions != null ? { actions: base.actions } : {})
+  }));
+
   const processes: ProcessDefinition[] = mergedProcesses.map((entry) => ({
     id: entry.id.trim(),
     name: entry.name?.trim() ?? "",
@@ -394,6 +488,27 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     }
   }));
 
+  const automations: AutomationRule[] = mergedAutomations.map((entry) => ({
+    id: entry.id.trim(),
+    name: entry.name?.trim() ?? entry.id.trim(),
+    trigger: {
+      type: entry.trigger?.type ?? "manual",
+      ...(entry.trigger?.cron ? { cron: entry.trigger.cron.trim() } : {}),
+      ...(entry.trigger?.branch ? { branch: entry.trigger.branch.trim() } : {})
+    },
+    actions: (entry.actions ?? []).map((action) => ({
+      type: action.type,
+      ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
+      ...(action.command ? { command: action.command } : {}),
+      ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
+      ...(action.condition ? { condition: action.condition.trim() } : {}),
+      ...(action.continueOnFailure != null ? { continueOnFailure: action.continueOnFailure } : {}),
+      ...(action.timeoutMs != null ? { timeoutMs: action.timeoutMs } : {}),
+      ...(action.retry != null ? { retry: action.retry } : {})
+    })),
+    enabled: entry.enabled ?? true
+  }));
+
   const mergedProviders = shared.providers || local.providers
     ? {
       ...(shared.providers ?? {}),
@@ -418,6 +533,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     stackButtons,
     testSuites,
     laneOverlayPolicies,
+    automations,
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {})

@@ -21,6 +21,12 @@ export type ProjectInfo = {
   baseRef: string;
 };
 
+export type RecentProjectSummary = {
+  rootPath: string;
+  displayName: string;
+  lastOpenedAt: string;
+};
+
 export type LaneType = "primary" | "worktree" | "attached";
 
 export type ProviderMode = "guest" | "hosted" | "byok" | "cli";
@@ -562,6 +568,13 @@ export type CreateChildLaneArgs = {
   description?: string;
 };
 
+export type ImportBranchLaneArgs = {
+  branchRef: string;
+  name?: string;
+  description?: string;
+  parentLaneId?: string | null;
+};
+
 export type AttachLaneArgs = {
   name: string;
   attachedPath: string;
@@ -940,12 +953,54 @@ export type ConfigLaneOverlayPolicy = {
   overrides?: LaneOverlayOverrides;
 };
 
+export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
+export type AutomationActionType =
+  | "update-packs"
+  | "sync-to-mirror"
+  | "predict-conflicts"
+  | "run-tests"
+  | "run-command";
+
+export type AutomationTrigger = {
+  type: AutomationTriggerType;
+  cron?: string;
+  branch?: string;
+};
+
+export type AutomationAction = {
+  type: AutomationActionType;
+  suiteId?: string;
+  command?: string;
+  cwd?: string;
+  condition?: string;
+  continueOnFailure?: boolean;
+  timeoutMs?: number;
+  retry?: number;
+};
+
+export type AutomationRule = {
+  id: string;
+  name: string;
+  trigger: AutomationTrigger;
+  actions: AutomationAction[];
+  enabled: boolean;
+};
+
+export type ConfigAutomationRule = {
+  id: string;
+  name?: string;
+  trigger?: AutomationTrigger;
+  actions?: AutomationAction[];
+  enabled?: boolean;
+};
+
 export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
   stackButtons?: ConfigStackButtonDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
+  automations?: ConfigAutomationRule[];
   github?: {
     prPollingIntervalSeconds?: number;
   };
@@ -963,6 +1018,7 @@ export type EffectiveProjectConfig = {
   stackButtons: StackButtonDefinition[];
   testSuites: TestSuiteDefinition[];
   laneOverlayPolicies: LaneOverlayPolicy[];
+  automations: AutomationRule[];
   github?: {
     prPollingIntervalSeconds?: number;
   };
@@ -1203,16 +1259,167 @@ export type GitStashSummary = {
   createdAt: string | null;
 };
 
-export type PackType = "project" | "lane";
+export type PackType = "project" | "lane" | "feature" | "conflict" | "plan";
 
 export type PackSummary = {
+  packKey: string;
   packType: PackType;
   path: string;
   exists: boolean;
   deterministicUpdatedAt: string | null;
   narrativeUpdatedAt: string | null;
   lastHeadSha: string | null;
+  versionId?: string | null;
+  versionNumber?: number | null;
+  contentHash?: string | null;
   body: string;
+};
+
+export type PackVersionSummary = {
+  id: string;
+  packKey: string;
+  packType: PackType;
+  versionNumber: number;
+  contentHash: string;
+  createdAt: string;
+};
+
+export type PackVersion = PackVersionSummary & {
+  renderedPath: string;
+  body: string;
+};
+
+export type PackEvent = {
+  id: string;
+  packKey: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type Checkpoint = {
+  id: string;
+  laneId: string;
+  sessionId: string | null;
+  sha: string;
+  diffStat: {
+    insertions: number;
+    deletions: number;
+    filesChanged: number;
+    files: string[];
+  };
+  packEventIds: string[];
+  createdAt: string;
+};
+
+export type AutomationRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+export type AutomationActionStatus = "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+
+export type AutomationRun = {
+  id: string;
+  automationId: string;
+  triggerType: AutomationTriggerType;
+  startedAt: string;
+  endedAt: string | null;
+  status: AutomationRunStatus;
+  actionsCompleted: number;
+  actionsTotal: number;
+  errorMessage: string | null;
+  triggerMetadata: Record<string, unknown> | null;
+};
+
+export type AutomationActionResult = {
+  id: string;
+  runId: string;
+  actionIndex: number;
+  actionType: AutomationActionType;
+  startedAt: string;
+  endedAt: string | null;
+  status: AutomationActionStatus;
+  errorMessage: string | null;
+  output: string | null;
+};
+
+export type AutomationRuleSummary = AutomationRule & {
+  lastRunAt: string | null;
+  lastRunStatus: AutomationRunStatus | null;
+  running: boolean;
+};
+
+export type AutomationRunDetail = {
+  run: AutomationRun;
+  rule: AutomationRule | null;
+  actions: AutomationActionResult[];
+};
+
+export type AutomationsEventPayload = {
+  type: "runs-updated";
+  automationId?: string;
+  runId?: string;
+};
+
+export type OnboardingStatus = {
+  completedAt: string | null;
+};
+
+export type OnboardingDetectionIndicator = {
+  file: string;
+  type: string;
+  confidence: number;
+};
+
+export type OnboardingDetectionResult = {
+  projectTypes: string[];
+  indicators: OnboardingDetectionIndicator[];
+  suggestedConfig: ProjectConfigFile;
+  suggestedWorkflows: Array<{ path: string; kind: "github-actions" | "gitlab-ci" | "other" }>;
+};
+
+export type OnboardingExistingLaneCandidate = {
+  branchRef: string;
+  isCurrent: boolean;
+  hasRemote: boolean;
+  ahead: number;
+  behind: number;
+};
+
+export type KeybindingOverride = {
+  id: string;
+  binding: string;
+};
+
+export type KeybindingDefinition = {
+  id: string;
+  description: string;
+  defaultBinding: string;
+  scope: "global" | "lanes" | "files" | "run" | "graph" | "conflicts" | "history";
+};
+
+export type KeybindingsSnapshot = {
+  definitions: KeybindingDefinition[];
+  overrides: KeybindingOverride[];
+};
+
+export type AgentTool = {
+  id: string;
+  label: string;
+  command: string;
+  installed: boolean;
+  detectedPath: string | null;
+  detectedVersion: string | null;
+};
+
+export type TerminalLaunchProfile = {
+  id: string;
+  name: string;
+  command: string;
+  tracked: boolean;
+  description?: string | null;
+};
+
+export type TerminalProfilesSnapshot = {
+  profiles: TerminalLaunchProfile[];
+  defaultProfileId: string | null;
 };
 
 export type SessionDeltaSummary = {

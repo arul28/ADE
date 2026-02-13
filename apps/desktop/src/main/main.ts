@@ -27,6 +27,11 @@ import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
+import { createKeybindingsService } from "./services/keybindings/keybindingsService";
+import { createTerminalProfilesService } from "./services/terminalProfiles/terminalProfilesService";
+import { createAgentToolsService } from "./services/agentTools/agentToolsService";
+import { createOnboardingService } from "./services/onboarding/onboardingService";
+import { createAutomationService } from "./services/automations/automationService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -118,6 +123,9 @@ app.whenReady().then(async () => {
     logger.info("project.init", { projectRoot, baseRef, ensureExclude });
 
     const db = await openKvDb(adePaths.dbPath, logger);
+    const keybindingsService = createKeybindingsService({ db });
+    const terminalProfilesService = createTerminalProfilesService({ db });
+    const agentToolsService = createAgentToolsService({ logger });
 
     // Avoid surprising git changes; use .git/info/exclude by default.
     if (ensureExclude) {
@@ -133,6 +141,7 @@ app.whenReady().then(async () => {
 
     const operationService = createOperationService({ db, projectId });
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
+    let automationService: ReturnType<typeof createAutomationService> | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -140,8 +149,9 @@ app.whenReady().then(async () => {
       defaultBaseRef: baseRef,
       worktreesDir: adePaths.worktreesDir,
       operationService,
-      onHeadChanged: ({ laneId, reason }) => {
+      onHeadChanged: ({ laneId, reason, preHeadSha, postHeadSha }) => {
         jobEngine?.onHeadChanged({ laneId, reason });
+        automationService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
       }
 	    });
 	    await laneService.ensurePrimaryLane();
@@ -169,6 +179,17 @@ app.whenReady().then(async () => {
       sessionService,
       projectConfigService,
       operationService
+    });
+
+    const onboardingService = createOnboardingService({
+      db,
+      logger,
+      projectRoot,
+      projectId,
+      baseRef,
+      laneService,
+      packService,
+      projectConfigService
     });
 
     const hostedAgentService = createHostedAgentService({
@@ -259,6 +280,7 @@ app.whenReady().then(async () => {
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
       onSessionEnded: ({ laneId, sessionId }) => {
         jobEngine.onSessionEnded({ laneId, sessionId });
+        automationService?.onSessionEnded({ laneId, sessionId });
       },
       loadPty
     });
@@ -270,8 +292,10 @@ app.whenReady().then(async () => {
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },
-      onHeadChanged: ({ laneId, reason }) => {
+      onHeadChanged: ({ laneId, reason, preHeadSha, postHeadSha }) => {
         jobEngine.onHeadChanged({ laneId, reason });
+        // Commit-style trigger for automation rules (run-tests, sync-to-mirror, etc.).
+        automationService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
       }
     });
 
@@ -295,6 +319,20 @@ app.whenReady().then(async () => {
       broadcastEvent: (ev) => broadcast(IPC.testsEvent, ev)
     });
 
+    automationService = createAutomationService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      packService,
+      conflictService,
+      hostedAgentService,
+      testService,
+      onEvent: (event) => broadcast(IPC.automationsEvent, event)
+    });
+
     const state = upsertRecentProject(readGlobalState(globalStatePath), project);
     writeGlobalState(globalStatePath, state);
 
@@ -309,6 +347,10 @@ app.whenReady().then(async () => {
       project,
       projectId,
       adeDir: adePaths.adeDir,
+      keybindingsService,
+      terminalProfilesService,
+      agentToolsService,
+      onboardingService,
       laneService,
       sessionService,
       ptyService,
@@ -323,6 +365,7 @@ app.whenReady().then(async () => {
       prService,
       prPollingService,
       jobEngine,
+      automationService,
       packService,
       projectConfigService,
       processService,
@@ -333,6 +376,11 @@ app.whenReady().then(async () => {
   const closeContext = () => {
     try {
       ctxRef.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctxRef.automationService.dispose();
     } catch {
       // ignore
     }
@@ -398,7 +446,8 @@ app.whenReady().then(async () => {
 
   registerIpc({
     getCtx: () => ctxRef,
-    switchProjectFromDialog
+    switchProjectFromDialog,
+    globalStatePath
   });
 
   await createWindow();

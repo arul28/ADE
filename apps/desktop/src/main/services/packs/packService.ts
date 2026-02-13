@@ -1,13 +1,14 @@
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { runGit } from "../git/git";
+import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import type { PackSummary, SessionDeltaSummary, TestRunStatus } from "../../../shared/types";
+import type { Checkpoint, PackEvent, PackSummary, PackType, PackVersion, PackVersionSummary, SessionDeltaSummary, TestRunStatus } from "../../../shared/types";
 
 type LaneSessionRow = {
   id: string;
@@ -85,7 +86,7 @@ function upsertPackIndex({
   projectId: string;
   packKey: string;
   laneId: string | null;
-  packType: "project" | "lane";
+  packType: PackType;
   packPath: string;
   deterministicUpdatedAt: string;
   narrativeUpdatedAt?: string | null;
@@ -129,25 +130,33 @@ function upsertPackIndex({
   );
 }
 
-function toPackSummaryFromRow(row: {
-  pack_type: "project" | "lane";
-  pack_path: string;
-  deterministic_updated_at: string | null;
-  narrative_updated_at: string | null;
-  last_head_sha: string | null;
-} | null): PackSummary {
-  const packType = row?.pack_type ?? "project";
-  const packPath = row?.pack_path ?? "";
+function toPackSummaryFromRow(args: {
+  packKey: string;
+  row: {
+    pack_type: PackType;
+    pack_path: string;
+    deterministic_updated_at: string | null;
+    narrative_updated_at: string | null;
+    last_head_sha: string | null;
+  } | null;
+  version: { versionId: string; versionNumber: number; contentHash: string } | null;
+}): PackSummary {
+  const packType = args.row?.pack_type ?? "project";
+  const packPath = args.row?.pack_path ?? "";
   const body = packPath ? readFileIfExists(packPath) : "";
   const exists = packPath.length ? fs.existsSync(packPath) : false;
 
   return {
+    packKey: args.packKey,
     packType,
     path: packPath,
     exists,
-    deterministicUpdatedAt: row?.deterministic_updated_at ?? null,
-    narrativeUpdatedAt: row?.narrative_updated_at ?? null,
-    lastHeadSha: row?.last_head_sha ?? null,
+    deterministicUpdatedAt: args.row?.deterministic_updated_at ?? null,
+    narrativeUpdatedAt: args.row?.narrative_updated_at ?? null,
+    lastHeadSha: args.row?.last_head_sha ?? null,
+    versionId: args.version?.versionId ?? null,
+    versionNumber: args.version?.versionNumber ?? null,
+    contentHash: args.version?.contentHash ?? null,
     body
   };
 }
@@ -231,6 +240,17 @@ function moduleFromPath(relPath: string): string {
   return first || ".";
 }
 
+function parseDiffNameOnly(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function uniqueSorted(values: Iterable<string>): string[] {
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+}
+
 export function createPackService({
   db,
   logger,
@@ -255,6 +275,29 @@ export function createPackService({
   const projectPackPath = path.join(packsDir, "project_pack.md");
 
   const getLanePackPath = (laneId: string) => path.join(packsDir, "lanes", laneId, "lane_pack.md");
+  const getFeaturePackPath = (featureKey: string) => path.join(packsDir, "features", safeSegment(featureKey), "feature_pack.md");
+  const getPlanPackPath = (laneId: string) => path.join(packsDir, "plans", laneId, "plan_pack.md");
+  const getConflictPackPath = (laneId: string, peer: string) =>
+    path.join(packsDir, "conflicts", "v2", `${laneId}__${safeSegment(peer)}.md`);
+
+  const versionsDir = path.join(packsDir, "versions");
+  const historyDir = path.join(path.dirname(packsDir), "history");
+  const checkpointsDir = path.join(historyDir, "checkpoints");
+  const eventsDir = path.join(historyDir, "events");
+
+  const nowIso = () => new Date().toISOString();
+
+  const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
+
+  const ensureDir = (dirPath: string) => {
+    fs.mkdirSync(dirPath, { recursive: true });
+  };
+
+  const safeSegment = (raw: string): string => {
+    const trimmed = raw.trim();
+    if (!trimmed) return "untitled";
+    return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
+  };
 
   const PACK_RETENTION_KEEP_DAYS = 14;
   const PACK_RETENTION_MAX_ARCHIVED_LANES = 25;
@@ -330,6 +373,218 @@ export function createPackService({
         error: error instanceof Error ? error.message : String(error)
       });
     });
+  };
+
+  const readCurrentPackVersion = (packKey: string): { versionId: string; versionNumber: number; contentHash: string; renderedPath: string } | null => {
+    const row = db.get<{ id: string; version_number: number; content_hash: string; rendered_path: string }>(
+      `
+        select v.id as id, v.version_number as version_number, v.content_hash as content_hash, v.rendered_path as rendered_path
+        from pack_heads h
+        join pack_versions v on v.id = h.current_version_id and v.project_id = h.project_id
+        where h.project_id = ?
+          and h.pack_key = ?
+        limit 1
+      `,
+      [projectId, packKey]
+    );
+    if (!row?.id) return null;
+    return {
+      versionId: row.id,
+      versionNumber: Number(row.version_number ?? 0),
+      contentHash: String(row.content_hash ?? ""),
+      renderedPath: String(row.rendered_path ?? "")
+    };
+  };
+
+  const createPackEvent = (args: { packKey: string; eventType: string; payload?: Record<string, unknown> }): { eventId: string; createdAt: string } => {
+    const eventId = randomUUID();
+    const createdAt = nowIso();
+    const payload = args.payload ?? {};
+
+    db.run(
+      `
+        insert into pack_events(
+          id,
+          project_id,
+          pack_key,
+          event_type,
+          payload_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?)
+      `,
+      [eventId, projectId, args.packKey, args.eventType, JSON.stringify(payload), createdAt]
+    );
+
+    try {
+      const monthKey = createdAt.slice(0, 7); // YYYY-MM
+      const monthDir = path.join(eventsDir, monthKey);
+      ensureDir(monthDir);
+      fs.writeFileSync(
+        path.join(monthDir, `${eventId}.json`),
+        JSON.stringify({ id: eventId, packKey: args.packKey, eventType: args.eventType, payload, createdAt }, null, 2),
+        "utf8"
+      );
+    } catch {
+      // ignore event file write failures
+    }
+
+    return { eventId, createdAt };
+  };
+
+  const createPackVersion = (args: { packKey: string; packType: PackType; body: string }): { versionId: string; versionNumber: number; contentHash: string } => {
+    const bodyHash = sha256(args.body);
+    const existing = readCurrentPackVersion(args.packKey);
+    if (existing && existing.contentHash === bodyHash) {
+      return {
+        versionId: existing.versionId,
+        versionNumber: existing.versionNumber,
+        contentHash: existing.contentHash
+      };
+    }
+
+    const versionId = randomUUID();
+    const createdAt = nowIso();
+    const maxRow = db.get<{ max_version: number | null }>(
+      "select max(version_number) as max_version from pack_versions where project_id = ? and pack_key = ?",
+      [projectId, args.packKey]
+    );
+    const versionNumber = Number(maxRow?.max_version ?? 0) + 1;
+    const renderedPath = path.join(versionsDir, `${versionId}.md`);
+
+    ensureDir(versionsDir);
+    fs.writeFileSync(renderedPath, args.body, "utf8");
+
+    db.run(
+      `
+        insert into pack_versions(
+          id,
+          project_id,
+          pack_key,
+          version_number,
+          content_hash,
+          rendered_path,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [versionId, projectId, args.packKey, versionNumber, bodyHash, renderedPath, createdAt]
+    );
+
+    db.run(
+      `
+        insert into pack_heads(project_id, pack_key, current_version_id, updated_at)
+        values (?, ?, ?, ?)
+        on conflict(project_id, pack_key) do update set
+          current_version_id = excluded.current_version_id,
+          updated_at = excluded.updated_at
+      `,
+      [projectId, args.packKey, versionId, createdAt]
+    );
+
+    createPackEvent({
+      packKey: args.packKey,
+      eventType: "version_created",
+      payload: {
+        packKey: args.packKey,
+        packType: args.packType,
+        versionId,
+        versionNumber,
+        contentHash: bodyHash
+      }
+    });
+
+    return { versionId, versionNumber, contentHash: bodyHash };
+  };
+
+  const recordCheckpointFromDelta = (args: {
+    laneId: string;
+    sessionId: string;
+    sha: string;
+    delta: SessionDeltaSummary;
+  }): Checkpoint | null => {
+    const existing = db.get<{ id: string }>(
+      "select id from checkpoints where project_id = ? and session_id = ? limit 1",
+      [projectId, args.sessionId]
+    );
+    if (existing?.id) return null;
+
+    const checkpointId = randomUUID();
+    const createdAt = nowIso();
+    const diffStat = {
+      insertions: args.delta.insertions,
+      deletions: args.delta.deletions,
+      filesChanged: args.delta.filesChanged,
+      files: args.delta.touchedFiles
+    };
+
+    const event = createPackEvent({
+      packKey: `lane:${args.laneId}`,
+      eventType: "checkpoint",
+      payload: {
+        checkpointId,
+        laneId: args.laneId,
+        sessionId: args.sessionId,
+        sha: args.sha,
+        diffStat
+      }
+    });
+
+    try {
+      ensureDir(checkpointsDir);
+      fs.writeFileSync(
+        path.join(checkpointsDir, `${checkpointId}.json`),
+        JSON.stringify(
+          {
+            id: checkpointId,
+            laneId: args.laneId,
+            sessionId: args.sessionId,
+            sha: args.sha,
+            diffStat,
+            packEventIds: [event.eventId],
+            createdAt
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+    } catch {
+      // ignore checkpoint file write failures
+    }
+
+    db.run(
+      `
+        insert into checkpoints(
+          id,
+          project_id,
+          lane_id,
+          session_id,
+          sha,
+          diff_stat_json,
+          pack_event_ids_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        checkpointId,
+        projectId,
+        args.laneId,
+        args.sessionId,
+        args.sha,
+        JSON.stringify(diffStat),
+        JSON.stringify([event.eventId]),
+        createdAt
+      ]
+    );
+
+    return {
+      id: checkpointId,
+      laneId: args.laneId,
+      sessionId: args.sessionId,
+      sha: args.sha,
+      diffStat,
+      packEventIds: [event.eventId],
+      createdAt
+    };
   };
 
   const getSessionRow = (sessionId: string): LaneSessionRow | null =>
@@ -663,10 +918,230 @@ export function createPackService({
     return `${lines.join("\n")}\n`;
   };
 
+  const getPackIndexRow = (packKey: string): {
+    pack_type: PackType;
+    lane_id: string | null;
+    pack_path: string;
+    deterministic_updated_at: string | null;
+    narrative_updated_at: string | null;
+    last_head_sha: string | null;
+  } | null => {
+    return db.get<{
+      pack_type: PackType;
+      lane_id: string | null;
+      pack_path: string;
+      deterministic_updated_at: string | null;
+      narrative_updated_at: string | null;
+      last_head_sha: string | null;
+    }>(
+      `
+        select
+          pack_type,
+          lane_id,
+          pack_path,
+          deterministic_updated_at,
+          narrative_updated_at,
+          last_head_sha
+        from packs_index
+        where pack_key = ?
+          and project_id = ?
+        limit 1
+      `,
+      [packKey, projectId]
+    );
+  };
+
+  const getPackSummaryForKey = (packKey: string, fallback: { packType: PackType; packPath: string }): PackSummary => {
+    const row = getPackIndexRow(packKey);
+    const effectiveRow = row ?? {
+      pack_type: fallback.packType,
+      lane_id: null,
+      pack_path: fallback.packPath,
+      deterministic_updated_at: null,
+      narrative_updated_at: null,
+      last_head_sha: null
+    };
+    const version = readCurrentPackVersion(packKey);
+    return toPackSummaryFromRow({ packKey, row: effectiveRow, version });
+  };
+
+  const readLanePackExcerpt = (laneId: string): string | null => {
+    const filePath = getLanePackPath(laneId);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const MAX = 12_000;
+      return trimmed.length > MAX ? `${trimmed.slice(0, MAX)}\n\n…(truncated)…\n` : trimmed;
+    } catch {
+      return null;
+    }
+  };
+
+  const buildFeaturePackBody = async (args: {
+    featureKey: string;
+    reason: string;
+    deterministicUpdatedAt: string;
+  }): Promise<{ body: string; laneIds: string[] }> => {
+    const lanes = await laneService.list({ includeArchived: false });
+    const matching = lanes.filter((lane) => lane.tags.includes(args.featureKey));
+    const lines: string[] = [];
+    lines.push(`# Feature Pack: ${args.featureKey}`);
+    lines.push("");
+    lines.push(`- Deterministic updated: ${args.deterministicUpdatedAt}`);
+    lines.push(`- Trigger: ${args.reason}`);
+    lines.push(`- Lanes: ${matching.length}`);
+    lines.push("");
+
+    if (matching.length === 0) {
+      lines.push("No lanes are tagged with this feature key yet.");
+      lines.push("");
+      lines.push("## How To Use");
+      lines.push(`- Add the tag '${args.featureKey}' to one or more lanes (Workspace Graph → right click lane → Customize).`);
+      lines.push("");
+      return { body: `${lines.join("\n")}\n`, laneIds: [] };
+    }
+
+    lines.push("## Lanes");
+    for (const lane of matching.sort((a, b) => a.name.localeCompare(b.name))) {
+      lines.push(`- ${lane.name} (${lane.branchRef}): dirty=${lane.status.dirty} ahead=${lane.status.ahead} behind=${lane.status.behind}`);
+    }
+    lines.push("");
+
+    for (const lane of matching.sort((a, b) => a.stackDepth - b.stackDepth || a.name.localeCompare(b.name))) {
+      const lanePackBody = readFileIfExists(getLanePackPath(lane.id));
+      const intent = extractSection(lanePackBody, USER_INTENT_START, USER_INTENT_END, "");
+      const todos = extractSection(lanePackBody, USER_TODOS_START, USER_TODOS_END, "");
+
+      lines.push(`## Lane: ${lane.name}`);
+      lines.push(`- Lane ID: ${lane.id}`);
+      lines.push(`- Branch: ${lane.branchRef}`);
+      lines.push(`- Base: ${lane.baseRef}`);
+      lines.push(`- Status: ${lane.status.dirty ? "dirty" : "clean"}; ahead ${lane.status.ahead}; behind ${lane.status.behind}`);
+      lines.push("");
+      if (intent.trim().length) {
+        lines.push("### Intent");
+        lines.push(intent.trim());
+        lines.push("");
+      }
+      if (todos.trim().length) {
+        lines.push("### Todos");
+        lines.push(todos.trim());
+        lines.push("");
+      }
+    }
+
+    lines.push("## Narrative");
+    lines.push("This feature pack is primarily deterministic aggregation. Use lane packs for detailed session context.");
+    lines.push("");
+
+    return { body: `${lines.join("\n")}\n`, laneIds: matching.map((lane) => lane.id) };
+  };
+
+  const buildConflictPackBody = async (args: {
+    laneId: string;
+    peerLaneId: string | null;
+    reason: string;
+    deterministicUpdatedAt: string;
+  }): Promise<{ body: string; lastHeadSha: string | null }> => {
+    const laneA = laneService.getLaneBaseAndBranch(args.laneId);
+    const laneAHead = (await runGitOrThrow(["rev-parse", "HEAD"], { cwd: laneA.worktreePath, timeoutMs: 10_000 })).trim();
+    const peerLabel = args.peerLaneId ? `lane:${args.peerLaneId}` : `base:${laneA.baseRef}`;
+
+    const laneBHead = args.peerLaneId
+      ? (await runGitOrThrow(["rev-parse", "HEAD"], { cwd: laneService.getLaneBaseAndBranch(args.peerLaneId).worktreePath, timeoutMs: 10_000 })).trim()
+      : (await runGitOrThrow(["rev-parse", laneA.baseRef], { cwd: projectRoot, timeoutMs: 10_000 })).trim();
+
+    const mergeBase = (await runGitOrThrow(["merge-base", laneAHead, laneBHead], { cwd: projectRoot, timeoutMs: 12_000 })).trim();
+    const merge = await runGitMergeTree({
+      cwd: projectRoot,
+      mergeBase,
+      branchA: laneAHead,
+      branchB: laneBHead,
+      timeoutMs: 60_000
+    });
+
+    const touchedA = await runGit(["diff", "--name-only", `${mergeBase}..${laneAHead}`], { cwd: projectRoot, timeoutMs: 20_000 });
+    const touchedB = await runGit(["diff", "--name-only", `${mergeBase}..${laneBHead}`], { cwd: projectRoot, timeoutMs: 20_000 });
+    const aFiles = new Set(parseDiffNameOnly(touchedA.stdout));
+    const bFiles = new Set(parseDiffNameOnly(touchedB.stdout));
+    const overlap = uniqueSorted(Array.from(aFiles).filter((file) => bFiles.has(file)));
+
+    const lines: string[] = [];
+    lines.push(`# Conflict Pack`);
+    lines.push("");
+    lines.push(`- Deterministic updated: ${args.deterministicUpdatedAt}`);
+    lines.push(`- Trigger: ${args.reason}`);
+    lines.push(`- Lane: ${args.laneId}`);
+    lines.push(`- Peer: ${peerLabel}`);
+    lines.push(`- Merge base: ${mergeBase}`);
+    lines.push(`- Lane HEAD: ${laneAHead}`);
+    lines.push(`- Peer HEAD: ${laneBHead}`);
+    lines.push("");
+
+    lines.push("## Overlapping Files");
+    if (overlap.length) {
+      for (const file of overlap.slice(0, 120)) {
+        lines.push(`- ${file}`);
+      }
+      if (overlap.length > 120) lines.push(`- … (${overlap.length - 120} more)`);
+    } else {
+      lines.push("- none");
+    }
+    lines.push("");
+
+    lines.push("## Conflicts (merge-tree)");
+    if (merge.conflicts.length) {
+      for (const conflict of merge.conflicts.slice(0, 30)) {
+        lines.push(`### ${conflict.path} (${conflict.conflictType})`);
+        if (conflict.markerPreview.trim().length) {
+          lines.push("```");
+          lines.push(conflict.markerPreview.trim());
+          lines.push("```");
+        }
+        lines.push("");
+      }
+      if (merge.conflicts.length > 30) {
+        lines.push(`(truncated) ${merge.conflicts.length} conflicts total.`);
+        lines.push("");
+      }
+    } else {
+      lines.push("- no merge-tree conflicts reported");
+      lines.push("");
+    }
+
+    const lanePackBody = readLanePackExcerpt(args.laneId);
+    if (lanePackBody) {
+      lines.push("## Lane Pack (Excerpt)");
+      lines.push("```");
+      lines.push(lanePackBody.trim());
+      lines.push("```");
+      lines.push("");
+    }
+
+    if (args.peerLaneId) {
+      const peerPackBody = readLanePackExcerpt(args.peerLaneId);
+      if (peerPackBody) {
+        lines.push("## Peer Lane Pack (Excerpt)");
+        lines.push("```");
+        lines.push(peerPackBody.trim());
+        lines.push("```");
+        lines.push("");
+      }
+    }
+
+    lines.push("## Narrative");
+    lines.push("Conflict packs are data-heavy: overlap lists, merge-tree conflicts, and lane context excerpts.");
+    lines.push("");
+
+    return { body: `${lines.join("\n")}\n`, lastHeadSha: laneAHead };
+  };
+
   return {
     getProjectPack(): PackSummary {
       const row = db.get<{
-        pack_type: "project" | "lane";
+        pack_type: PackType;
         pack_path: string;
         deterministic_updated_at: string | null;
         narrative_updated_at: string | null;
@@ -687,24 +1162,29 @@ export function createPackService({
         [projectId]
       );
 
-      if (row) return toPackSummaryFromRow(row);
+      const version = readCurrentPackVersion("project");
+      if (row) return toPackSummaryFromRow({ packKey: "project", row, version });
 
       const body = readFileIfExists(projectPackPath);
       const exists = fs.existsSync(projectPackPath);
       return {
+        packKey: "project",
         packType: "project",
         path: projectPackPath,
         exists,
         deterministicUpdatedAt: null,
         narrativeUpdatedAt: null,
         lastHeadSha: null,
+        versionId: version?.versionId ?? null,
+        versionNumber: version?.versionNumber ?? null,
+        contentHash: version?.contentHash ?? null,
         body
       };
     },
 
     getLanePack(laneId: string): PackSummary {
       const row = db.get<{
-        pack_type: "project" | "lane";
+        pack_type: PackType;
         pack_path: string;
         deterministic_updated_at: string | null;
         narrative_updated_at: string | null;
@@ -725,20 +1205,50 @@ export function createPackService({
         [`lane:${laneId}`, projectId]
       );
 
-      if (row) return toPackSummaryFromRow(row);
+      const packKey = `lane:${laneId}`;
+      const version = readCurrentPackVersion(packKey);
+      if (row) return toPackSummaryFromRow({ packKey, row, version });
 
       const lanePackPath = getLanePackPath(laneId);
       const body = readFileIfExists(lanePackPath);
       const exists = fs.existsSync(lanePackPath);
       return {
+        packKey,
         packType: "lane",
         path: lanePackPath,
         exists,
         deterministicUpdatedAt: null,
         narrativeUpdatedAt: null,
         lastHeadSha: null,
+        versionId: version?.versionId ?? null,
+        versionNumber: version?.versionNumber ?? null,
+        contentHash: version?.contentHash ?? null,
         body
       };
+    },
+
+    getFeaturePack(featureKey: string): PackSummary {
+      const key = featureKey.trim();
+      if (!key) throw new Error("featureKey is required");
+      const packKey = `feature:${key}`;
+      return getPackSummaryForKey(packKey, { packType: "feature", packPath: getFeaturePackPath(key) });
+    },
+
+    getConflictPack(args: { laneId: string; peerLaneId?: string | null }): PackSummary {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const peer = args.peerLaneId?.trim() || null;
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const peerKey = peer ?? lane.baseRef;
+      const packKey = `conflict:${laneId}:${peerKey}`;
+      return getPackSummaryForKey(packKey, { packType: "conflict", packPath: getConflictPackPath(laneId, peerKey) });
+    },
+
+    getPlanPack(laneId: string): PackSummary {
+      const id = laneId.trim();
+      if (!id) throw new Error("laneId is required");
+      const packKey = `plan:${id}`;
+      return getPackSummaryForKey(packKey, { packType: "plan", packPath: getPlanPackPath(id) });
     },
 
     getSessionDelta(sessionId: string): SessionDeltaSummary | null {
@@ -868,8 +1378,10 @@ export function createPackService({
       });
 
       try {
-        const latestDelta = args.sessionId ? await this.computeSessionDelta(args.sessionId) : listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
-        const deterministicUpdatedAt = new Date().toISOString();
+        const latestDelta = args.sessionId
+          ? await this.computeSessionDelta(args.sessionId)
+          : listRecentLaneSessionDeltas(args.laneId, 1)[0] ?? null;
+        const deterministicUpdatedAt = nowIso();
         const { body, lastHeadSha } = await buildLanePackBody({
           laneId: args.laneId,
           reason: args.reason,
@@ -877,14 +1389,43 @@ export function createPackService({
           deterministicUpdatedAt
         });
 
+        const packKey = `lane:${args.laneId}`;
         const packPath = getLanePackPath(args.laneId);
         ensureDirFor(packPath);
         fs.writeFileSync(packPath, body, "utf8");
 
+        createPackEvent({
+          packKey,
+          eventType: "refresh_triggered",
+          payload: {
+            trigger: args.reason,
+            laneId: args.laneId,
+            sessionId: args.sessionId ?? null
+          }
+        });
+
+        const version = createPackVersion({ packKey, packType: "lane", body });
+
+        if (args.sessionId && latestDelta) {
+          const checkpointSha =
+            lastHeadSha ??
+            latestDelta.headShaEnd ??
+            latestDelta.headShaStart ??
+            null;
+          if (checkpointSha) {
+            recordCheckpointFromDelta({
+              laneId: args.laneId,
+              sessionId: args.sessionId,
+              sha: checkpointSha,
+              delta: latestDelta
+            });
+          }
+        }
+
         upsertPackIndex({
           db,
           projectId,
-          packKey: `lane:${args.laneId}`,
+          packKey,
           laneId: args.laneId,
           packType: "lane",
           packPath,
@@ -894,7 +1435,10 @@ export function createPackService({
           metadata: {
             reason: args.reason,
             sessionId: args.sessionId ?? null,
-            latestDeltaSessionId: latestDelta?.sessionId ?? null
+            latestDeltaSessionId: latestDelta?.sessionId ?? null,
+            versionId: version.versionId,
+            versionNumber: version.versionNumber,
+            contentHash: version.contentHash
           }
         });
 
@@ -905,19 +1449,25 @@ export function createPackService({
           metadataPatch: {
             packPath,
             deterministicUpdatedAt,
-            latestDeltaSessionId: latestDelta?.sessionId ?? null
+            latestDeltaSessionId: latestDelta?.sessionId ?? null,
+            versionId: version.versionId,
+            versionNumber: version.versionNumber
           }
         });
 
         maybeCleanupPacks();
 
         return {
+          packKey,
           packType: "lane",
           path: packPath,
           exists: true,
           deterministicUpdatedAt,
           narrativeUpdatedAt: null,
           lastHeadSha,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash,
           body
         };
       } catch (error) {
@@ -943,20 +1493,32 @@ export function createPackService({
       });
 
       try {
-        const deterministicUpdatedAt = new Date().toISOString();
+        const deterministicUpdatedAt = nowIso();
         const body = await buildProjectPackBody({
           reason: args.reason,
           deterministicUpdatedAt,
           sourceLaneId: args.laneId
         });
 
+        const packKey = "project";
         ensureDirFor(projectPackPath);
         fs.writeFileSync(projectPackPath, body, "utf8");
+
+        createPackEvent({
+          packKey,
+          eventType: "refresh_triggered",
+          payload: {
+            trigger: args.reason,
+            laneId: args.laneId ?? null
+          }
+        });
+
+        const version = createPackVersion({ packKey, packType: "project", body });
 
         upsertPackIndex({
           db,
           projectId,
-          packKey: "project",
+          packKey,
           laneId: null,
           packType: "project",
           packPath: projectPackPath,
@@ -965,7 +1527,10 @@ export function createPackService({
           lastHeadSha: null,
           metadata: {
             reason: args.reason,
-            sourceLaneId: args.laneId ?? null
+            sourceLaneId: args.laneId ?? null,
+            versionId: version.versionId,
+            versionNumber: version.versionNumber,
+            contentHash: version.contentHash
           }
         });
 
@@ -974,19 +1539,25 @@ export function createPackService({
           status: "succeeded",
           metadataPatch: {
             packPath: projectPackPath,
-            deterministicUpdatedAt
+            deterministicUpdatedAt,
+            versionId: version.versionId,
+            versionNumber: version.versionNumber
           }
         });
 
         maybeCleanupPacks();
 
         return {
+          packKey,
           packType: "project",
           path: projectPackPath,
           exists: true,
           deterministicUpdatedAt,
           narrativeUpdatedAt: null,
           lastHeadSha: null,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash,
           body
         };
       } catch (error) {
@@ -1001,11 +1572,410 @@ export function createPackService({
       }
     },
 
+    async refreshFeaturePack(args: { featureKey: string; reason: string }): Promise<PackSummary> {
+      const key = args.featureKey.trim();
+      if (!key) throw new Error("featureKey is required");
+      const packKey = `feature:${key}`;
+      const deterministicUpdatedAt = nowIso();
+      const built = await buildFeaturePackBody({
+        featureKey: key,
+        reason: args.reason,
+        deterministicUpdatedAt
+      });
+
+      const packPath = getFeaturePackPath(key);
+      ensureDirFor(packPath);
+      fs.writeFileSync(packPath, built.body, "utf8");
+
+      createPackEvent({
+        packKey,
+        eventType: "refresh_triggered",
+        payload: { trigger: args.reason, featureKey: key, laneIds: built.laneIds }
+      });
+
+      const version = createPackVersion({ packKey, packType: "feature", body: built.body });
+
+      upsertPackIndex({
+        db,
+        projectId,
+        packKey,
+        laneId: null,
+        packType: "feature",
+        packPath,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        lastHeadSha: null,
+        metadata: {
+          reason: args.reason,
+          featureKey: key,
+          laneIds: built.laneIds,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        }
+      });
+
+      return {
+        packKey,
+        packType: "feature",
+        path: packPath,
+        exists: true,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        lastHeadSha: null,
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        contentHash: version.contentHash,
+        body: built.body
+      };
+    },
+
+    async refreshConflictPack(args: { laneId: string; peerLaneId?: string | null; reason: string }): Promise<PackSummary> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const peer = args.peerLaneId?.trim() || null;
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const peerKey = peer ?? lane.baseRef;
+      const packKey = `conflict:${laneId}:${peerKey}`;
+
+      const deterministicUpdatedAt = nowIso();
+      const built = await buildConflictPackBody({
+        laneId,
+        peerLaneId: peer,
+        reason: args.reason,
+        deterministicUpdatedAt
+      });
+
+      const packPath = getConflictPackPath(laneId, peerKey);
+      ensureDirFor(packPath);
+      fs.writeFileSync(packPath, built.body, "utf8");
+
+      createPackEvent({
+        packKey,
+        eventType: "refresh_triggered",
+        payload: { trigger: args.reason, laneId, peerLaneId: peer, peerKey }
+      });
+
+      const version = createPackVersion({ packKey, packType: "conflict", body: built.body });
+
+      upsertPackIndex({
+        db,
+        projectId,
+        packKey,
+        laneId,
+        packType: "conflict",
+        packPath,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        lastHeadSha: built.lastHeadSha,
+        metadata: {
+          reason: args.reason,
+          laneId,
+          peerLaneId: peer,
+          peerKey,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        }
+      });
+
+      return {
+        packKey,
+        packType: "conflict",
+        path: packPath,
+        exists: true,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        lastHeadSha: built.lastHeadSha,
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        contentHash: version.contentHash,
+        body: built.body
+      };
+    },
+
+    async savePlanPack(args: { laneId: string; body: string; reason: string }): Promise<PackSummary> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const packKey = `plan:${laneId}`;
+      const packPath = getPlanPackPath(laneId);
+      const deterministicUpdatedAt = nowIso();
+
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const headSha = await getHeadSha(lane.worktreePath);
+
+      const body = args.body ?? "";
+      ensureDirFor(packPath);
+      fs.writeFileSync(packPath, body, "utf8");
+
+      createPackEvent({
+        packKey,
+        eventType: "plan_saved",
+        payload: { trigger: args.reason, laneId }
+      });
+
+      const version = createPackVersion({ packKey, packType: "plan", body });
+
+      upsertPackIndex({
+        db,
+        projectId,
+        packKey,
+        laneId,
+        packType: "plan",
+        packPath,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: deterministicUpdatedAt,
+        lastHeadSha: headSha,
+        metadata: {
+          reason: args.reason,
+          laneId,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        }
+      });
+
+      return {
+        packKey,
+        packType: "plan",
+        path: packPath,
+        exists: true,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: deterministicUpdatedAt,
+        lastHeadSha: headSha,
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        contentHash: version.contentHash,
+        body
+      };
+    },
+
+    updateNarrative(args: { packKey: string; narrative: string; source?: string }): PackSummary {
+      const packKey = args.packKey.trim();
+      if (!packKey) throw new Error("packKey is required");
+      const row = getPackIndexRow(packKey);
+      if (!row?.pack_path) throw new Error(`Pack not found: ${packKey}`);
+
+      const existing = readFileIfExists(row.pack_path);
+      const updatedBody = replaceNarrativeSection(existing, args.narrative);
+      ensureDirFor(row.pack_path);
+      fs.writeFileSync(row.pack_path, updatedBody, "utf8");
+
+      const now = nowIso();
+      createPackEvent({
+        packKey,
+        eventType: "narrative_update",
+        payload: {
+          source: args.source ?? "user"
+        }
+      });
+
+      const version = createPackVersion({ packKey, packType: row.pack_type, body: updatedBody });
+
+      upsertPackIndex({
+        db,
+        projectId,
+        packKey,
+        laneId: row.lane_id ?? null,
+        packType: row.pack_type,
+        packPath: row.pack_path,
+        deterministicUpdatedAt: row.deterministic_updated_at ?? now,
+        narrativeUpdatedAt: now,
+        lastHeadSha: row.last_head_sha ?? null,
+        metadata: {
+          source: args.source ?? "user",
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        }
+      });
+
+      return toPackSummaryFromRow({
+        packKey,
+        row: {
+          ...row,
+          narrative_updated_at: now
+        },
+        version: {
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        }
+      });
+    },
+
+    listVersions(args: { packKey: string; limit?: number }): PackVersionSummary[] {
+      const packKey = args.packKey.trim();
+      if (!packKey) throw new Error("packKey is required");
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
+      const packType = getPackIndexRow(packKey)?.pack_type ?? (packKey.startsWith("lane:") ? "lane" : "project");
+      const rows = db.all<{
+        id: string;
+        version_number: number;
+        content_hash: string;
+        created_at: string;
+      }>(
+        `
+          select id, version_number, content_hash, created_at
+          from pack_versions
+          where project_id = ?
+            and pack_key = ?
+          order by version_number desc
+          limit ?
+        `,
+        [projectId, packKey, limit]
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        packKey,
+        packType,
+        versionNumber: Number(row.version_number ?? 0),
+        contentHash: String(row.content_hash ?? ""),
+        createdAt: row.created_at
+      }));
+    },
+
+    getVersion(versionId: string): PackVersion {
+      const id = versionId.trim();
+      if (!id) throw new Error("versionId is required");
+      const row = db.get<{
+        id: string;
+        pack_key: string;
+        version_number: number;
+        content_hash: string;
+        rendered_path: string;
+        created_at: string;
+      }>(
+        `
+          select id, pack_key, version_number, content_hash, rendered_path, created_at
+          from pack_versions
+          where project_id = ?
+            and id = ?
+          limit 1
+        `,
+        [projectId, id]
+      );
+      if (!row) throw new Error(`Pack version not found: ${id}`);
+      const packType = getPackIndexRow(row.pack_key)?.pack_type ?? (row.pack_key.startsWith("lane:") ? "lane" : "project");
+      return {
+        id: row.id,
+        packKey: row.pack_key,
+        packType,
+        versionNumber: Number(row.version_number ?? 0),
+        contentHash: String(row.content_hash ?? ""),
+        renderedPath: row.rendered_path,
+        body: readFileIfExists(row.rendered_path),
+        createdAt: row.created_at
+      };
+    },
+
+    async diffVersions(args: { fromId: string; toId: string }): Promise<string> {
+      const from = this.getVersion(args.fromId);
+      const to = this.getVersion(args.toId);
+      const res = await runGit(["diff", "--no-index", "--", from.renderedPath, to.renderedPath], {
+        cwd: projectRoot,
+        timeoutMs: 20_000
+      });
+      if (res.exitCode === 0 || res.exitCode === 1) {
+        return res.stdout;
+      }
+      throw new Error(res.stderr.trim() || "Failed to diff pack versions");
+    },
+
+    listEvents(args: { packKey: string; limit?: number }): PackEvent[] {
+      const packKey = args.packKey.trim();
+      if (!packKey) throw new Error("packKey is required");
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
+      const rows = db.all<{
+        id: string;
+        pack_key: string;
+        event_type: string;
+        payload_json: string | null;
+        created_at: string;
+      }>(
+        `
+          select id, pack_key, event_type, payload_json, created_at
+          from pack_events
+          where project_id = ?
+            and pack_key = ?
+          order by created_at desc
+          limit ?
+        `,
+        [projectId, packKey, limit]
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        packKey: row.pack_key,
+        eventType: row.event_type,
+        payload: (() => {
+          try {
+            return row.payload_json ? (JSON.parse(row.payload_json) as Record<string, unknown>) : {};
+          } catch {
+            return {};
+          }
+        })(),
+        createdAt: row.created_at
+      }));
+    },
+
+    listCheckpoints(args: { laneId?: string; limit?: number } = {}): Checkpoint[] {
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 100;
+      const where = ["project_id = ?"];
+      const params: Array<string | number> = [projectId];
+      if (args.laneId) {
+        where.push("lane_id = ?");
+        params.push(args.laneId);
+      }
+      params.push(limit);
+      const rows = db.all<{
+        id: string;
+        lane_id: string;
+        session_id: string | null;
+        sha: string;
+        diff_stat_json: string | null;
+        pack_event_ids_json: string | null;
+        created_at: string;
+      }>(
+        `
+          select id, lane_id, session_id, sha, diff_stat_json, pack_event_ids_json, created_at
+          from checkpoints
+          where ${where.join(" and ")}
+          order by created_at desc
+          limit ?
+        `,
+        params
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        laneId: row.lane_id,
+        sessionId: row.session_id,
+        sha: row.sha,
+        diffStat: (() => {
+          try {
+            return row.diff_stat_json
+              ? (JSON.parse(row.diff_stat_json) as Checkpoint["diffStat"])
+              : { insertions: 0, deletions: 0, filesChanged: 0, files: [] };
+          } catch {
+            return { insertions: 0, deletions: 0, filesChanged: 0, files: [] };
+          }
+        })(),
+        packEventIds: (() => {
+          try {
+            return row.pack_event_ids_json ? (JSON.parse(row.pack_event_ids_json) as string[]) : [];
+          } catch {
+            return [];
+          }
+        })(),
+        createdAt: row.created_at
+      }));
+    },
+
     applyHostedNarrative(args: {
       laneId: string;
       narrative: string;
       metadata?: Record<string, unknown>;
     }): PackSummary {
+      const packKey = `lane:${args.laneId}`;
       const lanePackPath = getLanePackPath(args.laneId);
       const existing = readFileIfExists(lanePackPath);
       if (!existing.trim().length) {
@@ -1016,7 +1986,7 @@ export function createPackService({
       ensureDirFor(lanePackPath);
       fs.writeFileSync(lanePackPath, updatedBody, "utf8");
 
-      const now = new Date().toISOString();
+      const now = nowIso();
       const existingRow = db.get<{
         deterministic_updated_at: string | null;
         last_head_sha: string | null;
@@ -1028,13 +1998,25 @@ export function createPackService({
             and project_id = ?
           limit 1
         `,
-        [`lane:${args.laneId}`, projectId]
+        [packKey, projectId]
       );
+
+      createPackEvent({
+        packKey,
+        eventType: "narrative_update",
+        payload: {
+          laneId: args.laneId,
+          source: "hosted",
+          ...(args.metadata ?? {})
+        }
+      });
+
+      const version = createPackVersion({ packKey, packType: "lane", body: updatedBody });
 
       upsertPackIndex({
         db,
         projectId,
-        packKey: `lane:${args.laneId}`,
+        packKey,
         laneId: args.laneId,
         packType: "lane",
         packPath: lanePackPath,
@@ -1043,19 +2025,26 @@ export function createPackService({
         lastHeadSha: existingRow?.last_head_sha ?? null,
         metadata: {
           source: "hosted",
-          ...(args.metadata ?? {})
+          ...(args.metadata ?? {}),
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
         }
       });
 
       maybeCleanupPacks();
 
       return {
+        packKey,
         packType: "lane",
         path: lanePackPath,
         exists: true,
         deterministicUpdatedAt: existingRow?.deterministic_updated_at ?? now,
         narrativeUpdatedAt: now,
         lastHeadSha: existingRow?.last_head_sha ?? null,
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        contentHash: version.contentHash,
         body: updatedBody
       };
     }

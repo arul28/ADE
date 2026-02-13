@@ -6,6 +6,10 @@ import type {
   AttachLaneArgs,
   AppInfo,
   ArchiveLaneArgs,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunDetail,
+  AutomationsEventPayload,
   ConflictProposal,
   ConflictEventPayload,
   ConflictOverlap,
@@ -78,6 +82,12 @@ import type {
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
+  AgentTool,
+  KeybindingOverride,
+  KeybindingsSnapshot,
+  OnboardingDetectionResult,
+  OnboardingExistingLaneCandidate,
+  OnboardingStatus,
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -87,7 +97,11 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
+  PackEvent,
   PackSummary,
+  PackVersion,
+  PackVersionSummary,
+  Checkpoint,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -99,6 +113,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
   PtyDataEvent,
@@ -119,6 +134,7 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
+  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   TestEvent,
   TestRunSummary,
@@ -135,7 +151,48 @@ contextBridge.exposeInMainWorld("ade", {
   },
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
-    openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder)
+    openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder),
+    listRecent: async (): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectListRecent),
+    switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+    forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath })
+  },
+  keybindings: {
+    get: async (): Promise<KeybindingsSnapshot> => ipcRenderer.invoke(IPC.keybindingsGet),
+    set: async (overrides: KeybindingOverride[]): Promise<KeybindingsSnapshot> =>
+      ipcRenderer.invoke(IPC.keybindingsSet, { overrides })
+  },
+  agentTools: {
+    detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
+  },
+  terminalProfiles: {
+    get: async (): Promise<TerminalProfilesSnapshot> => ipcRenderer.invoke(IPC.terminalProfilesGet),
+    set: async (snapshot: TerminalProfilesSnapshot): Promise<TerminalProfilesSnapshot> =>
+      ipcRenderer.invoke(IPC.terminalProfilesSet, snapshot)
+  },
+  onboarding: {
+    getStatus: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingGetStatus),
+    detectDefaults: async (): Promise<OnboardingDetectionResult> => ipcRenderer.invoke(IPC.onboardingDetectDefaults),
+    detectExistingLanes: async (): Promise<OnboardingExistingLaneCandidate[]> =>
+      ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
+    generateInitialPacks: async (args: { laneIds?: string[] } = {}): Promise<void> =>
+      ipcRenderer.invoke(IPC.onboardingGenerateInitialPacks, args),
+    complete: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingComplete)
+  },
+  automations: {
+    list: async (): Promise<AutomationRuleSummary[]> => ipcRenderer.invoke(IPC.automationsList),
+    toggle: async (args: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> =>
+      ipcRenderer.invoke(IPC.automationsToggle, args),
+    triggerManually: async (args: { id: string; laneId?: string | null }): Promise<AutomationRun> =>
+      ipcRenderer.invoke(IPC.automationsTriggerManually, args),
+    getHistory: async (args: { id: string; limit?: number }): Promise<AutomationRun[]> =>
+      ipcRenderer.invoke(IPC.automationsGetHistory, args),
+    getRunDetail: async (runId: string): Promise<AutomationRunDetail | null> =>
+      ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
+    onEvent: (cb: (ev: AutomationsEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: AutomationsEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.automationsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
+    }
   },
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
@@ -260,11 +317,33 @@ contextBridge.exposeInMainWorld("ade", {
   packs: {
     getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
     getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
+    getFeaturePack: async (featureKey: string): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsGetFeaturePack, { featureKey }),
+    getConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsGetConflictPack, args),
+    getPlanPack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetPlanPack, { laneId }),
     refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
+    refreshFeaturePack: async (featureKey: string): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshFeaturePack, { featureKey }),
+    refreshConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshConflictPack, args),
+    savePlanPack: async (args: { laneId: string; body: string }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsSavePlanPack, args),
     applyHostedNarrative: async (args: { laneId: string; narrative: string }): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args),
     generateNarrative: async (laneId: string): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsGenerateNarrative, { laneId })
+      ipcRenderer.invoke(IPC.packsGenerateNarrative, { laneId }),
+    listVersions: async (args: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> =>
+      ipcRenderer.invoke(IPC.packsListVersions, args),
+    getVersion: async (versionId: string): Promise<PackVersion> => ipcRenderer.invoke(IPC.packsGetVersion, { versionId }),
+    diffVersions: async (args: { fromId: string; toId: string }): Promise<string> =>
+      ipcRenderer.invoke(IPC.packsDiffVersions, args),
+    updateNarrative: async (args: { packKey: string; narrative: string }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsUpdateNarrative, args),
+    listEvents: async (args: { packKey: string; limit?: number }): Promise<PackEvent[]> =>
+      ipcRenderer.invoke(IPC.packsListEvents, args),
+    listCheckpoints: async (args: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> =>
+      ipcRenderer.invoke(IPC.packsListCheckpoints, args)
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),

@@ -44,6 +44,7 @@ type AppState = {
   refreshProject: () => Promise<void>;
   refreshLanes: () => Promise<void>;
   openRepo: () => Promise<void>;
+  switchProjectToPath: (rootPath: string) => Promise<void>;
 };
 
 export type LaneInspectorTab = "terminals" | "packs" | "stack" | "conflicts" | "pr";
@@ -105,6 +106,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const project = await window.ade.project.openRepo();
     set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {} });
     // Refresh lanes for the newly opened project.
+    await get().refreshLanes();
+    await get().refreshProviderMode().catch(() => { });
+  },
+
+  switchProjectToPath: async (rootPath: string) => {
+    const project = await window.ade.project.switchToPath(rootPath);
+    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {} });
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });
   }

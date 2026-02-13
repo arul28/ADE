@@ -54,62 +54,18 @@ export function createJobEngine({
       try {
         logger.info("jobs.refresh_lane.begin", payload);
 
-        const existingLanePack = packService.getLanePack(payload.laneId);
-        const existingHeadSha = existingLanePack.lastHeadSha ?? null;
-
         const lanePack = await packService.refreshLanePack({
           laneId: payload.laneId,
           reason: payload.reason,
           sessionId: payload.sessionId
         });
 
-        const refreshedHeadSha = lanePack.lastHeadSha ?? null;
-        const shouldRefreshNarrative =
-          !existingLanePack.narrativeUpdatedAt ||
-          !existingHeadSha ||
-          !refreshedHeadSha ||
-          existingHeadSha !== refreshedHeadSha;
-
         await packService.refreshProjectPack({
           reason: payload.reason,
           laneId: payload.laneId
         });
-
-        if (hostedAgentService?.getStatus().enabled) {
-          try {
-            if (!lanePack.exists || !lanePack.body.trim().length) {
-              logger.warn("jobs.hosted_refresh.empty_pack", {
-                laneId: payload.laneId,
-                reason: payload.reason
-              });
-            } else if (!shouldRefreshNarrative) {
-              logger.info("jobs.hosted_refresh.narrative_up_to_date", {
-                laneId: payload.laneId,
-                reason: payload.reason
-              });
-            } else {
-              await hostedAgentService.syncMirror({ laneId: payload.laneId, includeTranscripts: false });
-
-              const narrative = await hostedAgentService.requestLaneNarrative({
-                laneId: payload.laneId,
-                packBody: lanePack.body
-              });
-              packService.applyHostedNarrative({
-                laneId: payload.laneId,
-                narrative: narrative.narrative,
-                metadata: {
-                  jobId: narrative.jobId,
-                  artifactId: narrative.artifactId
-                }
-              });
-            }
-          } catch (hostedError) {
-            logger.warn("jobs.hosted_refresh.failed", {
-              laneId: payload.laneId,
-              error: hostedError instanceof Error ? hostedError.message : String(hostedError)
-            });
-          }
-        }
+        void lanePack;
+        void hostedAgentService;
 
         logger.info("jobs.refresh_lane.done", payload);
       } catch (error) {

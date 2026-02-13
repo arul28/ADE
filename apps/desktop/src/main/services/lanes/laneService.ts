@@ -425,6 +425,84 @@ export function createLaneService({
       });
     },
 
+    async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null }): Promise<LaneSummary> {
+      const branchRef = (args.branchRef ?? "").trim();
+      if (!branchRef) throw new Error("branchRef is required");
+      if (branchRef.includes("\0")) throw new Error("Invalid branchRef");
+
+      // Ensure branch exists locally.
+      await runGitOrThrow(["rev-parse", "--verify", branchRef], { cwd: projectRoot, timeoutMs: 12_000 });
+
+      // Prevent duplicates.
+      const existing = db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, branchRef]
+      );
+      if (existing?.id) {
+        throw new Error(`Lane already exists for branch '${branchRef}'`);
+      }
+
+      const laneId = randomUUID();
+      const now = new Date().toISOString();
+      const displayName = (args.name ?? "").trim() || branchRef;
+      const slug = slugify(displayName);
+      const suffix = laneId.slice(0, 8);
+      const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
+
+      // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
+      await runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
+        cwd: projectRoot,
+        timeoutMs: 60_000
+      });
+
+      const parentLaneIdRaw = typeof args.parentLaneId === "string" ? args.parentLaneId.trim() : "";
+      const parentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
+      const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
+      if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
+      if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
+
+      const baseRef = parent?.branch_ref ?? defaultBaseRef;
+
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          )
+          values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
+        `,
+        [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
+      );
+
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Failed to import lane: ${laneId}`);
+      const rowsById = getRowsById(true);
+      const status = await computeLaneStatus(worktreePath, baseRef, branchRef);
+      const parentStatus = parent ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
+
+      if (onHeadChanged) {
+        try {
+          const postHeadSha = await getHeadSha(worktreePath);
+          onHeadChanged({
+            laneId,
+            reason: "import_branch",
+            preHeadSha: null,
+            postHeadSha
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      return toLaneSummary({
+        row,
+        status,
+        parentStatus,
+        childCount: 0,
+        stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
+      });
+    },
+
     async getChildren(laneId: string): Promise<LaneSummary[]> {
       const children = await listLanes({ includeArchived: false });
       return children

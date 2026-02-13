@@ -150,15 +150,11 @@ function parseByokConfig(providerMode: ProviderMode, rawProviders: unknown): Byo
   const providers = isRecord(rawProviders) ? rawProviders : {};
   const byok = isRecord(providers.byok) ? providers.byok : {};
 
-  const providerRaw = asString(byok.provider).toLowerCase();
-  const provider: ByokProvider =
-    providerRaw === "openai" || providerRaw === "anthropic" || providerRaw === "gemini"
-      ? (providerRaw as ByokProvider)
-      : "";
-
-  if (!provider) {
+  const providerRaw = asString(byok.provider).trim().toLowerCase();
+  if (providerRaw !== "openai" && providerRaw !== "anthropic" && providerRaw !== "gemini") {
     throw new Error("BYOK provider is invalid. Supported providers are: openai, anthropic, gemini.");
   }
+  const provider = providerRaw as ByokProvider;
 
   const model = asString(byok.model).trim();
   const nextModel =
