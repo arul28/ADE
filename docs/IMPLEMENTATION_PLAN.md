@@ -774,7 +774,7 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 ### Phase 7: GitHub Integration + Canvas PR Workflow + Lane Commit Graph
 
-**Status**: NOT STARTED
+**Status**: IMPLEMENTED (Desktop)
 
 **Goal**: Connect ADE to GitHub for PR lifecycle management, extend the existing workspace canvas into an interactive PR orchestration surface where developers can open PRs, merge, and resolve conflicts visually, rework the lane detail UI with an inline commit graph, and ensure the conflict resolution pipeline is fully operational end-to-end.
 

@@ -65,7 +65,7 @@ export function PRsPage() {
     setError(null);
     try {
       if (!lanes.length) await refreshLanes();
-      const next = await window.ade.prs.listAll();
+      const next = await window.ade.prs.refresh();
       setPrs(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -75,25 +75,19 @@ export function PRsPage() {
     }
   }, [lanes.length, refreshLanes]);
 
-  const poll = React.useCallback(async () => {
-    try {
-      const next = await window.ade.prs.refresh();
-      setPrs(next);
-    } catch {
-      // ignore polling errors; explicit refresh shows them.
-    }
-  }, []);
-
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
 
   React.useEffect(() => {
-    const timer = window.setInterval(() => {
-      void poll();
-    }, 25_000);
-    return () => window.clearInterval(timer);
-  }, [poll]);
+    const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type !== "prs-updated") return;
+      setPrs(event.prs);
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
 
   const chainRoots = React.useMemo(() => lanes.filter((lane) => !lane.parentLaneId), [lanes]);
   const childrenByParent = React.useMemo(() => {

@@ -272,6 +272,7 @@ export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
 export type PrReviewStatus = "none" | "requested" | "approved" | "changes_requested";
 export type MergeMethod = "merge" | "squash" | "rebase";
+export type PrNotificationKind = "checks_failing" | "review_requested" | "changes_requested" | "merge_ready";
 
 export type PrSummary = {
   id: string;
@@ -320,6 +321,27 @@ export type PrReview = {
   body: string | null;
   submittedAt: string | null;
 };
+
+export type PrEventPayload =
+  | {
+      type: "prs-updated";
+      polledAt: string;
+      prs: PrSummary[];
+    }
+  | {
+      type: "pr-notification";
+      polledAt: string;
+      kind: PrNotificationKind;
+      laneId: string;
+      prId: string;
+      prNumber: number;
+      title: string;
+      githubUrl: string;
+      message: string;
+      state: PrState;
+      checksStatus: PrChecksStatus;
+      reviewStatus: PrReviewStatus;
+    };
 
 export type LandResult = {
   prId: string;
@@ -924,6 +946,9 @@ export type ProjectConfigFile = {
   stackButtons?: ConfigStackButtonDefinition[];
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
+  github?: {
+    prPollingIntervalSeconds?: number;
+  };
   providers?: Record<string, unknown>;
 };
 
@@ -938,6 +963,9 @@ export type EffectiveProjectConfig = {
   stackButtons: StackButtonDefinition[];
   testSuites: TestSuiteDefinition[];
   laneOverlayPolicies: LaneOverlayPolicy[];
+  github?: {
+    prPollingIntervalSeconds?: number;
+  };
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
 };
@@ -1160,6 +1188,11 @@ export type GitCommitSummary = {
 };
 
 export type GitListCommitFilesArgs = {
+  laneId: string;
+  commitSha: string;
+};
+
+export type GitGetCommitMessageArgs = {
   laneId: string;
   commitSha: string;
 };

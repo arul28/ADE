@@ -20,7 +20,7 @@ import {
   Sparkles,
   TerminalSquare
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type {
   FileTreeNode,
   FilesQuickOpenItem,
@@ -38,6 +38,11 @@ type OpenTab = {
   savedContent: string;
   languageId: string;
   isBinary: boolean;
+};
+
+type FilesPageNavState = {
+  openFilePath?: string;
+  laneId?: string;
 };
 
 type ConflictHunk = {
@@ -208,6 +213,7 @@ function changeStatusClasses(changeStatus: FileTreeNode["changeStatus"]): { dot:
 
 export function FilesPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
@@ -217,6 +223,7 @@ export function FilesPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
+  const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; key: string } | null>(null);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
@@ -344,6 +351,13 @@ export function FilesPage() {
     activeTabPathRef.current = activeTabPath;
   }, [activeTabPath]);
 
+  useEffect(() => {
+    const st = (location.state as FilesPageNavState | null) ?? null;
+    const openFilePath = st?.openFilePath?.trim();
+    if (!openFilePath) return;
+    pendingOpenRef.current = { key: location.key, filePath: openFilePath, laneId: st?.laneId ?? null };
+  }, [location.key, location.state]);
+
   const refreshTree = useCallback(async (parentPath?: string) => {
     if (!workspaceId) return;
     try {
@@ -412,6 +426,27 @@ export function FilesPage() {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [workspaceId]);
+
+  useEffect(() => {
+    const pending = pendingOpenRef.current;
+    if (!pending) return;
+    if (!workspaces.length) return;
+
+    const desiredWorkspaceId =
+      pending.laneId != null
+        ? workspaces.find((ws) => ws.kind !== "primary" && ws.laneId === pending.laneId)?.id ?? null
+        : null;
+    const targetWorkspaceId = desiredWorkspaceId ?? workspaceId;
+    if (targetWorkspaceId && targetWorkspaceId !== workspaceId) {
+      switchWorkspace(targetWorkspaceId);
+      return;
+    }
+    if (!workspaceId) return;
+
+    openFile(pending.filePath).catch(() => {});
+    pendingOpenRef.current = null;
+    navigate(location.pathname, { replace: true, state: null });
+  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname]);
 
   const closeTab = useCallback((filePath: string) => {
     setOpenTabs((prev) => {

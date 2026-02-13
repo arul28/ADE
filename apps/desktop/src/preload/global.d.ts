@@ -55,6 +55,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
@@ -66,6 +67,7 @@ import type {
   GitHubStatus,
   CreatePrFromLaneArgs,
   LinkPrToLaneArgs,
+  PrEventPayload,
   PrCheck,
   PrReview,
   PrStatus,
@@ -131,6 +133,7 @@ declare global {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
         getProject: () => Promise<ProjectInfo>;
+        openExternal: (url: string) => Promise<void>;
       };
       project: {
         openRepo: () => Promise<ProjectInfo>;
@@ -161,7 +164,7 @@ declare global {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
         resize: (args: { ptyId: string; cols: number; rows: number }) => Promise<void>;
-        dispose: (args: { ptyId: string }) => Promise<void>;
+        dispose: (args: { ptyId: string; sessionId?: string }) => Promise<void>;
         onData: (cb: (ev: PtyDataEvent) => void) => () => void;
         onExit: (cb: (ev: PtyExitEvent) => void) => () => void;
       };
@@ -193,6 +196,7 @@ declare global {
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;
         listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
         listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
+        getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
         stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
@@ -243,6 +247,7 @@ declare global {
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
+        onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
       };
       hosted: {
         getStatus: () => Promise<HostedStatus>;

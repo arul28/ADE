@@ -85,6 +85,41 @@ function toChecksStatus(state: string | null | undefined): PrChecksStatus {
   return "none";
 }
 
+function toChecksStatusFromCheckRuns(checkRuns: any[]): PrChecksStatus | null {
+  if (!Array.isArray(checkRuns) || checkRuns.length === 0) return null;
+
+  let hasPending = false;
+  let hasFailure = false;
+  let hasSuccessLike = false;
+  for (const run of checkRuns) {
+    const status = asString(run?.status).toLowerCase();
+    const conclusion = asString(run?.conclusion).toLowerCase();
+    if (status && status !== "completed") {
+      hasPending = true;
+      continue;
+    }
+    if (!conclusion) continue;
+    if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") {
+      hasSuccessLike = true;
+      continue;
+    }
+    if (
+      conclusion === "failure" ||
+      conclusion === "cancelled" ||
+      conclusion === "timed_out" ||
+      conclusion === "action_required" ||
+      conclusion === "stale"
+    ) {
+      hasFailure = true;
+    }
+  }
+
+  if (hasPending) return "pending";
+  if (hasFailure) return "failing";
+  if (hasSuccessLike) return "passing";
+  return "none";
+}
+
 function computeReviewStatus(args: { requestedReviewers: string[]; reviewStatesByUser: Map<string, string> }): PrReviewStatus {
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "CHANGES_REQUESTED") return "changes_requested";
@@ -375,6 +410,16 @@ export function createPrService({
     };
   };
 
+  const fetchCheckRuns = async (repo: GitHubRepoRef, sha: string): Promise<any[]> => {
+    const { data } = await githubService.apiRequest<any>({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.name}/commits/${sha}/check-runs`,
+      query: { per_page: 100 }
+    });
+    const runs = Array.isArray(data?.check_runs) ? data.check_runs : [];
+    return runs;
+  };
+
   const fetchCompare = async (repo: GitHubRepoRef, baseSha: string, headSha: string): Promise<{ behindBy: number }> => {
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
@@ -395,12 +440,11 @@ export function createPrService({
     const baseSha = asString(pr?.base?.sha);
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
 
-    const [combined, reviews, compare] = await Promise.all([
+    const [combinedStatus, checkRuns, reviews] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      fetchReviews(repo, Number(row.github_pr_number)).catch(() => []),
-      baseSha && headSha ? fetchCompare(repo, baseSha, headSha).catch(() => ({ behindBy: 0 })) : Promise.resolve({ behindBy: 0 })
+      headSha ? fetchCheckRuns(repo, headSha).catch(() => []) : Promise.resolve([]),
+      fetchReviews(repo, Number(row.github_pr_number)).catch(() => [])
     ]);
-
     const reviewStatesByUser = new Map<string, string>();
     for (const review of reviews) {
       // Only treat these as gating states.
@@ -414,7 +458,7 @@ export function createPrService({
       mergedAt: asString(pr?.merged_at) || null
     });
 
-    const checksStatus = toChecksStatus(combined.state);
+    const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
     const reviewStatus = computeReviewStatus({ requestedReviewers, reviewStatesByUser });
     const additions = Number(pr?.additions ?? 0);
     const deletions = Number(pr?.deletions ?? 0);
@@ -456,8 +500,9 @@ export function createPrService({
     const mergeableState = asString(pr?.mergeable_state);
     const mergeConflicts = mergeableState.toLowerCase() === "dirty";
 
-    const [combined, reviews, compare] = await Promise.all([
+    const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
       headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
+      headSha ? fetchCheckRuns(repo, headSha).catch(() => []) : Promise.resolve([]),
       fetchReviews(repo, summary.githubPrNumber).catch(() => []),
       baseSha && headSha ? fetchCompare(repo, baseSha, headSha).catch(() => ({ behindBy: 0 })) : Promise.resolve({ behindBy: 0 })
     ]);
@@ -474,7 +519,7 @@ export function createPrService({
       draft: Boolean(pr?.draft),
       mergedAt: asString(pr?.merged_at) || null
     });
-    const checksStatus = toChecksStatus(combined.state);
+    const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
     const reviewStatus = computeReviewStatus({ requestedReviewers, reviewStatesByUser });
     const isMergeable = Boolean(pr?.mergeable) && checksStatus !== "failing" && reviewStatus !== "changes_requested";
 
@@ -508,15 +553,59 @@ export function createPrService({
     const pr = await fetchPr(repo, Number(row.github_pr_number));
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return [];
-    const combined = await fetchCombinedStatus(repo, headSha);
-    return combined.statuses.map((s) => ({
-      name: asString(s.context) || "status",
-      status: s.state === "pending" ? "in_progress" : "completed",
-      conclusion: s.state === "success" ? "success" : s.state === "failure" || s.state === "error" ? "failure" : null,
-      detailsUrl: s.target_url ?? null,
-      startedAt: s.created_at ?? null,
-      completedAt: s.updated_at ?? null
-    }));
+    const [combinedStatus, checkRuns] = await Promise.all([
+      fetchCombinedStatus(repo, headSha).catch(() => ({ state: "", statuses: [] })),
+      fetchCheckRuns(repo, headSha).catch(() => [])
+    ]);
+
+    const out: PrCheck[] = [];
+    const seen = new Set<string>();
+
+    for (const run of checkRuns) {
+      const name = asString(run?.name) || "check";
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const statusRaw = asString(run?.status).toLowerCase();
+      const status: PrCheck["status"] =
+        statusRaw === "queued" ? "queued" : statusRaw === "in_progress" ? "in_progress" : "completed";
+      const conclusionRaw = asString(run?.conclusion).toLowerCase();
+      const conclusion: PrCheck["conclusion"] =
+        conclusionRaw === "success"
+          ? "success"
+          : conclusionRaw === "failure" || conclusionRaw === "timed_out" || conclusionRaw === "action_required"
+            ? "failure"
+            : conclusionRaw === "neutral"
+              ? "neutral"
+              : conclusionRaw === "skipped"
+                ? "skipped"
+                : conclusionRaw === "cancelled"
+                  ? "cancelled"
+                  : null;
+      out.push({
+        name,
+        status,
+        conclusion,
+        detailsUrl: asString(run?.details_url) || asString(run?.html_url) || null,
+        startedAt: asString(run?.started_at) || null,
+        completedAt: asString(run?.completed_at) || null
+      });
+    }
+
+    for (const s of combinedStatus.statuses) {
+      const name = asString(s.context) || "status";
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push({
+        name,
+        status: s.state === "pending" ? "in_progress" : "completed",
+        conclusion: s.state === "success" ? "success" : s.state === "failure" || s.state === "error" ? "failure" : null,
+        detailsUrl: s.target_url ?? null,
+        startedAt: s.created_at ?? null,
+        completedAt: s.updated_at ?? null
+      });
+    }
+
+    return out;
   };
 
   const getReviews = async (prId: string): Promise<PrReview[]> => {

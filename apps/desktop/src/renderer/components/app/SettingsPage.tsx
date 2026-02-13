@@ -228,6 +228,8 @@ export function SettingsPage() {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
+  const [prPollingIntervalDraft, setPrPollingIntervalDraft] = useState("25");
+  const [prPollingBusy, setPrPollingBusy] = useState(false);
   const [hostedGithubStatus, setHostedGithubStatus] = useState<HostedGitHubAppStatus | null>(null);
   const [hostedGithubEvents, setHostedGithubEvents] = useState<HostedGitHubEvent[]>([]);
   const [hostedGithubBusy, setHostedGithubBusy] = useState(false);
@@ -254,6 +256,11 @@ export function SettingsPage() {
       .then((snapshot) => {
         if (!cancelled) {
           setProviderDraft(readProviderDraft(snapshot));
+          const localSeconds = typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
+          const effectiveSeconds =
+            typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
+          const seconds = localSeconds ?? effectiveSeconds ?? 25;
+          setPrPollingIntervalDraft(String(seconds));
         }
       })
       .catch((e) => {
@@ -392,6 +399,10 @@ export function SettingsPage() {
   const refreshProviderDraftAndHostedState = async () => {
     const snapshot = await window.ade.projectConfig.get();
     setProviderDraft(readProviderDraft(snapshot));
+    const localSeconds = typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
+    const effectiveSeconds =
+      typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
+    setPrPollingIntervalDraft(String(localSeconds ?? effectiveSeconds ?? 25));
     const [status, bootstrap] = await Promise.all([
       window.ade.hosted.getStatus().catch(() => null),
       window.ade.hosted.getBootstrapConfig().catch(() => null)
@@ -459,6 +470,50 @@ export function SettingsPage() {
       setSaveNotice("Provider configuration saved to .ade/local.yaml.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const savePrPollingSettings = async () => {
+    setActionError(null);
+    setSaveNotice(null);
+
+    const raw = prPollingIntervalDraft.trim();
+    const snapshot = await window.ade.projectConfig.get();
+    const currentGithub = isRecord(snapshot.local.github) ? snapshot.local.github : {};
+    const nextGithub: Record<string, unknown> = { ...currentGithub };
+
+    if (!raw.length) {
+      delete nextGithub.prPollingIntervalSeconds;
+    } else {
+      const seconds = Number(raw);
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        setActionError("PR polling interval must be a positive number of seconds.");
+        return;
+      }
+      if (seconds < 5 || seconds > 300) {
+        setActionError("PR polling interval must be between 5 and 300 seconds.");
+        return;
+      }
+      nextGithub.prPollingIntervalSeconds = seconds;
+    }
+
+    setPrPollingBusy(true);
+    try {
+      const nextLocal = {
+        ...snapshot.local,
+        ...(Object.keys(nextGithub).length ? { github: nextGithub } : {})
+      };
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: nextLocal
+      });
+
+      await refreshProviderDraftAndHostedState();
+      setSaveNotice("PR polling settings saved to .ade/local.yaml.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPrPollingBusy(false);
     }
   };
 
@@ -1263,6 +1318,49 @@ export function SettingsPage() {
           </div>
           <div className="mt-2 text-xs text-muted-fg">
             Token is encrypted using OS secure storage and stored locally under `.ade/`. In Hosted mode, GitHub uses the GitHub App connection instead of this token.
+          </div>
+          <div className="mt-3 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">PR Polling</div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={5}
+                max={300}
+                className="h-8 w-[120px] rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent"
+                value={prPollingIntervalDraft}
+                onChange={(e) => setPrPollingIntervalDraft(e.target.value)}
+              />
+              <span className="text-[11px] text-muted-fg">seconds</span>
+              <div className="ml-auto flex items-center gap-2">
+                <Button size="sm" disabled={prPollingBusy} onClick={() => void savePrPollingSettings()}>
+                  {prPollingBusy ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={prPollingBusy}
+                  onClick={() => {
+                    window.ade.projectConfig
+                      .get()
+                      .then((snapshot) => {
+                        const localSeconds =
+                          typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
+                        const effectiveSeconds =
+                          typeof snapshot.effective.github?.prPollingIntervalSeconds === "number"
+                            ? snapshot.effective.github.prPollingIntervalSeconds
+                            : null;
+                        setPrPollingIntervalDraft(String(localSeconds ?? effectiveSeconds ?? 25));
+                      })
+                      .catch(() => {});
+                  }}
+                >
+                  Reset
+                </Button>
+              </div>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-fg">
+              Controls background PR refresh and notifications. Default is 25s; higher values reduce GitHub API usage.
+            </div>
           </div>
         </div>
 

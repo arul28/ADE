@@ -208,11 +208,15 @@ export function createGithubService({
         `GitHub API request failed (HTTP ${response.status})`;
       const rateRemaining = response.headers.get("x-ratelimit-remaining");
       const rateReset = response.headers.get("x-ratelimit-reset");
-      throw new Error(
-        rateRemaining === "0" && rateReset
-          ? `${message} (rate limit exceeded; resets at ${new Date(Number(rateReset) * 1000).toLocaleString()})`
-          : message
-      );
+      if (rateRemaining === "0" && rateReset) {
+        const resetAtMs = Number(rateReset) * 1000;
+        const err = new Error(
+          `${message} (rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()})`
+        );
+        (err as any).rateLimitResetAtMs = resetAtMs;
+        throw err;
+      }
+      throw new Error(message);
     }
 
     return { data: data as T, response };

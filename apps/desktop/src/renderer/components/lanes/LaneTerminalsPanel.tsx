@@ -143,7 +143,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
       }
       return nextSessions;
     });
-    window.ade.pty.dispose({ ptyId: session.ptyId })
+    window.ade.pty.dispose({ ptyId: session.ptyId, sessionId: session.id })
       .then(() => {
         refresh().catch(() => {});
         refreshLanes().catch(() => {});

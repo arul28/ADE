@@ -258,9 +258,27 @@ export function createPtyService({
       }
     },
 
-    dispose({ ptyId }: { ptyId: string }): void {
+    dispose({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): void {
       const entry = ptys.get(ptyId);
-      if (!entry) return;
+      if (!entry) {
+        if (!sessionId) return;
+        const session = sessionService.get(sessionId);
+        if (!session) return;
+        // The renderer can outlive the pty map (for example after app restart). Allow closing by session id
+        // so stale sessions do not get stuck in a "running" state forever.
+        const endedAt = new Date().toISOString();
+        sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
+        broadcastExit({ ptyId, sessionId, exitCode: null });
+        if (session.tracked) {
+          try {
+            onSessionEnded?.({ laneId: session.laneId, sessionId, exitCode: null });
+          } catch {
+            // ignore
+          }
+        }
+        logger.warn("pty.dispose_orphaned", { ptyId, sessionId });
+        return;
+      }
       if (entry.disposed) return;
       entry.disposed = true;
       try {

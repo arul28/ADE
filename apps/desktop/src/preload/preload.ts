@@ -38,6 +38,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
@@ -49,6 +50,7 @@ import type {
   GitHubStatus,
   CreatePrFromLaneArgs,
   LinkPrToLaneArgs,
+  PrEventPayload,
   PrCheck,
   PrReview,
   PrStatus,
@@ -128,7 +130,8 @@ contextBridge.exposeInMainWorld("ade", {
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
-    getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject)
+    getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject),
+    openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url })
   },
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
@@ -166,7 +169,7 @@ contextBridge.exposeInMainWorld("ade", {
     write: async (arg: { ptyId: string; data: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyWrite, arg),
     resize: async (arg: { ptyId: string; cols: number; rows: number }): Promise<void> =>
       ipcRenderer.invoke(IPC.ptyResize, arg),
-    dispose: async (arg: { ptyId: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyDispose, arg),
+    dispose: async (arg: { ptyId: string; sessionId?: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyDispose, arg),
     onData: (cb: (ev: PtyDataEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PtyDataEvent) => cb(payload);
       ipcRenderer.on(IPC.ptyData, listener);
@@ -215,6 +218,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.gitListRecentCommits, args),
     listCommitFiles: async (args: GitListCommitFilesArgs): Promise<string[]> =>
       ipcRenderer.invoke(IPC.gitListCommitFiles, args),
+    getCommitMessage: async (args: GitGetCommitMessageArgs): Promise<string> =>
+      ipcRenderer.invoke(IPC.gitGetCommitMessage, args),
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitRevertCommit, args),
     cherryPickCommit: async (args: GitCherryPickArgs): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitCherryPickCommit, args),
@@ -280,7 +285,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsDraftDescription, { laneId }),
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
-    openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId })
+    openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
+    onEvent: (cb: (ev: PrEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.prsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.prsEvent, listener);
+    }
   },
   hosted: {
     getStatus: async (): Promise<HostedStatus> => ipcRenderer.invoke(IPC.hostedGetStatus),

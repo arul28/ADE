@@ -19,6 +19,19 @@ function titleFromBranch(branch: string): string {
   return normalized.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function parseCsvList(raw: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const value = part.trim();
+    if (!value) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
 function stateChip(state: PrSummary["state"]): { label: string; className: string } {
   if (state === "draft") return { label: "draft", className: "text-purple-200 border-purple-700/60 bg-purple-900/20" };
   if (state === "open") return { label: "open", className: "text-sky-200 border-sky-700/60 bg-sky-900/20" };
@@ -57,6 +70,8 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   const [error, setError] = React.useState<string | null>(null);
   const [showCreate, setShowCreate] = React.useState(false);
   const [linkValue, setLinkValue] = React.useState("");
+  const [labelsDraft, setLabelsDraft] = React.useState("");
+  const [reviewersDraft, setReviewersDraft] = React.useState("");
 
   const defaultBaseBranch = lane ? branchNameFromRef(parentLane?.branchRef ?? lane.baseRef) : "main";
   const defaultHeadBranch = lane ? branchNameFromRef(lane.branchRef) : "";
@@ -112,6 +127,8 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     setError(null);
     setShowCreate(false);
     setMergeResult(null);
+    setLabelsDraft("");
+    setReviewersDraft("");
     if (!laneId || !lane) return;
     setCreateDraft({
       laneId,
@@ -132,9 +149,13 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     setError(null);
     setMergeResult(null);
     try {
+      const labels = parseCsvList(labelsDraft);
+      const reviewers = parseCsvList(reviewersDraft);
       const created = await window.ade.prs.createFromLane({
         ...createDraft,
-        laneId
+        laneId,
+        ...(labels.length ? { labels } : {}),
+        ...(reviewers.length ? { reviewers } : {})
       });
       setPr(created);
       setShowCreate(false);
@@ -172,6 +193,20 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     try {
       const res = await window.ade.prs.land({ prId: pr.id, method: mergeMethod });
       setMergeResult(res);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pushChanges = async () => {
+    setLoading(true);
+    setError(null);
+    setMergeResult(null);
+    try {
+      await window.ade.git.push({ laneId });
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -263,6 +298,26 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     placeholder="Write PR description…"
                   />
                 </label>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label className="text-[11px] text-muted-fg">
+                    Labels (comma-separated)
+                    <input
+                      value={labelsDraft}
+                      onChange={(e) => setLabelsDraft(e.target.value)}
+                      className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent"
+                      placeholder="bug, enhancement"
+                    />
+                  </label>
+                  <label className="text-[11px] text-muted-fg">
+                    Reviewers (comma-separated)
+                    <input
+                      value={reviewersDraft}
+                      onChange={(e) => setReviewersDraft(e.target.value)}
+                      className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent"
+                      placeholder="octocat, teammate"
+                    />
+                  </label>
+                </div>
                 <label className="inline-flex items-center gap-2 text-[11px] text-muted-fg">
                   <input
                     type="checkbox"
@@ -327,6 +382,9 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             <Button size="sm" variant="outline" className="h-7" onClick={() => void refresh()} disabled={loading}>
               Refresh
             </Button>
+            <Button size="sm" variant="outline" className="h-7" onClick={() => void pushChanges()} disabled={loading}>
+              Push changes
+            </Button>
             <Button size="sm" variant="outline" className="h-7" onClick={() => void window.ade.prs.openInGitHub(pr.id)}>
               Open in GitHub
             </Button>
@@ -384,7 +442,19 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
               <div key={check.name} className="px-2 py-1.5 text-[11px]">
                 <div className="flex items-center justify-between gap-2">
                   <div className="truncate text-fg">{check.name}</div>
-                  <div className="text-[10px] text-muted-fg">{check.conclusion ?? check.status}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-[10px] text-muted-fg">{check.conclusion ?? check.status}</div>
+                    {check.detailsUrl ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[10px]"
+                        onClick={() => void window.ade.app.openExternal(check.detailsUrl!)}
+                      >
+                        Open
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             ))}
@@ -410,4 +480,3 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
     </div>
   );
 }
-

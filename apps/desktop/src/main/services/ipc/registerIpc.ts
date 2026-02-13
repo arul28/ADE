@@ -35,6 +35,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
@@ -133,6 +134,7 @@ import type { createJobEngine } from "../jobs/jobEngine";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
+import type { createPrPollingService } from "../prs/prPollingService";
 import type { createByokLlmService } from "../byok/byokLlmService";
 
 export type AppContext = {
@@ -153,6 +155,7 @@ export type AppContext = {
   byokLlmService: ReturnType<typeof createByokLlmService>;
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
+  prPollingService: ReturnType<typeof createPrPollingService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -179,6 +182,21 @@ export function registerIpc({
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
   ipcMain.handle(IPC.appGetProject, async () => getCtx().project);
+
+  ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
+    const urlRaw = typeof arg?.url === "string" ? arg.url.trim() : "";
+    if (!urlRaw) return;
+    let parsed: URL;
+    try {
+      parsed = new URL(urlRaw);
+    } catch {
+      throw new Error("Invalid URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("Only http(s) URLs are allowed.");
+    }
+    await shell.openExternal(parsed.toString());
+  });
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     return {
@@ -350,7 +368,7 @@ export function registerIpc({
     ctx.ptyService.resize(arg);
   });
 
-  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string }): Promise<void> => {
+  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
     const ctx = getCtx();
     ctx.ptyService.dispose(arg);
   });
@@ -476,6 +494,11 @@ export function registerIpc({
   ipcMain.handle(IPC.gitListCommitFiles, async (_event, arg: GitListCommitFilesArgs): Promise<string[]> => {
     const ctx = getCtx();
     return await ctx.gitService.listCommitFiles(arg);
+  });
+
+  ipcMain.handle(IPC.gitGetCommitMessage, async (_event, arg: GitGetCommitMessageArgs): Promise<string> => {
+    const ctx = getCtx();
+    return await ctx.gitService.getCommitMessage(arg);
   });
 
   ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {

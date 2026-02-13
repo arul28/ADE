@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ArrowRight, Columns, GitMerge, Layers3, MoreHorizontal, RefreshCw, Save, Undo2, Upload } from "lucide-react";
-import * as Dialog from "@radix-ui/react-dialog";
+import { ArrowDown, Check, ChevronDown, Columns, FolderOpen, GitMerge, GripVertical, Layers3, MoreHorizontal, RefreshCw, Save, Upload } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { useAppStore } from "../../state/appStore";
-import { PaneHeader } from "../ui/PaneHeader";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
@@ -17,12 +17,6 @@ import type {
 } from "../../../shared/types";
 import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
 import { CommitTimeline } from "./CommitTimeline";
-
-function formatTs(ts: string): string {
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return ts;
-  return date.toLocaleString();
-}
 
 type LaneTextPromptState = {
   title: string;
@@ -45,30 +39,12 @@ export function LaneDetail({
 }) {
   const globalLaneId = useAppStore((s) => s.selectedLaneId);
   const laneId = overrideLaneId ?? globalLaneId;
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
-  const selectLane = useAppStore((s) => s.selectLane);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const laneName = lane?.name ?? null;
-  const parentLane = useMemo(
-    () => (lane?.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null),
-    [lane, lanes]
-  );
-  const childLanes = useMemo(
-    () =>
-      lane
-        ? lanes
-          .filter((entry) => entry.parentLaneId === lane.id)
-          .sort((a, b) => {
-            const aTs = Date.parse(a.createdAt);
-            const bTs = Date.parse(b.createdAt);
-            if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
-            return a.name.localeCompare(b.name);
-          })
-        : [],
-    [lane, lanes]
-  );
 
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
@@ -84,7 +60,6 @@ export function LaneDetail({
 
   const [stashes, setStashes] = useState<GitStashSummary[]>([]);
   const [recentCommits, setRecentCommits] = useState<GitCommitSummary[]>([]);
-  const [gitActionsOpen, setGitActionsOpen] = useState(false);
 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -92,7 +67,27 @@ export function LaneDetail({
   const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
 
+  // Dropdown state
+  const [pullDropdownOpen, setPullDropdownOpen] = useState(false);
+  const [moreDropdownOpen, setMoreDropdownOpen] = useState(false);
+  const pullDropdownRef = useRef<HTMLDivElement>(null);
+  const moreDropdownRef = useRef<HTMLDivElement>(null);
+
   const diffRef = useRef<MonacoDiffHandle | null>(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (pullDropdownRef.current && !pullDropdownRef.current.contains(e.target as Node)) {
+        setPullDropdownOpen(false);
+      }
+      if (moreDropdownRef.current && !moreDropdownRef.current.contains(e.target as Node)) {
+        setMoreDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const requestTextInput = useCallback(
     (args: {
@@ -148,7 +143,6 @@ export function LaneDetail({
     try {
       const next = await window.ade.diff.getChanges({ laneId });
       setChanges(next);
-      // If selected path is gone, clear selection
       if (selectedPath && ![...next.staged, ...next.unstaged].some((f) => f.path === selectedPath)) {
         setSelectedPath(null);
         setDiff(null);
@@ -210,6 +204,22 @@ export function LaneDetail({
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [laneId]);
 
+  // Unified file list: merge unstaged + staged, track which is which
+  const unifiedFiles = useMemo(() => {
+    const files: Array<FileChange & { staged: boolean }> = [];
+    const seenPaths = new Set<string>();
+    for (const f of changes.staged) {
+      files.push({ ...f, staged: true });
+      seenPaths.add(f.path);
+    }
+    for (const f of changes.unstaged) {
+      if (!seenPaths.has(f.path)) {
+        files.push({ ...f, staged: false });
+      }
+    }
+    return files;
+  }, [changes]);
+
   // Determine which mode (staged/unstaged) the selected file belongs to for diff fetching
   const selectedFileMode = useMemo(() => {
     if (!selectedPath) return null;
@@ -221,7 +231,7 @@ export function LaneDetail({
   useEffect(() => {
     setDiff(null);
     if (!laneId || !selectedPath || !selectedFileMode) return;
-    const mode = selectedFileMode as "staged" | "unstaged"; // Help TS
+    const mode = selectedFileMode as "staged" | "unstaged";
     window.ade.diff
       .getFile({ laneId, path: selectedPath, mode })
       .then((value) => setDiff(value))
@@ -275,430 +285,361 @@ export function LaneDetail({
     };
   }, [laneId, selectedCommit, selectedCommitFilePath]);
 
-  const stageFile = async (path: string) => {
+  const toggleStageFile = async (path: string, isStaged: boolean) => {
     if (!laneId) return;
-    await window.ade.git.stageFile({ laneId, path });
+    if (isStaged) {
+      await window.ade.git.unstageFile({ laneId, path });
+    } else {
+      await window.ade.git.stageFile({ laneId, path });
+    }
+    await refreshChanges();
   };
 
-  const unstageFile = async (path: string) => {
+  const stageAll = () => {
     if (!laneId) return;
-    await window.ade.git.unstageFile({ laneId, path });
-  };
-
-  const stageAll = async () => {
-    if (!laneId) return;
-    // MVP: simple loop or specialized IPC. Loop is fine for small checks.
-    // Better: use '.'? But let's act on specific files to be safe or use IPC if available.
-    // We'll map mostly.
     runAction("stage all", async () => {
-      // Sequentially to avoid race? Parallel usually ok.
       await Promise.all(changes.unstaged.map(f => window.ade.git.stageFile({ laneId, path: f.path })));
     });
   };
 
-  const unstageAll = async () => {
+  const unstageAll = () => {
     if (!laneId) return;
     runAction("unstage all", async () => {
       await Promise.all(changes.staged.map(f => window.ade.git.unstageFile({ laneId, path: f.path })));
     });
   };
 
-  const renderFileList = (title: string, files: FileChange[], actionLabel: string, onAction: (path: string) => void, onAll?: () => void) => (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">{title}</span>
-          <Chip className="text-[10px] h-4 px-1">{files.length}</Chip>
+  const stagedCount = changes.staged.length;
+  const hasStaged = stagedCount > 0;
+
+  // --- Render ---
+
+  const renderDiffSection = () => {
+    if (!laneId) {
+      return (
+        <div className="flex h-full items-center justify-center p-3">
+          <EmptyState title="No lane selected" />
         </div>
-        {files.length > 0 && onAll ? (
-          <Button variant="ghost" size="sm" className="h-5 text-[10px] px-1" onClick={onAll}>
-            {actionLabel} All
-          </Button>
-        ) : null}
-      </div>
-      <div className="flex-1 overflow-auto p-1 space-y-0.5">
-        {files.map(file => (
-          <div
-            key={file.path}
-            className={cn(
-              "group flex items-center justify-between gap-2 px-2 py-1 rounded cursor-pointer text-xs border border-transparent",
-              selectedPath === file.path ? "bg-accent/10 border-accent/20 text-fg" : "hover:bg-muted/50 text-muted-fg hover:text-fg"
-            )}
-            onClick={() => {
-              setSelectedCommit(null);
-              setCommitFiles([]);
-              setSelectedCommitFilePath(null);
-              setCommitDiff(null);
-              setSelectedPath(file.path);
-            }}
-          >
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
-                file.kind === "modified" ? "bg-blue-400" :
-                  file.kind === "added" ? "bg-emerald-400" :
-                    file.kind === "deleted" ? "bg-red-400" : "bg-amber-400"
-              )} />
-              <span className="truncate">{file.path}</span>
+      );
+    }
+
+    if (selectedCommit) {
+      return (
+        <div className="h-full flex flex-col">
+          <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-border bg-card/30">
+            <div className="min-w-0 flex items-center gap-2 text-xs">
+              <span className="font-mono text-muted-fg">Commit</span>
+              <span className="text-muted-fg">/</span>
+              <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
+              <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100"
-              onClick={(e) => { e.stopPropagation(); runAction(actionLabel, () => Promise.resolve(onAction(file.path))); }}
-              title={actionLabel}
+            <div className="shrink-0">
+              <Chip className="text-[10px]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
+            </div>
+          </div>
+          <div className="flex-1 min-h-0">
+            <Group
+              id={`lane-commit-view:${laneId ?? "none"}:${selectedCommit.sha}`}
+              orientation="horizontal"
+              className="h-full min-h-0"
             >
-              {actionLabel === "Stage" ? <ArrowRight className="h-3 w-3" /> : <Undo2 className="h-3 w-3" />}
-            </Button>
+              <Panel id="lane-commit-files" minSize={15} defaultSize={26} className="min-w-0 bg-card/20">
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="flex items-center justify-between border-b border-border bg-card/50 px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Files</span>
+                      <Chip className="h-4 px-1 text-[10px]">{commitFiles.length}</Chip>
+                    </div>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-auto p-1 space-y-0.5">
+                    {commitFiles.length ? (
+                      commitFiles.map((file) => (
+                        <button
+                          key={file}
+                          type="button"
+                          className={cn(
+                            "group flex w-full items-center justify-between gap-2 rounded border px-2 py-1 text-left text-xs transition-colors",
+                            selectedCommitFilePath === file
+                              ? "border-accent/30 bg-accent/10 text-fg"
+                              : "border-transparent text-muted-fg hover:border-border hover:bg-muted/40 hover:text-fg"
+                          )}
+                          onClick={() => setSelectedCommitFilePath(file)}
+                          title={file}
+                        >
+                          <span className="truncate">{file}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="p-3 text-center text-xs text-muted-fg opacity-60 italic">
+                        {selectedCommit ? "Loading files..." : "No commit selected"}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Panel>
+              <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
+                <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
+                  <GripVertical className="h-3 w-3" />
+                </div>
+              </Separator>
+              <Panel id="lane-commit-diff" minSize={30} defaultSize={74} className="min-w-0">
+                {!selectedCommitFilePath ? (
+                  <div className="flex h-full items-center justify-center p-3">
+                    <EmptyState title="No files found" description="This commit may be empty or metadata-only." />
+                  </div>
+                ) : !commitDiff ? (
+                  <div className="flex h-full items-center justify-center text-xs text-muted-fg">Loading commit diff...</div>
+                ) : (
+                  <MonacoDiffView diff={commitDiff} editable={false} className="h-full" />
+                )}
+              </Panel>
+            </Group>
           </div>
-        ))}
-        {files.length === 0 && (
-          <div className="p-4 text-center text-xs text-muted-fg opacity-50 italic">
-            No files
+        </div>
+      );
+    }
+
+    if (!selectedPath) {
+      return (
+        <div className="flex h-full items-center justify-center p-3">
+          <EmptyState title="Select a file or commit" description="Choose a changed file or pick a commit from the timeline." />
+        </div>
+      );
+    }
+
+    if (!diff) {
+      return <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading diff...</div>;
+    }
+
+    return (
+      <div className="h-full flex flex-col">
+        <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-card/30">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-mono text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
+            <span className="text-muted-fg">/</span>
+            <span className="font-semibold">{diff.path}</span>
           </div>
-        )}
+          <div className="flex items-center gap-2">
+            {selectedFileMode === "unstaged" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6"
+                onClick={() => {
+                  if (!laneId || !selectedPath) return;
+                  navigate("/files", { state: { openFilePath: selectedPath, laneId } });
+                }}
+                title="Open this file in the Files tab"
+              >
+                <FolderOpen className="h-3.5 w-3.5 mr-1" />
+                Files
+              </Button>
+            ) : null}
+            {selectedFileMode === "unstaged" && !diff.isBinary ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6"
+                onClick={() => {
+                  if (!laneId || !selectedPath) return;
+                  const text = diffRef.current?.getModifiedValue();
+                  if (text == null) return;
+                  runAction("save edit", async () => {
+                    await window.ade.files.writeTextAtomic({ laneId, path: selectedPath, text });
+                  });
+                }}
+              >
+                <Save className="h-3.5 w-3.5 mr-1" />
+                Save
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <MonacoDiffView ref={diffRef} diff={diff} editable={selectedFileMode === "unstaged"} className="flex-1" />
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="flex h-full flex-col">
-      <PaneHeader
-        title="Changes"
-        meta={laneName}
-        right={
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" onClick={() => refreshAll().catch(() => { })} title="Refresh">
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+      {/* === Header: two rows - lane info on left, toolbar wraps === */}
+      <div className="shrink-0 border-b border-border bg-card/30 px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {/* Lane identity */}
+          <span className={cn(
+            "h-2 w-2 rounded-full shrink-0",
+            lane?.laneType === "primary" ? "bg-emerald-500" : lane?.status.dirty ? "bg-amber-500" : "bg-sky-500"
+          )} />
+          <span className="text-xs font-semibold truncate max-w-[120px]">{laneName ?? "No lane"}</span>
+          {lane ? (
+            <span className="text-[10px] text-muted-fg font-mono shrink-0">
+              {lane.branchRef} · ↑{lane.status.ahead} ↓{lane.status.behind}
+            </span>
+          ) : null}
+
+          <div className="flex-1 min-w-[8px]" />
+
+          {/* Git actions - wraps when space is tight */}
+          <div className="flex flex-wrap items-center gap-1">
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => refreshAll().catch(() => {})} title="Refresh all data">
+              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
             </Button>
-            {lane?.parentLaneId ? (
-              <>
-                <div className="h-4 w-px bg-border mx-1" />
+
+            {/* Pull with strategy dropdown */}
+            <div className="relative" ref={pullDropdownRef}>
+              <div className="inline-flex">
                 <Button
                   variant="outline"
                   size="sm"
-                  title="Rebase reapplies this lane (and descendants) onto the current parent lane HEAD."
+                  className="h-7 rounded-r-none border-r-0 px-2 text-xs"
                   disabled={!laneId || busyAction != null}
                   onClick={() => {
                     if (!laneId) return;
-                    runAction("rebase", async () => {
-                      const result = await window.ade.lanes.restack({ laneId, recursive: true });
-                      if (result.error) {
-                        throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
-                      }
-                    });
+                    setPullDropdownOpen(false);
+                    runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: syncMode }); });
                   }}
+                  title={`Download remote changes and apply them to this lane.\nCurrent strategy: ${syncMode === "merge" ? "merge (creates a merge commit)" : "rebase (replays your commits on top)"}`}
                 >
-                  <Layers3 className="h-3.5 w-3.5 mr-1.5" /> Rebase
+                  <ArrowDown className="h-3 w-3 mr-1" />
+                  Pull
                 </Button>
-              </>
-            ) : null}
-            <div className="h-4 w-px bg-border mx-1" />
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7"
-              title="More git actions"
-              onClick={() => setGitActionsOpen(true)}
-            >
-              <MoreHorizontal className="mr-1 h-4 w-4" />
-              Git actions
-            </Button>
-            <div className="h-4 w-px bg-border mx-1" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-l-none px-1"
+                  onClick={() => setPullDropdownOpen(prev => !prev)}
+                  title="Choose pull strategy"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
+              </div>
+              {pullDropdownOpen ? (
+                <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded border border-border bg-bg shadow-xl py-1">
+                  <button
+                    type="button"
+                    className={cn("flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left", syncMode === "merge" && "text-accent")}
+                    onClick={() => { setSyncMode("merge"); setPullDropdownOpen(false); if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: "merge" }); }); }}
+                  >
+                    {syncMode === "merge" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                    <div>
+                      <div className="font-medium">Pull (merge)</div>
+                      <div className="text-[10px] text-muted-fg">Fetch + merge remote into your branch</div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className={cn("flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left", syncMode === "rebase" && "text-accent")}
+                    onClick={() => { setSyncMode("rebase"); setPullDropdownOpen(false); if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: "rebase" }); }); }}
+                  >
+                    {syncMode === "rebase" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                    <div>
+                      <div className="font-medium">Pull (rebase)</div>
+                      <div className="text-[10px] text-muted-fg">Fetch + replay your commits on top of remote</div>
+                    </div>
+                  </button>
+                  <div className="border-t border-border my-1" />
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left"
+                    onClick={() => { setPullDropdownOpen(false); if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }); }}
+                  >
+                    <span className="w-3 shrink-0" />
+                    <div>
+                      <div className="font-medium">Fetch only</div>
+                      <div className="text-[10px] text-muted-fg">Download remote data without changing your branch</div>
+                    </div>
+                  </button>
+                </div>
+              ) : null}
+            </div>
 
-            {onSplit && (
-              <Button variant="ghost" size="sm" onClick={onSplit} title="Split View">
-                <Columns className="h-4 w-4" />
-              </Button>
-            )}
-
-            <div className="h-4 w-px bg-border mx-1" />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!laneId || busyAction != null}
-              onClick={() => { if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }) }}
-              title="Fetch updates from remotes into this lane's git metadata."
-            >
-              <ArrowDownToLine className="h-3.5 w-3.5 mr-1.5" /> Fetch
-            </Button>
-            <select
-              value={syncMode}
-              onChange={(event) => setSyncMode(event.target.value as GitSyncMode)}
-              className="h-7 rounded border border-border bg-card/70 px-2 text-xs"
-              title="Pull strategy: merge creates a merge commit. rebase rewrites lane commits on top of base."
-            >
-              <option value="merge">pull: merge</option>
-              <option value="rebase">pull: rebase</option>
-            </select>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!laneId || busyAction != null}
-              onClick={() => { if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: syncMode }); }) }}
-              title={`Pull brings ${lane?.baseRef ?? "base ref"} into this lane using ${syncMode}.`}
-            >
-              <GitMerge className="h-3.5 w-3.5 mr-1.5" /> Pull
-            </Button>
             <Button
               variant="primary"
               size="sm"
+              className="h-7 px-2 text-xs"
               disabled={!laneId || busyAction != null}
-              onClick={() => { if (laneId) runAction("push", async () => { await window.ade.git.push({ laneId }); }) }}
-              title="Push this lane branch to remote."
+              onClick={() => { if (laneId) runAction("push", async () => { await window.ade.git.push({ laneId }); }); }}
+              title="Upload your commits to the remote repository"
             >
-              <Upload className="h-3.5 w-3.5 mr-1.5" /> Push
+              <Upload className="h-3 w-3 mr-1" /> Push
             </Button>
-          </div>
-        }
-      />
 
-      {lane && (parentLane || childLanes.length > 0) ? (
-        <div className="border-b border-border bg-card/25 px-3 py-1.5 text-xs">
-          <div className="flex flex-wrap items-center gap-2">
-            {parentLane ? (
-              <>
-                <span className="font-semibold text-muted-fg">Parent:</span>
-                <button
-                  type="button"
-                  className="rounded border border-border bg-card/60 px-1.5 py-0.5 text-fg hover:border-accent"
-                  onClick={() => selectLane(parentLane.id)}
-                >
-                  {parentLane.name}
-                </button>
-              </>
-            ) : (
-              <span className="text-muted-fg">Stack root</span>
-            )}
-            {childLanes.length > 0 ? (
-              <>
-                <span className="ml-2 font-semibold text-muted-fg">Children:</span>
-                {childLanes.map((child) => (
-                  <button
-                    key={child.id}
-                    type="button"
-                    className="rounded border border-border bg-card/60 px-1.5 py-0.5 text-fg hover:border-accent"
-                    onClick={() => selectLane(child.id)}
-                  >
-                    {child.name}
-                  </button>
-                ))}
-              </>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-      {lane ? (
-        <div className="border-b border-border bg-card/20 px-3 py-1.5 text-[11px] text-muted-fg">
-          <span className="font-semibold text-fg">Rebase</span>: rebase lane commits onto parent lane head.
-          <span className="mx-2">|</span>
-          <span className="font-semibold text-fg">Pull ({syncMode})</span>: bring <code>{lane.baseRef}</code> into this lane.
-        </div>
-      ) : null}
-
-      <div className="flex-1 flex flex-col min-h-0">
-        {/* Top Section: Unstaged / Staged+Commit / Commit Timeline */}
-        <div className="flex-none h-[44%] min-h-[220px] flex border-b border-border">
-          {/* Unstaged Column */}
-          <div className="flex-1 flex flex-col border-r border-border min-w-0">
-            {renderFileList("Unstaged", changes.unstaged, "Stage", stageFile, stageAll)}
-          </div>
-
-          {/* Staged Column + Commit */}
-          <div className="flex-1 flex flex-col min-w-0 bg-muted/10 border-r border-border">
-            <div className="flex-1 min-h-0">
-              {renderFileList("Staged", changes.staged, "Unstage", unstageFile, unstageAll)}
-            </div>
-            {/* Commit Box */}
-            <div className="p-3 border-t border-border bg-card">
-              <div className="flex gap-2">
-                <textarea
-                  className="flex-1 h-[60px] p-2 text-xs bg-bg border border-border rounded resize-none focus:border-accent outline-none"
-                  placeholder="Commit message..."
-                  value={commitMessage}
-                  onChange={(e) => setCommitMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      if (laneId && commitMessage.trim()) {
-                        runAction("commit", async () => {
-                          await window.ade.git.commit({ laneId, message: commitMessage.trim() });
-                          setCommitMessage("");
-                        });
-                      }
+            {/* Rebase onto parent - only for stacked (child) lanes */}
+            {lane?.parentLaneId ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                title={`Rebase onto parent: replay this lane's commits on top of the parent lane's latest changes.\nUse this when the parent lane has new commits you want to incorporate.`}
+                disabled={!laneId || busyAction != null}
+                onClick={() => {
+                  if (!laneId) return;
+                  runAction("rebase", async () => {
+                    const result = await window.ade.lanes.restack({ laneId, recursive: true });
+                    if (result.error) {
+                      throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
                     }
-                  }}
-                />
-                <div className="flex flex-col gap-1 w-[80px]">
-                  <Button
-                    variant="primary"
-                    className="flex-1 h-full"
-                    disabled={!commitMessage.trim() || changes.staged.length === 0 || busyAction != null}
+                  });
+                }}
+              >
+                <Layers3 className="h-3 w-3 mr-1" /> Rebase
+              </Button>
+            ) : null}
+
+            {/* More actions dropdown */}
+            <div className="relative" ref={moreDropdownRef}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                title="More git actions (stash, revert, cherry-pick)"
+                onClick={() => setMoreDropdownOpen(prev => !prev)}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+              {moreDropdownOpen ? (
+                <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded border border-border bg-bg shadow-xl py-1">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left"
                     onClick={() => {
-                      if (laneId) runAction("commit", async () => {
-                        await window.ade.git.commit({ laneId, message: commitMessage.trim() });
-                        setCommitMessage("");
-                      });
-                    }}
-                  >
-                    Commit
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Commit Timeline */}
-          <div className="basis-[340px] shrink-0 min-w-[260px] max-w-[420px]">
-            <CommitTimeline
-              laneId={laneId ?? null}
-              selectedSha={selectedCommit?.sha ?? null}
-              onSelectCommit={(commit) => {
-                setSelectedPath(null);
-                setDiff(null);
-                setSelectedCommit(commit);
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Bottom Section: Diff View */}
-        <div className="flex-1 min-h-0 bg-bg">
-          {!laneId ? (
-            <div className="flex h-full items-center justify-center p-3">
-              <EmptyState title="No lane selected" />
-            </div>
-          ) : selectedCommit ? (
-            <div className="h-full flex flex-col">
-              <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-border bg-card/30">
-                <div className="min-w-0 flex items-center gap-2 text-xs">
-                  <span className="font-mono text-muted-fg">Commit</span>
-                  <span className="text-muted-fg">/</span>
-                  <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
-                  <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
-                </div>
-                {commitFiles.length ? (
-                  <select
-                    value={selectedCommitFilePath ?? ""}
-                    onChange={(event) => setSelectedCommitFilePath(event.target.value)}
-                    className="h-7 max-w-[55%] rounded border border-border bg-card/70 px-2 text-[11px]"
-                    title="File changed in this commit"
-                  >
-                    {commitFiles.map((file) => (
-                      <option key={file} value={file}>
-                        {file}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-              </div>
-              {!selectedCommitFilePath ? (
-                <div className="flex h-full items-center justify-center p-3">
-                  <EmptyState title="No files found" description="This commit may be empty or metadata-only." />
-                </div>
-              ) : !commitDiff ? (
-                <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading commit diff...</div>
-              ) : (
-                <MonacoDiffView diff={commitDiff} editable={false} className="flex-1" />
-              )}
-            </div>
-          ) : !selectedPath ? (
-            <div className="flex h-full items-center justify-center p-3">
-              <EmptyState title="Select a file or commit" description="Choose a working tree file (unstaged/staged) or pick a commit from the timeline." />
-            </div>
-          ) : !diff ? (
-            <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading diff...</div>
-          ) : (
-            <div className="h-full flex flex-col">
-              <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-card/30">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-mono text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
-                  <span className="text-muted-fg">/</span>
-                  <span className="font-semibold">{diff.path}</span>
-                </div>
-                {selectedFileMode === "unstaged" && !diff.isBinary && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6"
-                    onClick={() => {
-                      if (!laneId || !selectedPath) return;
-                      const text = diffRef.current?.getModifiedValue();
-                      if (text == null) return;
-                      runAction("save edit", async () => {
-                        await window.ade.files.writeTextAtomic({ laneId, path: selectedPath, text });
-                      });
-                    }}
-                  >
-                    <Save className="h-3.5 w-3.5 mr-1" />
-                    Save
-                  </Button>
-                )}
-              </div>
-              <MonacoDiffView ref={diffRef} diff={diff} editable={selectedFileMode === "unstaged"} className="flex-1" />
-            </div>
-          )}
-        </div>
-      </div>
-
-      <Dialog.Root open={gitActionsOpen} onOpenChange={setGitActionsOpen}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-card p-4 shadow-2xl focus:outline-none">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <Dialog.Title className="text-sm font-semibold">Git actions</Dialog.Title>
-              <Dialog.Close asChild>
-                <Button size="sm" variant="ghost">Esc</Button>
-              </Dialog.Close>
-            </div>
-
-            <div className="space-y-3">
-              <div className="rounded border border-border bg-bg/40 p-2">
-                <div className="mb-2 text-xs font-semibold text-muted-fg">Stash</div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
+                      setMoreDropdownOpen(false);
                       if (!laneId) return;
-                      setGitActionsOpen(false);
                       runAction("stash push", async () => {
-                        const msg = await requestTextInput({
-                          title: "Stash message",
-                          placeholder: "optional"
-                        });
+                        const msg = await requestTextInput({ title: "Stash message", placeholder: "optional" });
                         if (msg == null) throw new Error("__ade_cancelled__");
                         await window.ade.git.stashPush({ laneId, message: msg || undefined });
                       });
                     }}
                   >
-                    Push changes
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={stashes.length === 0}
+                    <div>
+                      <div className="font-medium">Stash changes</div>
+                      <div className="text-[10px] text-muted-fg">Temporarily save uncommitted changes</div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className={cn("flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left", stashes.length === 0 && "opacity-40 pointer-events-none")}
                     onClick={() => {
+                      setMoreDropdownOpen(false);
                       if (!laneId || stashes.length === 0) return;
-                      setGitActionsOpen(false);
                       runAction("stash pop", async () => {
                         await window.ade.git.stashPop({ laneId, stashRef: stashes[0]!.ref });
                       });
                     }}
                   >
-                    Pop latest ({stashes[0]?.ref ?? "none"})
-                  </Button>
-                </div>
-              </div>
-
-              <div className="rounded border border-border bg-bg/40 p-2">
-                <div className="mb-2 text-xs font-semibold text-muted-fg">History</div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={recentCommits.length === 0}
+                    <div>
+                      <div className="font-medium">Pop stash{stashes.length > 0 ? ` (${stashes[0]?.ref})` : ""}</div>
+                      <div className="text-[10px] text-muted-fg">Restore previously stashed changes</div>
+                    </div>
+                  </button>
+                  <div className="border-t border-border my-1" />
+                  <button
+                    type="button"
+                    className={cn("flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left", recentCommits.length === 0 && "opacity-40 pointer-events-none")}
                     onClick={() => {
+                      setMoreDropdownOpen(false);
                       if (!laneId || recentCommits.length === 0) return;
-                      setGitActionsOpen(false);
                       runAction("revert commit", async () => {
                         const sha = await requestTextInput({
                           title: "Commit SHA to revert",
@@ -710,14 +651,17 @@ export function LaneDetail({
                       });
                     }}
                   >
-                    Revert commit...
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
+                    <div>
+                      <div className="font-medium">Revert commit...</div>
+                      <div className="text-[10px] text-muted-fg">Create a new commit that undoes a previous one</div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left"
                     onClick={() => {
+                      setMoreDropdownOpen(false);
                       if (!laneId) return;
-                      setGitActionsOpen(false);
                       runAction("cherry-pick commit", async () => {
                         const sha = await requestTextInput({
                           title: "Commit SHA to cherry-pick",
@@ -728,15 +672,186 @@ export function LaneDetail({
                       });
                     }}
                   >
-                    Cherry-pick commit...
-                  </Button>
+                    <div>
+                      <div className="font-medium">Cherry-pick commit...</div>
+                      <div className="text-[10px] text-muted-fg">Copy a commit from another branch into this one</div>
+                    </div>
+                  </button>
                 </div>
-              </div>
+              ) : null}
             </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
 
+            <div className="h-4 w-px bg-border" />
+
+            {/* Inline commit input */}
+            <input
+              className="h-7 min-w-[100px] max-w-[220px] flex-1 rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent transition-colors"
+              placeholder="Commit message..."
+              value={commitMessage}
+              onChange={(e) => setCommitMessage(e.target.value)}
+              title="Type a commit message, then press Cmd/Ctrl+Enter or click Commit"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  if (laneId && commitMessage.trim() && hasStaged) {
+                    runAction("commit", async () => {
+                      await window.ade.git.commit({ laneId, message: commitMessage.trim() });
+                      setCommitMessage("");
+                    });
+                  }
+                }
+              }}
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!commitMessage.trim() || !hasStaged || busyAction != null}
+              title={!hasStaged ? "Stage files first (click checkboxes), then commit" : "Save staged changes as a new commit"}
+              onClick={() => {
+                if (laneId)
+                  runAction("commit", async () => {
+                    await window.ade.git.commit({ laneId, message: commitMessage.trim() });
+                    setCommitMessage("");
+                  });
+              }}
+            >
+              Commit
+            </Button>
+
+            {onSplit ? (
+              <>
+                <div className="h-4 w-px bg-border" />
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onSplit} title="Open side-by-side split view">
+                  <Columns className="h-3.5 w-3.5" />
+                </Button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* === Main content: vertical resizable split === */}
+      <div className="flex-1 min-h-0">
+        <Group
+          id={`lane-detail-vsplit:${laneId ?? "none"}`}
+          orientation="vertical"
+          className="h-full"
+        >
+          {/* Top panel: files + commits side by side */}
+          <Panel id={`lane-detail-top:${laneId ?? "none"}`} minSize={15} defaultSize={38}>
+            <Group
+              id={`lane-detail-top-cols:${laneId ?? "none"}`}
+              orientation="horizontal"
+              className="h-full"
+            >
+              {/* Unified file list */}
+              <Panel id={`lane-detail-files:${laneId ?? "none"}`} minSize={20} defaultSize={55} className="min-w-0">
+                <div className="flex flex-col h-full min-h-0">
+                  <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Changed Files</span>
+                      <Chip className="text-[10px] h-4 px-1">{unifiedFiles.length}</Chip>
+                      {stagedCount > 0 ? (
+                        <span className="text-[10px] text-muted-fg">({stagedCount} staged)</span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {changes.unstaged.length > 0 ? (
+                        <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={stageAll}>
+                          Stage All
+                        </button>
+                      ) : null}
+                      {changes.staged.length > 0 ? (
+                        <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={unstageAll}>
+                          Unstage All
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-auto p-1 space-y-0.5">
+                    {unifiedFiles.map(file => (
+                      <div
+                        key={file.path}
+                        className={cn(
+                          "group flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs border border-transparent",
+                          selectedPath === file.path ? "bg-accent/10 border-accent/20 text-fg" : "hover:bg-muted/50 text-muted-fg hover:text-fg"
+                        )}
+                        onClick={() => {
+                          setSelectedCommit(null);
+                          setCommitFiles([]);
+                          setSelectedCommitFilePath(null);
+                          setCommitDiff(null);
+                          setSelectedPath(file.path);
+                        }}
+                      >
+                        {/* Staging checkbox */}
+                        <button
+                          type="button"
+                          className="shrink-0 h-4 w-4 rounded border border-border flex items-center justify-center hover:border-accent"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleStageFile(file.path, file.staged);
+                          }}
+                          title={file.staged ? "Unstage" : "Stage"}
+                        >
+                          {file.staged ? <Check className="h-2.5 w-2.5 text-accent" /> : null}
+                        </button>
+                        {/* Status dot */}
+                        <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
+                          file.kind === "modified" ? "bg-blue-400" :
+                            file.kind === "added" ? "bg-emerald-400" :
+                              file.kind === "deleted" ? "bg-red-400" : "bg-amber-400"
+                        )} />
+                        <span className="truncate flex-1">{file.path}</span>
+                      </div>
+                    ))}
+                    {unifiedFiles.length === 0 && (
+                      <div className="p-4 text-center text-xs text-muted-fg opacity-50 italic">
+                        No changes
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Panel>
+
+              <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
+                <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
+                  <GripVertical className="h-3 w-3" />
+                </div>
+              </Separator>
+
+              {/* Commits timeline */}
+              <Panel id={`lane-detail-commits:${laneId ?? "none"}`} minSize={20} defaultSize={45} className="min-w-0">
+                <CommitTimeline
+                  laneId={laneId ?? null}
+                  selectedSha={selectedCommit?.sha ?? null}
+                  onSelectCommit={(commit) => {
+                    setSelectedPath(null);
+                    setDiff(null);
+                    setSelectedCommit(commit);
+                  }}
+                />
+              </Panel>
+            </Group>
+          </Panel>
+
+          {/* Vertical resizable divider */}
+          <Separator className="relative h-2 shrink-0 cursor-row-resize border-y border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
+            <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
+              <GripVertical className="h-3 w-3 rotate-90" />
+            </div>
+          </Separator>
+
+          {/* Bottom panel: diff viewer */}
+          <Panel id={`lane-detail-bottom:${laneId ?? "none"}`} minSize={20} defaultSize={62} className="min-h-0">
+            <div className="h-full bg-bg">
+              {renderDiffSection()}
+            </div>
+          </Panel>
+        </Group>
+      </div>
+
+      {/* Text prompt modal (reused) */}
       {textPrompt ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
           <div className="w-[min(460px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
@@ -775,7 +890,7 @@ export function LaneDetail({
         </div>
       ) : null}
 
-      {/* Footer Info / Status Bar (optional, maybe specific lane errors/notices) */}
+      {/* Status bar */}
       {(notice || error || busyAction) && (
         <div className={cn("flex items-center justify-between border-t border-border px-3 py-1 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
           <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>

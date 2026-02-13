@@ -400,6 +400,22 @@ export function createConflictService({
     return lanes.filter((lane) => !lane.archivedAt);
   };
 
+  const packsRootDir = conflictPacksDir ? path.dirname(conflictPacksDir) : null;
+
+  const readLanePackBody = (laneId: string): string | null => {
+    if (!packsRootDir) return null;
+    const filePath = path.join(packsRootDir, "lanes", laneId, "lane_pack.md");
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      return trimmed.length > 12_000 ? `${trimmed.slice(0, 12_000)}\n\n…(truncated)…\n` : trimmed;
+    } catch {
+      return null;
+    }
+  };
+
   const getLatestRows = (): Map<string, ConflictPredictionRow> => {
     const rows = db.all<ConflictPredictionRow>(
       `
@@ -1238,7 +1254,8 @@ export function createConflictService({
   };
 
   const requestProposal = async (args: RequestConflictProposalArgs): Promise<ConflictProposal> => {
-    const lane = (await listActiveLanes()).find((entry) => entry.id === args.laneId);
+    const lanes = await listActiveLanes();
+    const lane = lanes.find((entry) => entry.id === args.laneId);
     if (!lane) {
       throw new Error(`Lane not found: ${args.laneId}`);
     }
@@ -1253,11 +1270,79 @@ export function createConflictService({
       }
     }
 
+    const peerLaneId = args.peerLaneId ?? null;
+
+    const overlaps = await listOverlaps({ laneId: args.laneId });
+    const status = await getLaneStatus({ laneId: args.laneId });
+    const overlapEntry = overlaps.find((entry) => entry.peerId === peerLaneId) ?? null;
+    const overlapPaths = (overlapEntry?.files ?? []).map((file) => file.path).filter(Boolean);
+
+    const lanePackBody = readLanePackBody(args.laneId);
+    const peerPackBody = peerLaneId ? readLanePackBody(peerLaneId) : null;
+
+    const overlapDiffs = await (async () => {
+      const MAX_FILES = 6;
+      const MAX_DIFF_CHARS = 9000;
+
+      const truncate = (text: string): string => {
+        if (text.length <= MAX_DIFF_CHARS) return text;
+        return `${text.slice(0, MAX_DIFF_CHARS)}\n...(truncated)...\n`;
+      };
+
+      const laneGit = laneService.getLaneBaseAndBranch(args.laneId);
+      const laneHeadSha = await readHeadSha(laneGit.worktreePath).catch(() => "");
+      if (!laneHeadSha) return null;
+
+      if (peerLaneId) {
+        const peerGit = laneService.getLaneBaseAndBranch(peerLaneId);
+        const peerHeadSha = await readHeadSha(peerGit.worktreePath).catch(() => "");
+        if (!peerHeadSha) return null;
+        const mergeBaseSha = await readMergeBase(laneGit.worktreePath, laneHeadSha, peerHeadSha).catch(() => "");
+        const base = mergeBaseSha.trim();
+        if (!base) return null;
+
+        const files: Array<{ path: string; laneDiff: string; peerDiff: string }> = [];
+        for (const filePath of overlapPaths.slice(0, MAX_FILES)) {
+          const [laneDiff, peerDiff] = await Promise.all([
+            runGit(["diff", "--unified=3", `${base}..${laneHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
+              .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : "")),
+            runGit(["diff", "--unified=3", `${base}..${peerHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
+              .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : ""))
+          ]);
+          files.push({ path: filePath, laneDiff, peerDiff });
+        }
+
+        return {
+          mergeBaseSha: base,
+          laneHeadSha,
+          peerHeadSha,
+          files
+        };
+      }
+
+      const parentLane = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+      const baseRef = parentLane?.branchRef ?? lane.baseRef;
+      const files: Array<{ path: string; laneDiff: string }> = [];
+      for (const filePath of overlapPaths.slice(0, MAX_FILES)) {
+        const diff = await runGit(["diff", "--unified=3", `${baseRef}..${laneHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
+          .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : ""));
+        files.push({ path: filePath, laneDiff: diff });
+      }
+      return {
+        baseRef,
+        laneHeadSha,
+        files
+      };
+    })().catch(() => null);
+
     let conflictContext: Record<string, unknown> = {
       laneId: args.laneId,
-      peerLaneId: args.peerLaneId ?? null,
-      overlaps: await listOverlaps({ laneId: args.laneId }),
-      status: await getLaneStatus({ laneId: args.laneId })
+      peerLaneId,
+      overlaps,
+      status,
+      ...(lanePackBody ? { lanePackBody } : {}),
+      ...(peerPackBody ? { peerPackBody } : {}),
+      ...(overlapDiffs ? { overlapDiffs } : {})
     };
 
     if (conflictPacksDir) {
@@ -1267,7 +1352,12 @@ export function createConflictService({
           const raw = fs.readFileSync(packPath, "utf8");
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === "object") {
-            conflictContext = parsed as Record<string, unknown>;
+            conflictContext = {
+              ...conflictContext,
+              ...(parsed as Record<string, unknown>),
+              laneId: args.laneId,
+              peerLaneId
+            };
           }
         } catch {
           // Ignore malformed conflict pack and fall back to runtime context.

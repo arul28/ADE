@@ -42,6 +42,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    let cancelled = false;
 
     const term = new Terminal({
       convertEol: true,
@@ -56,19 +57,44 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
-    fit.fit();
-    lastDimsRef.current = { cols: term.cols, rows: term.rows };
-    window.ade.pty.resize({ ptyId, cols: term.cols, rows: term.rows }).catch(() => {});
+
+    const doFit = () => {
+      if (cancelled) return;
+      if (!el.isConnected) return;
+      // xterm can misbehave if we try to fit while hidden/zero-sized.
+      if (el.clientWidth === 0 || el.clientHeight === 0) return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      const next = { cols: term.cols, rows: term.rows };
+      const prev = lastDimsRef.current;
+      if (!prev || prev.cols !== next.cols || prev.rows !== next.rows) {
+        lastDimsRef.current = next;
+        window.ade.pty.resize({ ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
+      }
+    };
+
+    // Allow layout to settle before first fit (helps in StrictMode/dev + tab switching).
+    requestAnimationFrame(doFit);
 
     // Try to hydrate recent output so switching tabs doesn't feel like losing context.
     window.ade.sessions
       .readTranscriptTail({ sessionId, maxBytes: 80_000 })
       .then((text) => {
-        if (text.trim().length) term.write(text);
+        if (cancelled) return;
+        if (!text.trim().length) return;
+        try {
+          term.write(text);
+        } catch {
+          // Ignore writes after disposal/unmount.
+        }
       })
       .catch(() => {});
 
-    term.onData((data) => {
+    const dataSub = term.onData((data) => {
+      if (cancelled) return;
       window.ade.pty.write({ ptyId, data }).catch(() => {});
     });
 
@@ -80,37 +106,36 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         // Best-effort paste.
         navigator.clipboard
           .readText()
-          .then((text) => window.ade.pty.write({ ptyId, data: text }))
+          .then((text) => {
+            if (cancelled) return;
+            return window.ade.pty.write({ ptyId, data: text });
+          })
           .catch(() => {});
         return false;
       }
       return true;
     });
 
-    const unsubData = window.ade.pty.onData((ev) => {
-      if (ev.ptyId !== ptyId) return;
-      term.write(ev.data);
-    });
+	    const unsubData = window.ade.pty.onData((ev) => {
+	      if (ev.ptyId !== ptyId) return;
+	      if (cancelled) return;
+	      try {
+	        term.write(ev.data);
+	      } catch {
+	        // Ignore writes after disposal/unmount.
+	      }
+	    });
 
     const unsubExit = window.ade.pty.onExit((ev) => {
       if (ev.ptyId !== ptyId) return;
+      if (cancelled) return;
       setExited(ev.exitCode ?? 0);
     });
 
     const obs = new ResizeObserver(() => {
       // Throttle to animation frame to avoid spamming.
       requestAnimationFrame(() => {
-        try {
-          fit.fit();
-          const next = { cols: term.cols, rows: term.rows };
-          const prev = lastDimsRef.current;
-          if (!prev || prev.cols !== next.cols || prev.rows !== next.rows) {
-            lastDimsRef.current = next;
-            window.ade.pty.resize({ ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
-          }
-        } catch {
-          // ignore
-        }
+        doFit();
       });
     });
     obs.observe(el);
@@ -120,9 +145,15 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     resizeObsRef.current = obs;
 
     return () => {
+      cancelled = true;
       try {
         unsubData();
         unsubExit();
+      } catch {
+        // ignore
+      }
+      try {
+        dataSub.dispose();
       } catch {
         // ignore
       }
@@ -145,7 +176,9 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options = { ...term.options, theme: termTheme ? { ...termTheme } : undefined };
+    // Avoid reassigning `term.options` wholesale. Some options (cols/rows) are readonly after construction
+    // and xterm will throw if we try to set them via the options setter.
+    term.options.theme = termTheme ? { ...termTheme } : undefined;
   }, [termTheme]);
 
   return (

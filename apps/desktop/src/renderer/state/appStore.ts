@@ -30,10 +30,12 @@ type AppState = {
   focusedSessionId: string | null;
   theme: ThemeId;
   providerMode: ProviderMode;
+  laneInspectorTabs: Record<string, LaneInspectorTab>;
 
   setProject: (project: ProjectInfo) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
+  setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
@@ -44,6 +46,8 @@ type AppState = {
   openRepo: () => Promise<void>;
 };
 
+export type LaneInspectorTab = "terminals" | "packs" | "stack" | "conflicts" | "pr";
+
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
   lanes: [],
@@ -52,10 +56,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   focusedSessionId: null,
   theme: readInitialTheme(),
   providerMode: "guest",
+  laneInspectorTabs: {},
 
   setProject: (project) => set({ project }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
+  setLaneInspectorTab: (laneId, tab) =>
+    set((prev) => ({
+      laneInspectorTabs: {
+        ...prev.laneInspectorTabs,
+        [laneId]: tab
+      }
+    })),
   selectRunLane: (laneId) => set({ runLaneId: laneId }),
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
   setTheme: (theme) => {
@@ -74,7 +86,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const runLane = get().runLaneId;
     const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
     const nextRunLane = runLane && lanes.some((l) => l.id === runLane) ? runLane : nextSelected;
-    set({ lanes, selectedLaneId: nextSelected, runLaneId: nextRunLane });
+    set((prev) => {
+      const allowed = new Set(lanes.map((lane) => lane.id));
+      const nextTabs: Record<string, LaneInspectorTab> = {};
+      for (const [laneId, tab] of Object.entries(prev.laneInspectorTabs)) {
+        if (allowed.has(laneId)) nextTabs[laneId] = tab as LaneInspectorTab;
+      }
+      return { lanes, selectedLaneId: nextSelected, runLaneId: nextRunLane, laneInspectorTabs: nextTabs };
+    });
   },
 
   refreshProviderMode: async () => {
@@ -84,7 +103,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openRepo: async () => {
     const project = await window.ade.project.openRepo();
-    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null });
+    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {} });
     // Refresh lanes for the newly opened project.
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });

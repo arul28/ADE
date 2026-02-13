@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GripVertical, Home, Pin, X } from "lucide-react";
+import { GripHorizontal, GripVertical, Home, Link2, Pin, Play, Plus, X } from "lucide-react";
 import { LaneDetail } from "./LaneDetail";
 import { LaneInspector } from "./LaneInspector";
 import { useAppStore } from "../../state/appStore";
@@ -156,18 +156,184 @@ function chipLabel(kind: ConflictChip["kind"]): string {
   return kind === "high-risk" ? "high risk" : "new overlap";
 }
 
+// --- SVG Stack Graph (Tree-style) ---
+
+const TREE_ROW_H = 28;
+const TREE_INDENT = 22;
+const TREE_LEFT_PAD = 16;
+const TREE_DOT_R = 4;
+
+type TreeNodeLayout = {
+  lane: LaneSummary;
+  row: number;
+  depth: number;
+  dotX: number;
+  dotY: number;
+};
+
+function computeTreeLayout(lanes: LaneSummary[]): TreeNodeLayout[] {
+  return lanes.map((lane, idx) => ({
+    lane,
+    row: idx,
+    depth: lane.stackDepth,
+    dotX: TREE_LEFT_PAD + lane.stackDepth * TREE_INDENT,
+    dotY: idx * TREE_ROW_H + TREE_ROW_H / 2
+  }));
+}
+
+function StackGraph({
+  lanes,
+  selectedLaneId,
+  onSelect
+}: {
+  lanes: LaneSummary[];
+  selectedLaneId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const layout = React.useMemo(() => computeTreeLayout(lanes), [lanes]);
+  const layoutById = React.useMemo(() => new Map(layout.map((n) => [n.lane.id, n])), [layout]);
+
+  const totalHeight = layout.length * TREE_ROW_H + 4;
+
+  // Build parent → children map
+  const childrenByParent = React.useMemo(() => {
+    const map = new Map<string, TreeNodeLayout[]>();
+    for (const node of layout) {
+      if (!node.lane.parentLaneId) continue;
+      const arr = map.get(node.lane.parentLaneId) ?? [];
+      arr.push(node);
+      map.set(node.lane.parentLaneId, arr);
+    }
+    return map;
+  }, [layout]);
+
+  // Build tree-style SVG connectors: vertical line from parent down, horizontal branches to children
+  const connectors: React.ReactNode[] = [];
+  for (const [parentId, children] of childrenByParent) {
+    const parent = layoutById.get(parentId);
+    if (!parent || children.length === 0) continue;
+
+    const lastChild = children[children.length - 1]!;
+
+    // Vertical line from below parent dot to last child's row
+    connectors.push(
+      <line
+        key={`v:${parentId}`}
+        x1={parent.dotX}
+        y1={parent.dotY + TREE_DOT_R + 2}
+        x2={parent.dotX}
+        y2={lastChild.dotY}
+        stroke="currentColor"
+        className="text-muted-fg/35"
+        strokeWidth={1.5}
+      />
+    );
+
+    // Horizontal branch from vertical line to each child's dot
+    for (const child of children) {
+      connectors.push(
+        <line
+          key={`h:${child.lane.id}`}
+          x1={parent.dotX}
+          y1={child.dotY}
+          x2={child.dotX - TREE_DOT_R - 3}
+          y2={child.dotY}
+          stroke="currentColor"
+          className="text-muted-fg/35"
+          strokeWidth={1.5}
+        />
+      );
+    }
+  }
+
+  return (
+    <div className="h-full overflow-auto">
+      <div className="relative py-1" style={{ height: totalHeight, minWidth: "100%" }}>
+        {/* SVG layer: connectors + dots */}
+        <svg className="absolute inset-0 pointer-events-none" width="100%" height={totalHeight}>
+          {connectors}
+          {layout.map((node) => (
+            <circle
+              key={`dot:${node.lane.id}`}
+              cx={node.dotX}
+              cy={node.dotY}
+              r={TREE_DOT_R}
+              className={cn(
+                node.lane.laneType === "primary"
+                  ? "fill-emerald-500"
+                  : node.lane.status.dirty
+                    ? "fill-amber-500"
+                    : "fill-sky-500"
+              )}
+            />
+          ))}
+        </svg>
+
+        {/* HTML layer: clickable labels */}
+        {layout.map((node) => {
+          const { lane } = node;
+          const isSelected = selectedLaneId === lane.id;
+          return (
+            <button
+              key={`label:${lane.id}`}
+              type="button"
+              className={cn(
+                "absolute flex items-center gap-1.5 rounded px-1.5 text-[11px] transition-colors whitespace-nowrap",
+                isSelected
+                  ? "bg-accent/15 text-fg ring-1 ring-accent/50"
+                  : "text-muted-fg hover:bg-muted/60 hover:text-fg"
+              )}
+              style={{
+                left: node.dotX + TREE_DOT_R + 5,
+                top: node.dotY - (TREE_ROW_H - 6) / 2,
+                height: TREE_ROW_H - 6
+              }}
+              onClick={() => onSelect(lane.id)}
+              title={lane.parentLaneId ? `Child of ${layoutById.get(lane.parentLaneId)?.lane.name ?? "parent"}` : "Root"}
+            >
+              <span className="truncate max-w-[160px]">{lane.name}</span>
+              {(lane.status.ahead > 0 || lane.status.behind > 0) && (
+                <span className="shrink-0 font-mono text-[9px] text-muted-fg/70">
+                  {lane.status.ahead > 0 ? `${lane.status.ahead}↑` : ""}
+                  {lane.status.behind > 0 ? `${lane.status.behind}↓` : ""}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function LanesPage() {
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const selectLane = useAppStore((s) => s.selectLane);
+  const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const project = useAppStore((s) => s.project);
+  const baseRef = project?.baseRef;
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
   const [laneFilter, setLaneFilter] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
+
+  // Create lane dialog state
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createLaneName, setCreateLaneName] = useState("");
+  const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
+
+  // Attach lane dialog state
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachName, setAttachName] = useState("");
+  const [attachPath, setAttachPath] = useState("");
+
+  const canCreateLane = Boolean(project?.rootPath);
   const [deleteMode, setDeleteMode] = useState<"worktree" | "local_branch" | "remote_branch">("worktree");
   const [deleteRemoteName, setDeleteRemoteName] = useState("origin");
   const [deleteForce, setDeleteForce] = useState(false);
@@ -185,22 +351,6 @@ export function LanesPage() {
     return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
   }, [sortedLanes, laneFilter, pinnedLaneIds]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
-  const stackGraphIsLastSiblingByLaneId = useMemo(() => {
-    const siblingsByParent = new Map<string, string[]>();
-    for (const lane of stackGraphLanes) {
-      if (!lane.parentLaneId) continue;
-      const list = siblingsByParent.get(lane.parentLaneId) ?? [];
-      list.push(lane.id);
-      siblingsByParent.set(lane.parentLaneId, list);
-    }
-    const out = new Map<string, boolean>();
-    for (const siblingIds of siblingsByParent.values()) {
-      siblingIds.forEach((id, index) => {
-        out.set(id, index === siblingIds.length - 1);
-      });
-    }
-    return out;
-  }, [stackGraphLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
 
@@ -259,14 +409,18 @@ export function LanesPage() {
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
+    const inspectorTab = params.get("inspectorTab");
     if (laneId) {
       selectLane(laneId);
+      if (inspectorTab === "terminals" || inspectorTab === "packs" || inspectorTab === "stack" || inspectorTab === "conflicts" || inspectorTab === "pr") {
+        setLaneInspectorTab(laneId, inspectorTab);
+      }
       if (params.get("focus") === "single") {
         setActiveLaneIds([laneId]);
       }
     }
     if (sessionId) focusSession(sessionId);
-  }, [params, selectLane, focusSession]);
+  }, [params, selectLane, setLaneInspectorTab, focusSession]);
 
   useEffect(() => {
     void loadConflictStatuses();
@@ -586,8 +740,51 @@ export function LanesPage() {
           >
             Manage lane
           </Button>
+
+          <div className="h-4 w-px bg-border" />
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2 text-[11px]"
+            disabled={!canCreateLane}
+            onClick={() => { setCreateLaneName(""); setCreateParentLaneId(""); setCreateOpen(true); }}
+            title={canCreateLane ? "Create a new lane" : "Open a repo first"}
+          >
+            <Plus className="h-3 w-3 mr-0.5" /> Lane
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2 text-[11px]"
+            disabled={!canCreateLane}
+            onClick={() => { setAttachName(""); setAttachPath(""); setAttachOpen(true); }}
+            title={canCreateLane ? "Attach an existing worktree" : "Open a repo first"}
+          >
+            <Link2 className="h-3 w-3 mr-0.5" /> Attach
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            className="h-7 px-2 text-[11px]"
+            disabled={!selectedLaneId}
+            onClick={() => {
+              if (!selectedLaneId) return;
+              window.ade.pty
+                .create({ laneId: selectedLaneId, cols: 100, rows: 30, title: "Shell" })
+                .then(({ sessionId }) => {
+                  focusSession(sessionId);
+                  navigate(`/lanes?laneId=${encodeURIComponent(selectedLaneId)}&sessionId=${encodeURIComponent(sessionId)}`);
+                })
+                .catch(() => {});
+            }}
+            title={selectedLaneId ? "Start a terminal session" : "Select a lane first"}
+          >
+            <Play className="h-3 w-3 mr-0.5" /> Terminal
+          </Button>
+
           <div className="ml-auto text-[11px] text-muted-fg">
-            {filteredLanes.length}/{sortedLanes.length} visible · Shift/Cmd/Ctrl-click split · j/k or ↑/↓ move · [ ] cycle · / or Cmd/Ctrl+F filter
+            {filteredLanes.length}/{sortedLanes.length} · j/k ↑↓ move · [ ] cycle · / filter
           </div>
         </div>
       </div>
@@ -677,99 +874,67 @@ export function LanesPage() {
         })}
       </div>
 
-      <div className="border-b border-border bg-card/35 px-2 py-1.5">
-        <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack graph</div>
-        <div className="grid max-h-[120px] grid-cols-1 gap-0.5 overflow-y-auto pr-1">
-          {stackGraphLanes.map((lane) => (
-            <button
-              key={`stack-graph:${lane.id}`}
-              type="button"
-              className={cn(
-                "relative flex items-center justify-between rounded px-1.5 py-1 text-left text-[11px] transition-colors",
-                selectedLaneId === lane.id ? "bg-accent/15 text-fg" : "text-muted-fg hover:bg-muted/60 hover:text-fg"
-              )}
-              onClick={() => handleLaneSelect(lane.id, { extend: false })}
-              title={lane.parentLaneId ? "Child lane" : "Stack root"}
-            >
-              <span className="relative inline-flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${4 + lane.stackDepth * 16}px` }}>
-                {lane.parentLaneId ? (
-                  <>
-                    <span
-                      className="pointer-events-none absolute w-px bg-accent/55"
-                      style={
-                        stackGraphIsLastSiblingByLaneId.get(lane.id)
-                          ? { left: `${(lane.stackDepth - 1) * 16 + 8}px`, top: "0px", bottom: "50%" }
-                          : { left: `${(lane.stackDepth - 1) * 16 + 8}px`, top: "0px", bottom: "0px" }
-                      }
-                    />
-                    <span
-                      className="pointer-events-none absolute h-px bg-accent/55"
-                      style={{ left: `${lane.stackDepth * 16 - 10}px`, width: "10px" }}
-                    />
-                  </>
-                ) : null}
-                <span
-                  className={cn(
-                    "h-1.5 w-1.5 rounded-full",
-                    lane.laneType === "primary" ? "bg-emerald-500" : lane.status.dirty ? "bg-amber-500" : "bg-sky-500"
-                  )}
-                />
-                <span className="truncate">{lane.name}</span>
-              </span>
-              <span className="ml-2 shrink-0 font-mono text-[10px]">
-                {lane.status.ahead}↑ {lane.status.behind}↓
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <Group id="lanes-vertical-split" orientation="vertical" className="flex-1 min-h-0">
+        <Panel id="stack-graph-panel" defaultSize={14} minSize={3} collapsible>
+          <div className="flex h-full flex-col bg-card/35">
+            <div className="shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack graph</div>
+            <StackGraph
+              lanes={stackGraphLanes}
+              selectedLaneId={selectedLaneId}
+              onSelect={(id) => handleLaneSelect(id, { extend: false })}
+            />
+          </div>
+        </Panel>
+        <Separator className="relative h-1.5 shrink-0 cursor-row-resize border-y border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
+          <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
+            <GripHorizontal className="h-3 w-3" />
+          </div>
+        </Separator>
+        <Panel id="lanes-main" minSize={50}>
+          {visibleLaneIds.length === 0 ? (
+            <div className="flex h-full items-center justify-center">
+              <EmptyState
+                title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
+                description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to open changes and terminals."}
+              />
+            </div>
+          ) : (
+            <Group key={visibleLaneIds.join("|")} id="lanes-split-columns" orientation="horizontal" className="h-full w-full">
+              {visibleLaneIds.map((laneId, index) => {
+                const lane = lanesById.get(laneId);
+                const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
+                return (
+                  <React.Fragment key={laneId}>
+                    <Panel id={`lane-column:${laneId}`} minSize={18} defaultSize={defaultSize} className="h-full min-h-0 min-w-0">
+                      <Group id={`lane-stack:${laneId}`} orientation="horizontal" className="h-full min-h-0 w-full">
+                        <Panel id={`lane-changes:${laneId}`} minSize={30} defaultSize={58} className="h-full min-h-0">
+                          <LaneDetail overrideLaneId={laneId} isPrimary={lane?.laneType === "primary"} />
+                        </Panel>
+                        <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
+                          <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
+                            <GripVertical className="h-3 w-3" />
+                          </div>
+                        </Separator>
+                        <Panel id={`lane-inspector:${laneId}`} minSize={22} defaultSize={42} className="h-full min-h-0">
+                          <LaneInspector overrideLaneId={laneId} hideHeader />
+                        </Panel>
+                      </Group>
+                    </Panel>
 
-      {visibleLaneIds.length === 0 ? (
-        <div className="flex-1 min-h-0">
-          <EmptyState
-            title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
-            description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to open changes and terminals."}
-          />
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <Group key={visibleLaneIds.join("|")} id="lanes-split-columns" orientation="horizontal" className="h-full w-full">
-            {visibleLaneIds.map((laneId, index) => {
-              const lane = lanesById.get(laneId);
-              const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
-              return (
-                <React.Fragment key={laneId}>
-                  <Panel id={`lane-column:${laneId}`} minSize={18} defaultSize={defaultSize} className="h-full min-h-0 min-w-0">
-                    <Group id={`lane-stack:${laneId}`} orientation="horizontal" className="h-full min-h-0 w-full">
-                      <Panel id={`lane-changes:${laneId}`} minSize={30} defaultSize={58} className="h-full min-h-0">
-                        <LaneDetail overrideLaneId={laneId} isPrimary={lane?.laneType === "primary"} />
-                      </Panel>
-                      <Separator className="relative w-2 shrink-0 cursor-col-resize bg-border/60 transition-colors hover:bg-accent data-[resize-handle-active]:bg-accent">
-                        <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border" />
-                        <div className="absolute inset-0 flex items-center justify-center text-bg/80">
+                    {index < visibleLaneIds.length - 1 ? (
+                      <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
+                        <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
                           <GripVertical className="h-3 w-3" />
                         </div>
                       </Separator>
-                      <Panel id={`lane-inspector:${laneId}`} minSize={22} defaultSize={42} className="h-full min-h-0">
-                        <LaneInspector overrideLaneId={laneId} hideHeader />
-                      </Panel>
-                    </Group>
-                  </Panel>
-
-                  {index < visibleLaneIds.length - 1 ? (
-                    <Separator className="relative w-2 shrink-0 cursor-col-resize bg-border/70 transition-colors hover:bg-accent data-[resize-handle-active]:bg-accent">
-                      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border" />
-                      <div className="absolute inset-0 flex items-center justify-center text-bg/80">
-                        <GripVertical className="h-3 w-3" />
-                      </div>
-                    </Separator>
-                  ) : null}
-                </React.Fragment>
-              );
-            })}
-          </Group>
-        </div>
-      )}
+                    ) : null}
+                  </React.Fragment>
+                );
+              })}
+            </Group>
+          )}
+        </Panel>
+      </Group>
 
       <Dialog.Root open={manageOpen} onOpenChange={setManageOpen}>
         <Dialog.Portal>
@@ -892,6 +1057,134 @@ export function LanesPage() {
                 </div>
               </div>
             )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Create Lane dialog */}
+      <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-3 shadow-2xl focus:outline-none">
+            <div className="flex items-center justify-between gap-3">
+              <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
+              <Dialog.Close asChild>
+                <Button variant="ghost" size="sm">Esc</Button>
+              </Dialog.Close>
+            </div>
+            <div className="mt-3 space-y-2">
+              <div className="text-xs text-muted-fg">Name</div>
+              <input
+                value={createLaneName}
+                onChange={(e) => setCreateLaneName(e.target.value)}
+                placeholder="e.g. feature/auth-refresh"
+                className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
+                autoFocus
+              />
+              <div className="space-y-1">
+                <div className="text-xs text-muted-fg">Parent lane (optional)</div>
+                <select
+                  value={createParentLaneId}
+                  onChange={(event) => setCreateParentLaneId(event.target.value)}
+                  className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none"
+                >
+                  <option value="">None (base: {baseRef ?? "main"})</option>
+                  {lanes.map((lane) => (
+                    <option key={lane.id} value={lane.id}>
+                      {lane.name} ({lane.branchRef})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={() => { setCreateOpen(false); setCreateLaneName(""); setCreateParentLaneId(""); }}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!createLaneName.trim().length}
+                onClick={() => {
+                  const name = createLaneName.trim();
+                  const parentId = createParentLaneId || null;
+                  const promise = parentId
+                    ? window.ade.lanes.createChild({ name, parentLaneId: parentId })
+                    : window.ade.lanes.create({ name });
+                  promise
+                    .then(async (lane) => {
+                      await refreshLanes();
+                      setCreateOpen(false);
+                      setCreateLaneName("");
+                      setCreateParentLaneId("");
+                      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                    })
+                    .catch(() => {});
+                }}
+              >
+                {createParentLaneId ? "Create child lane" : "Create"}
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Attach Lane dialog */}
+      <Dialog.Root open={attachOpen} onOpenChange={setAttachOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-3 shadow-2xl focus:outline-none">
+            <div className="flex items-center justify-between gap-3">
+              <Dialog.Title className="text-sm font-semibold">Attach lane</Dialog.Title>
+              <Dialog.Close asChild>
+                <Button variant="ghost" size="sm">Esc</Button>
+              </Dialog.Close>
+            </div>
+            <div className="mt-3 space-y-2">
+              <div>
+                <div className="mb-1 text-xs text-muted-fg">Lane name</div>
+                <input
+                  value={attachName}
+                  onChange={(e) => setAttachName(e.target.value)}
+                  placeholder="e.g. bugfix/from-other-worktree"
+                  className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <div className="mb-1 text-xs text-muted-fg">Attached path</div>
+                <input
+                  value={attachPath}
+                  onChange={(e) => setAttachPath(e.target.value)}
+                  placeholder="/absolute/path/to/existing/worktree"
+                  className="h-10 w-full rounded border border-border bg-card/70 px-3 font-mono text-xs outline-none placeholder:text-muted-fg"
+                />
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={() => { setAttachOpen(false); setAttachName(""); setAttachPath(""); }}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!attachPath.trim().length || !attachName.trim().length}
+                onClick={() => {
+                  const name = attachName.trim();
+                  const attachedPath = attachPath.trim();
+                  window.ade.lanes
+                    .attach({ name, attachedPath })
+                    .then(async (lane) => {
+                      await refreshLanes();
+                      setAttachOpen(false);
+                      setAttachName("");
+                      setAttachPath("");
+                      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                    })
+                    .catch(() => {});
+                }}
+              >
+                Attach
+              </Button>
+            </div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

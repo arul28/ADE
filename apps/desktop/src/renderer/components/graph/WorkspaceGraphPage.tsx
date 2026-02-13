@@ -636,7 +636,7 @@ function GraphInner() {
     overlapFiles: string[];
     preview: MergeSimulationResult | null;
     previewBusy: boolean;
-    actionMode: "integrate" | "reparent";
+    actionMode: "integrate" | "reparent" | "pr";
     integratePlan: {
       sourceLaneId: string;
       laneId: string;
@@ -1001,15 +1001,18 @@ function GraphInner() {
         if (!cancelled) setLoadingPrs(false);
       });
 
-    const interval = window.setInterval(() => {
-      void refreshPrs().catch(() => {});
-    }, 25_000);
+    const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type !== "prs-updated") return;
+      if (cancelled) return;
+      setPrs(event.prs);
+      setLoadingPrs(false);
+    });
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      unsub();
     };
-  }, [refreshPrs]);
+  }, []);
 
   React.useEffect(() => {
     if (!project?.rootPath) return;
@@ -1678,6 +1681,14 @@ function GraphInner() {
       return;
     }
 
+    if (reparentDialog.actionMode === "pr") {
+      const laneId = reparentDialog.laneIds[0];
+      if (!laneId) return;
+      openPrDialogForLane(laneId, reparentDialog.targetLaneId);
+      setReparentDialog(null);
+      return;
+    }
+
     const target = laneById.get(reparentDialog.targetLaneId);
     if (!target) return;
 
@@ -1720,7 +1731,7 @@ function GraphInner() {
     });
     setReparentDialog(null);
     await refreshLanes().catch(() => {});
-  }, [laneById, refreshLanes, reparentDialog]);
+  }, [laneById, openPrDialogForLane, refreshLanes, reparentDialog]);
 
   const runBatchOperation = React.useCallback(
     async (operation: "restack" | "push" | "fetch" | "archive" | "delete") => {
@@ -2481,14 +2492,28 @@ function GraphInner() {
             setHoveredEdgeId(edge.id);
             const data = edge.data;
             const [_, laneAId, laneBId] = edge.id.split(":");
-            const prLabel = data?.pr
-              ? ` · PR #${data.pr.number} · ${data.pr.checksStatus} · ${data.pr.reviewStatus}`
-              : "";
+            const pr = data?.pr ?? null;
+            const prLines = pr
+              ? [
+                  `PR #${pr.number} · ${pr.state} · checks: ${pr.checksStatus} · reviews: ${pr.reviewStatus}`,
+                  pr.title ? pr.title : null,
+                  pr.lastSyncedAt ? `synced ${toRelativeTime(pr.lastSyncedAt)}` : null
+                ].filter((line): line is string => Boolean(line && line.trim().length))
+              : [];
             if (data?.edgeType === "risk") {
+              const pair = laneAId && laneBId ? edgePairKey(laneAId, laneBId) : "";
+              const overlapFiles = pair ? overlapFilesByPair.get(pair) ?? [] : [];
+              const fileLines = overlapFiles.slice(0, 6).map((file) => `- ${file}`);
+              const moreLine = overlapFiles.length > 6 ? `... +${overlapFiles.length - 6} more` : null;
               setEdgeHover({
                 x: event.clientX + 12,
                 y: event.clientY + 12,
-                label: `${data.riskLevel ?? "unknown"} · ${data.overlapCount ?? 0} files${data.stale ? " · stale" : ""}${prLabel}`
+                label: [
+                  `${data.riskLevel ?? "unknown"} · ${overlapFiles.length} file${overlapFiles.length === 1 ? "" : "s"}${data.stale ? " · stale" : ""}`,
+                  ...fileLines,
+                  ...(moreLine ? [moreLine] : []),
+                  ...(prLines.length ? ["", ...prLines] : [])
+                ].join("\n")
               });
               return;
             }
@@ -2496,7 +2521,10 @@ function GraphInner() {
               setEdgeHover({
                 x: event.clientX + 12,
                 y: event.clientY + 12,
-                label: `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}${prLabel}`
+                label: [
+                  `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}`,
+                  ...(prLines.length ? ["", ...prLines] : [])
+                ].join("\n")
               });
               return;
             }
@@ -2504,7 +2532,10 @@ function GraphInner() {
               setEdgeHover({
                 x: event.clientX + 12,
                 y: event.clientY + 12,
-                label: `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}${prLabel}`
+                label: [
+                  `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}`,
+                  ...(prLines.length ? ["", ...prLines] : [])
+                ].join("\n")
               });
               return;
             }
@@ -2763,18 +2794,20 @@ function GraphInner() {
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
           <div className="w-[min(780px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
             <div className="mb-2 text-sm font-semibold text-fg">Confirm Lane Drop</div>
-            {reparentDialog.integratePlan ? (
+            {reparentDialog.integratePlan || reparentDialog.laneIds.length === 1 ? (
               <div className="mb-2 inline-flex rounded border border-border bg-bg/40 p-0.5 text-xs">
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded px-2 py-1",
-                    reparentDialog.actionMode === "integrate" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
-                  )}
-                  onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "integrate" } : prev))}
-                >
-                  Integrate
-                </button>
+                {reparentDialog.integratePlan ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded px-2 py-1",
+                      reparentDialog.actionMode === "integrate" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
+                    )}
+                    onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "integrate" } : prev))}
+                  >
+                    Integrate
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={cn(
@@ -2785,11 +2818,25 @@ function GraphInner() {
                 >
                   Reparent
                 </button>
+                {reparentDialog.laneIds.length === 1 ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded px-2 py-1",
+                      reparentDialog.actionMode === "pr" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
+                    )}
+                    onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "pr" } : prev))}
+                  >
+                    PR
+                  </button>
+                ) : null}
               </div>
             ) : null}
             <div className="mb-2 rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">
               {reparentDialog.actionMode === "integrate"
                 ? "Integrate keeps stack ancestry unchanged and brings source lane commits into the target lane."
+                : reparentDialog.actionMode === "pr"
+                  ? "PR opens the pull request workflow for the dragged lane, targeting the drop base."
                 : "Reparent changes stack ancestry. ADE rebases selected lane commits onto the target parent branch."}
             </div>
             {reparentDialog.actionMode === "integrate" && reparentDialog.integratePlan ? (
@@ -2836,6 +2883,8 @@ function GraphInner() {
             <div className="mb-3 text-xs text-amber-300">
               {reparentDialog.actionMode === "integrate"
                 ? "If merge/rebase conflicts occur, resolve them in the target lane."
+                : reparentDialog.actionMode === "pr"
+                  ? "This does not change lane ancestry. It opens a PR flow targeting the drop base."
                 : "If conflicts occur during rebase, resolve them in the target lane context."}
               {reparentDialog.actionMode === "reparent" && laneById.get(reparentDialog.targetLaneId)?.laneType === "primary"
                 ? " Target is Primary: lane will now be based directly on Primary."
@@ -2853,32 +2902,38 @@ function GraphInner() {
               <Button size="sm" variant="outline" onClick={() => setReparentDialog(null)}>
                 Cancel
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={reparentDialog.previewBusy}
-                onClick={async () => {
-                  const previewLaneAId =
-                    reparentDialog.actionMode === "integrate"
-                      ? reparentDialog.integratePlan?.laneId
-                      : reparentDialog.laneIds[0];
-                  const previewLaneBId =
-                    reparentDialog.actionMode === "integrate"
-                      ? reparentDialog.integratePlan?.sourceLaneId
-                      : reparentDialog.targetLaneId;
-                  if (!previewLaneAId || !previewLaneBId) return;
-                  setReparentDialog((prev) => (prev ? { ...prev, previewBusy: true } : prev));
-                  const preview = await window.ade.conflicts.simulateMerge({
-                    laneAId: previewLaneAId,
-                    laneBId: previewLaneBId
-                  });
-                  setReparentDialog((prev) => (prev ? { ...prev, previewBusy: false, preview } : prev));
-                }}
-              >
-                {reparentDialog.actionMode === "integrate" ? "Preview integrate" : "Preview rebase"}
-              </Button>
+              {reparentDialog.actionMode !== "pr" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={reparentDialog.previewBusy}
+                  onClick={async () => {
+                    const previewLaneAId =
+                      reparentDialog.actionMode === "integrate"
+                        ? reparentDialog.integratePlan?.laneId
+                        : reparentDialog.laneIds[0];
+                    const previewLaneBId =
+                      reparentDialog.actionMode === "integrate"
+                        ? reparentDialog.integratePlan?.sourceLaneId
+                        : reparentDialog.targetLaneId;
+                    if (!previewLaneAId || !previewLaneBId) return;
+                    setReparentDialog((prev) => (prev ? { ...prev, previewBusy: true } : prev));
+                    const preview = await window.ade.conflicts.simulateMerge({
+                      laneAId: previewLaneAId,
+                      laneBId: previewLaneBId
+                    });
+                    setReparentDialog((prev) => (prev ? { ...prev, previewBusy: false, preview } : prev));
+                  }}
+                >
+                  {reparentDialog.actionMode === "integrate" ? "Preview integrate" : "Preview rebase"}
+                </Button>
+              ) : null}
               <Button size="sm" variant="primary" onClick={() => void applyReparent()}>
-                {reparentDialog.actionMode === "integrate" ? "Confirm Integrate" : "Confirm Reparent"}
+                {reparentDialog.actionMode === "integrate"
+                  ? "Confirm Integrate"
+                  : reparentDialog.actionMode === "pr"
+                    ? "Open PR Dialog"
+                    : "Confirm Reparent"}
               </Button>
             </div>
           </div>
@@ -3650,7 +3705,10 @@ function GraphInner() {
       ) : null}
 
       {edgeHover ? (
-        <div className="pointer-events-none fixed z-[91] rounded border border-border bg-card/95 px-2 py-1 text-[11px] text-fg shadow" style={{ left: edgeHover.x, top: edgeHover.y }}>
+        <div
+          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded border border-border bg-card/95 px-2 py-1 text-[11px] text-fg shadow"
+          style={{ left: edgeHover.x, top: edgeHover.y }}
+        >
           {edgeHover.label}
         </div>
       ) : null}

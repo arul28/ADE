@@ -10,6 +10,7 @@ import { Button } from "../ui/Button";
 import { Layers3 } from "lucide-react";
 import { LaneConflictsPanel } from "./LaneConflictsPanel";
 import { LanePrPanel } from "../prs/LanePrPanel";
+import type { LaneInspectorTab } from "../../state/appStore";
 
 const tabTrigger =
   "px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:border-b-2 data-[state=active]:border-accent";
@@ -25,6 +26,8 @@ export function LaneInspector({
   const lanes = useAppStore((s) => s.lanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const laneInspectorTabs = useAppStore((s) => s.laneInspectorTabs);
+  const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const laneId = overrideLaneId ?? selectedLaneId;
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const parentLane = useMemo(
@@ -61,10 +64,19 @@ export function LaneInspector({
     return lanes.filter((entry) => entry.id !== lane.id && !descendantIds.has(entry.id));
   }, [descendantIds, lane, lanes]);
 
+  const activeTab: LaneInspectorTab = (laneId ? (laneInspectorTabs[laneId] as LaneInspectorTab | undefined) : undefined) ?? "terminals";
+
   return (
     <div className="flex h-full flex-col">
       {!hideHeader ? <PaneHeader title="Inspector" meta="lane-scoped" /> : null}
-      <Tabs.Root defaultValue="terminals" className="flex h-full flex-col">
+      <Tabs.Root
+        value={activeTab}
+        onValueChange={(value) => {
+          if (!laneId) return;
+          setLaneInspectorTab(laneId, value as LaneInspectorTab);
+        }}
+        className="flex h-full flex-col"
+      >
         <Tabs.List className="flex gap-2 border-b border-border px-2">
           <Tabs.Trigger className={cn(tabTrigger)} value="terminals">
             Terminals
@@ -83,7 +95,7 @@ export function LaneInspector({
           </Tabs.Trigger>
         </Tabs.List>
         <div className="flex-1 min-h-0 p-3">
-          <Tabs.Content value="terminals" forceMount className="h-full data-[state=inactive]:hidden">
+          <Tabs.Content value="terminals" className="h-full">
             <LaneTerminalsPanel overrideLaneId={laneId} />
           </Tabs.Content>
           <Tabs.Content value="packs" className="h-full overflow-auto">
