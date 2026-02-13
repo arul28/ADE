@@ -3,7 +3,9 @@ import path from "node:path";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
-import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
+import type { GitHubRepoRef, GitHubStatus, HostedGitHubAppStatus } from "../../../shared/types";
+import type { createHostedAgentService } from "../hosted/hostedAgentService";
+import type { createProjectConfigService } from "../config/projectConfigService";
 
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
 
@@ -49,11 +51,15 @@ function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | nul
 export function createGithubService({
   logger,
   adeDir,
-  projectRoot
+  projectRoot,
+  projectConfigService,
+  hostedAgentService
 }: {
   logger: Logger;
   adeDir: string;
   projectRoot: string;
+  projectConfigService: ReturnType<typeof createProjectConfigService>;
+  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
 }) {
   const githubStateDir = path.join(adeDir, "github");
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
@@ -142,7 +148,29 @@ export function createGithubService({
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
-  }): Promise<{ data: T; response: Response }> => {
+  }): Promise<{ data: T; response: Response | null }> => {
+    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+    const shouldUseHostedProxy = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
+    if (shouldUseHostedProxy) {
+      const status = await getHostedGitHubStatus();
+      if (!status.configured) {
+        throw new Error(
+          "Hosted GitHub App is not configured on the cloud API. Configure ADE_GITHUB_APP_ID/ADE_GITHUB_APP_SLUG/ADE_GITHUB_APP_PRIVATE_KEY_BASE64 and ADE_GITHUB_WEBHOOK_SECRET, then redeploy the API."
+        );
+      }
+      if (!status.connected) {
+        throw new Error("GitHub App is not connected for this project. Go to Settings → Hosted GitHub App and click Connect.");
+      }
+
+      const data = await hostedAgentService!.githubProxyRequest<T>({
+        method: args.method,
+        path: args.path,
+        query: args.query,
+        body: args.body
+      });
+      return { data, response: null };
+    }
+
     const token = (args.token ?? readStoredToken() ?? "").trim();
     if (!token) {
       throw new Error("GitHub token missing. Set it in Settings.");
@@ -192,6 +220,25 @@ export function createGithubService({
 
   let cachedStatus: GitHubStatus | null = null;
   let cachedAt = 0;
+
+  let cachedHostedStatus: HostedGitHubAppStatus | null = null;
+  let cachedHostedAt = 0;
+
+  const getHostedGitHubStatus = async (): Promise<HostedGitHubAppStatus> => {
+    if (!hostedAgentService) {
+      throw new Error("Hosted GitHub App status is unavailable (hosted agent service missing).");
+    }
+
+    const now = Date.now();
+    if (cachedHostedStatus && now - cachedHostedAt < 5_000) {
+      return cachedHostedStatus;
+    }
+
+    const status = await hostedAgentService.githubGetStatus();
+    cachedHostedStatus = status;
+    cachedHostedAt = now;
+    return status;
+  };
 
   const getStatus = async (): Promise<GitHubStatus> => {
     const token = readStoredToken();
@@ -269,4 +316,3 @@ export function createGithubService({
     apiRequest
   };
 }
-

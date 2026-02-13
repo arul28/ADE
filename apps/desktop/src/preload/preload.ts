@@ -64,6 +64,10 @@ import type {
   GetTestLogTailArgs,
   HostedArtifactResult,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -291,7 +295,13 @@ contextBridge.exposeInMainWorld("ade", {
     getJob: async (jobId: string): Promise<HostedJobStatusResult> =>
       ipcRenderer.invoke(IPC.hostedGetJob, { jobId }),
     getArtifact: async (artifactId: string): Promise<HostedArtifactResult> =>
-      ipcRenderer.invoke(IPC.hostedGetArtifact, { artifactId })
+      ipcRenderer.invoke(IPC.hostedGetArtifact, { artifactId }),
+    github: {
+      getStatus: async (): Promise<HostedGitHubAppStatus> => ipcRenderer.invoke(IPC.hostedGithubGetStatus),
+      connectStart: async (): Promise<HostedGitHubConnectStartResult> => ipcRenderer.invoke(IPC.hostedGithubConnectStart),
+      disconnect: async (): Promise<HostedGitHubDisconnectResult> => ipcRenderer.invoke(IPC.hostedGithubDisconnect),
+      listEvents: async (): Promise<HostedGitHubEventsResult> => ipcRenderer.invoke(IPC.hostedGithubListEvents)
+    }
   },
   history: {
     listOperations: async (args: ListOperationsArgs = {}): Promise<OperationRecord[]> =>

@@ -187,7 +187,9 @@ app.whenReady().then(async () => {
     const githubService = createGithubService({
       logger,
       adeDir: adePaths.adeDir,
-      projectRoot
+      projectRoot,
+      projectConfigService,
+      hostedAgentService
     });
 
     const conflictService = createConflictService({

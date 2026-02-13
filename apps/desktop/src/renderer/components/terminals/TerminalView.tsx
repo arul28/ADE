@@ -3,7 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 import { cn } from "../ui/cn";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type ThemeId } from "../../state/appStore";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 
@@ -24,6 +24,10 @@ const terminalThemes: Record<"light" | "dark", XtermTheme> = {
   }
 };
 
+function isDarkTheme(theme: ThemeId): boolean {
+  return theme === "bloomberg" || theme === "github" || theme === "rainbow" || theme === "pats";
+}
+
 export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; sessionId: string; className?: string }) {
   const appTheme = useAppStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -33,7 +37,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null);
   const [exited, setExited] = useState<number | null>(null);
 
-  const termTheme = useMemo(() => terminalThemes[appTheme], [appTheme]);
+  const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
 
   useEffect(() => {
     const el = containerRef.current;

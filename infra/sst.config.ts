@@ -133,6 +133,13 @@ export default $config({
     const llmSecretName = `ade-${stage}-llm-provider`;
     const llmSecretResourceArn = $interpolate`arn:aws:secretsmanager:${region}:${caller.accountId}:secret:${llmSecretName}*`;
 
+    // GitHub App secrets (used by Phase 7A GitHub integration).
+    // These are passed into the API as plain env vars consumed by the Lambda runtime.
+    const githubAppId = new sst.Secret("ADE_GITHUB_APP_ID");
+    const githubAppSlug = new sst.Secret("ADE_GITHUB_APP_SLUG");
+    const githubAppPrivateKeyBase64 = new sst.Secret("ADE_GITHUB_APP_PRIVATE_KEY_BASE64");
+    const githubWebhookSecret = new sst.Secret("ADE_GITHUB_WEBHOOK_SECRET");
+
     const blobsBucket = new sst.aws.Bucket("Blobs", {
       versioning: false,
       transform: {
@@ -356,10 +363,10 @@ export default $config({
       GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
       GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
       GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
-      GITHUB_APP_ID: process.env.ADE_GITHUB_APP_ID ?? "",
-      GITHUB_APP_SLUG: process.env.ADE_GITHUB_APP_SLUG ?? "",
-      GITHUB_APP_PRIVATE_KEY_BASE64: process.env.ADE_GITHUB_APP_PRIVATE_KEY_BASE64 ?? "",
-      GITHUB_WEBHOOK_SECRET: process.env.ADE_GITHUB_WEBHOOK_SECRET ?? ""
+      GITHUB_APP_ID: githubAppId.value,
+      GITHUB_APP_SLUG: githubAppSlug.value,
+      GITHUB_APP_PRIVATE_KEY_BASE64: githubAppPrivateKeyBase64.value,
+      GITHUB_WEBHOOK_SECRET: githubWebhookSecret.value
     };
 
     const apiLinkedResources = [

@@ -61,6 +61,10 @@ import type {
   GetTestLogTailArgs,
   HostedArtifactResult,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -694,6 +698,26 @@ export function registerIpc({
   ipcMain.handle(IPC.hostedGetArtifact, async (_event, arg: { artifactId: string }): Promise<HostedArtifactResult> => {
     const ctx = getCtx();
     return await ctx.hostedAgentService.getArtifact(arg.artifactId);
+  });
+
+  ipcMain.handle(IPC.hostedGithubGetStatus, async (): Promise<HostedGitHubAppStatus> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubGetStatus();
+  });
+
+  ipcMain.handle(IPC.hostedGithubConnectStart, async (): Promise<HostedGitHubConnectStartResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubConnectStart();
+  });
+
+  ipcMain.handle(IPC.hostedGithubDisconnect, async (): Promise<HostedGitHubDisconnectResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubDisconnect();
+  });
+
+  ipcMain.handle(IPC.hostedGithubListEvents, async (): Promise<HostedGitHubEventsResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubListEvents();
   });
 
   ipcMain.handle(IPC.githubGetStatus, async (): Promise<GitHubStatus> => {

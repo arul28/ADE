@@ -228,6 +228,46 @@ export type GitHubStatus = {
   checkedAt: string | null;
 };
 
+export type HostedGitHubAppStatus = {
+  configured: boolean;
+  connected: boolean;
+  installationId: string | null;
+  connectedAt: string | null;
+  appSlug: string | null;
+};
+
+export type HostedGitHubConnectStartResult = {
+  installUrl: string;
+  state: string;
+  expiresAt: string;
+  callbackUrl: string;
+};
+
+export type HostedGitHubDisconnectResult = {
+  disconnected: true;
+};
+
+export type HostedGitHubEvent = {
+  eventId: string;
+  githubEvent: string;
+  action: string | null;
+  repoFullName: string | null;
+  prNumber: number | null;
+  summary: string;
+  createdAt: string;
+};
+
+export type HostedGitHubEventsResult = {
+  events: HostedGitHubEvent[];
+};
+
+export type HostedGitHubProxyRequestArgs = {
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  path: string;
+  query?: Record<string, string | number | boolean | undefined | null>;
+  body?: unknown;
+};
+
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
 export type PrReviewStatus = "none" | "requested" | "approved" | "changes_requested";

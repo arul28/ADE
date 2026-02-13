@@ -39,6 +39,10 @@ import type {
   GetTestLogTailArgs,
   HostedArtifactResult,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -250,6 +254,12 @@ declare global {
         submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
         getJob: (jobId: string) => Promise<HostedJobStatusResult>;
         getArtifact: (artifactId: string) => Promise<HostedArtifactResult>;
+        github: {
+          getStatus: () => Promise<HostedGitHubAppStatus>;
+          connectStart: () => Promise<HostedGitHubConnectStartResult>;
+          disconnect: () => Promise<HostedGitHubDisconnectResult>;
+          listEvents: () => Promise<HostedGitHubEventsResult>;
+        };
       };
       history: {
         listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;

@@ -7,6 +7,11 @@ import type {
   HostedArtifactResult,
   HostedAuthStatus,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
+  HostedGitHubProxyRequestArgs,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -1320,6 +1325,55 @@ export function createHostedAgentService({
     };
   };
 
+  const githubGetStatus = async (): Promise<HostedGitHubAppStatus> => {
+    const remoteProjectId = await ensureRemoteProject();
+    return await apiRequest<HostedGitHubAppStatus>({
+      method: "GET",
+      path: `/projects/${remoteProjectId}/github/status`
+    });
+  };
+
+  const githubConnectStart = async (): Promise<HostedGitHubConnectStartResult> => {
+    const remoteProjectId = await ensureRemoteProject();
+    const response = await apiRequest<HostedGitHubConnectStartResult>({
+      method: "POST",
+      path: `/projects/${remoteProjectId}/github/connect/start`
+    });
+    await openExternal(response.installUrl);
+    return response;
+  };
+
+  const githubDisconnect = async (): Promise<HostedGitHubDisconnectResult> => {
+    const remoteProjectId = await ensureRemoteProject();
+    return await apiRequest<HostedGitHubDisconnectResult>({
+      method: "POST",
+      path: `/projects/${remoteProjectId}/github/disconnect`
+    });
+  };
+
+  const githubListEvents = async (): Promise<HostedGitHubEventsResult> => {
+    const remoteProjectId = await ensureRemoteProject();
+    return await apiRequest<HostedGitHubEventsResult>({
+      method: "GET",
+      path: `/projects/${remoteProjectId}/github/events`
+    });
+  };
+
+  const githubProxyRequest = async <T>(args: HostedGitHubProxyRequestArgs): Promise<T> => {
+    const remoteProjectId = await ensureRemoteProject();
+    const response = await apiRequest<{ data: T }>({
+      method: "POST",
+      path: `/projects/${remoteProjectId}/github/api`,
+      body: {
+        method: args.method,
+        path: args.path,
+        query: args.query ?? {},
+        body: args.body
+      }
+    });
+    return response.data;
+  };
+
   const syncMirror = async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
     const config = ensureHostedConfigured();
     const remoteProjectId = await ensureRemoteProject();
@@ -1406,6 +1460,26 @@ export function createHostedAgentService({
 
     async getArtifact(artifactId: string): Promise<HostedArtifactResult> {
       return await getArtifact(artifactId);
+    },
+
+    async githubGetStatus(): Promise<HostedGitHubAppStatus> {
+      return await githubGetStatus();
+    },
+
+    async githubConnectStart(): Promise<HostedGitHubConnectStartResult> {
+      return await githubConnectStart();
+    },
+
+    async githubDisconnect(): Promise<HostedGitHubDisconnectResult> {
+      return await githubDisconnect();
+    },
+
+    async githubListEvents(): Promise<HostedGitHubEventsResult> {
+      return await githubListEvents();
+    },
+
+    async githubProxyRequest<T>(args: HostedGitHubProxyRequestArgs): Promise<T> {
+      return await githubProxyRequest<T>(args);
     },
 
     async waitForJob(jobId: string, timeoutMs?: number): Promise<HostedJobStatusResult> {

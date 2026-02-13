@@ -3,6 +3,8 @@ import { EmptyState } from "../ui/EmptyState";
 import type {
   AppInfo,
   GitHubStatus,
+  HostedGitHubAppStatus,
+  HostedGitHubEvent,
   HostedBootstrapConfig,
   HostedStatus,
   ProviderMode,
@@ -226,6 +228,10 @@ export function SettingsPage() {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
+  const [hostedGithubStatus, setHostedGithubStatus] = useState<HostedGitHubAppStatus | null>(null);
+  const [hostedGithubEvents, setHostedGithubEvents] = useState<HostedGitHubEvent[]>([]);
+  const [hostedGithubBusy, setHostedGithubBusy] = useState(false);
+  const [hostedGithubPollingUntil, setHostedGithubPollingUntil] = useState<number | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -279,6 +285,101 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!providerDraft || providerDraft.mode !== "hosted") {
+      setHostedGithubStatus(null);
+      setHostedGithubEvents([]);
+      setHostedGithubPollingUntil(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    window.ade.hosted.github
+      .getStatus()
+      .then((status) => {
+        if (!cancelled) setHostedGithubStatus(status);
+      })
+      .catch(() => { });
+
+    window.ade.hosted.github
+      .listEvents()
+      .then((res) => {
+        if (!cancelled) setHostedGithubEvents(res.events ?? []);
+      })
+      .catch(() => { });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [providerDraft?.mode]);
+
+  useEffect(() => {
+    if (hostedGithubPollingUntil == null) return;
+    let cancelled = false;
+    let inFlight = false;
+
+    const tick = async () => {
+      if (cancelled || inFlight) return;
+      if (Date.now() >= hostedGithubPollingUntil) {
+        setHostedGithubPollingUntil(null);
+        return;
+      }
+
+      inFlight = true;
+      try {
+        const status = await window.ade.hosted.github.getStatus();
+        if (!cancelled) setHostedGithubStatus(status);
+        if (status.connected) {
+          setHostedGithubPollingUntil(null);
+          setSaveNotice("GitHub App connected.");
+        }
+      } catch {
+        // Ignore polling errors; user can manually refresh.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = window.setInterval(() => void tick(), 2000);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hostedGithubPollingUntil]);
+
+  useEffect(() => {
+    if (!providerDraft || providerDraft.mode !== "hosted") return;
+    if (!hostedGithubStatus?.connected) return;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshEvents = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const res = await window.ade.hosted.github.listEvents();
+        if (!cancelled) setHostedGithubEvents(res.events ?? []);
+      } catch {
+        // ignore
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = window.setInterval(() => void refreshEvents(), 10_000);
+    void refreshEvents();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [providerDraft?.mode, hostedGithubStatus?.connected]);
 
   if (loadError) {
     return <EmptyState title="Settings" description={`Failed to load settings: ${loadError}`} />;
@@ -877,6 +978,142 @@ export function SettingsPage() {
           </div>
         ) : null}
 
+        {providerDraft.mode === "hosted" ? (
+          <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+            <div className="text-xs text-muted-fg">GitHub App (Hosted, Phase 7A)</div>
+            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Hosted GitHub uses a GitHub App installation per project (no PATs). Click Connect, complete the installation in the browser, then return to ADE.
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                disabled={
+                  hostedGithubBusy ||
+                  providerMode !== "hosted" ||
+                  !hostedStatus?.auth.signedIn ||
+                  !providerDraft.hosted.consentGiven ||
+                  !providerDraft.hosted.githubRepoConsent ||
+                  hostedGithubStatus?.configured === false
+                }
+                onClick={() => {
+                  setHostedGithubBusy(true);
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.hosted.github
+                    .connectStart()
+                    .then(() => {
+                      setSaveNotice("Opened GitHub App installation page. Finish install and return to ADE.");
+                      setHostedGithubPollingUntil(Date.now() + 2 * 60_000);
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedGithubBusy(false));
+                }}
+              >
+                {hostedGithubBusy ? "Working..." : "Connect GitHub App"}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedGithubBusy || providerMode !== "hosted" || !hostedGithubStatus?.connected}
+                onClick={() => {
+                  setHostedGithubBusy(true);
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.hosted.github
+                    .disconnect()
+                    .then(() => window.ade.hosted.github.getStatus())
+                    .then((status) => {
+                      setHostedGithubStatus(status);
+                      setSaveNotice("GitHub App disconnected.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedGithubBusy(false));
+                }}
+              >
+                Disconnect
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedGithubBusy || providerMode !== "hosted"}
+                onClick={() => {
+                  setHostedGithubBusy(true);
+                  setActionError(null);
+                  window.ade.hosted.github
+                    .getStatus()
+                    .then((status) => setHostedGithubStatus(status))
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedGithubBusy(false));
+                }}
+              >
+                Refresh Status
+              </Button>
+
+              {!hostedStatus?.auth.signedIn ? (
+                <div className="text-xs text-muted-fg">Sign in first.</div>
+              ) : providerMode !== "hosted" ? (
+                <div className="text-xs text-muted-fg">Save provider mode as Hosted first.</div>
+              ) : hostedGithubStatus?.configured === false ? (
+                <div className="text-xs text-muted-fg">Server GitHub App not configured.</div>
+              ) : null}
+            </div>
+
+            <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+              <div>configured: {hostedGithubStatus ? (hostedGithubStatus.configured ? "yes" : "no") : "unknown"}</div>
+              <div>connected: {hostedGithubStatus ? (hostedGithubStatus.connected ? "yes" : "no") : "unknown"}</div>
+              <div>app slug: {hostedGithubStatus?.appSlug ?? "unknown"}</div>
+              <div>installation: {hostedGithubStatus?.installationId ?? "none"}</div>
+              <div>connected at: {hostedGithubStatus?.connectedAt ?? "never"}</div>
+            </div>
+
+            <div className="mt-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs text-muted-fg">Recent GitHub webhook events (debug)</div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={hostedGithubBusy || providerMode !== "hosted"}
+                  onClick={() => {
+                    setHostedGithubBusy(true);
+                    setActionError(null);
+                    window.ade.hosted.github
+                      .listEvents()
+                      .then((res) => setHostedGithubEvents(res.events ?? []))
+                      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                      .finally(() => setHostedGithubBusy(false));
+                  }}
+                >
+                  Refresh Events
+                </Button>
+              </div>
+
+              <div className="mt-2 max-h-[220px] overflow-auto rounded border border-border bg-card/30">
+                <div className="divide-y divide-border">
+                  {hostedGithubEvents.map((ev) => (
+                    <div key={ev.eventId} className="px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="truncate text-fg">{ev.summary}</div>
+                        <div className="shrink-0 text-[11px] text-muted-fg">{ev.createdAt}</div>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-fg">
+                        {ev.repoFullName ? ev.repoFullName : "unknown repo"}
+                        {ev.prNumber != null ? ` · #${ev.prNumber}` : ""}
+                        {ev.action ? ` · ${ev.action}` : ""}
+                      </div>
+                    </div>
+                  ))}
+                  {!hostedGithubEvents.length ? (
+                    <div className="px-3 py-3 text-xs text-muted-fg">No events stored yet.</div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {providerDraft.mode === "byok" ? (
           <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
             <div className="text-xs text-muted-fg">BYOK (ONBOARD-015)</div>
@@ -946,12 +1183,12 @@ export function SettingsPage() {
         ) : null}
 
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
-          <div className="text-xs text-muted-fg">GitHub (Phase 7)</div>
+          <div className="text-xs text-muted-fg">GitHub (Local Token)</div>
           <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
             <input
               type="password"
               className="h-9 rounded border border-border bg-bg px-3 text-sm md:col-span-2"
-              placeholder="GitHub token (PAT or App installation token)"
+              placeholder="GitHub token (PAT; non-hosted mode only)"
               value={githubTokenDraft}
               onChange={(e) => setGithubTokenDraft(e.target.value)}
             />
@@ -1025,7 +1262,7 @@ export function SettingsPage() {
             <div>checked: {githubStatus?.checkedAt ?? "never"}</div>
           </div>
           <div className="mt-2 text-xs text-muted-fg">
-            GitHub token is encrypted using OS secure storage and stored locally under `.ade/`.
+            Token is encrypted using OS secure storage and stored locally under `.ade/`. In Hosted mode, GitHub uses the GitHub App connection instead of this token.
           </div>
         </div>
 
