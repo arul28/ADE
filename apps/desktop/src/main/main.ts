@@ -32,6 +32,7 @@ import { createTerminalProfilesService } from "./services/terminalProfiles/termi
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
+import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -333,6 +334,14 @@ app.whenReady().then(async () => {
       onEvent: (event) => broadcast(IPC.automationsEvent, event)
     });
 
+    const automationPlannerService = createAutomationPlannerService({
+      logger,
+      projectRoot,
+      projectConfigService,
+      laneService,
+      automationService
+    });
+
     const state = upsertRecentProject(readGlobalState(globalStatePath), project);
     writeGlobalState(globalStatePath, state);
 
@@ -366,6 +375,7 @@ app.whenReady().then(async () => {
       prPollingService,
       jobEngine,
       automationService,
+      automationPlannerService,
       packService,
       projectConfigService,
       processService,

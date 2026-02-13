@@ -1,6 +1,7 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { AutomationRuleSummary, AutomationRun, AutomationRunDetail } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -109,7 +110,7 @@ export function AutomationsSection() {
         <div className="min-w-0">
           <div className="text-sm font-semibold">Automations</div>
           <div className="mt-0.5 text-xs text-muted-fg">
-            Trigger-action workflows. Hosted actions (mirror sync) can incur cloud usage; keep them off unless you need them.
+            Trigger-action workflows. Manage rules in the <Link to="/automations" className="underline">Automations</Link> tab.
           </div>
         </div>
         <Button size="sm" variant="outline" disabled={loading} onClick={() => void refresh()}>

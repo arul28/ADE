@@ -56,6 +56,14 @@ import type {
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationParseNaturalLanguageRequest,
+  AutomationParseNaturalLanguageResult,
+  AutomationValidateDraftRequest,
+  AutomationValidateDraftResult,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+  AutomationSimulateRequest,
+  AutomationSimulateResult,
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
@@ -182,6 +190,10 @@ declare global {
         triggerManually: (args: { id: string; laneId?: string | null }) => Promise<AutomationRun>;
         getHistory: (args: { id: string; limit?: number }) => Promise<AutomationRun[]>;
         getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
+        parseNaturalLanguage: (req: AutomationParseNaturalLanguageRequest) => Promise<AutomationParseNaturalLanguageResult>;
+        validateDraft: (req: AutomationValidateDraftRequest) => Promise<AutomationValidateDraftResult>;
+        saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;
+        simulate: (req: AutomationSimulateRequest) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
       lanes: {

@@ -9,6 +9,14 @@ import type {
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationParseNaturalLanguageRequest,
+  AutomationParseNaturalLanguageResult,
+  AutomationValidateDraftRequest,
+  AutomationValidateDraftResult,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+  AutomationSimulateRequest,
+  AutomationSimulateResult,
   ConflictProposal,
   ConflictOverlap,
   ConflictStatus,
@@ -158,6 +166,7 @@ import type { createTerminalProfilesService } from "../terminalProfiles/terminal
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createAutomationService } from "../automations/automationService";
+import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 
 export type AppContext = {
   db: AdeDb;
@@ -184,6 +193,7 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
+  automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -378,6 +388,26 @@ export function registerIpc({
   ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
     const ctx = getCtx();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
+    const ctx = getCtx();
+    return await ctx.automationPlannerService.parseNaturalLanguage(arg);
+  });
+
+  ipcMain.handle(IPC.automationsValidateDraft, async (_event, arg: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> => {
+    const ctx = getCtx();
+    return ctx.automationPlannerService.validateDraft(arg);
+  });
+
+  ipcMain.handle(IPC.automationsSaveDraft, async (_event, arg: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> => {
+    const ctx = getCtx();
+    return ctx.automationPlannerService.saveDraft(arg);
+  });
+
+  ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
+    const ctx = getCtx();
+    return ctx.automationPlannerService.simulate(arg);
   });
 
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {

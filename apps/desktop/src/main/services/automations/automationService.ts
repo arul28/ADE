@@ -90,6 +90,12 @@ function normalizeActionStatus(value: string, fallback: AutomationActionStatus):
   return fallback;
 }
 
+function isWithinDir(root: string, candidate: string): boolean {
+  const rootNorm = path.resolve(root) + path.sep;
+  const candNorm = path.resolve(candidate) + path.sep;
+  return candNorm.startsWith(rootNorm);
+}
+
 function toRun(row: AutomationRunRow): AutomationRun {
   return {
     id: row.id,
@@ -400,10 +406,8 @@ export function createAutomationService({
     }
 
     if (action.type === "sync-to-mirror") {
-      if (!hostedAgentService) throw new Error("Hosted agent service unavailable");
-      if (!isHostedEnabled()) throw new Error("Hosted mode is not enabled");
-      await hostedAgentService.syncMirror(trigger.laneId ? { laneId: trigger.laneId, includeTranscripts: false } : { includeTranscripts: false });
-      return { status: "succeeded" };
+      // Policy: Automations must run locally. Hosted mirror sync is intentionally blocked.
+      throw new Error("sync-to-mirror is not supported for automations (hosted execution is disabled).");
     }
 
     if (action.type === "run-tests") {
@@ -428,7 +432,16 @@ export function createAutomationService({
       const laneId = trigger.laneId ?? null;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
       const configuredCwd = (action.cwd ?? "").trim();
-      const cwd = configuredCwd.length ? (path.isAbsolute(configuredCwd) ? configuredCwd : path.join(baseCwd, configuredCwd)) : baseCwd;
+      const cwd = configuredCwd.length
+        ? path.isAbsolute(configuredCwd)
+          ? configuredCwd
+          : path.resolve(baseCwd, configuredCwd)
+        : baseCwd;
+
+      // Safety: never allow escaping the lane/workspace base directory via ../ or absolute paths.
+      if (!isWithinDir(baseCwd, cwd)) {
+        throw new Error("Unsafe cwd: must be within the lane worktree (or project root when no lane is present).");
+      }
 
       const { output, exitCode } = await runCommand({ command, cwd, timeoutMs: action.timeoutMs ?? 5 * 60_000 });
       if (exitCode !== 0) {
@@ -441,6 +454,12 @@ export function createAutomationService({
   };
 
   const runRule = async (rule: AutomationRule, trigger: TriggerContext): Promise<AutomationRun> => {
+    // Trust model: refuse to execute when shared config is untrusted.
+    // (UI should surface a trust CTA, mirroring process/test blocking semantics.)
+    if (projectConfigService.get().trust.requiresSharedTrust) {
+      throw new Error("Shared config is untrusted. Confirm trust to run automations.");
+    }
+
     if (inFlightByAutomationId.has(rule.id)) {
       logger.info("automations.dedup.skip", { automationId: rule.id, triggerType: trigger.triggerType });
       // Return the most recent run if possible.

@@ -9,6 +9,14 @@ import type {
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunDetail,
+  AutomationParseNaturalLanguageRequest,
+  AutomationParseNaturalLanguageResult,
+  AutomationValidateDraftRequest,
+  AutomationValidateDraftResult,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+  AutomationSimulateRequest,
+  AutomationSimulateResult,
   AutomationsEventPayload,
   ConflictProposal,
   ConflictEventPayload,
@@ -188,6 +196,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.automationsGetHistory, args),
     getRunDetail: async (runId: string): Promise<AutomationRunDetail | null> =>
       ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
+    parseNaturalLanguage: async (req: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> =>
+      ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
+    validateDraft: async (req: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> =>
+      ipcRenderer.invoke(IPC.automationsValidateDraft, req),
+    saveDraft: async (req: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> =>
+      ipcRenderer.invoke(IPC.automationsSaveDraft, req),
+    simulate: async (req: AutomationSimulateRequest): Promise<AutomationSimulateResult> =>
+      ipcRenderer.invoke(IPC.automationsSimulate, req),
     onEvent: (cb: (ev: AutomationsEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: AutomationsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.automationsEvent, listener);

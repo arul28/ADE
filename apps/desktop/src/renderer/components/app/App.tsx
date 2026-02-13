@@ -9,6 +9,7 @@ import { ConflictsPage } from "../conflicts/ConflictsPage";
 import { WorkspaceGraphPage } from "../graph/WorkspaceGraphPage";
 import { PRsPage } from "../prs/PRsPage";
 import { HistoryPage } from "../history/HistoryPage";
+import { AutomationsPage } from "../automations/AutomationsPage";
 import { SettingsPage } from "./SettingsPage";
 import { StartupAuthPage } from "./StartupAuthPage";
 
@@ -46,6 +47,7 @@ export function App() {
             <Route path="/graph" element={<WorkspaceGraphPage />} />
             <Route path="/prs" element={<PRsPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/automations" element={<AutomationsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
