@@ -14,15 +14,18 @@
 [data-theme="e-paper"] {
   /* E-PAPER Theme (Warm/Light) - DEFAULT */
   --color-bg: #fdfbf7;
-  --color-fg: #1c1917;
+  --color-fg: #201a14;
+  --color-surface: #f7f2e9;
 
   --color-card: #fdfbf7;
-  --color-card-fg: #1c1917;
+  --color-card-fg: #201a14;
+  --color-secondary: #ddd1be;
+  --color-secondary-fg: #5f5140;
 
-  --color-muted: #f2f0ed;
-  --color-muted-fg: #6b665e;
+  --color-muted: #efe8dd;
+  --color-muted-fg: #6f6359;
 
-  --color-border: #dbd8d3;
+  --color-border: #d3cfc6;
 
   --color-accent: #c22323;
   --color-accent-fg: #ffffff;
@@ -31,17 +34,20 @@
 [data-theme="bloomberg"] {
   /* BLOOMBERG Theme (Dark Terminal) */
   --color-bg: #0a0a0a;
-  --color-fg: #ff9900;
+  --color-fg: #ffc87a;
+  --color-surface: #15100a;
 
-  --color-card: #111111;
-  --color-card-fg: #ff9900;
+  --color-card: #16110a;
+  --color-card-fg: #ffbb66;
+  --color-secondary: #4f3c1f;
+  --color-secondary-fg: #f5d2a4;
 
-  --color-muted: #1a1a1a;
-  --color-muted-fg: #888888;
+  --color-muted: #1f180f;
+  --color-muted-fg: #b09779;
 
-  --color-border: #333333;
+  --color-border: #403121;
 
-  --color-accent: #ff6600;
+  --color-accent: #ff7a00;
   --color-accent-fg: #000000;
 }
 
@@ -49,14 +55,17 @@
   /* GITHUB Theme (Dark Navy) */
   --color-bg: #0d1117;
   --color-fg: #c9d1d9;
+  --color-surface: #0f1a2d;
 
-  --color-card: #161b22;
+  --color-card: #111b2c;
   --color-card-fg: #c9d1d9;
+  --color-secondary: #58a6ff;
+  --color-secondary-fg: #0f2d53;
 
-  --color-muted: #21262d;
-  --color-muted-fg: #8b949e;
+  --color-muted: #1d2a3a;
+  --color-muted-fg: #8b97a8;
 
-  --color-border: #30363d;
+  --color-border: #2f3b49;
 
   --color-accent: #58a6ff;
   --color-accent-fg: #ffffff;
@@ -66,17 +75,19 @@
   /* RAINBOW Theme (Vibrant Dark) */
   --color-bg: #1b1f23;
   --color-fg: #e6edf3;
+  --color-surface: #252035;
 
-  --color-card: #24292e;
+  --color-card: #222737;
   --color-card-fg: #e6edf3;
+  --color-secondary: #c084fc;
+  --color-secondary-fg: #35134f;
 
-  --color-muted: #2f363d;
-  --color-muted-fg: #959da5;
+  --color-muted: #2a3342;
+  --color-muted-fg: #96a0ac;
 
-  --color-border: #444c56;
+  --color-border: #525e72;
 
-  --color-accent: #c084fc;
-  /* Purple/Pink vibe */
+  --color-accent: #fb7185;
   --color-accent-fg: #ffffff;
 }
 
@@ -84,38 +95,40 @@
   /* SKY Theme (Light / Analytical) */
   --color-bg: #f0f6ff;
   --color-fg: #1e3a8a;
+  --color-surface: #edf3ff;
 
-  --color-card: #ffffff;
+  --color-card: #f7faff;
   --color-card-fg: #1e3a8a;
+  --color-secondary: #14b8a6;
+  --color-secondary-fg: #042f2f;
 
   --color-muted: #dbeafe;
   --color-muted-fg: #60a5fa;
 
-  --color-border: #bfdbfe;
+  --color-border: #b7d5ff;
 
-  --color-accent: #3b82f6;
+  --color-accent: #2563eb;
   --color-accent-fg: #ffffff;
 }
 
 [data-theme="pats"] {
   /* PATS Theme (Navy/Red/Silver) */
-  --color-bg: #002244;
+  --color-bg: #001a36;
   /* Navy */
-  --color-fg: #ffffff;
+  --color-fg: #edf4ff;
+  --color-surface: #012b53;
 
-  --color-card: #001122;
-  --color-card-fg: #b0b7bc;
-  /* Silverish text */
+  --color-card: #001a34;
+  --color-card-fg: #d3deec;
+  --color-secondary: #0d426b;
+  --color-secondary-fg: #cfe0f3;
 
-  --color-muted: #b0b7bc;
-  /* Silver */
-  --color-muted-fg: #002244;
+  --color-muted: #163f66;
+  --color-muted-fg: #a6bdd6;
 
   --color-border: #c60c30;
-  /* Red border */
 
   --color-accent: #c60c30;
-  /* Red */
   --color-accent-fg: #ffffff;
 }
 
@@ -131,6 +144,7 @@ body {
   margin: 0;
   color: var(--color-fg);
   background-color: var(--color-bg);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 86%, black 14%), var(--color-surface));
   /* 
    * Fonts:
    * Body/UI: Monospace for density

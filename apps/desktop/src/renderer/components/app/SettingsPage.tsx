@@ -104,12 +104,13 @@ function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
       mirrorExcludePatternsText: asStringArray(hosted.mirrorExcludePatterns).join("\n")
     },
     byok: {
-      provider:
-        asString(byok.provider) === "openai"
-          ? "openai"
-          : asString(byok.provider) === "gemini"
-            ? "gemini"
-            : "anthropic",
+      provider: (() => {
+        const value = asString(byok.provider).trim().toLowerCase();
+        if (value === "openai" || value === "anthropic" || value === "gemini") {
+          return value;
+        }
+        return "openai";
+      })(),
       model: asString(byok.model),
       apiKey: asString(byok.apiKey)
     },
@@ -144,33 +145,92 @@ function validateProviderDraft(draft: ProviderDraft, hasBootstrapConfig: boolean
     return "BYOK mode requires a model name.";
   }
 
+  if (
+    draft.mode === "byok" &&
+    draft.byok.provider === "gemini" &&
+    !/^gemini-[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(draft.byok.model.trim())
+  ) {
+    return "Gemini model should start with 'gemini-' (for example, gemini-1.5-flash-latest).";
+  }
+
   return null;
 }
 
-const THEME_META: Record<ThemeId, { label: string; colors: { bg: string; fg: string; card: string; border: string; accent: string } }> = {
+const THEME_META: Record<
+  ThemeId,
+  { label: string; colors: { bg: string; fg: string; card: string; muted: string; border: string; accent: string; accentSecondary: string } }
+> = {
   "e-paper": {
     label: "E-Paper",
-    colors: { bg: "#fdfbf7", fg: "#1c1917", card: "#fdfbf7", border: "#dbd8d3", accent: "#c22323" }
+    colors: {
+      bg: "#fdfbf7",
+      fg: "#201a14",
+      card: "#fdfbf7",
+      muted: "#efe8dd",
+      border: "#d3cfc6",
+      accent: "#c22323",
+      accentSecondary: "#ddd1be"
+    }
   },
   bloomberg: {
     label: "Bloomberg",
-    colors: { bg: "#0a0a0a", fg: "#ff9900", card: "#111111", border: "#333333", accent: "#ff6600" }
+    colors: {
+      bg: "#0a0a0a",
+      fg: "#ffc87a",
+      card: "#16110a",
+      muted: "#1f180f",
+      border: "#403121",
+      accent: "#ff7a00",
+      accentSecondary: "#4f3c1f"
+    }
   },
   github: {
     label: "GitHub",
-    colors: { bg: "#0d1117", fg: "#c9d1d9", card: "#161b22", border: "#30363d", accent: "#58a6ff" }
+    colors: {
+      bg: "#0d1117",
+      fg: "#c9d1d9",
+      card: "#111b2c",
+      muted: "#1d2a3a",
+      border: "#2f3b49",
+      accent: "#58a6ff",
+      accentSecondary: "#1f6feb"
+    }
   },
   rainbow: {
     label: "Rainbow",
-    colors: { bg: "#1b1f23", fg: "#e6edf3", card: "#24292e", border: "#444c56", accent: "#c084fc" }
+    colors: {
+      bg: "#1b1f23",
+      fg: "#e6edf3",
+      card: "#222737",
+      muted: "#2a3342",
+      border: "#525e72",
+      accent: "#fb7185",
+      accentSecondary: "#c084fc"
+    }
   },
   sky: {
     label: "Sky",
-    colors: { bg: "#f0f6ff", fg: "#1e3a8a", card: "#ffffff", border: "#bfdbfe", accent: "#3b82f6" }
+    colors: {
+      bg: "#f0f6ff",
+      fg: "#1e3a8a",
+      card: "#f7faff",
+      muted: "#dbeafe",
+      border: "#b7d5ff",
+      accent: "#2563eb",
+      accentSecondary: "#14b8a6"
+    }
   },
   pats: {
     label: "Pats",
-    colors: { bg: "#002244", fg: "#ffffff", card: "#001122", border: "#c60c30", accent: "#c60c30" }
+    colors: {
+      bg: "#001a36",
+      fg: "#edf4ff",
+      card: "#001a34",
+      muted: "#163f66",
+      border: "#c60c30",
+      accent: "#c60c30",
+      accentSecondary: "#0d426b"
+    }
   }
 };
 
@@ -184,7 +244,7 @@ function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selecte
         "hover:bg-muted/40",
         selected && "ring-2 ring-accent ring-offset-1"
       )}
-      style={{ "--tw-ring-offset-color": "var(--color-bg)" } as React.CSSProperties}
+    style={{ "--tw-ring-offset-color": "var(--color-bg)" } as React.CSSProperties}
       title={label}
     >
       {/* Preview square */}
@@ -196,11 +256,12 @@ function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selecte
         <div className="h-2 w-full" style={{ backgroundColor: colors.card }} />
         {/* Accent stripe */}
         <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accent }} />
+        <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accentSecondary }} />
         {/* Text lines */}
         <div className="mx-1 mt-1 space-y-0.5">
           <div className="h-0.5 w-6 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.6 }} />
-          <div className="h-0.5 w-4 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.35 }} />
-          <div className="h-0.5 w-5 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.35 }} />
+          <div className="h-0.5 w-4 rounded-full" style={{ backgroundColor: colors.muted, opacity: 0.75 }} />
+          <div className="h-0.5 w-5 rounded-full" style={{ backgroundColor: colors.muted, opacity: 0.55 }} />
         </div>
       </div>
       {/* Label */}

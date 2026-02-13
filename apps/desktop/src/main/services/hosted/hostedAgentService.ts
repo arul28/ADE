@@ -108,6 +108,12 @@ const DEFAULT_EXCLUDE_PATTERNS = [
   ".git/"
 ];
 
+const HOSTED_FETCH_TIMEOUT_MS = 20_000;
+const POLL_INITIAL_DELAY_MS = 700;
+const POLL_MAX_DELAY_MS = 4_000;
+const POLL_TIMEOUT_FLOOR_MS = 60_000;
+const POLL_STALL_TIMEOUT_MS = 90_000;
+
 const TEXT_EXTENSIONS = new Set([
   ".md",
   ".txt",
@@ -210,9 +216,50 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const body = keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",");
+  return `{${body}}`;
+};
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = HOSTED_FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = Math.max(5_000, Math.floor(timeoutMs));
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if ((error as DOMException | null)?.name === "AbortError") {
+      throw new Error(`Request to hosted endpoint timed out after ${timeout}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function toJsonBody(value: unknown): string {
   return JSON.stringify(value);
 }
+
+const makeRequestKey = (label: string, payload: unknown): string =>
+  `${label}:${createHash("sha256").update(stableStringify(payload)).digest("hex")}`;
 
 function normalizeHttpUrl(input: string): string {
   const trimmed = input.trim();
@@ -681,7 +728,7 @@ export function createHostedAgentService({
       throw new Error("Hosted OAuth token endpoint is missing. Apply bootstrap config and try again.");
     }
 
-    const response = await fetch(tokenUrl, {
+    const response = await fetchWithTimeout(tokenUrl, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded"
@@ -741,7 +788,7 @@ export function createHostedAgentService({
         : asString(config.auth.idToken || config.auth.accessToken);
 
     const doRequest = async (authToken: string) => {
-      const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, "")}${args.path}`, {
+      const response = await fetchWithTimeout(`${config.apiBaseUrl.replace(/\/$/, "")}${args.path}`, {
         method: args.method,
         headers: {
           "content-type": "application/json",
@@ -1069,17 +1116,97 @@ export function createHostedAgentService({
     };
   };
 
+  const laneNarrativeRequests = new Map<
+    string,
+    Promise<{
+      jobId: string;
+      artifactId: string;
+      narrative: string;
+    }>
+  >();
+
+  const conflictProposalRequests = new Map<
+    string,
+    Promise<{
+      jobId: string;
+      artifactId: string;
+      explanation: string;
+      diffPatch: string;
+      confidence: number | null;
+      rawContent: string;
+    }>
+  >();
+
+  const prDescriptionRequests = new Map<
+    string,
+    Promise<{
+      jobId: string;
+      artifactId: string;
+      title: string;
+      body: string;
+    }>
+  >();
+
+  const runSingleRequest = async <T>(args: {
+    key: string;
+    inFlight: Map<string, Promise<T>>;
+    run: () => Promise<T>;
+  }): Promise<T> => {
+    const existing = args.inFlight.get(args.key);
+    if (existing) return existing;
+    const inFlight = args.run().finally(() => {
+      args.inFlight.delete(args.key);
+    });
+    args.inFlight.set(args.key, inFlight);
+    return inFlight;
+  };
+
   const pollJob = async (jobId: string, timeoutMs = 120_000): Promise<HostedJobStatusResult> => {
     const started = Date.now();
+    const effectiveTimeout = Math.max(POLL_TIMEOUT_FLOOR_MS, timeoutMs);
+    let delayMs = POLL_INITIAL_DELAY_MS;
+    let statusStreakStart = started;
+    let lastStatus: HostedJobStatusResult["status"] | null = null;
+    let consecutiveFailures = 0;
+
     while (true) {
-      const status = await getJob(jobId);
-      if (status.status === "completed" || status.status === "failed") {
+      let status: HostedJobStatusResult;
+      try {
+        status = await getJob(jobId);
+        consecutiveFailures = 0;
+      } catch (error) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures > 4) {
+          throw new Error(
+            `Unable to poll hosted job ${jobId} after ${consecutiveFailures} attempts: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        await sleep(Math.min(POLL_MAX_DELAY_MS, POLL_INITIAL_DELAY_MS * 2 ** consecutiveFailures));
+        continue;
+      }
+
+      const normalizedStatus = status.status === "in_progress" ? "processing" : status.status;
+
+      if (normalizedStatus !== lastStatus) {
+        lastStatus = normalizedStatus;
+        statusStreakStart = Date.now();
+      }
+
+      if (!["queued", "processing", "completed", "failed"].includes(normalizedStatus)) {
+        throw new Error(`Hosted job ${jobId} returned unsupported status: ${status.status}`);
+      }
+
+      if (normalizedStatus === "completed" || normalizedStatus === "failed") {
         return status;
       }
-      if (Date.now() - started > timeoutMs) {
+      if (Date.now() - statusStreakStart > POLL_STALL_TIMEOUT_MS) {
+        throw new Error(`Hosted job ${jobId} is stuck on status '${normalizedStatus}' for too long.`);
+      }
+      if (Date.now() - started > effectiveTimeout) {
         throw new Error(`Timed out waiting for hosted job ${jobId}`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await sleep(delayMs);
+      delayMs = Math.min(POLL_MAX_DELAY_MS, Math.max(POLL_INITIAL_DELAY_MS, Math.floor(delayMs * 1.8)));
     }
   };
 
@@ -1174,7 +1301,7 @@ export function createHostedAgentService({
       });
     });
 
-    const tokenResponse = await fetch(tokenEndpoint, {
+    const tokenResponse = await fetchWithTimeout(tokenEndpoint, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded"
@@ -1202,7 +1329,7 @@ export function createHostedAgentService({
     let profile = extractProfileFromClaims(decodeJwtClaims(idToken || accessToken));
 
     if ((!profile.email || !profile.displayName) && config.clerkOauthUserInfoUrl.trim() && accessToken) {
-      const userInfoResponse = await fetch(config.clerkOauthUserInfoUrl, {
+      const userInfoResponse = await fetchWithTimeout(config.clerkOauthUserInfoUrl, {
         headers: {
           authorization: `Bearer ${accessToken}`
         }
@@ -1498,40 +1625,50 @@ export function createHostedAgentService({
       confidence: number | null;
       rawContent: string;
     }> {
-      await syncMirror({ laneId: args.laneId, includeTranscripts: false });
-
-      const submission = await submitJob({
-        type: "ProposeConflictResolution" as HostedJobType,
+      const requestKey = makeRequestKey("conflict-proposal", {
         laneId: args.laneId,
-        params: {
-          peerLaneId: args.peerLaneId ?? null,
-          ...args.conflictContext
-        }
+        peerLaneId: args.peerLaneId ?? null,
+        context: args.conflictContext
       });
 
-      const status = await pollJob(submission.jobId, 180_000);
-      if (status.status !== "completed" || !status.artifactId) {
-        const message = status.error?.message ?? `Proposal job ${status.jobId} did not complete successfully.`;
-        throw new Error(message);
-      }
+      return runSingleRequest({
+        key: requestKey,
+        inFlight: conflictProposalRequests,
+        run: async () => {
+          const submission = await submitJob({
+            type: "ProposeConflictResolution" as HostedJobType,
+            laneId: args.laneId,
+            params: {
+              peerLaneId: args.peerLaneId ?? null,
+              ...args.conflictContext
+            }
+          });
 
-      const artifact = await getArtifact(status.artifactId);
-      const contentRaw = isRecord(artifact.content) && typeof artifact.content.content === "string"
-        ? (artifact.content.content as string)
-        : typeof artifact.content === "string"
-          ? artifact.content
-          : JSON.stringify(artifact.content, null, 2);
+          const status = await pollJob(submission.jobId, 180_000);
+          if (status.status !== "completed" || !status.artifactId) {
+            const message = status.error?.message ?? `Proposal job ${status.jobId} did not complete successfully.`;
+            throw new Error(message);
+          }
 
-      const parsed = parseDiffFromContent(contentRaw);
+          const artifact = await getArtifact(status.artifactId);
+          const contentRaw = isRecord(artifact.content) && typeof artifact.content.content === "string"
+            ? (artifact.content.content as string)
+            : typeof artifact.content === "string"
+              ? artifact.content
+              : JSON.stringify(artifact.content, null, 2);
 
-      return {
-        jobId: submission.jobId,
-        artifactId: artifact.artifactId,
-        explanation: parsed.explanation,
-        diffPatch: parsed.diffPatch,
-        confidence: parsed.confidence,
-        rawContent: contentRaw
-      };
+          const parsed = parseDiffFromContent(contentRaw);
+
+          return {
+            jobId: submission.jobId,
+            artifactId: artifact.artifactId,
+            explanation: parsed.explanation,
+            diffPatch: parsed.diffPatch,
+            confidence: parsed.confidence,
+            rawContent: contentRaw
+          };
+        }
+      });
     },
 
     async requestLaneNarrative(args: { laneId: string; packBody: string }): Promise<{
@@ -1539,34 +1676,43 @@ export function createHostedAgentService({
       artifactId: string;
       narrative: string;
     }> {
-      await syncMirror({ laneId: args.laneId, includeTranscripts: false });
-
-      const submission = await submitJob({
-        type: "NarrativeGeneration" as HostedJobType,
+      const requestKey = makeRequestKey("lane-narrative", {
         laneId: args.laneId,
-        params: {
-          packBody: args.packBody
-        }
+        packBody: args.packBody
       });
 
-      const status = await pollJob(submission.jobId, 120_000);
-      if (status.status !== "completed" || !status.artifactId) {
-        const message = status.error?.message ?? `Narrative job ${status.jobId} did not complete successfully.`;
-        throw new Error(message);
-      }
+      return runSingleRequest({
+        key: requestKey,
+        inFlight: laneNarrativeRequests,
+        run: async () => {
+          const submission = await submitJob({
+            type: "NarrativeGeneration" as HostedJobType,
+            laneId: args.laneId,
+            params: {
+              packBody: args.packBody
+            }
+          });
 
-      const artifact = await getArtifact(status.artifactId);
-      const narrative = isRecord(artifact.content) && typeof artifact.content.content === "string"
-        ? (artifact.content.content as string)
-        : typeof artifact.content === "string"
-          ? artifact.content
-          : JSON.stringify(artifact.content, null, 2);
+          const status = await pollJob(submission.jobId, 120_000);
+          if (status.status !== "completed" || !status.artifactId) {
+            const message = status.error?.message ?? `Narrative job ${status.jobId} did not complete successfully.`;
+            throw new Error(message);
+          }
 
-      return {
-        jobId: submission.jobId,
-        artifactId: artifact.artifactId,
-        narrative
-      };
+          const artifact = await getArtifact(status.artifactId);
+          const narrative = isRecord(artifact.content) && typeof artifact.content.content === "string"
+            ? (artifact.content.content as string)
+            : typeof artifact.content === "string"
+              ? artifact.content
+              : JSON.stringify(artifact.content, null, 2);
+
+          return {
+            jobId: submission.jobId,
+            artifactId: artifact.artifactId,
+            narrative
+          };
+        }
+      });
     },
 
     async requestPrDescription(args: {
@@ -1578,33 +1724,42 @@ export function createHostedAgentService({
       title: string;
       body: string;
     }> {
-      await syncMirror({ laneId: args.laneId, includeTranscripts: false });
-
-      const submission = await submitJob({
-        type: "DraftPrDescription" as HostedJobType,
+      const requestKey = makeRequestKey("pr-description", {
         laneId: args.laneId,
-        params: args.prContext
+        prContext: args.prContext
       });
 
-      const status = await pollJob(submission.jobId, 120_000);
-      if (status.status !== "completed" || !status.artifactId) {
-        const message = status.error?.message ?? `PR drafting job ${status.jobId} did not complete successfully.`;
-        throw new Error(message);
-      }
+      return runSingleRequest({
+        key: requestKey,
+        inFlight: prDescriptionRequests,
+        run: async () => {
+          const submission = await submitJob({
+            type: "DraftPrDescription" as HostedJobType,
+            laneId: args.laneId,
+            params: args.prContext
+          });
 
-      const artifact = await getArtifact(status.artifactId);
-      const body = isRecord(artifact.content) && typeof artifact.content.content === "string"
-        ? (artifact.content.content as string)
-        : typeof artifact.content === "string"
-          ? artifact.content
-          : JSON.stringify(artifact.content, null, 2);
+          const status = await pollJob(submission.jobId, 120_000);
+          if (status.status !== "completed" || !status.artifactId) {
+            const message = status.error?.message ?? `PR drafting job ${status.jobId} did not complete successfully.`;
+            throw new Error(message);
+          }
 
-      return {
-        jobId: submission.jobId,
-        artifactId: artifact.artifactId,
-        title: "",
-        body
-      };
+          const artifact = await getArtifact(status.artifactId);
+          const body = isRecord(artifact.content) && typeof artifact.content.content === "string"
+            ? (artifact.content.content as string)
+            : typeof artifact.content === "string"
+              ? artifact.content
+              : JSON.stringify(artifact.content, null, 2);
+
+          return {
+            jobId: submission.jobId,
+            artifactId: artifact.artifactId,
+            title: "",
+            body
+          };
+        }
+      });
     }
   };
 }

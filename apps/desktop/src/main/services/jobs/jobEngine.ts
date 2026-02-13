@@ -53,11 +53,23 @@ export function createJobEngine({
 
       try {
         logger.info("jobs.refresh_lane.begin", payload);
-        await packService.refreshLanePack({
+
+        const existingLanePack = packService.getLanePack(payload.laneId);
+        const existingHeadSha = existingLanePack.lastHeadSha ?? null;
+
+        const lanePack = await packService.refreshLanePack({
           laneId: payload.laneId,
           reason: payload.reason,
           sessionId: payload.sessionId
         });
+
+        const refreshedHeadSha = lanePack.lastHeadSha ?? null;
+        const shouldRefreshNarrative =
+          !existingLanePack.narrativeUpdatedAt ||
+          !existingHeadSha ||
+          !refreshedHeadSha ||
+          existingHeadSha !== refreshedHeadSha;
+
         await packService.refreshProjectPack({
           reason: payload.reason,
           laneId: payload.laneId
@@ -65,8 +77,19 @@ export function createJobEngine({
 
         if (hostedAgentService?.getStatus().enabled) {
           try {
-            const lanePack = packService.getLanePack(payload.laneId);
-            if (lanePack.exists && lanePack.body.trim().length) {
+            if (!lanePack.exists || !lanePack.body.trim().length) {
+              logger.warn("jobs.hosted_refresh.empty_pack", {
+                laneId: payload.laneId,
+                reason: payload.reason
+              });
+            } else if (!shouldRefreshNarrative) {
+              logger.info("jobs.hosted_refresh.narrative_up_to_date", {
+                laneId: payload.laneId,
+                reason: payload.reason
+              });
+            } else {
+              await hostedAgentService.syncMirror({ laneId: payload.laneId, includeTranscripts: false });
+
               const narrative = await hostedAgentService.requestLaneNarrative({
                 laneId: payload.laneId,
                 packBody: lanePack.body
@@ -80,7 +103,6 @@ export function createJobEngine({
                 }
               });
             }
-            await hostedAgentService.syncMirror({ laneId: payload.laneId, includeTranscripts: false });
           } catch (hostedError) {
             logger.warn("jobs.hosted_refresh.failed", {
               laneId: payload.laneId,
@@ -88,6 +110,7 @@ export function createJobEngine({
             });
           }
         }
+
         logger.info("jobs.refresh_lane.done", payload);
       } catch (error) {
         logger.error("jobs.refresh_lane.failed", {

@@ -49,7 +49,7 @@ function asPrettyJson(value: unknown): string {
 }
 
 function parseConfidence(text: string): number | null {
-  const match = text.match(/confidence\\s*[:=]\\s*([0-9]+(?:\\.[0-9]+)?)(%?)/i);
+  const match = text.match(/confidence\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)(%?)/i);
   if (!match) return null;
   const raw = Number(match[1]);
   if (!Number.isFinite(raw)) return null;
@@ -59,14 +59,28 @@ function parseConfidence(text: string): number | null {
   return confidence;
 }
 
+function normalizeGeminiModel(model: string): string {
+  const normalized = model.trim();
+  if (!normalized) {
+    throw new Error("BYOK Gemini model is missing. Set a valid Gemini model such as gemini-1.5-flash-latest.");
+  }
+
+  const withoutPrefix = normalized.startsWith("models/") ? normalized.slice("models/".length) : normalized;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(withoutPrefix) || !withoutPrefix.startsWith("gemini-")) {
+    throw new Error("BYOK Gemini model should start with 'gemini-' (for example, gemini-1.5-flash-latest).");
+  }
+
+  return withoutPrefix;
+}
+
 function extractDiffPatch(text: string): string {
-  const fence = text.match(/```diff\\s*\\n([\\s\\S]*?)\\n```/i);
+  const fence = text.match(/```diff\s*\n([\s\S]*?)\n```/i);
   if (fence?.[1]) return fence[1].trim() + "\n";
   return "";
 }
 
 function stripDiffFence(text: string): string {
-  return text.replace(/```diff\\s*\\n[\\s\\S]*?\\n```/gi, "").trim();
+  return text.replace(/```diff\s*\n[\s\S]*?\n```/gi, "").trim();
 }
 
 function buildPromptTemplate(kind: "narrative" | "pr-description" | "conflict", params: unknown): PromptTemplate {
@@ -140,15 +154,28 @@ function parseByokConfig(providerMode: ProviderMode, rawProviders: unknown): Byo
   const provider: ByokProvider =
     providerRaw === "openai" || providerRaw === "anthropic" || providerRaw === "gemini"
       ? (providerRaw as ByokProvider)
-      : "openai";
+      : "";
+
+  if (!provider) {
+    throw new Error("BYOK provider is invalid. Supported providers are: openai, anthropic, gemini.");
+  }
 
   const model = asString(byok.model).trim();
+  const nextModel =
+    provider === "gemini"
+      ? normalizeGeminiModel(model)
+      : model;
+
   const apiKey = asString(byok.apiKey).trim();
 
   if (!apiKey) throw new Error("BYOK API key is missing. Set it in Settings → Provider Mode (BYOK).");
-  if (!model) throw new Error("BYOK model is missing. Set it in Settings → Provider Mode (BYOK).");
+  if (!nextModel) throw new Error("BYOK model is missing. Set it in Settings → Provider Mode (BYOK).");
 
-  return { provider, model, apiKey };
+  return {
+    provider,
+    model: nextModel,
+    apiKey
+  };
 }
 
 async function callOpenai(args: {
@@ -375,4 +402,3 @@ export function createByokLlmService({
     }
   };
 }
-
