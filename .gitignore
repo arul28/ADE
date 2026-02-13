@@ -1,5 +1,7 @@
 .ade/
 .DS_Store
+*.pem
 infra/node_modules/
 infra/.sst/
 infra/.pulumi/
+/infra/.home

@@ -31,6 +31,8 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
+import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createByokLlmService } from "../byok/byokLlmService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
@@ -67,6 +69,7 @@ type ConflictProposalRow = {
   job_id: string | null;
   artifact_id: string | null;
   applied_operation_id: string | null;
+  metadata_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -296,10 +299,37 @@ function rowToProposal(row: ConflictProposalRow): ConflictProposal {
   };
 }
 
+function safeParseMetadata(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
 function writePatchFile(content: string): string {
   const filePath = path.join(os.tmpdir(), `ade-proposal-${randomUUID()}.patch`);
   fs.writeFileSync(filePath, content, "utf8");
   return filePath;
+}
+
+function extractPathsFromUnifiedDiff(diffPatch: string): string[] {
+  const paths = new Set<string>();
+  for (const line of diffPatch.split(/\r?\n/)) {
+    if (line.startsWith("+++ b/")) {
+      const p = line.slice("+++ b/".length).trim();
+      if (p && p !== "/dev/null") paths.add(p);
+    }
+    if (line.startsWith("diff --git ")) {
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      const p = match?.[2]?.trim();
+      if (p && p !== "/dev/null") paths.add(p);
+    }
+  }
+  return Array.from(paths).sort((a, b) => a.localeCompare(b));
 }
 
 function deletePatchFile(filePath: string): void {
@@ -316,8 +346,10 @@ export function createConflictService({
   projectId,
   projectRoot,
   laneService,
+  projectConfigService,
   operationService,
   hostedAgentService,
+  byokLlmService,
   conflictPacksDir,
   onEvent
 }: {
@@ -326,8 +358,10 @@ export function createConflictService({
   projectId: string;
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
+  projectConfigService: ReturnType<typeof createProjectConfigService>;
   operationService?: ReturnType<typeof createOperationService>;
   hostedAgentService?: ReturnType<typeof createHostedAgentService>;
+  byokLlmService?: ReturnType<typeof createByokLlmService>;
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
@@ -364,6 +398,22 @@ export function createConflictService({
   const listActiveLanes = async (): Promise<LaneSummary[]> => {
     const lanes = await laneService.list({ includeArchived: false });
     return lanes.filter((lane) => !lane.archivedAt);
+  };
+
+  const packsRootDir = conflictPacksDir ? path.dirname(conflictPacksDir) : null;
+
+  const readLanePackBody = (laneId: string): string | null => {
+    if (!packsRootDir) return null;
+    const filePath = path.join(packsRootDir, "lanes", laneId, "lane_pack.md");
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      return trimmed.length > 12_000 ? `${trimmed.slice(0, 12_000)}\n\n…(truncated)…\n` : trimmed;
+    } catch {
+      return null;
+    }
   };
 
   const getLatestRows = (): Map<string, ConflictPredictionRow> => {
@@ -1204,20 +1254,95 @@ export function createConflictService({
   };
 
   const requestProposal = async (args: RequestConflictProposalArgs): Promise<ConflictProposal> => {
-    const lane = (await listActiveLanes()).find((entry) => entry.id === args.laneId);
+    const lanes = await listActiveLanes();
+    const lane = lanes.find((entry) => entry.id === args.laneId);
     if (!lane) {
       throw new Error(`Lane not found: ${args.laneId}`);
     }
 
-    if (!hostedAgentService || !hostedAgentService.getStatus().enabled) {
-      throw new Error("Hosted provider is not configured. Set Provider Mode to Hosted and sign in first.");
+    // CONF-022: stack-aware conflict resolution. If a lane is stacked, resolve parent conflicts first.
+    if (lane.parentLaneId) {
+      const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
+      if (parentStatus && parentStatus.status !== "merge-ready") {
+        throw new Error(
+          `Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`
+        );
+      }
     }
+
+    const peerLaneId = args.peerLaneId ?? null;
+
+    const overlaps = await listOverlaps({ laneId: args.laneId });
+    const status = await getLaneStatus({ laneId: args.laneId });
+    const overlapEntry = overlaps.find((entry) => entry.peerId === peerLaneId) ?? null;
+    const overlapPaths = (overlapEntry?.files ?? []).map((file) => file.path).filter(Boolean);
+
+    const lanePackBody = readLanePackBody(args.laneId);
+    const peerPackBody = peerLaneId ? readLanePackBody(peerLaneId) : null;
+
+    const overlapDiffs = await (async () => {
+      const MAX_FILES = 6;
+      const MAX_DIFF_CHARS = 9000;
+
+      const truncate = (text: string): string => {
+        if (text.length <= MAX_DIFF_CHARS) return text;
+        return `${text.slice(0, MAX_DIFF_CHARS)}\n...(truncated)...\n`;
+      };
+
+      const laneGit = laneService.getLaneBaseAndBranch(args.laneId);
+      const laneHeadSha = await readHeadSha(laneGit.worktreePath).catch(() => "");
+      if (!laneHeadSha) return null;
+
+      if (peerLaneId) {
+        const peerGit = laneService.getLaneBaseAndBranch(peerLaneId);
+        const peerHeadSha = await readHeadSha(peerGit.worktreePath).catch(() => "");
+        if (!peerHeadSha) return null;
+        const mergeBaseSha = await readMergeBase(laneGit.worktreePath, laneHeadSha, peerHeadSha).catch(() => "");
+        const base = mergeBaseSha.trim();
+        if (!base) return null;
+
+        const files: Array<{ path: string; laneDiff: string; peerDiff: string }> = [];
+        for (const filePath of overlapPaths.slice(0, MAX_FILES)) {
+          const [laneDiff, peerDiff] = await Promise.all([
+            runGit(["diff", "--unified=3", `${base}..${laneHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
+              .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : "")),
+            runGit(["diff", "--unified=3", `${base}..${peerHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
+              .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : ""))
+          ]);
+          files.push({ path: filePath, laneDiff, peerDiff });
+        }
+
+        return {
+          mergeBaseSha: base,
+          laneHeadSha,
+          peerHeadSha,
+          files
+        };
+      }
+
+      const parentLane = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+      const baseRef = parentLane?.branchRef ?? lane.baseRef;
+      const files: Array<{ path: string; laneDiff: string }> = [];
+      for (const filePath of overlapPaths.slice(0, MAX_FILES)) {
+        const diff = await runGit(["diff", "--unified=3", `${baseRef}..${laneHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
+          .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : ""));
+        files.push({ path: filePath, laneDiff: diff });
+      }
+      return {
+        baseRef,
+        laneHeadSha,
+        files
+      };
+    })().catch(() => null);
 
     let conflictContext: Record<string, unknown> = {
       laneId: args.laneId,
-      peerLaneId: args.peerLaneId ?? null,
-      overlaps: await listOverlaps({ laneId: args.laneId }),
-      status: await getLaneStatus({ laneId: args.laneId })
+      peerLaneId,
+      overlaps,
+      status,
+      ...(lanePackBody ? { lanePackBody } : {}),
+      ...(peerPackBody ? { peerPackBody } : {}),
+      ...(overlapDiffs ? { overlapDiffs } : {})
     };
 
     if (conflictPacksDir) {
@@ -1227,7 +1352,12 @@ export function createConflictService({
           const raw = fs.readFileSync(packPath, "utf8");
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === "object") {
-            conflictContext = parsed as Record<string, unknown>;
+            conflictContext = {
+              ...conflictContext,
+              ...(parsed as Record<string, unknown>),
+              laneId: args.laneId,
+              peerLaneId
+            };
           }
         } catch {
           // Ignore malformed conflict pack and fall back to runtime context.
@@ -1235,11 +1365,29 @@ export function createConflictService({
       }
     }
 
-    const hostedResult = await hostedAgentService.requestConflictProposal({
-      laneId: args.laneId,
-      peerLaneId: args.peerLaneId ?? null,
-      conflictContext
-    });
+    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+    const usingHosted = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
+    const usingByok = providerMode === "byok";
+
+    if (!usingHosted && !usingByok) {
+      throw new Error("AI conflict resolution requires Hosted or BYOK provider mode.");
+    }
+
+    if (usingByok && !byokLlmService) {
+      throw new Error("BYOK provider is enabled but BYOK LLM service is unavailable.");
+    }
+
+    const result = usingHosted
+      ? await hostedAgentService!.requestConflictProposal({
+          laneId: args.laneId,
+          peerLaneId: args.peerLaneId ?? null,
+          conflictContext
+        })
+      : await byokLlmService!.proposeConflictResolution({
+          laneId: args.laneId,
+          peerLaneId: args.peerLaneId ?? null,
+          conflictContext
+        });
 
     const createdAt = new Date().toISOString();
     const proposalId = randomUUID();
@@ -1264,7 +1412,7 @@ export function createConflictService({
           metadata_json,
           created_at,
           updated_at
-        ) values (?, ?, ?, ?, ?, 'hosted', ?, ?, ?, 'pending', ?, ?, null, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, null, ?, ?, ?)
       `,
       [
         proposalId,
@@ -1272,13 +1420,16 @@ export function createConflictService({
         args.laneId,
         args.peerLaneId ?? null,
         predictionId,
-        hostedResult.confidence,
-        hostedResult.explanation,
-        hostedResult.diffPatch,
-        hostedResult.jobId,
-        hostedResult.artifactId,
+        usingHosted ? "hosted" : "local",
+        result.confidence,
+        result.explanation,
+        result.diffPatch,
+        usingHosted ? (result as any).jobId : null,
+        usingHosted ? (result as any).artifactId : null,
         JSON.stringify({
-          rawContent: hostedResult.rawContent
+          provider: usingHosted ? "hosted" : "byok",
+          model: usingHosted ? null : (result as any).model,
+          rawContent: result.rawContent
         }),
         createdAt,
         createdAt
@@ -1301,6 +1452,12 @@ export function createConflictService({
       throw new Error("Proposal does not include a diff patch");
     }
 
+    const applyMode = args.applyMode ?? "unstaged";
+    const commitMessage = args.commitMessage?.trim() ?? "";
+    if (applyMode === "commit" && !commitMessage) {
+      throw new Error("commitMessage is required when applyMode='commit'");
+    }
+
     const lane = laneService.getLaneBaseAndBranch(args.laneId);
     const preHeadSha = await readHeadSha(lane.worktreePath);
     const operation = operationService?.start({
@@ -1308,7 +1465,8 @@ export function createConflictService({
       kind: "conflict_proposal_apply",
       preHeadSha,
       metadata: {
-        proposalId: args.proposalId
+        proposalId: args.proposalId,
+        applyMode
       }
     });
 
@@ -1322,6 +1480,22 @@ export function createConflictService({
         throw new Error(applyResult.stderr.trim() || "Failed to apply conflict proposal patch");
       }
 
+      const touchedFiles = extractPathsFromUnifiedDiff(row.diff_patch);
+      if (applyMode === "staged" || applyMode === "commit") {
+        if (touchedFiles.length) {
+          await runGitOrThrow(["add", "--", ...touchedFiles], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        } else {
+          // Fall back to staging all changes; diff parsing missed something.
+          await runGitOrThrow(["add", "-A"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        }
+      }
+
+      let appliedCommitSha: string | null = null;
+      if (applyMode === "commit") {
+        await runGitOrThrow(["commit", "-m", commitMessage], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        appliedCommitSha = await readHeadSha(lane.worktreePath);
+      }
+
       const postHeadSha = await readHeadSha(lane.worktreePath);
       if (operationService && operation) {
         operationService.finish({
@@ -1329,22 +1503,30 @@ export function createConflictService({
           status: "succeeded",
           postHeadSha,
           metadataPatch: {
-            proposalId: args.proposalId
+            proposalId: args.proposalId,
+            ...(appliedCommitSha ? { appliedCommitSha } : {})
           }
         });
       }
 
       const now = new Date().toISOString();
+      const nextMetadata = {
+        ...safeParseMetadata(row.metadata_json),
+        applyMode,
+        ...(commitMessage ? { commitMessage } : {}),
+        ...(appliedCommitSha ? { appliedCommitSha } : {})
+      };
       db.run(
         `
           update conflict_proposals
           set status = 'applied',
               applied_operation_id = ?,
+              metadata_json = ?,
               updated_at = ?
           where id = ?
             and project_id = ?
         `,
-        [operation?.operationId ?? null, now, args.proposalId, projectId]
+        [operation?.operationId ?? null, JSON.stringify(nextMetadata), now, args.proposalId, projectId]
       );
     } catch (error) {
       const postHeadSha = await readHeadSha(lane.worktreePath);
@@ -1390,14 +1572,26 @@ export function createConflictService({
       }
     });
 
-    const patchFile = writePatchFile(row.diff_patch);
     try {
-      const undoResult = await runGit(
-        ["apply", "-R", "--3way", "--whitespace=nowarn", patchFile],
-        { cwd: lane.worktreePath, timeoutMs: 60_000 }
-      );
-      if (undoResult.exitCode !== 0) {
-        throw new Error(undoResult.stderr.trim() || "Failed to undo applied proposal patch");
+      const metadata = safeParseMetadata(row.metadata_json);
+      const applyMode = typeof metadata.applyMode === "string" ? metadata.applyMode : "unstaged";
+      const appliedCommitSha = typeof metadata.appliedCommitSha === "string" ? metadata.appliedCommitSha : "";
+
+      if (applyMode === "commit" && appliedCommitSha.trim()) {
+        await runGitOrThrow(["revert", "--no-edit", appliedCommitSha.trim()], { cwd: lane.worktreePath, timeoutMs: 90_000 });
+      } else {
+        const patchFile = writePatchFile(row.diff_patch);
+        try {
+          const undoResult = await runGit(
+            ["apply", "-R", "--3way", "--whitespace=nowarn", patchFile],
+            { cwd: lane.worktreePath, timeoutMs: 60_000 }
+          );
+          if (undoResult.exitCode !== 0) {
+            throw new Error(undoResult.stderr.trim() || "Failed to undo applied proposal patch");
+          }
+        } finally {
+          deletePatchFile(patchFile);
+        }
       }
 
       const postHeadSha = await readHeadSha(lane.worktreePath);
@@ -1418,11 +1612,12 @@ export function createConflictService({
           update conflict_proposals
           set status = 'pending',
               applied_operation_id = null,
+              metadata_json = ?,
               updated_at = ?
           where id = ?
             and project_id = ?
         `,
-        [now, args.proposalId, projectId]
+        [JSON.stringify({ ...safeParseMetadata(row.metadata_json), applyMode: "unstaged", appliedCommitSha: null }), now, args.proposalId, projectId]
       );
     } catch (error) {
       const postHeadSha = await readHeadSha(lane.worktreePath);
@@ -1438,7 +1633,6 @@ export function createConflictService({
       }
       throw error;
     } finally {
-      deletePatchFile(patchFile);
     }
 
     const updated = getProposalRow(args.proposalId);

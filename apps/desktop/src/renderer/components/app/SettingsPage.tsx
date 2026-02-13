@@ -2,13 +2,17 @@ import React, { useEffect, useState } from "react";
 import { EmptyState } from "../ui/EmptyState";
 import type {
   AppInfo,
+  GitHubStatus,
+  HostedGitHubAppStatus,
+  HostedGitHubEvent,
   HostedBootstrapConfig,
   HostedStatus,
   ProviderMode,
   ProjectConfigSnapshot
 } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
 import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 
 type ProviderDraft = {
   mode: ProviderMode;
@@ -31,7 +35,7 @@ type ProviderDraft = {
     mirrorExcludePatternsText: string;
   };
   byok: {
-    provider: "openai" | "anthropic";
+    provider: "openai" | "anthropic" | "gemini";
     model: string;
     apiKey: string;
   };
@@ -100,7 +104,13 @@ function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
       mirrorExcludePatternsText: asStringArray(hosted.mirrorExcludePatterns).join("\n")
     },
     byok: {
-      provider: asString(byok.provider) === "openai" ? "openai" : "anthropic",
+      provider: (() => {
+        const value = asString(byok.provider).trim().toLowerCase();
+        if (value === "openai" || value === "anthropic" || value === "gemini") {
+          return value;
+        }
+        return "openai";
+      })(),
       model: asString(byok.model),
       apiKey: asString(byok.apiKey)
     },
@@ -135,7 +145,135 @@ function validateProviderDraft(draft: ProviderDraft, hasBootstrapConfig: boolean
     return "BYOK mode requires a model name.";
   }
 
+  if (
+    draft.mode === "byok" &&
+    draft.byok.provider === "gemini" &&
+    !/^gemini-[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(draft.byok.model.trim())
+  ) {
+    return "Gemini model should start with 'gemini-' (for example, gemini-1.5-flash-latest).";
+  }
+
   return null;
+}
+
+const THEME_META: Record<
+  ThemeId,
+  { label: string; colors: { bg: string; fg: string; card: string; muted: string; border: string; accent: string; accentSecondary: string } }
+> = {
+  "e-paper": {
+    label: "E-Paper",
+    colors: {
+      bg: "#fdfbf7",
+      fg: "#201a14",
+      card: "#fdfbf7",
+      muted: "#efe8dd",
+      border: "#d3cfc6",
+      accent: "#c22323",
+      accentSecondary: "#ddd1be"
+    }
+  },
+  bloomberg: {
+    label: "Bloomberg",
+    colors: {
+      bg: "#0a0a0a",
+      fg: "#ffc87a",
+      card: "#16110a",
+      muted: "#1f180f",
+      border: "#403121",
+      accent: "#ff7a00",
+      accentSecondary: "#4f3c1f"
+    }
+  },
+  github: {
+    label: "GitHub",
+    colors: {
+      bg: "#0d1117",
+      fg: "#c9d1d9",
+      card: "#111b2c",
+      muted: "#1d2a3a",
+      border: "#2f3b49",
+      accent: "#58a6ff",
+      accentSecondary: "#1f6feb"
+    }
+  },
+  rainbow: {
+    label: "Rainbow",
+    colors: {
+      bg: "#1b1f23",
+      fg: "#e6edf3",
+      card: "#222737",
+      muted: "#2a3342",
+      border: "#525e72",
+      accent: "#fb7185",
+      accentSecondary: "#c084fc"
+    }
+  },
+  sky: {
+    label: "Sky",
+    colors: {
+      bg: "#f0f6ff",
+      fg: "#1e3a8a",
+      card: "#f7faff",
+      muted: "#dbeafe",
+      border: "#b7d5ff",
+      accent: "#2563eb",
+      accentSecondary: "#14b8a6"
+    }
+  },
+  pats: {
+    label: "Pats",
+    colors: {
+      bg: "#001a36",
+      fg: "#edf4ff",
+      card: "#001a34",
+      muted: "#163f66",
+      border: "#c60c30",
+      accent: "#c60c30",
+      accentSecondary: "#0d426b"
+    }
+  }
+};
+
+function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selected: boolean; onClick: () => void }) {
+  const { label, colors } = THEME_META[themeId];
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group relative flex flex-col items-center gap-1.5 rounded-lg p-2 transition-all",
+        "hover:bg-muted/40",
+        selected && "ring-2 ring-accent ring-offset-1"
+      )}
+    style={{ "--tw-ring-offset-color": "var(--color-bg)" } as React.CSSProperties}
+      title={label}
+    >
+      {/* Preview square */}
+      <div
+        className="h-12 w-12 rounded-md border overflow-hidden"
+        style={{ backgroundColor: colors.bg, borderColor: colors.border }}
+      >
+        {/* Mini layout: top bar */}
+        <div className="h-2 w-full" style={{ backgroundColor: colors.card }} />
+        {/* Accent stripe */}
+        <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accent }} />
+        <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accentSecondary }} />
+        {/* Text lines */}
+        <div className="mx-1 mt-1 space-y-0.5">
+          <div className="h-0.5 w-6 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.6 }} />
+          <div className="h-0.5 w-4 rounded-full" style={{ backgroundColor: colors.muted, opacity: 0.75 }} />
+          <div className="h-0.5 w-5 rounded-full" style={{ backgroundColor: colors.muted, opacity: 0.55 }} />
+        </div>
+      </div>
+      {/* Label */}
+      <span className="text-[10px] font-medium leading-none">{label}</span>
+      {/* Selected indicator */}
+      {selected && (
+        <div className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-fg text-[8px] font-bold">
+          ✓
+        </div>
+      )}
+    </button>
+  );
 }
 
 export function SettingsPage() {
@@ -148,7 +286,18 @@ export function SettingsPage() {
   const [hostedBootstrapConfig, setHostedBootstrapConfig] = useState<HostedBootstrapConfig | null>(null);
   const [hostedBusy, setHostedBusy] = useState(false);
   const [showAdvancedHostedFields, setShowAdvancedHostedFields] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [githubTokenDraft, setGithubTokenDraft] = useState("");
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [prPollingIntervalDraft, setPrPollingIntervalDraft] = useState("25");
+  const [prPollingBusy, setPrPollingBusy] = useState(false);
+  const [hostedGithubStatus, setHostedGithubStatus] = useState<HostedGitHubAppStatus | null>(null);
+  const [hostedGithubEvents, setHostedGithubEvents] = useState<HostedGitHubEvent[]>([]);
+  const [hostedGithubBusy, setHostedGithubBusy] = useState(false);
+  const [hostedGithubPollingUntil, setHostedGithubPollingUntil] = useState<number | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
+  const theme = useAppStore((s) => s.theme);
+  const setTheme = useAppStore((s) => s.setTheme);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
 
   useEffect(() => {
@@ -168,6 +317,11 @@ export function SettingsPage() {
       .then((snapshot) => {
         if (!cancelled) {
           setProviderDraft(readProviderDraft(snapshot));
+          const localSeconds = typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
+          const effectiveSeconds =
+            typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
+          const seconds = localSeconds ?? effectiveSeconds ?? 25;
+          setPrPollingIntervalDraft(String(seconds));
         }
       })
       .catch((e) => {
@@ -179,19 +333,121 @@ export function SettingsPage() {
       .then((status) => {
         if (!cancelled) setHostedStatus(status);
       })
-      .catch(() => {});
+      .catch(() => { });
 
     window.ade.hosted
       .getBootstrapConfig()
       .then((config) => {
         if (!cancelled) setHostedBootstrapConfig(config);
       })
-      .catch(() => {});
+      .catch(() => { });
+
+    window.ade.github
+      .getStatus()
+      .then((status) => {
+        if (!cancelled) setGithubStatus(status);
+      })
+      .catch(() => { });
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!providerDraft || providerDraft.mode !== "hosted") {
+      setHostedGithubStatus(null);
+      setHostedGithubEvents([]);
+      setHostedGithubPollingUntil(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    window.ade.hosted.github
+      .getStatus()
+      .then((status) => {
+        if (!cancelled) setHostedGithubStatus(status);
+      })
+      .catch(() => { });
+
+    window.ade.hosted.github
+      .listEvents()
+      .then((res) => {
+        if (!cancelled) setHostedGithubEvents(res.events ?? []);
+      })
+      .catch(() => { });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [providerDraft?.mode]);
+
+  useEffect(() => {
+    if (hostedGithubPollingUntil == null) return;
+    let cancelled = false;
+    let inFlight = false;
+
+    const tick = async () => {
+      if (cancelled || inFlight) return;
+      if (Date.now() >= hostedGithubPollingUntil) {
+        setHostedGithubPollingUntil(null);
+        return;
+      }
+
+      inFlight = true;
+      try {
+        const status = await window.ade.hosted.github.getStatus();
+        if (!cancelled) setHostedGithubStatus(status);
+        if (status.connected) {
+          setHostedGithubPollingUntil(null);
+          setSaveNotice("GitHub App connected.");
+        }
+      } catch {
+        // Ignore polling errors; user can manually refresh.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = window.setInterval(() => void tick(), 2000);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hostedGithubPollingUntil]);
+
+  useEffect(() => {
+    if (!providerDraft || providerDraft.mode !== "hosted") return;
+    if (!hostedGithubStatus?.connected) return;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshEvents = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const res = await window.ade.hosted.github.listEvents();
+        if (!cancelled) setHostedGithubEvents(res.events ?? []);
+      } catch {
+        // ignore
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = window.setInterval(() => void refreshEvents(), 10_000);
+    void refreshEvents();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [providerDraft?.mode, hostedGithubStatus?.connected]);
 
   if (loadError) {
     return <EmptyState title="Settings" description={`Failed to load settings: ${loadError}`} />;
@@ -204,6 +460,10 @@ export function SettingsPage() {
   const refreshProviderDraftAndHostedState = async () => {
     const snapshot = await window.ade.projectConfig.get();
     setProviderDraft(readProviderDraft(snapshot));
+    const localSeconds = typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
+    const effectiveSeconds =
+      typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
+    setPrPollingIntervalDraft(String(localSeconds ?? effectiveSeconds ?? 25));
     const [status, bootstrap] = await Promise.all([
       window.ade.hosted.getStatus().catch(() => null),
       window.ade.hosted.getBootstrapConfig().catch(() => null)
@@ -274,6 +534,50 @@ export function SettingsPage() {
     }
   };
 
+  const savePrPollingSettings = async () => {
+    setActionError(null);
+    setSaveNotice(null);
+
+    const raw = prPollingIntervalDraft.trim();
+    const snapshot = await window.ade.projectConfig.get();
+    const currentGithub = isRecord(snapshot.local.github) ? snapshot.local.github : {};
+    const nextGithub: Record<string, unknown> = { ...currentGithub };
+
+    if (!raw.length) {
+      delete nextGithub.prPollingIntervalSeconds;
+    } else {
+      const seconds = Number(raw);
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        setActionError("PR polling interval must be a positive number of seconds.");
+        return;
+      }
+      if (seconds < 5 || seconds > 300) {
+        setActionError("PR polling interval must be between 5 and 300 seconds.");
+        return;
+      }
+      nextGithub.prPollingIntervalSeconds = seconds;
+    }
+
+    setPrPollingBusy(true);
+    try {
+      const nextLocal = {
+        ...snapshot.local,
+        ...(Object.keys(nextGithub).length ? { github: nextGithub } : {})
+      };
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: nextLocal
+      });
+
+      await refreshProviderDraftAndHostedState();
+      setSaveNotice("PR polling settings saved to .ade/local.yaml.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPrPollingBusy(false);
+    }
+  };
+
   const applyHostedBootstrap = async () => {
     setActionError(null);
     setSaveNotice(null);
@@ -296,6 +600,15 @@ export function SettingsPage() {
 
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
+      <div className="text-sm font-semibold">Theme</div>
+      <div className="mt-2 flex flex-wrap gap-1">
+        {THEME_IDS.map((id) => (
+          <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
+        ))}
+      </div>
+
+      <div className="my-6 h-px w-full bg-border" />
+
       <div className="text-sm font-semibold">Environment</div>
       {saveNotice ? (
         <div className="mt-2 rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
@@ -333,9 +646,9 @@ export function SettingsPage() {
                 setProviderDraft((prev) =>
                   prev
                     ? {
-                        ...prev,
-                        mode: nextMode
-                      }
+                      ...prev,
+                      mode: nextMode
+                    }
                     : prev
                 );
               }}
@@ -369,12 +682,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            consentGiven: e.target.checked
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          consentGiven: e.target.checked
                         }
+                      }
                       : prev
                   )
                 }
@@ -390,12 +703,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            githubRepoConsent: e.target.checked
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          githubRepoConsent: e.target.checked
                         }
+                      }
                       : prev
                   )
                 }
@@ -411,12 +724,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            uploadTranscripts: e.target.checked
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          uploadTranscripts: e.target.checked
                         }
+                      }
                       : prev
                   )
                 }
@@ -535,12 +848,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          hosted: {
-                            ...prev.hosted,
-                            mirrorExcludePatternsText: e.target.value
-                          }
+                        ...prev,
+                        hosted: {
+                          ...prev.hosted,
+                          mirrorExcludePatternsText: e.target.value
                         }
+                      }
                       : prev
                   )
                 }
@@ -564,12 +877,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              apiBaseUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            apiBaseUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -582,12 +895,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              region: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            region: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -600,12 +913,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkPublishableKey: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkPublishableKey: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -618,12 +931,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthClientId: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthClientId: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -636,12 +949,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkIssuer: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkIssuer: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -654,12 +967,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkFrontendApiUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkFrontendApiUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -672,12 +985,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthMetadataUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthMetadataUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -690,12 +1003,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthAuthorizeUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthAuthorizeUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -708,12 +1021,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthTokenUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthTokenUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -726,12 +1039,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthRevocationUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthRevocationUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -744,12 +1057,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthUserInfoUrl: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthUserInfoUrl: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -762,12 +1075,12 @@ export function SettingsPage() {
                     setProviderDraft((prev) =>
                       prev
                         ? {
-                            ...prev,
-                            hosted: {
-                              ...prev.hosted,
-                              clerkOauthScopes: e.target.value
-                            }
+                          ...prev,
+                          hosted: {
+                            ...prev.hosted,
+                            clerkOauthScopes: e.target.value
                           }
+                        }
                         : prev
                     )
                   }
@@ -777,6 +1090,142 @@ export function SettingsPage() {
 
             <div className="mt-2 text-xs text-muted-fg">
               Hosted tokens are stored in OS secure storage. Existing sessions are restored across app restarts.
+            </div>
+          </div>
+        ) : null}
+
+        {providerDraft.mode === "hosted" ? (
+          <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+            <div className="text-xs text-muted-fg">GitHub App (Hosted, Phase 7A)</div>
+            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Hosted GitHub uses a GitHub App installation per project (no PATs). Click Connect, complete the installation in the browser, then return to ADE.
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                disabled={
+                  hostedGithubBusy ||
+                  providerMode !== "hosted" ||
+                  !hostedStatus?.auth.signedIn ||
+                  !providerDraft.hosted.consentGiven ||
+                  !providerDraft.hosted.githubRepoConsent ||
+                  hostedGithubStatus?.configured === false
+                }
+                onClick={() => {
+                  setHostedGithubBusy(true);
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.hosted.github
+                    .connectStart()
+                    .then(() => {
+                      setSaveNotice("Opened GitHub App installation page. Finish install and return to ADE.");
+                      setHostedGithubPollingUntil(Date.now() + 2 * 60_000);
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedGithubBusy(false));
+                }}
+              >
+                {hostedGithubBusy ? "Working..." : "Connect GitHub App"}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedGithubBusy || providerMode !== "hosted" || !hostedGithubStatus?.connected}
+                onClick={() => {
+                  setHostedGithubBusy(true);
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.hosted.github
+                    .disconnect()
+                    .then(() => window.ade.hosted.github.getStatus())
+                    .then((status) => {
+                      setHostedGithubStatus(status);
+                      setSaveNotice("GitHub App disconnected.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedGithubBusy(false));
+                }}
+              >
+                Disconnect
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedGithubBusy || providerMode !== "hosted"}
+                onClick={() => {
+                  setHostedGithubBusy(true);
+                  setActionError(null);
+                  window.ade.hosted.github
+                    .getStatus()
+                    .then((status) => setHostedGithubStatus(status))
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedGithubBusy(false));
+                }}
+              >
+                Refresh Status
+              </Button>
+
+              {!hostedStatus?.auth.signedIn ? (
+                <div className="text-xs text-muted-fg">Sign in first.</div>
+              ) : providerMode !== "hosted" ? (
+                <div className="text-xs text-muted-fg">Save provider mode as Hosted first.</div>
+              ) : hostedGithubStatus?.configured === false ? (
+                <div className="text-xs text-muted-fg">Server GitHub App not configured.</div>
+              ) : null}
+            </div>
+
+            <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+              <div>configured: {hostedGithubStatus ? (hostedGithubStatus.configured ? "yes" : "no") : "unknown"}</div>
+              <div>connected: {hostedGithubStatus ? (hostedGithubStatus.connected ? "yes" : "no") : "unknown"}</div>
+              <div>app slug: {hostedGithubStatus?.appSlug ?? "unknown"}</div>
+              <div>installation: {hostedGithubStatus?.installationId ?? "none"}</div>
+              <div>connected at: {hostedGithubStatus?.connectedAt ?? "never"}</div>
+            </div>
+
+            <div className="mt-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs text-muted-fg">Recent GitHub webhook events (debug)</div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={hostedGithubBusy || providerMode !== "hosted"}
+                  onClick={() => {
+                    setHostedGithubBusy(true);
+                    setActionError(null);
+                    window.ade.hosted.github
+                      .listEvents()
+                      .then((res) => setHostedGithubEvents(res.events ?? []))
+                      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                      .finally(() => setHostedGithubBusy(false));
+                  }}
+                >
+                  Refresh Events
+                </Button>
+              </div>
+
+              <div className="mt-2 max-h-[220px] overflow-auto rounded border border-border bg-card/30">
+                <div className="divide-y divide-border">
+                  {hostedGithubEvents.map((ev) => (
+                    <div key={ev.eventId} className="px-3 py-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="truncate text-fg">{ev.summary}</div>
+                        <div className="shrink-0 text-[11px] text-muted-fg">{ev.createdAt}</div>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-fg">
+                        {ev.repoFullName ? ev.repoFullName : "unknown repo"}
+                        {ev.prNumber != null ? ` · #${ev.prNumber}` : ""}
+                        {ev.action ? ` · ${ev.action}` : ""}
+                      </div>
+                    </div>
+                  ))}
+                  {!hostedGithubEvents.length ? (
+                    <div className="px-3 py-3 text-xs text-muted-fg">No events stored yet.</div>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </div>
         ) : null}
@@ -792,18 +1241,20 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          byok: {
-                            ...prev.byok,
-                            provider: e.target.value === "openai" ? "openai" : "anthropic"
-                          }
+                        ...prev,
+                        byok: {
+                          ...prev.byok,
+                          provider:
+                            e.target.value === "openai" ? "openai" : e.target.value === "gemini" ? "gemini" : "anthropic"
                         }
+                      }
                       : prev
                   )
                 }
               >
                 <option value="anthropic">Anthropic</option>
                 <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
               </select>
               <input
                 className="h-9 rounded border border-border bg-bg px-3 text-sm"
@@ -813,12 +1264,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          byok: {
-                            ...prev.byok,
-                            model: e.target.value
-                          }
+                        ...prev,
+                        byok: {
+                          ...prev.byok,
+                          model: e.target.value
                         }
+                      }
                       : prev
                   )
                 }
@@ -832,12 +1283,12 @@ export function SettingsPage() {
                   setProviderDraft((prev) =>
                     prev
                       ? {
-                          ...prev,
-                          byok: {
-                            ...prev.byok,
-                            apiKey: e.target.value
-                          }
+                        ...prev,
+                        byok: {
+                          ...prev.byok,
+                          apiKey: e.target.value
                         }
+                      }
                       : prev
                   )
                 }
@@ -846,6 +1297,133 @@ export function SettingsPage() {
             <div className="mt-2 text-xs text-muted-fg">API key is stored in `.ade/local.yaml` and excluded from git.</div>
           </div>
         ) : null}
+
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">GitHub (Local Token)</div>
+          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
+            <input
+              type="password"
+              className="h-9 rounded border border-border bg-bg px-3 text-sm md:col-span-2"
+              placeholder="GitHub token (PAT; non-hosted mode only)"
+              value={githubTokenDraft}
+              onChange={(e) => setGithubTokenDraft(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={githubBusy}
+                onClick={() => {
+                  const token = githubTokenDraft.trim();
+                  if (!token) {
+                    setActionError("GitHub token is empty.");
+                    return;
+                  }
+                  setGithubBusy(true);
+                  setActionError(null);
+                  window.ade.github
+                    .setToken(token)
+                    .then((status) => {
+                      setGithubStatus(status);
+                      setGithubTokenDraft("");
+                      setSaveNotice("GitHub token saved.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setGithubBusy(false));
+                }}
+              >
+                Save Token
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={githubBusy}
+                onClick={() => {
+                  setGithubBusy(true);
+                  setActionError(null);
+                  window.ade.github
+                    .clearToken()
+                    .then((status) => {
+                      setGithubStatus(status);
+                      setSaveNotice("GitHub token cleared.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setGithubBusy(false));
+                }}
+              >
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={githubBusy}
+                onClick={() => {
+                  setGithubBusy(true);
+                  setActionError(null);
+                  window.ade.github
+                    .getStatus()
+                    .then((status) => setGithubStatus(status))
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setGithubBusy(false));
+                }}
+              >
+                Refresh
+              </Button>
+            </div>
+          </div>
+          <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+            <div>token stored: {githubStatus?.tokenStored ? "yes" : "no"}</div>
+            <div>repo: {githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "unknown"}</div>
+            <div>user: {githubStatus?.userLogin ?? "unknown"}</div>
+            <div>scopes: {(githubStatus?.scopes ?? []).join(", ") || "unknown"}</div>
+            <div>checked: {githubStatus?.checkedAt ?? "never"}</div>
+          </div>
+          <div className="mt-2 text-xs text-muted-fg">
+            Token is encrypted using OS secure storage and stored locally under `.ade/`. In Hosted mode, GitHub uses the GitHub App connection instead of this token.
+          </div>
+          <div className="mt-3 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">PR Polling</div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={5}
+                max={300}
+                className="h-8 w-[120px] rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent"
+                value={prPollingIntervalDraft}
+                onChange={(e) => setPrPollingIntervalDraft(e.target.value)}
+              />
+              <span className="text-[11px] text-muted-fg">seconds</span>
+              <div className="ml-auto flex items-center gap-2">
+                <Button size="sm" disabled={prPollingBusy} onClick={() => void savePrPollingSettings()}>
+                  {prPollingBusy ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={prPollingBusy}
+                  onClick={() => {
+                    window.ade.projectConfig
+                      .get()
+                      .then((snapshot) => {
+                        const localSeconds =
+                          typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
+                        const effectiveSeconds =
+                          typeof snapshot.effective.github?.prPollingIntervalSeconds === "number"
+                            ? snapshot.effective.github.prPollingIntervalSeconds
+                            : null;
+                        setPrPollingIntervalDraft(String(localSeconds ?? effectiveSeconds ?? 25));
+                      })
+                      .catch(() => {});
+                  }}
+                >
+                  Reset
+                </Button>
+              </div>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-fg">
+              Controls background PR refresh and notifications. Default is 25s; higher values reduce GitHub API usage.
+            </div>
+          </div>
+        </div>
 
         {providerDraft.mode === "cli" ? (
           <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
@@ -858,11 +1436,11 @@ export function SettingsPage() {
                 setProviderDraft((prev) =>
                   prev
                     ? {
-                        ...prev,
-                        cli: {
-                          command: e.target.value
-                        }
+                      ...prev,
+                      cli: {
+                        command: e.target.value
                       }
+                    }
                     : prev
                 )
               }

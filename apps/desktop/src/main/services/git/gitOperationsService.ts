@@ -5,6 +5,8 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
+  GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
@@ -274,9 +276,9 @@ export function createGitOperationsService({
 
     async listRecentCommits(args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(100, Math.floor(args.limit))) : 30;
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 30;
       const out = await runGitOrThrow(
-        ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s"],
+        ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s"],
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
 
@@ -285,11 +287,16 @@ export function createGitOperationsService({
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line): GitCommitSummary | null => {
-          const [sha, shortSha, authorName, authoredAt, subject] = parseDelimited(line);
+          const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
           if (!sha || !shortSha) return null;
+          const parents = (parentsRaw ?? "")
+            .split(" ")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
           return {
             sha,
             shortSha,
+            parents,
             authorName: authorName ?? "",
             authoredAt: authoredAt ?? "",
             subject: subject ?? ""
@@ -298,6 +305,36 @@ export function createGitOperationsService({
         .filter((entry): entry is GitCommitSummary => entry != null);
 
       return rows;
+    },
+
+    async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const sha = args.commitSha.trim();
+      if (!sha.length) throw new Error("commitSha is required");
+      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", sha], {
+        cwd: lane.worktreePath,
+        timeoutMs: 12_000
+      });
+      return res
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    },
+
+    async getCommitMessage(args: GitGetCommitMessageArgs): Promise<string> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const sha = args.commitSha.trim();
+      if (!sha.length) throw new Error("commitSha is required");
+      const res = await runGitOrThrow(["show", "-s", "--format=%B", sha], {
+        cwd: lane.worktreePath,
+        timeoutMs: 12_000
+      });
+      const message = res.trimEnd();
+      const MAX = 8000;
+      if (message.length > MAX) {
+        return `${message.slice(0, MAX)}\n\n...(truncated)...\n`;
+      }
+      return message;
     },
 
     async revertCommit(args: GitRevertArgs): Promise<GitActionResult> {

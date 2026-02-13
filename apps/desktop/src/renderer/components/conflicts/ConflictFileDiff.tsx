@@ -1,7 +1,7 @@
 import React from "react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import type { MergeSimulationResult } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type ThemeId } from "../../state/appStore";
 import { extensionToLanguage } from "./extensionToLanguage";
 
 let monacoInit: Promise<typeof import("monaco-editor")> | null = null;
@@ -103,6 +103,10 @@ function buildDecorations(
   }
 
   return decorations;
+}
+
+function isDarkTheme(theme: ThemeId): boolean {
+  return theme === "bloomberg" || theme === "github" || theme === "rainbow" || theme === "pats";
 }
 
 export function ConflictFileDiff({
@@ -247,7 +251,7 @@ export function ConflictFileDiff({
   React.useEffect(() => {
     loadMonaco()
       .then((monaco) => {
-        monaco.editor.setTheme(theme === "dark" ? "vs-dark" : "vs");
+        monaco.editor.setTheme(isDarkTheme(theme) ? "vs-dark" : "vs");
       })
       .catch(() => {
         // ignore theme updates in fallback mode

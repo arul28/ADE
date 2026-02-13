@@ -19,6 +19,10 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createHostedAgentService } from "./services/hosted/hostedAgentService";
+import { createByokLlmService } from "./services/byok/byokLlmService";
+import { createGithubService } from "./services/github/githubService";
+import { createPrService } from "./services/prs/prService";
+import { createPrPollingService } from "./services/prs/prPollingService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -139,13 +143,17 @@ app.whenReady().then(async () => {
       onHeadChanged: ({ laneId, reason }) => {
         jobEngine?.onHeadChanged({ laneId, reason });
       }
-    });
-    await laneService.ensurePrimaryLane();
-    const sessionService = createSessionService({ db });
-    const diffService = createDiffService({ laneService });
-    const projectConfigService = createProjectConfigService({
-      projectRoot,
-      adeDir: adePaths.adeDir,
+	    });
+	    await laneService.ensurePrimaryLane();
+	    const sessionService = createSessionService({ db });
+	    const reconciledSessions = sessionService.reconcileStaleRunningSessions({ status: "disposed" });
+	    if (reconciledSessions > 0) {
+	      logger.warn("sessions.reconciled_stale_running", { count: reconciledSessions });
+	    }
+	    const diffService = createDiffService({ laneService });
+	    const projectConfigService = createProjectConfigService({
+	      projectRoot,
+	      adeDir: adePaths.adeDir,
       projectId,
       db,
       logger
@@ -176,14 +184,29 @@ app.whenReady().then(async () => {
       }
     });
 
+    const byokLlmService = createByokLlmService({
+      logger,
+      projectConfigService
+    });
+
+    const githubService = createGithubService({
+      logger,
+      adeDir: adePaths.adeDir,
+      projectRoot,
+      projectConfigService,
+      hostedAgentService
+    });
+
     const conflictService = createConflictService({
       db,
       logger,
       projectId,
       projectRoot,
       laneService,
+      projectConfigService,
       operationService,
       hostedAgentService,
+      byokLlmService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => broadcast(IPC.conflictsEvent, event)
     });
@@ -193,6 +216,30 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       hostedAgentService
+    });
+
+    const prService = createPrService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      operationService,
+      githubService,
+      packService,
+      hostedAgentService,
+      byokLlmService,
+      projectConfigService,
+      openExternal: async (url) => {
+        await shell.openExternal(url);
+      }
+    });
+
+    const prPollingService = createPrPollingService({
+      logger,
+      prService,
+      projectConfigService,
+      onEvent: (event) => broadcast(IPC.prsEvent, event)
     });
 
     const fileService = createFileService({
@@ -271,6 +318,10 @@ app.whenReady().then(async () => {
       gitService,
       conflictService,
       hostedAgentService,
+      byokLlmService,
+      githubService,
+      prService,
+      prPollingService,
       jobEngine,
       packService,
       projectConfigService,
@@ -280,6 +331,11 @@ app.whenReady().then(async () => {
   };
 
   const closeContext = () => {
+    try {
+      ctxRef.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
     try {
       ctxRef.jobEngine.dispose();
     } catch {

@@ -39,6 +39,10 @@ import type {
   GetTestLogTailArgs,
   HostedArtifactResult,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -51,6 +55,8 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
+  GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
@@ -58,6 +64,18 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubStatus,
+  CreatePrFromLaneArgs,
+  LinkPrToLaneArgs,
+  PrEventPayload,
+  PrCheck,
+  PrReview,
+  PrStatus,
+  PrSummary,
+  UpdatePrDescriptionArgs,
+  LandPrArgs,
+  LandStackArgs,
+  LandResult,
   ListOverlapsArgs,
   LaneSummary,
   MergeSimulationArgs,
@@ -115,6 +133,7 @@ declare global {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
         getProject: () => Promise<ProjectInfo>;
+        openExternal: (url: string) => Promise<void>;
       };
       project: {
         openRepo: () => Promise<ProjectInfo>;
@@ -145,7 +164,7 @@ declare global {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
         resize: (args: { ptyId: string; cols: number; rows: number }) => Promise<void>;
-        dispose: (args: { ptyId: string }) => Promise<void>;
+        dispose: (args: { ptyId: string; sessionId?: string }) => Promise<void>;
         onData: (cb: (ev: PtyDataEvent) => void) => () => void;
         onExit: (cb: (ev: PtyExitEvent) => void) => () => void;
       };
@@ -176,6 +195,8 @@ declare global {
         restoreStagedFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;
         listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
+        listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
+        getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
         stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
@@ -205,6 +226,28 @@ declare global {
         getLanePack: (laneId: string) => Promise<PackSummary>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
         applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
+        generateNarrative: (laneId: string) => Promise<PackSummary>;
+      };
+      github: {
+        getStatus: () => Promise<GitHubStatus>;
+        setToken: (token: string) => Promise<GitHubStatus>;
+        clearToken: () => Promise<GitHubStatus>;
+      };
+      prs: {
+        createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
+        linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
+        getForLane: (laneId: string) => Promise<PrSummary | null>;
+        listAll: () => Promise<PrSummary[]>;
+        refresh: (args?: { prId?: string }) => Promise<PrSummary[]>;
+        getStatus: (prId: string) => Promise<PrStatus>;
+        getChecks: (prId: string) => Promise<PrCheck[]>;
+        getReviews: (prId: string) => Promise<PrReview[]>;
+        updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
+        draftDescription: (laneId: string) => Promise<{ title: string; body: string }>;
+        land: (args: LandPrArgs) => Promise<LandResult>;
+        landStack: (args: LandStackArgs) => Promise<LandResult[]>;
+        openInGitHub: (prId: string) => Promise<void>;
+        onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
       };
       hosted: {
         getStatus: () => Promise<HostedStatus>;
@@ -216,6 +259,12 @@ declare global {
         submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
         getJob: (jobId: string) => Promise<HostedJobStatusResult>;
         getArtifact: (artifactId: string) => Promise<HostedArtifactResult>;
+        github: {
+          getStatus: () => Promise<HostedGitHubAppStatus>;
+          connectStart: () => Promise<HostedGitHubConnectStartResult>;
+          disconnect: () => Promise<HostedGitHubDisconnectResult>;
+          listEvents: () => Promise<HostedGitHubEventsResult>;
+        };
       };
       history: {
         listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;

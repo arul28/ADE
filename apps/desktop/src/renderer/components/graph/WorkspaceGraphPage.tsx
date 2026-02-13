@@ -26,6 +26,7 @@ import { useNavigate } from "react-router-dom";
 import type {
   BatchAssessmentResult,
   ConflictStatus,
+  ConflictProposal,
   GraphFilterState,
   GraphLayoutPreset,
   GraphLayoutSnapshot,
@@ -35,7 +36,15 @@ import type {
   GitSyncMode,
   LaneIcon,
   LaneSummary,
-  MergeSimulationResult
+  MergeMethod,
+  MergeSimulationResult,
+  PackSummary,
+  PrCheck,
+  PrReview,
+  PrReviewStatus,
+  PrState,
+  PrStatus,
+  PrSummary
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -55,6 +64,22 @@ type GraphNodeData = {
   highlight: boolean;
   restackFailed: boolean;
   restackPulse: boolean;
+  mergeInProgress: boolean;
+  mergeDisappearing: boolean;
+};
+
+type GraphPrOverlay = {
+  prId: string;
+  laneId: string;
+  baseLaneId: string;
+  number: number;
+  title: string;
+  url: string;
+  state: PrState;
+  checksStatus: PrStatus["checksStatus"];
+  reviewStatus: PrReviewStatus;
+  lastSyncedAt: string | null;
+  mergeInProgress: boolean;
 };
 
 type GraphEdgeData = {
@@ -64,6 +89,7 @@ type GraphEdgeData = {
   stale?: boolean;
   dimmed?: boolean;
   highlight?: boolean;
+  pr?: GraphPrOverlay;
 };
 
 type BatchStepStatus = "pending" | "running" | "done" | "failed" | "skipped";
@@ -84,6 +110,47 @@ type GraphTextPromptState = {
   confirmLabel: string;
   validate?: (value: string) => string | null;
   resolve: (value: string | null) => void;
+};
+
+type PrDialogState = {
+  laneId: string;
+  baseLaneId: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+  draft: boolean;
+  loadingDraft: boolean;
+  creating: boolean;
+  existingPr: PrSummary | null;
+  loadingDetails: boolean;
+  status: PrStatus | null;
+  checks: PrCheck[];
+  reviews: PrReview[];
+  mergeMethod: MergeMethod;
+  merging: boolean;
+  error: string | null;
+};
+
+type ConflictPanelState = {
+  laneAId: string;
+  laneBId: string;
+  loading: boolean;
+  result: MergeSimulationResult | null;
+  error: string | null;
+  applyLaneId: string;
+  proposal: ConflictProposal | null;
+  proposing: boolean;
+  applyMode: "unstaged" | "staged" | "commit";
+  commitMessage: string;
+  applying: boolean;
+};
+
+type IntegrationDialogState = {
+  laneIds: string[];
+  name: string;
+  busy: boolean;
+  step: string | null;
+  error: string | null;
 };
 
 const VIEW_MODES: GraphViewMode[] = ["stack", "risk", "activity", "all"];
@@ -220,6 +287,22 @@ function riskStrokeColor(level: GraphEdgeData["riskLevel"]): string {
   if (level === "high") return "#dc2626";
   if (level === "medium") return "#f59e0b";
   if (level === "low") return "#16a34a";
+  return "#6b7280";
+}
+
+function prOverlayColor(pr: GraphPrOverlay): string {
+  if (pr.state === "draft") return "#a855f7";
+  if (pr.checksStatus === "failing") return "#dc2626";
+  if (pr.reviewStatus === "changes_requested") return "#f59e0b";
+  if (pr.checksStatus === "passing") return "#16a34a";
+  if (pr.checksStatus === "pending") return "#38bdf8";
+  return "#6b7280";
+}
+
+function prCiDotColor(pr: GraphPrOverlay): string {
+  if (pr.checksStatus === "failing") return "#dc2626";
+  if (pr.checksStatus === "passing") return "#16a34a";
+  if (pr.checksStatus === "pending") return "#f59e0b";
   return "#6b7280";
 }
 
@@ -372,7 +455,9 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         data.highlight && "scale-[1.02] shadow-[0_2px_8px_rgba(0,0,0,0.2)]",
         data.activityBucket === "high" && "shadow-[0_0_18px_rgba(34,197,94,0.2)]",
         data.restackFailed && "border-red-500 ring-1 ring-red-500/80",
-        data.restackPulse && "ade-node-failed-pulse"
+        data.restackPulse && "ade-node-failed-pulse",
+        data.mergeInProgress && "ade-node-merging",
+        data.mergeDisappearing && "ade-node-disappear"
       )}
       style={{
         width: dimensions.width,
@@ -389,6 +474,7 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         <Chip className="px-1 py-0 text-[10px]">{lane.status.dirty ? "dirty" : "clean"}</Chip>
         <Chip className="px-1 py-0 text-[10px]">{lane.status.ahead}↑/{lane.status.behind}↓</Chip>
         <Chip className={cn("px-1 py-0 text-[10px]", statusColor)}>{data.status}</Chip>
+        {data.mergeInProgress ? <Chip className="px-1 py-0 text-[10px] text-accent">merging</Chip> : null}
         {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
       </div>
       {lane.tags.length > 0 ? (
@@ -425,7 +511,7 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
 
 function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, selected } = props;
-  const [path] = getBezierPath({
+  const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
     targetX,
@@ -433,11 +519,24 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
     sourcePosition: sourcePosition ?? Position.Bottom,
     targetPosition: targetPosition ?? Position.Top
   });
-  const color = data?.edgeType === "risk" ? riskStrokeColor(data.riskLevel) : data?.edgeType === "stack" ? "#38bdf8" : "#6b7280";
-  const width = data?.edgeType === "stack" ? 3 : 1.8;
+  const pr = data?.pr;
+  const color =
+    data?.edgeType === "risk"
+      ? riskStrokeColor(data.riskLevel)
+      : pr
+        ? prOverlayColor(pr)
+        : data?.edgeType === "stack"
+          ? "#38bdf8"
+          : "#6b7280";
+  const width = pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
   const dash = data?.edgeType === "risk" ? "5 3" : undefined;
   const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
   const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : data?.stale ? 0.55 : 0.9;
+  const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";
+  const dotColor = pr ? prCiDotColor(pr) : "#6b7280";
+  const badgeText = pr ? `PR #${pr.number}` : "";
+  const badgeWidth = Math.max(64, badgeText.length * 6 + 26);
+  const badgeHeight = 18;
   return (
     <g>
       <path
@@ -451,6 +550,38 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
         strokeDasharray={dash}
         opacity={effectiveOpacity}
       />
+      {pr ? (
+        <g transform={`translate(${labelX}, ${labelY})`} className={pr.mergeInProgress ? "ade-pr-badge-pulse" : undefined}>
+          <rect
+            x={-badgeWidth / 2}
+            y={-badgeHeight / 2}
+            width={badgeWidth}
+            height={badgeHeight}
+            rx={8}
+            fill={badgeColor}
+            fillOpacity={0.18}
+            stroke={badgeColor}
+            strokeOpacity={0.75}
+            strokeWidth={1}
+          />
+          <circle
+            cx={-badgeWidth / 2 + 10}
+            cy={0}
+            r={3}
+            fill={dotColor}
+            className={pr.checksStatus === "pending" ? "ade-pr-ci-pending" : undefined}
+          />
+          <text
+            x={-badgeWidth / 2 + 18}
+            y={3}
+            fontSize={10}
+            fill="var(--color-fg)"
+            fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+          >
+            {badgeText}
+          </text>
+        </g>
+      ) : null}
     </g>
   );
 }
@@ -464,6 +595,13 @@ function GraphInner() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const [prs, setPrs] = React.useState<PrSummary[]>([]);
+  const [loadingPrs, setLoadingPrs] = React.useState(true);
+
+  const refreshPrs = React.useCallback(async () => {
+    const next = await window.ade.prs.refresh();
+    setPrs(next);
+  }, []);
 
   const [viewMode, setViewMode] = React.useState<GraphViewMode>("all");
   const [graphState, setGraphState] = React.useState<GraphPersistedState>(createDefaultState());
@@ -498,7 +636,7 @@ function GraphInner() {
     overlapFiles: string[];
     preview: MergeSimulationResult | null;
     previewBusy: boolean;
-    actionMode: "integrate" | "reparent";
+    actionMode: "integrate" | "reparent" | "pr";
     integratePlan: {
       sourceLaneId: string;
       laneId: string;
@@ -515,6 +653,11 @@ function GraphInner() {
   const [activityScoreByLaneId, setActivityScoreByLaneId] = React.useState<Record<string, number>>({});
   const [activeSessionsByLaneId, setActiveSessionsByLaneId] = React.useState<Record<string, number>>({});
   const [lastActivityByLaneId, setLastActivityByLaneId] = React.useState<Record<string, string>>({});
+  const [mergeInProgressByLaneId, setMergeInProgressByLaneId] = React.useState<Record<string, boolean>>({});
+  const [mergeDisappearingAtByLaneId, setMergeDisappearingAtByLaneId] = React.useState<Record<string, number>>({});
+  const [prDialog, setPrDialog] = React.useState<PrDialogState | null>(null);
+  const [conflictPanel, setConflictPanel] = React.useState<ConflictPanelState | null>(null);
+  const [integrationDialog, setIntegrationDialog] = React.useState<IntegrationDialogState | null>(null);
   const [edgeHover, setEdgeHover] = React.useState<{ x: number; y: number; label: string } | null>(null);
   const [dragTrail, setDragTrail] = React.useState<{ laneId: string; from: { x: number; y: number }; to: { x: number; y: number } } | null>(null);
   const [dropPreview, setDropPreview] = React.useState<{
@@ -534,6 +677,7 @@ function GraphInner() {
   } | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
   const [nodeTooltip, setNodeTooltip] = React.useState<{ x: number; y: number; laneId: string } | null>(null);
+  const [nodeTooltipPack, setNodeTooltipPack] = React.useState<PackSummary | null>(null);
   const [restackFailedLaneId, setRestackFailedLaneId] = React.useState<string | null>(null);
   const [restackFailedPulse, setRestackFailedPulse] = React.useState(false);
   const [textPrompt, setTextPrompt] = React.useState<GraphTextPromptState | null>(null);
@@ -644,6 +788,32 @@ function GraphInner() {
   }, [collapsedLaneIds, lanes]);
 
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
+  const primaryLaneId = React.useMemo(() => lanes.find((lane) => lane.laneType === "primary")?.id ?? null, [lanes]);
+  const laneIdByBranchRef = React.useMemo(() => new Map(lanes.map((lane) => [lane.branchRef, lane.id] as const)), [lanes]);
+  const prByLaneId = React.useMemo(() => new Map(prs.map((pr) => [pr.laneId, pr] as const)), [prs]);
+  const prOverlayByPair = React.useMemo(() => {
+    const map = new Map<string, GraphPrOverlay>();
+    for (const pr of prs) {
+      const lane = laneById.get(pr.laneId);
+      if (!lane) continue;
+      const baseLaneId = laneIdByBranchRef.get(pr.baseBranch) ?? lane.parentLaneId ?? primaryLaneId;
+      if (!baseLaneId) continue;
+      map.set(edgePairKey(baseLaneId, pr.laneId), {
+        prId: pr.id,
+        laneId: pr.laneId,
+        baseLaneId,
+        number: pr.githubPrNumber,
+        title: pr.title,
+        url: pr.githubUrl,
+        state: pr.state,
+        checksStatus: pr.checksStatus,
+        reviewStatus: pr.reviewStatus,
+        lastSyncedAt: pr.lastSyncedAt ?? null,
+        mergeInProgress: Boolean(mergeInProgressByLaneId[pr.laneId])
+      });
+    }
+    return map;
+  }, [laneById, laneIdByBranchRef, mergeInProgressByLaneId, primaryLaneId, prs]);
 
   const connectedToHoveredNode = React.useMemo(() => {
     if (!hoveredNodeId) return new Set<string>();
@@ -818,6 +988,33 @@ function GraphInner() {
   }, [refreshLanes, refreshRiskBatch, refreshActivity]);
 
   React.useEffect(() => {
+    let cancelled = false;
+    setLoadingPrs(true);
+    window.ade.prs
+      .listAll()
+      .then((list) => {
+        if (cancelled) return;
+        setPrs(list);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingPrs(false);
+      });
+
+    const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type !== "prs-updated") return;
+      if (cancelled) return;
+      setPrs(event.prs);
+      setLoadingPrs(false);
+    });
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
+
+  React.useEffect(() => {
     if (!project?.rootPath) return;
     setLoadedGraphState(false);
     void window.ade.graphState
@@ -838,6 +1035,25 @@ function GraphInner() {
     const timer = window.setTimeout(() => setUndoToast(null), 10_000);
     return () => window.clearTimeout(timer);
   }, [undoToast]);
+
+  React.useEffect(() => {
+    const laneId = nodeTooltip?.laneId ?? null;
+    if (!laneId) {
+      setNodeTooltipPack(null);
+      return;
+    }
+    let cancelled = false;
+    setNodeTooltipPack(null);
+    window.ade.packs
+      .getLanePack(laneId)
+      .then((pack) => {
+        if (!cancelled) setNodeTooltipPack(pack);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [nodeTooltip?.laneId]);
 
   React.useEffect(() => {
     if (!batchStatus?.summary) return;
@@ -954,7 +1170,9 @@ function GraphInner() {
           lastActivityAt: lastActivityByLaneId[lane.id] ?? null,
           highlight: Boolean(hoveredNodeId) && connectedToHover,
           restackFailed: restackFailedLaneId === lane.id,
-          restackPulse: restackFailedLaneId === lane.id && restackFailedPulse
+          restackPulse: restackFailedLaneId === lane.id && restackFailedPulse,
+          mergeInProgress: Boolean(mergeInProgressByLaneId[lane.id]),
+          mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id])
         },
         selected: selectedLaneIds.includes(lane.id),
         draggable: true
@@ -964,6 +1182,16 @@ function GraphInner() {
 
     const nextEdges: Array<Edge<GraphEdgeData>> = [];
     const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const riskPairsWithVisibleEdge = new Set<string>();
+    if (viewMode === "all" || viewMode === "risk") {
+      for (const [key, risk] of riskByPair.entries()) {
+        if (risk.riskLevel === "none" && risk.overlapCount === 0) continue;
+        const [laneAId, laneBId] = key.split("::");
+        if (!laneAId || !laneBId) continue;
+        if (hiddenByCollapse.has(laneAId) || hiddenByCollapse.has(laneBId)) continue;
+        riskPairsWithVisibleEdge.add(key);
+      }
+    }
     const edgeVisualState = (edgeId: string, source: string, target: string) => {
       const connectedToNodeHover = hoveredNodeId ? source === hoveredNodeId || target === hoveredNodeId : false;
       const highlightedByEdge = hoveredEdgeId ? hoveredEdgeId === edgeId : false;
@@ -981,6 +1209,8 @@ function GraphInner() {
         if (!primaryLane || lane.id === primaryLane.id) continue;
         const edgeId = `topology:${primaryLane.id}:${lane.id}`;
         const visual = edgeVisualState(edgeId, primaryLane.id, lane.id);
+        const pair = edgePairKey(primaryLane.id, lane.id);
+        const pr = prOverlayByPair.get(pair);
         nextEdges.push({
           id: edgeId,
           source: primaryLane.id,
@@ -988,7 +1218,7 @@ function GraphInner() {
           sourceHandle: "source",
           targetHandle: "target",
           type: "custom",
-          data: { edgeType: "topology", ...visual },
+          data: { edgeType: "topology", ...visual, ...(pr && !riskPairsWithVisibleEdge.has(pair) ? { pr } : {}) },
           markerEnd: { type: MarkerType.ArrowClosed },
           animated: false,
           selected: visual.highlight
@@ -998,6 +1228,8 @@ function GraphInner() {
         if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) continue;
         const edgeId = `stack:${lane.parentLaneId}:${lane.id}`;
         const visual = edgeVisualState(edgeId, lane.parentLaneId, lane.id);
+        const pair = edgePairKey(lane.parentLaneId, lane.id);
+        const pr = prOverlayByPair.get(pair);
         nextEdges.push({
           id: edgeId,
           source: lane.parentLaneId,
@@ -1005,7 +1237,7 @@ function GraphInner() {
           sourceHandle: "source",
           targetHandle: "target",
           type: "custom",
-          data: { edgeType: "stack", ...visual },
+          data: { edgeType: "stack", ...visual, ...(pr && !riskPairsWithVisibleEdge.has(pair) ? { pr } : {}) },
           markerEnd: { type: MarkerType.ArrowClosed },
           selected: visual.highlight
         });
@@ -1020,6 +1252,7 @@ function GraphInner() {
         if (hiddenByCollapse.has(laneAId) || hiddenByCollapse.has(laneBId)) continue;
         const edgeId = `risk:${laneAId}:${laneBId}`;
         const visual = edgeVisualState(edgeId, laneAId, laneBId);
+        const pr = prOverlayByPair.get(key);
         nextEdges.push({
           id: edgeId,
           source: laneAId,
@@ -1032,6 +1265,7 @@ function GraphInner() {
             riskLevel: risk.riskLevel,
             overlapCount: risk.overlapCount,
             stale: risk.stale,
+            ...(pr ? { pr } : {}),
             ...visual
           },
           selected: visual.highlight
@@ -1057,11 +1291,14 @@ function GraphInner() {
     restackFailedLaneId,
     restackFailedPulse,
     riskByPair,
+    prOverlayByPair,
     selectedLaneIds,
     statusByLane,
     viewMode,
     hoveredEdgeId,
-    activityScoreByLaneId
+    activityScoreByLaneId,
+    mergeDisappearingAtByLaneId,
+    mergeInProgressByLaneId
   ]);
 
   const onNodesChange = React.useCallback((changes: Parameters<typeof applyNodeChanges<Node<GraphNodeData>>>[0]) => {
@@ -1287,6 +1524,110 @@ function GraphInner() {
     [getDropIntegratePlan, laneById, lanes, overlapFilesByPair]
   );
 
+  const openPrDialogForLane = React.useCallback(
+    (laneId: string, baseLaneId: string) => {
+      const lane = laneById.get(laneId);
+      const baseLane = laneById.get(baseLaneId);
+      if (!lane || !baseLane) return;
+
+      const existing = prByLaneId.get(laneId) ?? null;
+      const baseBranch = baseLane.branchRef;
+
+      setPrDialog({
+        laneId,
+        baseLaneId,
+        baseBranch,
+        title: existing?.title ?? "",
+        body: "",
+        draft: existing?.state === "draft",
+        loadingDraft: !existing,
+        creating: false,
+        existingPr: existing,
+        loadingDetails: Boolean(existing),
+        status: null,
+        checks: [],
+        reviews: [],
+        mergeMethod: "squash",
+        merging: false,
+        error: null
+      });
+
+      if (!existing) {
+        void window.ade.prs
+          .draftDescription(laneId)
+          .then((draft) => {
+            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev));
+          })
+          .catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDraft: false, error: message } : prev));
+          });
+        return;
+      }
+
+      void Promise.all([
+        window.ade.prs.getStatus(existing.id),
+        window.ade.prs.getChecks(existing.id),
+        window.ade.prs.getReviews(existing.id)
+      ])
+        .then(([status, checks, reviews]) => {
+          setPrDialog((prev) =>
+            prev && prev.laneId === laneId
+              ? { ...prev, loadingDetails: false, status, checks, reviews }
+              : prev
+          );
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDetails: false, error: message } : prev));
+        });
+    },
+    [laneById, prByLaneId]
+  );
+
+  const openConflictPanelForEdge = React.useCallback(
+    (laneAId: string, laneBId: string) => {
+      const laneA = laneById.get(laneAId);
+      const laneB = laneById.get(laneBId);
+      const applyLaneId = laneA && laneB && laneA.stackDepth !== laneB.stackDepth
+        ? (laneA.stackDepth > laneB.stackDepth ? laneAId : laneBId)
+        : laneAId;
+
+      setConflictPanel({
+        laneAId,
+        laneBId,
+        loading: true,
+        result: null,
+        error: null,
+        applyLaneId,
+        proposal: null,
+        proposing: false,
+        applyMode: "unstaged",
+        commitMessage: "",
+        applying: false
+      });
+
+      void window.ade.conflicts
+        .simulateMerge({ laneAId, laneBId })
+        .then((result) => {
+          setConflictPanel((prev) =>
+            prev && prev.laneAId === laneAId && prev.laneBId === laneBId
+              ? { ...prev, loading: false, result }
+              : prev
+          );
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setConflictPanel((prev) =>
+            prev && prev.laneAId === laneAId && prev.laneBId === laneBId
+              ? { ...prev, loading: false, error: message }
+              : prev
+          );
+        });
+    },
+    [laneById]
+  );
+
   const onNodeDragStop = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
       nodeDragActiveRef.current = false;
@@ -1312,9 +1653,13 @@ function GraphInner() {
       }
 
       const selectedIds = selectedLaneIds.includes(node.id) && selectedLaneIds.length > 1 ? selectedLaneIds : [node.id];
+      if (selectedIds.length === 1 && laneById.get(target.id)?.laneType === "primary") {
+        openPrDialogForLane(node.id, target.id);
+        return;
+      }
       openReparentDialog(node.id, target.id, selectedIds);
     },
-    [findDropTarget, openReparentDialog, reactFlow, saveNodePositions, selectedLaneIds]
+    [findDropTarget, laneById, openPrDialogForLane, openReparentDialog, reactFlow, saveNodePositions, selectedLaneIds]
   );
 
   const applyReparent = React.useCallback(async () => {
@@ -1333,6 +1678,14 @@ function GraphInner() {
       } catch (error) {
         setErrorBanner(error instanceof Error ? error.message : String(error));
       }
+      return;
+    }
+
+    if (reparentDialog.actionMode === "pr") {
+      const laneId = reparentDialog.laneIds[0];
+      if (!laneId) return;
+      openPrDialogForLane(laneId, reparentDialog.targetLaneId);
+      setReparentDialog(null);
       return;
     }
 
@@ -1378,7 +1731,7 @@ function GraphInner() {
     });
     setReparentDialog(null);
     await refreshLanes().catch(() => {});
-  }, [laneById, refreshLanes, reparentDialog]);
+  }, [laneById, openPrDialogForLane, refreshLanes, reparentDialog]);
 
   const runBatchOperation = React.useCallback(
     async (operation: "restack" | "push" | "fetch" | "archive" | "delete") => {
@@ -2088,7 +2441,24 @@ function GraphInner() {
           onEdgeClick={(_event, edge) => {
             const [prefix, laneAId, laneBId] = edge.id.split(":");
             if (!laneAId || !laneBId) return;
-            if (prefix === "risk" || prefix === "stack" || prefix === "topology") {
+            const data = edge.data;
+            if (prefix === "risk") {
+              setEdgeSimulation(null);
+              setReparentDialog(null);
+              setContextMenu(null);
+              openConflictPanelForEdge(laneAId, laneBId);
+              return;
+            }
+
+            if (data?.pr) {
+              setEdgeSimulation(null);
+              setReparentDialog(null);
+              setContextMenu(null);
+              openPrDialogForLane(data.pr.laneId, data.pr.baseLaneId);
+              return;
+            }
+
+            if (prefix === "stack" || prefix === "topology") {
               setReparentDialog(null);
               setContextMenu(null);
               setEdgeSimulation({
@@ -2122,11 +2492,28 @@ function GraphInner() {
             setHoveredEdgeId(edge.id);
             const data = edge.data;
             const [_, laneAId, laneBId] = edge.id.split(":");
+            const pr = data?.pr ?? null;
+            const prLines = pr
+              ? [
+                  `PR #${pr.number} · ${pr.state} · checks: ${pr.checksStatus} · reviews: ${pr.reviewStatus}`,
+                  pr.title ? pr.title : null,
+                  pr.lastSyncedAt ? `synced ${toRelativeTime(pr.lastSyncedAt)}` : null
+                ].filter((line): line is string => Boolean(line && line.trim().length))
+              : [];
             if (data?.edgeType === "risk") {
+              const pair = laneAId && laneBId ? edgePairKey(laneAId, laneBId) : "";
+              const overlapFiles = pair ? overlapFilesByPair.get(pair) ?? [] : [];
+              const fileLines = overlapFiles.slice(0, 6).map((file) => `- ${file}`);
+              const moreLine = overlapFiles.length > 6 ? `... +${overlapFiles.length - 6} more` : null;
               setEdgeHover({
                 x: event.clientX + 12,
                 y: event.clientY + 12,
-                label: `${data.riskLevel ?? "unknown"} · ${data.overlapCount ?? 0} files${data.stale ? " · stale" : ""}`
+                label: [
+                  `${data.riskLevel ?? "unknown"} · ${overlapFiles.length} file${overlapFiles.length === 1 ? "" : "s"}${data.stale ? " · stale" : ""}`,
+                  ...fileLines,
+                  ...(moreLine ? [moreLine] : []),
+                  ...(prLines.length ? ["", ...prLines] : [])
+                ].join("\n")
               });
               return;
             }
@@ -2134,7 +2521,21 @@ function GraphInner() {
               setEdgeHover({
                 x: event.clientX + 12,
                 y: event.clientY + 12,
-                label: `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}`
+                label: [
+                  `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}`,
+                  ...(prLines.length ? ["", ...prLines] : [])
+                ].join("\n")
+              });
+              return;
+            }
+            if (data?.edgeType === "topology" && laneAId && laneBId) {
+              setEdgeHover({
+                x: event.clientX + 12,
+                y: event.clientY + 12,
+                label: [
+                  `${laneById.get(laneAId)?.name ?? laneAId} → ${laneById.get(laneBId)?.name ?? laneBId}`,
+                  ...(prLines.length ? ["", ...prLines] : [])
+                ].join("\n")
               });
               return;
             }
@@ -2393,18 +2794,20 @@ function GraphInner() {
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
           <div className="w-[min(780px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
             <div className="mb-2 text-sm font-semibold text-fg">Confirm Lane Drop</div>
-            {reparentDialog.integratePlan ? (
+            {reparentDialog.integratePlan || reparentDialog.laneIds.length === 1 ? (
               <div className="mb-2 inline-flex rounded border border-border bg-bg/40 p-0.5 text-xs">
-                <button
-                  type="button"
-                  className={cn(
-                    "rounded px-2 py-1",
-                    reparentDialog.actionMode === "integrate" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
-                  )}
-                  onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "integrate" } : prev))}
-                >
-                  Integrate
-                </button>
+                {reparentDialog.integratePlan ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded px-2 py-1",
+                      reparentDialog.actionMode === "integrate" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
+                    )}
+                    onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "integrate" } : prev))}
+                  >
+                    Integrate
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={cn(
@@ -2415,11 +2818,25 @@ function GraphInner() {
                 >
                   Reparent
                 </button>
+                {reparentDialog.laneIds.length === 1 ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded px-2 py-1",
+                      reparentDialog.actionMode === "pr" ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg"
+                    )}
+                    onClick={() => setReparentDialog((prev) => (prev ? { ...prev, actionMode: "pr" } : prev))}
+                  >
+                    PR
+                  </button>
+                ) : null}
               </div>
             ) : null}
             <div className="mb-2 rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">
               {reparentDialog.actionMode === "integrate"
                 ? "Integrate keeps stack ancestry unchanged and brings source lane commits into the target lane."
+                : reparentDialog.actionMode === "pr"
+                  ? "PR opens the pull request workflow for the dragged lane, targeting the drop base."
                 : "Reparent changes stack ancestry. ADE rebases selected lane commits onto the target parent branch."}
             </div>
             {reparentDialog.actionMode === "integrate" && reparentDialog.integratePlan ? (
@@ -2466,6 +2883,8 @@ function GraphInner() {
             <div className="mb-3 text-xs text-amber-300">
               {reparentDialog.actionMode === "integrate"
                 ? "If merge/rebase conflicts occur, resolve them in the target lane."
+                : reparentDialog.actionMode === "pr"
+                  ? "This does not change lane ancestry. It opens a PR flow targeting the drop base."
                 : "If conflicts occur during rebase, resolve them in the target lane context."}
               {reparentDialog.actionMode === "reparent" && laneById.get(reparentDialog.targetLaneId)?.laneType === "primary"
                 ? " Target is Primary: lane will now be based directly on Primary."
@@ -2483,32 +2902,384 @@ function GraphInner() {
               <Button size="sm" variant="outline" onClick={() => setReparentDialog(null)}>
                 Cancel
               </Button>
+              {reparentDialog.actionMode !== "pr" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={reparentDialog.previewBusy}
+                  onClick={async () => {
+                    const previewLaneAId =
+                      reparentDialog.actionMode === "integrate"
+                        ? reparentDialog.integratePlan?.laneId
+                        : reparentDialog.laneIds[0];
+                    const previewLaneBId =
+                      reparentDialog.actionMode === "integrate"
+                        ? reparentDialog.integratePlan?.sourceLaneId
+                        : reparentDialog.targetLaneId;
+                    if (!previewLaneAId || !previewLaneBId) return;
+                    setReparentDialog((prev) => (prev ? { ...prev, previewBusy: true } : prev));
+                    const preview = await window.ade.conflicts.simulateMerge({
+                      laneAId: previewLaneAId,
+                      laneBId: previewLaneBId
+                    });
+                    setReparentDialog((prev) => (prev ? { ...prev, previewBusy: false, preview } : prev));
+                  }}
+                >
+                  {reparentDialog.actionMode === "integrate" ? "Preview integrate" : "Preview rebase"}
+                </Button>
+              ) : null}
+              <Button size="sm" variant="primary" onClick={() => void applyReparent()}>
+                {reparentDialog.actionMode === "integrate"
+                  ? "Confirm Integrate"
+                  : reparentDialog.actionMode === "pr"
+                    ? "Open PR Dialog"
+                    : "Confirm Reparent"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {prDialog ? (
+        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
+          <div className="w-[min(980px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-fg">
+                {prDialog.existingPr ? `PR #${prDialog.existingPr.githubPrNumber}` : "Create Pull Request"}
+              </div>
+              <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setPrDialog(null)}>
+                ×
+              </button>
+            </div>
+            <div className="mb-3 text-xs text-muted-fg">
+              {laneById.get(prDialog.laneId)?.name ?? prDialog.laneId} → {laneById.get(prDialog.baseLaneId)?.name ?? prDialog.baseLaneId} (base:{" "}
+              <span className="text-fg">{prDialog.baseBranch}</span>)
+            </div>
+
+            {prDialog.error ? (
+              <div className="mb-3 rounded border border-red-700/70 bg-red-900/30 p-2 text-xs text-red-200">
+                {prDialog.error}
+              </div>
+            ) : null}
+
+            {!prDialog.existingPr ? (
+              <div className="space-y-3">
+                {prDialog.loadingDraft ? (
+                  <div className="rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">
+                    <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
+                    Drafting description from pack…
+                  </div>
+                ) : null}
+
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <input
+                    className="h-9 rounded border border-border bg-bg px-3 text-sm md:col-span-2"
+                    placeholder="PR title"
+                    value={prDialog.title}
+                    onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
+                  />
+                  <label className="inline-flex h-9 items-center gap-2 rounded border border-border bg-bg px-3 text-xs text-muted-fg">
+                    <input
+                      type="checkbox"
+                      checked={prDialog.draft}
+                      onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, draft: e.target.checked } : prev))}
+                    />
+                    Draft PR
+                  </label>
+                </div>
+
+                <textarea
+                  className="min-h-[240px] w-full rounded border border-border bg-bg px-3 py-2 text-xs"
+                  value={prDialog.body}
+                  onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, body: e.target.value } : prev))}
+                  placeholder="PR description (markdown)"
+                />
+
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setPrDialog(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={prDialog.creating || prDialog.loadingDraft}
+                    onClick={() => {
+                      const laneId = prDialog.laneId;
+                      setPrDialog((prev) => (prev ? { ...prev, loadingDraft: true, error: null } : prev));
+                      window.ade.prs
+                        .draftDescription(laneId)
+                        .then((draft) => {
+                          setPrDialog((prev) =>
+                            prev && prev.laneId === laneId ? { ...prev, title: draft.title, body: draft.body, loadingDraft: false } : prev
+                          );
+                        })
+                        .catch((error) => {
+                          const message = error instanceof Error ? error.message : String(error);
+                          setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, loadingDraft: false, error: message } : prev));
+                        });
+                    }}
+                  >
+                    Refresh Draft
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={prDialog.creating || !prDialog.title.trim() || !prDialog.body.trim()}
+                    onClick={() => {
+                      const laneId = prDialog.laneId;
+                      setPrDialog((prev) => (prev ? { ...prev, creating: true, error: null } : prev));
+                      window.ade.prs
+                        .createFromLane({
+                          laneId,
+                          title: prDialog.title,
+                          body: prDialog.body,
+                          draft: prDialog.draft,
+                          baseBranch: prDialog.baseBranch
+                        })
+                        .then((created) => {
+                          void refreshPrs().catch(() => {});
+                          setPrDialog((prev) =>
+                            prev && prev.laneId === laneId
+                              ? { ...prev, creating: false, existingPr: created, loadingDetails: true }
+                              : prev
+                          );
+                          void Promise.all([
+                            window.ade.prs.getStatus(created.id),
+                            window.ade.prs.getChecks(created.id),
+                            window.ade.prs.getReviews(created.id)
+                          ])
+                            .then(([status, checks, reviews]) => {
+                              setPrDialog((prev) =>
+                                prev && prev.laneId === laneId
+                                  ? { ...prev, loadingDetails: false, status, checks, reviews }
+                                  : prev
+                              );
+                            })
+                            .catch(() => {});
+                        })
+                        .catch((error) => {
+                          const message = error instanceof Error ? error.message : String(error);
+                          setPrDialog((prev) => (prev && prev.laneId === laneId ? { ...prev, creating: false, error: message } : prev));
+                        });
+                    }}
+                  >
+                    {prDialog.creating ? "Creating…" : "Create PR"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="rounded border border-border bg-bg/40 p-2 text-xs">
+                  <div className="font-semibold text-fg">{prDialog.existingPr.title}</div>
+                  <div className="mt-1 text-muted-fg">
+                    state: {prDialog.existingPr.state} · checks: {prDialog.existingPr.checksStatus} · reviews: {prDialog.existingPr.reviewStatus}
+                    {prDialog.existingPr.lastSyncedAt ? ` · synced ${prDialog.existingPr.lastSyncedAt}` : ""}
+                  </div>
+                </div>
+
+                {prDialog.loadingDetails ? (
+                  <div className="rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">Loading PR status…</div>
+                ) : prDialog.status ? (
+                  <div className="rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">
+                    <div>
+                      mergeable: <span className="text-fg">{prDialog.status.isMergeable ? "yes" : "no"}</span> · conflicts:{" "}
+                      <span className="text-fg">{prDialog.status.mergeConflicts ? "yes" : "no"}</span> · behind base:{" "}
+                      <span className="text-fg">{prDialog.status.behindBaseBy}</span>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="rounded border border-border bg-bg/40 p-2 text-xs">
+                    <div className="mb-1 font-semibold text-fg">Checks</div>
+                    {prDialog.checks.length === 0 ? (
+                      <div className="text-muted-fg">No checks.</div>
+                    ) : (
+                      prDialog.checks.slice(0, 12).map((check) => (
+                        <div key={check.name} className="flex items-center justify-between gap-2">
+                          <span className="truncate">{check.name}</span>
+                          <span className="text-muted-fg">{check.conclusion ?? check.status}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div className="rounded border border-border bg-bg/40 p-2 text-xs">
+                    <div className="mb-1 font-semibold text-fg">Reviews</div>
+                    {prDialog.reviews.length === 0 ? (
+                      <div className="text-muted-fg">No reviews.</div>
+                    ) : (
+                      prDialog.reviews.slice(0, 12).map((review, idx) => (
+                        <div key={`${review.reviewer}:${idx}`} className="flex items-center justify-between gap-2">
+                          <span className="truncate">{review.reviewer}</span>
+                          <span className="text-muted-fg">{review.state}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={prDialog.mergeMethod}
+                      onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, mergeMethod: e.target.value as MergeMethod } : prev))}
+                      className="h-8 rounded border border-border bg-bg px-2 text-xs"
+                    >
+                      <option value="merge">merge</option>
+                      <option value="squash">squash</option>
+                      <option value="rebase">rebase</option>
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const prId = prDialog.existingPr?.id;
+                        if (!prId) return;
+                        void window.ade.prs.openInGitHub(prId).catch(() => {});
+                      }}
+                    >
+                      Open in GitHub
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={prDialog.loadingDetails}
+                      onClick={() => openPrDialogForLane(prDialog.laneId, prDialog.baseLaneId)}
+                    >
+                      Refresh
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setPrDialog(null)}>
+                      Close
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={prDialog.merging || !prDialog.existingPr}
+                      onClick={() => {
+                        const pr = prDialog.existingPr;
+                        if (!pr) return;
+                        const laneId = prDialog.laneId;
+                        setPrDialog((prev) => (prev ? { ...prev, merging: true, error: null } : prev));
+                        setMergeInProgressByLaneId((prev) => ({ ...prev, [laneId]: true }));
+                        window.ade.prs
+                          .land({ prId: pr.id, method: prDialog.mergeMethod })
+                          .then((result) => {
+                            void refreshPrs().catch(() => {});
+                            if (!result.success) {
+                              throw new Error(result.error || "Merge failed");
+                            }
+                            setMergeDisappearingAtByLaneId((prev) => ({ ...prev, [laneId]: Date.now() }));
+                            window.setTimeout(() => {
+                              void refreshLanes().catch(() => {});
+                              void refreshRiskBatch().catch(() => {});
+                            }, 650);
+                            setPrDialog(null);
+                          })
+                          .catch((error) => {
+                            const message = error instanceof Error ? error.message : String(error);
+                            setMergeInProgressByLaneId((prev) => ({ ...prev, [laneId]: false }));
+                            setPrDialog((prev) => (prev ? { ...prev, merging: false, error: message } : prev));
+                          });
+                      }}
+                    >
+                      {prDialog.merging ? "Merging…" : "Merge PR"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {integrationDialog ? (
+        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
+          <div className="w-[min(780px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-fg">Create Integration Lane</div>
+              <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setIntegrationDialog(null)}>
+                ×
+              </button>
+            </div>
+
+            {integrationDialog.error ? (
+              <div className="mb-2 rounded border border-red-700/70 bg-red-900/30 p-2 text-xs text-red-200">
+                {integrationDialog.error}
+              </div>
+            ) : null}
+
+            <div className="mb-2 text-xs text-muted-fg">
+              This will create a new lane branched from Primary and merge the selected lanes into it.
+            </div>
+
+            <input
+              className="mb-2 h-9 w-full rounded border border-border bg-bg px-3 text-sm"
+              value={integrationDialog.name}
+              onChange={(e) => setIntegrationDialog((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+              placeholder="Integration lane name"
+              disabled={integrationDialog.busy}
+            />
+
+            <div className="mb-3 max-h-[160px] overflow-auto rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">
+              {integrationDialog.laneIds.map((laneId) => (
+                <div key={laneId} className="truncate">
+                  {laneById.get(laneId)?.name ?? laneId}
+                </div>
+              ))}
+            </div>
+
+            {integrationDialog.step ? (
+              <div className="mb-3 rounded border border-border bg-bg/40 p-2 text-xs text-muted-fg">{integrationDialog.step}</div>
+            ) : null}
+
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="outline" disabled={integrationDialog.busy} onClick={() => setIntegrationDialog(null)}>
+                Cancel
+              </Button>
               <Button
                 size="sm"
-                variant="outline"
-                disabled={reparentDialog.previewBusy}
-                onClick={async () => {
-                  const previewLaneAId =
-                    reparentDialog.actionMode === "integrate"
-                      ? reparentDialog.integratePlan?.laneId
-                      : reparentDialog.laneIds[0];
-                  const previewLaneBId =
-                    reparentDialog.actionMode === "integrate"
-                      ? reparentDialog.integratePlan?.sourceLaneId
-                      : reparentDialog.targetLaneId;
-                  if (!previewLaneAId || !previewLaneBId) return;
-                  setReparentDialog((prev) => (prev ? { ...prev, previewBusy: true } : prev));
-                  const preview = await window.ade.conflicts.simulateMerge({
-                    laneAId: previewLaneAId,
-                    laneBId: previewLaneBId
-                  });
-                  setReparentDialog((prev) => (prev ? { ...prev, previewBusy: false, preview } : prev));
+                variant="primary"
+                disabled={integrationDialog.busy || !integrationDialog.name.trim() || !primaryLaneId}
+                onClick={() => {
+                  const draft = integrationDialog;
+                  if (!draft) return;
+                  const primaryId = primaryLaneId;
+                  if (!primaryId) {
+                    setIntegrationDialog((prev) => (prev ? { ...prev, error: "Primary lane not found." } : prev));
+                    return;
+                  }
+                  const ordered = [...draft.laneIds].filter((id) => id !== primaryId);
+                  setIntegrationDialog((prev) => (prev ? { ...prev, busy: true, error: null, step: "Creating integration lane…" } : prev));
+                  window.ade.lanes
+                    .createChild({ parentLaneId: primaryId, name: draft.name.trim() })
+                    .then(async (newLane) => {
+                      for (const sourceLaneId of ordered) {
+                        const source = laneById.get(sourceLaneId);
+                        if (!source) continue;
+                        setIntegrationDialog((prev) =>
+                          prev ? { ...prev, step: `Merging ${source.name}…` } : prev
+                        );
+                        await window.ade.git.sync({
+                          laneId: newLane.id,
+                          mode: "merge",
+                          baseRef: source.branchRef
+                        });
+                      }
+                      setIntegrationDialog((prev) => (prev ? { ...prev, step: "Done." } : prev));
+                      window.setTimeout(() => setIntegrationDialog(null), 300);
+                      await refreshLanes();
+                      setSelectedLaneIds([newLane.id]);
+                      navigate(`/lanes?laneId=${encodeURIComponent(newLane.id)}&focus=single`);
+                    })
+                    .catch((error) => {
+                      const message = error instanceof Error ? error.message : String(error);
+                      setIntegrationDialog((prev) => (prev ? { ...prev, busy: false, error: message, step: null } : prev));
+                    });
                 }}
               >
-                {reparentDialog.actionMode === "integrate" ? "Preview integrate" : "Preview rebase"}
-              </Button>
-              <Button size="sm" variant="primary" onClick={() => void applyReparent()}>
-                {reparentDialog.actionMode === "integrate" ? "Confirm Integrate" : "Confirm Reparent"}
+                {integrationDialog.busy ? "Working…" : "Create"}
               </Button>
             </div>
           </div>
@@ -2522,6 +3293,22 @@ function GraphInner() {
             <div className="flex items-center gap-1">
               <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack")}>
                 Batch Rebase
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                className="h-7 px-2 text-[11px]"
+                onClick={() =>
+                  setIntegrationDialog({
+                    laneIds: [...selectedLaneIds],
+                    name: `Integration ${new Date().toISOString().slice(0, 10)} (${selectedLaneIds.length})`,
+                    busy: false,
+                    step: null,
+                    error: null
+                  })
+                }
+              >
+                Integration Lane
               </Button>
               <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("push")}>
                 Batch Push
@@ -2666,6 +3453,197 @@ function GraphInner() {
         </div>
       ) : null}
 
+      {conflictPanel ? (
+        <div className="absolute right-3 top-[66px] z-[89] w-[420px] rounded border border-border bg-card/95 p-3 text-xs shadow-2xl">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="font-semibold text-fg">Conflict Resolution</div>
+            <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setConflictPanel(null)}>
+              ×
+            </button>
+          </div>
+          <div className="mb-2 text-muted-fg">
+            {(laneById.get(conflictPanel.laneAId)?.name ?? conflictPanel.laneAId)} ↔ {(laneById.get(conflictPanel.laneBId)?.name ?? conflictPanel.laneBId)}
+          </div>
+
+          {conflictPanel.error ? (
+            <div className="mb-2 rounded border border-red-700/70 bg-red-900/30 p-2 text-xs text-red-200">
+              {conflictPanel.error}
+            </div>
+          ) : null}
+
+          {conflictPanel.loading ? (
+            <div className="mb-2 rounded border border-border bg-bg/40 p-2 text-muted-fg">
+              <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
+              <div>Running merge simulation…</div>
+            </div>
+          ) : conflictPanel.result ? (
+            <div className="mb-2 rounded border border-border bg-bg/40 p-2 text-muted-fg">
+              <div>
+                outcome: <span className="font-semibold text-fg">{conflictPanel.result.outcome}</span>
+              </div>
+              <div>
+                conflicts: <span className="text-fg">{conflictPanel.result.conflictingFiles.length}</span> · files changed:{" "}
+                <span className="text-fg">{conflictPanel.result.diffStat.filesChanged}</span>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mb-2">
+            <div className="mb-1 text-[11px] font-semibold text-fg">Overlapping Files</div>
+            <div className="max-h-[120px] overflow-auto rounded border border-border bg-bg/40 p-2 text-[11px]">
+              {(() => {
+                const key = edgePairKey(conflictPanel.laneAId, conflictPanel.laneBId);
+                const files = overlapFilesByPair.get(key) ?? [];
+                if (files.length === 0) return <div className="text-muted-fg">No overlap file list.</div>;
+                return files.slice(0, 30).map((file) => (
+                  <div key={file} className="truncate" title={file}>
+                    {file}
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-fg">Apply to:</span>
+              <select
+                className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                value={conflictPanel.applyLaneId}
+                onChange={(e) => setConflictPanel((prev) => (prev ? { ...prev, applyLaneId: e.target.value } : prev))}
+              >
+                <option value={conflictPanel.laneAId}>{laneById.get(conflictPanel.laneAId)?.name ?? conflictPanel.laneAId}</option>
+                <option value={conflictPanel.laneBId}>{laneById.get(conflictPanel.laneBId)?.name ?? conflictPanel.laneBId}</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => navigate("/conflicts")}>
+                Open Conflicts Tab
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                className="h-7 px-2 text-[11px]"
+                disabled={conflictPanel.proposing}
+                onClick={() => {
+                  const panel = conflictPanel;
+                  const laneId = panel.applyLaneId;
+                  const peerLaneId = laneId === panel.laneAId ? panel.laneBId : panel.laneAId;
+                  setConflictPanel((prev) => (prev ? { ...prev, proposing: true, error: null } : prev));
+                  window.ade.conflicts
+                    .requestProposal({ laneId, peerLaneId })
+                    .then((proposal) => {
+                      setConflictPanel((prev) => (prev ? { ...prev, proposing: false, proposal } : prev));
+                    })
+                    .catch((error) => {
+                      const message = error instanceof Error ? error.message : String(error);
+                      setConflictPanel((prev) => (prev ? { ...prev, proposing: false, error: message } : prev));
+                    });
+                }}
+              >
+                {conflictPanel.proposing ? "Resolving…" : "Resolve with AI"}
+              </Button>
+            </div>
+          </div>
+
+          {conflictPanel.proposal ? (
+            <div className="space-y-2">
+              <div className="rounded border border-border bg-bg/40 p-2 text-[11px] text-muted-fg">
+                <div className="mb-1 font-semibold text-fg">Proposal</div>
+                <div>status: <span className="text-fg">{conflictPanel.proposal.status}</span></div>
+                {conflictPanel.proposal.confidence != null ? (
+                  <div>confidence: <span className="text-fg">{Math.round(conflictPanel.proposal.confidence * 100)}%</span></div>
+                ) : null}
+                {conflictPanel.proposal.explanation ? (
+                  <div className="mt-1 whitespace-pre-wrap">{conflictPanel.proposal.explanation}</div>
+                ) : null}
+              </div>
+
+              <div className="rounded border border-border bg-bg/40 p-2">
+                <div className="mb-1 text-[11px] font-semibold text-fg">Apply Mode</div>
+                <div className="flex flex-wrap gap-2 text-[11px] text-muted-fg">
+                  {(["unstaged", "staged", "commit"] as const).map((mode) => (
+                    <label key={mode} className="inline-flex items-center gap-1">
+                      <input
+                        type="radio"
+                        checked={conflictPanel.applyMode === mode}
+                        onChange={() => setConflictPanel((prev) => (prev ? { ...prev, applyMode: mode } : prev))}
+                      />
+                      {mode}
+                    </label>
+                  ))}
+                </div>
+                {conflictPanel.applyMode === "commit" ? (
+                  <input
+                    className="mt-2 h-8 w-full rounded border border-border bg-bg px-2 text-[11px]"
+                    placeholder="Commit message"
+                    value={conflictPanel.commitMessage}
+                    onChange={(e) => setConflictPanel((prev) => (prev ? { ...prev, commitMessage: e.target.value } : prev))}
+                  />
+                ) : null}
+                <div className="mt-2 flex justify-end gap-2">
+                  {conflictPanel.proposal.status === "applied" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => {
+                        const panel = conflictPanel;
+                        setConflictPanel((prev) => (prev ? { ...prev, applying: true, error: null } : prev));
+                        window.ade.conflicts
+                          .undoProposal({ laneId: panel.applyLaneId, proposalId: panel.proposal!.id })
+                          .then((updated) => {
+                            setConflictPanel((prev) => (prev ? { ...prev, applying: false, proposal: updated } : prev));
+                            window.setTimeout(() => void refreshRiskBatch().catch(() => {}), 900);
+                          })
+                          .catch((error) => {
+                            const message = error instanceof Error ? error.message : String(error);
+                            setConflictPanel((prev) => (prev ? { ...prev, applying: false, error: message } : prev));
+                          });
+                      }}
+                    >
+                      Undo
+                    </Button>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={conflictPanel.applying}
+                    onClick={() => {
+                      const panel = conflictPanel;
+                      if (panel.applyMode === "commit" && !panel.commitMessage.trim()) {
+                        setConflictPanel((prev) => (prev ? { ...prev, error: "Commit message is required for commit mode." } : prev));
+                        return;
+                      }
+                      setConflictPanel((prev) => (prev ? { ...prev, applying: true, error: null } : prev));
+                      window.ade.conflicts
+                        .applyProposal({
+                          laneId: panel.applyLaneId,
+                          proposalId: panel.proposal!.id,
+                          applyMode: panel.applyMode,
+                          commitMessage: panel.applyMode === "commit" ? panel.commitMessage : undefined
+                        })
+                        .then((updated) => {
+                          setConflictPanel((prev) => (prev ? { ...prev, applying: false, proposal: updated } : prev));
+                          window.setTimeout(() => void refreshRiskBatch().catch(() => {}), 900);
+                          void refreshLanes().catch(() => {});
+                        })
+                        .catch((error) => {
+                          const message = error instanceof Error ? error.message : String(error);
+                          setConflictPanel((prev) => (prev ? { ...prev, applying: false, error: message } : prev));
+                        });
+                    }}
+                  >
+                    {conflictPanel.applying ? "Applying…" : "Apply"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {nodeTooltip && hoveredTooltipLane ? (
         <div
           className="pointer-events-none fixed z-[92] min-w-[240px] rounded border border-border bg-card/95 px-2.5 py-2 text-[11px] shadow-xl ade-tooltip-motion ade-tooltip-open"
@@ -2675,6 +3653,12 @@ function GraphInner() {
           <div className="truncate text-muted-fg">{hoveredTooltipLane.branchRef}</div>
           <div className="mt-1 text-muted-fg">dirty changes: {hoveredTooltipLane.status.dirty ? "yes" : "no"}</div>
           <div className="text-muted-fg">last activity: {toRelativeTime(lastActivityByLaneId[hoveredTooltipLane.id] ?? null)}</div>
+          <div className="mt-1 text-muted-fg">
+            pack deterministic: {nodeTooltipPack ? toRelativeTime(nodeTooltipPack.deterministicUpdatedAt) : "loading…"}
+          </div>
+          <div className="text-muted-fg">
+            pack narrative: {nodeTooltipPack ? toRelativeTime(nodeTooltipPack.narrativeUpdatedAt) : "loading…"}
+          </div>
         </div>
       ) : null}
 
@@ -2721,7 +3705,10 @@ function GraphInner() {
       ) : null}
 
       {edgeHover ? (
-        <div className="pointer-events-none fixed z-[91] rounded border border-border bg-card/95 px-2 py-1 text-[11px] text-fg shadow" style={{ left: edgeHover.x, top: edgeHover.y }}>
+        <div
+          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded border border-border bg-card/95 px-2 py-1 text-[11px] text-fg shadow"
+          style={{ left: edgeHover.x, top: edgeHover.y }}
+        >
           {edgeHover.label}
         </div>
       ) : null}

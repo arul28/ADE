@@ -6,6 +6,22 @@
 
 declare module "sst" {
   export interface Resource {
+    "ADE_GITHUB_APP_ID": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ADE_GITHUB_APP_PRIVATE_KEY_BASE64": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ADE_GITHUB_APP_SLUG": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ADE_GITHUB_WEBHOOK_SECRET": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "Api": {
       "type": "sst.aws.ApiGatewayV2"
       "url": string
@@ -25,6 +41,18 @@ declare module "sst" {
     "CLERK_OAUTH_CLIENT_ID": {
       "type": "sst.sst.Secret"
       "value": string
+    }
+    "GitHubConnectStates": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "GitHubEvents": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "GitHubInstallations": {
+      "name": string
+      "type": "sst.aws.Dynamo"
     }
     "Jobs": {
       "name": string

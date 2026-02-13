@@ -39,12 +39,9 @@ checks, track review status, update descriptions, and merge — all from within 
 For stacked workflows, ADE handles the complexity of landing PRs in the correct
 order and retargeting child PRs automatically.
 
-**Current status**: This feature is planned for **Phase 7** (GitHub Integration + Workspace Graph). All tasks are TODO. No PR work has been built yet.
+**Current status**: Implemented as part of **Phase 7**. ADE supports lane-scoped PR creation/linking, status + checks + reviews, stacked landing (with base retargeting), and canvas PR overlays/merge workflows. Hosted mode uses the cloud GitHub App proxy; non-hosted modes use a locally stored token.
 
-**Phase 6 prerequisite**: Phase 6 (Cloud Infrastructure + Auth + LLM Gateway) must be completed before Phase 7 can begin. Key dependencies:
-
-- **LLM-powered PR description drafting** (PR-007) requires the LLM gateway from Phase 6 to generate pack-based descriptions.
-- **GitHub OAuth authentication** (PR-001) uses Clerk-backed hosted auth from Phase 6 for secure token management and OAuth flow.
+**Phase 6 prerequisite**: Phase 6 (Cloud Infrastructure + Auth + LLM Gateway) is complete and provides the hosted auth + job APIs used for hosted PR description drafting and conflict proposals.
 
 **Cross-feature note**: CONF-022 (stack-aware conflict resolution) is also in Phase 7's scope, bridging the conflict detection system (Phase 5) with the stacked PR workflow.
 
@@ -226,8 +223,8 @@ Workflow for stacked lanes with chained PRs:
 
 | Service | Status | Responsibility |
 |---------|--------|----------------|
-| `githubService` | **New (planned)** | GitHub API integration — PR CRUD, checks, reviews, merge operations. Wraps `gh` CLI or GitHub REST/GraphQL API. |
-| `prService` | **New (planned)** | PR lifecycle management — creation, status tracking, stack chain logic, land flow orchestration. |
+| `githubService` | Exists | GitHub API integration — PR CRUD, checks, reviews, merge operations. Uses GitHub REST API directly; in hosted mode routes requests via the cloud GitHub App proxy. |
+| `prService` | Exists | PR lifecycle management — creation/linking, status tracking, stack chain logic, land flow orchestration. |
 | `packService` | Exists | Provides lane pack content for auto-drafting PR descriptions. |
 | `laneService` | Exists | Lane-PR association, parent-child relationships for stacking. |
 | `operationService` | Exists | Records PR land operations in the history timeline. |
@@ -236,15 +233,12 @@ Workflow for stacked lanes with chained PRs:
 
 GitHub authentication is handled securely:
 
-- **Token storage**: GitHub personal access token (PAT) or OAuth token stored in
-  the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service).
-- **Token acquisition**: Obtained via `gh auth login` (if `gh` CLI is installed)
-  or manual entry in ADE settings.
+- **Hosted mode**: Uses a GitHub App installation per project (no PATs). GitHub API calls from the desktop are routed through the cloud proxy using an installation token.
+- **Non-hosted modes**: Uses a GitHub personal access token (PAT) entered in ADE Settings.
+- **Token storage (non-hosted)**: PAT is encrypted using Electron `safeStorage` and stored under `.ade/github/` (not in YAML configs, env vars, or SQLite).
 - **Scope requirements**: `repo` scope for private repositories, `public_repo` for
   public repositories.
-- **Security policy**: Tokens are **never** stored in config files, environment
-  variables, or the SQLite database. They are read from the keychain at runtime
-  and held in memory only for the duration of API calls.
+- **Security policy**: Tokens are **never** stored in config files, environment variables, or the SQLite database. They are decrypted on demand and held in memory only for the duration of API calls.
 - **Token refresh**: ADE prompts the user if a token is expired or has insufficient
   permissions.
 

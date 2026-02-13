@@ -10,45 +10,126 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-:root {
-  /* LIGHT Theme ("Clean Paper") */
-  --color-bg: hsl(40 20% 98%);
-  /* #FDFBF7 */
-  --color-fg: hsl(30 10% 10%);
-  /* #1C1917 */
+:root,
+[data-theme="e-paper"] {
+  /* E-PAPER Theme (Warm/Light) - DEFAULT */
+  --color-bg: #fdfbf7;
+  --color-fg: #201a14;
+  --color-surface: #f7f2e9;
 
-  --color-card: hsl(40 20% 98%);
-  --color-card-fg: hsl(30 10% 10%);
+  --color-card: #fdfbf7;
+  --color-card-fg: #201a14;
+  --color-secondary: #ddd1be;
+  --color-secondary-fg: #5f5140;
 
-  --color-muted: hsl(40 10% 94%);
-  /* #F2F0ED */
-  --color-muted-fg: hsl(30 5% 40%);
-  /* #6B665E */
+  --color-muted: #efe8dd;
+  --color-muted-fg: #6f6359;
 
-  --color-border: hsl(30 8% 85%);
-  /* #DBD8D3 */
+  --color-border: #d3cfc6;
 
-  --color-accent: hsl(10 70% 45%);
-  /* #C22323 */
-  --color-accent-fg: hsl(0 0% 100%);
+  --color-accent: #c22323;
+  --color-accent-fg: #ffffff;
 }
 
-[data-theme="dark"] {
-  /* DARK Theme ("Bloomberg Terminal") */
+[data-theme="bloomberg"] {
+  /* BLOOMBERG Theme (Dark Terminal) */
   --color-bg: #0a0a0a;
-  --color-fg: #ededed;
+  --color-fg: #ffc87a;
+  --color-surface: #15100a;
 
-  --color-card: #111111;
-  --color-card-fg: #ededed;
+  --color-card: #16110a;
+  --color-card-fg: #ffbb66;
+  --color-secondary: #4f3c1f;
+  --color-secondary-fg: #f5d2a4;
 
-  --color-muted: #1a1a1a;
-  --color-muted-fg: #888888;
+  --color-muted: #1f180f;
+  --color-muted-fg: #b09779;
 
-  --color-border: #333333;
+  --color-border: #403121;
 
-  --color-accent: #f59e0b;
-  /* Amber */
+  --color-accent: #ff7a00;
   --color-accent-fg: #000000;
+}
+
+[data-theme="github"] {
+  /* GITHUB Theme (Dark Navy) */
+  --color-bg: #0d1117;
+  --color-fg: #c9d1d9;
+  --color-surface: #0f1a2d;
+
+  --color-card: #111b2c;
+  --color-card-fg: #c9d1d9;
+  --color-secondary: #58a6ff;
+  --color-secondary-fg: #0f2d53;
+
+  --color-muted: #1d2a3a;
+  --color-muted-fg: #8b97a8;
+
+  --color-border: #2f3b49;
+
+  --color-accent: #58a6ff;
+  --color-accent-fg: #ffffff;
+}
+
+[data-theme="rainbow"] {
+  /* RAINBOW Theme (Vibrant Dark) */
+  --color-bg: #1b1f23;
+  --color-fg: #e6edf3;
+  --color-surface: #252035;
+
+  --color-card: #222737;
+  --color-card-fg: #e6edf3;
+  --color-secondary: #c084fc;
+  --color-secondary-fg: #35134f;
+
+  --color-muted: #2a3342;
+  --color-muted-fg: #96a0ac;
+
+  --color-border: #525e72;
+
+  --color-accent: #fb7185;
+  --color-accent-fg: #ffffff;
+}
+
+[data-theme="sky"] {
+  /* SKY Theme (Light / Analytical) */
+  --color-bg: #f0f6ff;
+  --color-fg: #1e3a8a;
+  --color-surface: #edf3ff;
+
+  --color-card: #f7faff;
+  --color-card-fg: #1e3a8a;
+  --color-secondary: #14b8a6;
+  --color-secondary-fg: #042f2f;
+
+  --color-muted: #dbeafe;
+  --color-muted-fg: #60a5fa;
+
+  --color-border: #b7d5ff;
+
+  --color-accent: #2563eb;
+  --color-accent-fg: #ffffff;
+}
+
+[data-theme="pats"] {
+  /* PATS Theme (Navy/Red/Silver) */
+  --color-bg: #001a36;
+  /* Navy */
+  --color-fg: #edf4ff;
+  --color-surface: #012b53;
+
+  --color-card: #001a34;
+  --color-card-fg: #d3deec;
+  --color-secondary: #0d426b;
+  --color-secondary-fg: #cfe0f3;
+
+  --color-muted: #163f66;
+  --color-muted-fg: #a6bdd6;
+
+  --color-border: #c60c30;
+
+  --color-accent: #c60c30;
+  --color-accent-fg: #ffffff;
 }
 
 /* 
@@ -63,6 +144,7 @@ body {
   margin: 0;
   color: var(--color-fg);
   background-color: var(--color-bg);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 86%, black 14%), var(--color-surface));
   /* 
    * Fonts:
    * Body/UI: Monospace for density
@@ -280,7 +362,73 @@ h6 {
 }
 
 .ade-edge-path {
-  transition: opacity 200ms ease, stroke-width 200ms ease;
+  transition: opacity 200ms ease, stroke-width 200ms ease, stroke 260ms ease;
+}
+
+@keyframes ade-pr-badge-pulse {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-pr-badge-pulse {
+  animation: ade-pr-badge-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes ade-pr-ci-pending {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-pr-ci-pending {
+  animation: ade-pr-ci-pending 800ms ease-in-out infinite;
+}
+
+@keyframes ade-node-merging-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
+  }
+
+  100% {
+    box-shadow: 0 0 0 12px rgba(56, 189, 248, 0);
+  }
+}
+
+.ade-node-merging {
+  animation: ade-node-merging-pulse 1200ms ease-out infinite;
+}
+
+@keyframes ade-node-disappear {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+.ade-node-disappear {
+  animation: ade-node-disappear 520ms ease-in forwards;
 }
 
 @keyframes ade-node-failed-pulse {

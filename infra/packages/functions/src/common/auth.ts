@@ -17,6 +17,7 @@ export function getUserIdFromEvent(event: APIGatewayProxyEventV2): string {
     authorizer?: {
       jwt?: {
         claims?: Record<string, unknown>;
+        scopes?: string[];
       };
     };
   };
@@ -24,12 +25,10 @@ export function getUserIdFromEvent(event: APIGatewayProxyEventV2): string {
   const claims = context.authorizer?.jwt?.claims;
   const userId = claimValue(claims, ["sub", "user_id", "userId", "uid"]);
   if (!userId) {
-    const claimKeys = claims ? Object.keys(claims).join(", ") : "";
+    const claimKeys = claims ? Object.keys(claims).join(", ") : "none";
     throw new ApiError(401, {
       code: "UNAUTHORIZED",
-      message: claimKeys
-        ? `Missing user identity claim in JWT (available claims: ${claimKeys})`
-        : "Missing user identity claim in JWT"
+      message: `Missing user identity claim in JWT (available claims: ${claimKeys})`
     });
   }
   return userId;

@@ -35,6 +35,8 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
+  GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
@@ -42,6 +44,17 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubStatus,
+  CreatePrFromLaneArgs,
+  LinkPrToLaneArgs,
+  LandResult,
+  PrCheck,
+  PrReview,
+  PrStatus,
+  PrSummary,
+  UpdatePrDescriptionArgs,
+  LandPrArgs,
+  LandStackArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -49,6 +62,10 @@ import type {
   GetTestLogTailArgs,
   HostedArtifactResult,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -115,6 +132,10 @@ import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
+import type { createGithubService } from "../github/githubService";
+import type { createPrService } from "../prs/prService";
+import type { createPrPollingService } from "../prs/prPollingService";
+import type { createByokLlmService } from "../byok/byokLlmService";
 
 export type AppContext = {
   db: AdeDb;
@@ -131,6 +152,10 @@ export type AppContext = {
   gitService: ReturnType<typeof createGitOperationsService>;
   conflictService: ReturnType<typeof createConflictService>;
   hostedAgentService: ReturnType<typeof createHostedAgentService>;
+  byokLlmService: ReturnType<typeof createByokLlmService>;
+  githubService: ReturnType<typeof createGithubService>;
+  prService: ReturnType<typeof createPrService>;
+  prPollingService: ReturnType<typeof createPrPollingService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -157,6 +182,21 @@ export function registerIpc({
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
   ipcMain.handle(IPC.appGetProject, async () => getCtx().project);
+
+  ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
+    const urlRaw = typeof arg?.url === "string" ? arg.url.trim() : "";
+    if (!urlRaw) return;
+    let parsed: URL;
+    try {
+      parsed = new URL(urlRaw);
+    } catch {
+      throw new Error("Invalid URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("Only http(s) URLs are allowed.");
+    }
+    await shell.openExternal(parsed.toString());
+  });
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     return {
@@ -328,7 +368,7 @@ export function registerIpc({
     ctx.ptyService.resize(arg);
   });
 
-  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string }): Promise<void> => {
+  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
     const ctx = getCtx();
     ctx.ptyService.dispose(arg);
   });
@@ -344,7 +384,8 @@ export function registerIpc({
       laneId: arg.laneId,
       filePath: arg.path,
       mode: arg.mode,
-      compareRef: arg.compareRef
+      compareRef: arg.compareRef,
+      compareTo: arg.compareTo
     });
   });
 
@@ -450,6 +491,16 @@ export function registerIpc({
     return ctx.gitService.listRecentCommits(arg);
   });
 
+  ipcMain.handle(IPC.gitListCommitFiles, async (_event, arg: GitListCommitFilesArgs): Promise<string[]> => {
+    const ctx = getCtx();
+    return await ctx.gitService.listCommitFiles(arg);
+  });
+
+  ipcMain.handle(IPC.gitGetCommitMessage, async (_event, arg: GitGetCommitMessageArgs): Promise<string> => {
+    const ctx = getCtx();
+    return await ctx.gitService.getCommitMessage(arg);
+  });
+
   ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.revertCommit(arg);
@@ -542,12 +593,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.conflictsApplyProposal, async (_event, arg: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
     const ctx = getCtx();
-    return await ctx.conflictService.applyProposal(arg);
+    const updated = await ctx.conflictService.applyProposal(arg);
+    ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
+    return updated;
   });
 
   ipcMain.handle(IPC.conflictsUndoProposal, async (_event, arg: UndoConflictProposalArgs): Promise<ConflictProposal> => {
     const ctx = getCtx();
-    return await ctx.conflictService.undoProposal(arg);
+    const updated = await ctx.conflictService.undoProposal(arg);
+    ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
+    return updated;
   });
 
   ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {
@@ -579,6 +634,48 @@ export function registerIpc({
       laneId: arg.laneId,
       narrative: arg.narrative
     });
+  });
+
+  ipcMain.handle(IPC.packsGenerateNarrative, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    const lanePack = ctx.packService.getLanePack(arg.laneId);
+    if (!lanePack.exists || !lanePack.body.trim().length) {
+      throw new Error("Lane pack is empty. Refresh the deterministic pack first.");
+    }
+
+    const providerMode = ctx.projectConfigService.get().effective.providerMode ?? "guest";
+    if (providerMode === "hosted" && ctx.hostedAgentService.getStatus().enabled) {
+      const narrative = await ctx.hostedAgentService.requestLaneNarrative({
+        laneId: arg.laneId,
+        packBody: lanePack.body
+      });
+      return ctx.packService.applyHostedNarrative({
+        laneId: arg.laneId,
+        narrative: narrative.narrative,
+        metadata: {
+          jobId: narrative.jobId,
+          artifactId: narrative.artifactId
+        }
+      });
+    }
+
+    if (providerMode === "byok") {
+      const narrative = await ctx.byokLlmService.generateLaneNarrative({
+        laneId: arg.laneId,
+        packBody: lanePack.body
+      });
+      return ctx.packService.applyHostedNarrative({
+        laneId: arg.laneId,
+        narrative: narrative.narrative,
+        metadata: {
+          source: "byok",
+          provider: narrative.provider,
+          model: narrative.model
+        }
+      });
+    }
+
+    throw new Error("AI narrative generation requires Hosted or BYOK provider mode.");
   });
 
   ipcMain.handle(IPC.hostedGetStatus, async (): Promise<HostedStatus> => {
@@ -624,6 +721,108 @@ export function registerIpc({
   ipcMain.handle(IPC.hostedGetArtifact, async (_event, arg: { artifactId: string }): Promise<HostedArtifactResult> => {
     const ctx = getCtx();
     return await ctx.hostedAgentService.getArtifact(arg.artifactId);
+  });
+
+  ipcMain.handle(IPC.hostedGithubGetStatus, async (): Promise<HostedGitHubAppStatus> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubGetStatus();
+  });
+
+  ipcMain.handle(IPC.hostedGithubConnectStart, async (): Promise<HostedGitHubConnectStartResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubConnectStart();
+  });
+
+  ipcMain.handle(IPC.hostedGithubDisconnect, async (): Promise<HostedGitHubDisconnectResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubDisconnect();
+  });
+
+  ipcMain.handle(IPC.hostedGithubListEvents, async (): Promise<HostedGitHubEventsResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.githubListEvents();
+  });
+
+  ipcMain.handle(IPC.githubGetStatus, async (): Promise<GitHubStatus> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getStatus();
+  });
+
+  ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {
+    const ctx = getCtx();
+    ctx.githubService.setToken(arg.token);
+    return await ctx.githubService.getStatus();
+  });
+
+  ipcMain.handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
+    const ctx = getCtx();
+    ctx.githubService.clearToken();
+    return await ctx.githubService.getStatus();
+  });
+
+  ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
+    const ctx = getCtx();
+    return await ctx.prService.createFromLane(arg);
+  });
+
+  ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
+    const ctx = getCtx();
+    return await ctx.prService.linkToLane(arg);
+  });
+
+  ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
+    const ctx = getCtx();
+    return ctx.prService.getForLane(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
+    const ctx = getCtx();
+    return ctx.prService.listAll();
+  });
+
+  ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string } = {}): Promise<PrSummary[]> => {
+    const ctx = getCtx();
+    return await ctx.prService.refresh(arg);
+  });
+
+  ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus> => {
+    const ctx = getCtx();
+    return await ctx.prService.getStatus(arg.prId);
+  });
+
+  ipcMain.handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
+    const ctx = getCtx();
+    return await ctx.prService.getChecks(arg.prId);
+  });
+
+  ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
+    const ctx = getCtx();
+    return await ctx.prService.getReviews(arg.prId);
+  });
+
+  ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
+    const ctx = getCtx();
+    return await ctx.prService.updateDescription(arg);
+  });
+
+  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: { laneId: string }): Promise<{ title: string; body: string }> => {
+    const ctx = getCtx();
+    return await ctx.prService.draftDescription(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
+    const ctx = getCtx();
+    return await ctx.prService.land(arg);
+  });
+
+  ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
+    const ctx = getCtx();
+    return await ctx.prService.landStack(arg);
+  });
+
+  ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
+    const ctx = getCtx();
+    return await ctx.prService.openInGitHub(arg.prId);
   });
 
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {

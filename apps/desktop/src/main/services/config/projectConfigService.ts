@@ -220,12 +220,22 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ? value.laneOverlayPolicies.map(coerceLaneOverlayPolicy).filter((x): x is ConfigLaneOverlayPolicy => x != null)
     : [];
 
+  const github =
+    isRecord(value.github) && (asNumber(value.github.prPollingIntervalSeconds) != null)
+      ? {
+          ...(asNumber(value.github.prPollingIntervalSeconds) != null
+            ? { prPollingIntervalSeconds: asNumber(value.github.prPollingIntervalSeconds) }
+            : {})
+        }
+      : undefined;
+
   return {
     version,
     processes,
     stackButtons,
     testSuites,
     laneOverlayPolicies,
+    ...(github ? { github } : {}),
     ...(isRecord(value.providers) ? { providers: value.providers } : {})
   };
 }
@@ -253,6 +263,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     stackButtons: config.stackButtons ?? [],
     testSuites: config.testSuites ?? [],
     laneOverlayPolicies: config.laneOverlayPolicies ?? [],
+    ...(config.github ? { github: config.github } : {}),
     ...(config.providers ? { providers: config.providers } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
@@ -390,6 +401,13 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     }
     : undefined;
 
+  const mergedGithub = shared.github || local.github
+    ? {
+        ...(shared.github ?? {}),
+        ...(local.github ?? {})
+      }
+    : undefined;
+
   const modeRaw = typeof mergedProviders?.mode === "string" ? mergedProviders.mode : undefined;
   const providerMode: ProviderMode =
     modeRaw === "hosted" || modeRaw === "byok" || modeRaw === "cli" || modeRaw === "guest" ? modeRaw : "guest";
@@ -401,6 +419,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     testSuites,
     laneOverlayPolicies,
     providerMode,
+    ...(mergedGithub ? { github: mergedGithub } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {})
   };
 }
@@ -479,6 +498,15 @@ function validateEffectiveConfig(
   validateDuplicateIds(local.testSuites ?? [], "testSuites", issues, "local");
   validateDuplicateIds(shared.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "shared");
   validateDuplicateIds(local.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "local");
+
+  const prPoll = effective.github?.prPollingIntervalSeconds;
+  if (prPoll != null) {
+    if (!Number.isFinite(prPoll) || prPoll <= 0) {
+      issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be > 0" });
+    } else if (prPoll < 5 || prPoll > 300) {
+      issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be between 5 and 300" });
+    }
+  }
 
   const processIds = new Set<string>();
   for (const [idx, proc] of effective.processes.entries()) {

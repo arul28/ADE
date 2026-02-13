@@ -67,6 +67,27 @@ export function createSessionService({ db }: { db: AdeDb }) {
   return {
     list,
 
+    reconcileStaleRunningSessions({
+      endedAt,
+      status
+    }: {
+      endedAt?: string;
+      status?: TerminalSessionStatus;
+    } = {}): number {
+      const row = db.get<{ count: number }>("select count(1) as count from terminal_sessions where status = 'running'");
+      const count = Number(row?.count ?? 0);
+      if (!Number.isFinite(count) || count <= 0) return 0;
+
+      const finalEndedAt = endedAt ?? new Date().toISOString();
+      const finalStatus = status ?? "disposed";
+      db.run("update terminal_sessions set ended_at = ?, exit_code = ?, status = ?, pty_id = null where status = 'running'", [
+        finalEndedAt,
+        null,
+        finalStatus
+      ]);
+      return count;
+    },
+
     get(sessionId: string): TerminalSessionDetail | null {
       const row = db.get<TerminalSessionDetail & { laneName: string }>(
         `

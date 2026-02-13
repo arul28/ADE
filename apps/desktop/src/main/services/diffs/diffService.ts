@@ -98,12 +98,14 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       laneId,
       filePath,
       mode,
-      compareRef
+      compareRef,
+      compareTo
     }: {
       laneId: string;
       filePath: string;
       mode: DiffMode;
       compareRef?: string;
+      compareTo?: "worktree" | "parent";
     }): Promise<FileDiff> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const abs = path.join(worktreePath, filePath);
@@ -126,6 +128,25 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
         if (!ref) {
           throw new Error("compareRef is required for commit mode");
         }
+        const target = compareTo ?? "worktree";
+
+        if (target === "parent") {
+          const parentsRes = await runGit(["rev-list", "--parents", "-n", "1", ref], { cwd: worktreePath, timeoutMs: 10_000 });
+          const parentSha = parentsRes.exitCode === 0 ? parentsRes.stdout.trim().split(" ").slice(1)[0] : undefined;
+          const parentRef = parentSha?.trim() ? parentSha.trim() : null;
+
+          const parentSide = parentRef ? await gitShowText(worktreePath, `${parentRef}:${filePath}`, MAX_TEXT_BYTES) : { exists: false, text: "" };
+          const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_TEXT_BYTES);
+          const isBinary = Boolean(parentSide.isBinary || commitSide.isBinary);
+          return {
+            path: filePath,
+            mode,
+            original: { exists: parentSide.exists, text: parentSide.text },
+            modified: { exists: commitSide.exists, text: commitSide.text },
+            ...(isBinary ? { isBinary: true } : {})
+          };
+        }
+
         const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_TEXT_BYTES);
         const wt = readTextFileSafe(abs, MAX_TEXT_BYTES);
         const isBinary = Boolean(commitSide.isBinary || wt.isBinary);

@@ -29,6 +29,9 @@ export const sharedEnv = {
   jobsTableName: required("JOBS_TABLE_NAME"),
   artifactsTableName: required("ARTIFACTS_TABLE_NAME"),
   rateLimitsTableName: required("RATE_LIMITS_TABLE_NAME"),
+  githubConnectStatesTableName: required("GITHUB_CONNECT_STATES_TABLE_NAME"),
+  githubInstallationsTableName: required("GITHUB_INSTALLATIONS_TABLE_NAME"),
+  githubEventsTableName: required("GITHUB_EVENTS_TABLE_NAME"),
   blobsBucketName: required("BLOBS_BUCKET_NAME"),
   manifestsBucketName: required("MANIFESTS_BUCKET_NAME"),
   artifactsBucketName: required("ARTIFACTS_BUCKET_NAME"),
@@ -41,5 +44,9 @@ export const sharedEnv = {
   llmMaxOutputTokens: parseNumberEnv("LLM_MAX_OUTPUT_TOKENS", 4_000),
   rateLimitJobsPerMinute: parseNumberEnv("RATE_LIMIT_JOBS_PER_MINUTE", 20),
   rateLimitDailyJobs: parseNumberEnv("RATE_LIMIT_DAILY_JOBS", 500),
-  rateLimitDailyEstimatedTokens: parseNumberEnv("RATE_LIMIT_DAILY_ESTIMATED_TOKENS", 250_000)
+  rateLimitDailyEstimatedTokens: parseNumberEnv("RATE_LIMIT_DAILY_ESTIMATED_TOKENS", 250_000),
+  githubAppId: optional("GITHUB_APP_ID"),
+  githubAppSlug: optional("GITHUB_APP_SLUG"),
+  githubAppPrivateKeyBase64: optional("GITHUB_APP_PRIVATE_KEY_BASE64"),
+  githubWebhookSecret: optional("GITHUB_WEBHOOK_SECRET")
 };

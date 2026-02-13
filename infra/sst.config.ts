@@ -1,3 +1,4 @@
+/// <reference path="./.sst/platform/config.d.ts" />
 
 function sanitizeStage(stage: string): string {
   return stage.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
@@ -70,6 +71,15 @@ export default $config({
     const region = process.env.ADE_AWS_REGION ?? "us-east-1";
     const accountId = process.env.ADE_ALLOWED_AWS_ACCOUNT_ID ?? "695094375923";
     const enableAwsDefaultTags = isTruthy(process.env.ADE_ENABLE_AWS_DEFAULT_TAGS);
+    const defaultTags = enableAwsDefaultTags
+      ? {
+          tags: {
+            project: "ade",
+            environment: stage,
+            "managed-by": "sst"
+          }
+        }
+      : undefined;
 
     return {
       name: "ade",
@@ -80,19 +90,9 @@ export default $config({
       providers: {
         aws: {
           profile: resolveAwsProfile(),
-          region,
-          allowedAccountIds: [accountId],
-          defaultTags: enableAwsDefaultTags
-            ? {
-                tags: {
-                  project: "ade",
-                  environment: stage,
-                  "managed-by": "sst"
-                }
-              }
-            : {
-                tags: {}
-              }
+          // Pulumi's Region type is a string union; env vars are untyped.
+          region: region as any,
+          ...(defaultTags ? { defaultTags } : {})
         }
       }
     };
@@ -133,6 +133,13 @@ export default $config({
     const llmSecretName = `ade-${stage}-llm-provider`;
     const llmSecretResourceArn = $interpolate`arn:aws:secretsmanager:${region}:${caller.accountId}:secret:${llmSecretName}*`;
 
+    // GitHub App secrets (used by Phase 7A GitHub integration).
+    // These are passed into the API as plain env vars consumed by the Lambda runtime.
+    const githubAppId = new sst.Secret("ADE_GITHUB_APP_ID");
+    const githubAppSlug = new sst.Secret("ADE_GITHUB_APP_SLUG");
+    const githubAppPrivateKeyBase64 = new sst.Secret("ADE_GITHUB_APP_PRIVATE_KEY_BASE64");
+    const githubWebhookSecret = new sst.Secret("ADE_GITHUB_WEBHOOK_SECRET");
+
     const blobsBucket = new sst.aws.Bucket("Blobs", {
       versioning: false,
       transform: {
@@ -151,23 +158,25 @@ export default $config({
       }
     });
 
-    const artifactsBucket = new sst.aws.Bucket("Artifacts", {
-      versioning: false,
-      lifecycleRules: [
-        {
-          id: "artifact-expiry-30d",
-          enabled: true,
-          expiration: {
-            days: 30
-          }
-        }
-      ],
-      transform: {
-        bucket: (args: any) => {
-          args.bucket = $interpolate`ade-${stage}-artifacts-${caller.accountId}`;
-        }
-      }
-    });
+	    const artifactsBucket = new sst.aws.Bucket("Artifacts", {
+	      versioning: false,
+	      transform: {
+	        bucket: (args: any) => {
+	          args.bucket = $interpolate`ade-${stage}-artifacts-${caller.accountId}`;
+	          args.lifecycleRules = [
+	            {
+	              id: "artifact-expiry-30d",
+	              enabled: true,
+	              expirations: [
+	                {
+	                  days: 30
+	                }
+	              ]
+	            }
+	          ];
+	        }
+	      }
+	    });
 
     const projectsTable = new sst.aws.Dynamo("Projects", {
       fields: {
@@ -259,6 +268,54 @@ export default $config({
       }
     });
 
+    const githubConnectStatesTable = new sst.aws.Dynamo("GitHubConnectStates", {
+      fields: {
+        state: "string"
+      },
+      primaryIndex: {
+        hashKey: "state"
+      },
+      ttl: "expiresAt",
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-github-connect-states`;
+        }
+      }
+    });
+
+    const githubInstallationsTable = new sst.aws.Dynamo("GitHubInstallations", {
+      fields: {
+        installationId: "string",
+        projectId: "string"
+      },
+      primaryIndex: {
+        hashKey: "installationId",
+        rangeKey: "projectId"
+      },
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-github-installations`;
+        }
+      }
+    });
+
+    const githubEventsTable = new sst.aws.Dynamo("GitHubEvents", {
+      fields: {
+        projectId: "string",
+        eventId: "string"
+      },
+      primaryIndex: {
+        hashKey: "projectId",
+        rangeKey: "eventId"
+      },
+      ttl: "expiresAt",
+      transform: {
+        table: (args: any) => {
+          args.name = `ade-${stage}-github-events`;
+        }
+      }
+    });
+
     const jobsDlq = new sst.aws.Queue("JobsDlq", {
       visibilityTimeout: "5 minutes",
       transform: {
@@ -294,15 +351,22 @@ export default $config({
       ARTIFACTS_BUCKET_NAME: artifactsBucket.name,
       JOBS_QUEUE_URL: jobsQueue.url,
       API_CORS_ORIGIN: apiCorsOrigin,
-      LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "mock",
-      LLM_MODEL: process.env.ADE_LLM_MODEL ?? "claude-3-5-sonnet-latest",
+      LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "gemini",
+      LLM_MODEL: process.env.ADE_LLM_MODEL ?? "gemini-3-flash-preview",
       LLM_MAX_INPUT_TOKENS: process.env.ADE_LLM_MAX_INPUT_TOKENS ?? "200000",
       LLM_MAX_OUTPUT_TOKENS: process.env.ADE_LLM_MAX_OUTPUT_TOKENS ?? "4000",
       LLM_SECRET_ARN: llmSecretName,
       RATE_LIMITS_TABLE_NAME: rateLimitsTable.name,
       RATE_LIMIT_JOBS_PER_MINUTE: process.env.ADE_RATE_LIMIT_JOBS_PER_MINUTE ?? "20",
       RATE_LIMIT_DAILY_JOBS: process.env.ADE_RATE_LIMIT_DAILY_JOBS ?? "500",
-      RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000"
+      RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000",
+      GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
+      GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
+      GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
+      GITHUB_APP_ID: githubAppId.value,
+      GITHUB_APP_SLUG: githubAppSlug.value,
+      GITHUB_APP_PRIVATE_KEY_BASE64: githubAppPrivateKeyBase64.value,
+      GITHUB_WEBHOOK_SECRET: githubWebhookSecret.value
     };
 
     const apiLinkedResources = [
@@ -311,6 +375,9 @@ export default $config({
       jobsTable,
       artifactsTable,
       rateLimitsTable,
+      githubConnectStatesTable,
+      githubInstallationsTable,
+      githubEventsTable,
       blobsBucket,
       manifestsBucket,
       artifactsBucket,
@@ -327,17 +394,18 @@ export default $config({
       transform: {
         api: (args: any) => {
           args.name = `ade-${stage}-api`;
+        },
+        route: {
+          handler: {
+            timeout: "30 seconds",
+            memory: "1024 MB",
+            architecture: "arm64" as const,
+            environment: apiEnvironment,
+            link: apiLinkedResources
+          }
         }
       }
     });
-
-    const handlerDefaults = {
-      timeout: "30 seconds",
-      memory: "1024 MB",
-      architecture: "arm64" as const,
-      environment: apiEnvironment,
-      link: apiLinkedResources
-    };
 
     const clerkJwtAuthorizer = api.addAuthorizer({
       name: "clerkJwt",
@@ -353,53 +421,65 @@ export default $config({
       }
     };
 
-    api.route("OPTIONS /{proxy+}", "packages/functions/src/api/handlers.options", {
-      ...handlerDefaults
-    });
+    api.route("OPTIONS /{proxy+}", "packages/functions/src/api/handlers.options");
 
-    api.route("GET /health", "packages/functions/src/api/handlers.health", {
-      ...handlerDefaults
-    });
+    api.route("GET /health", "packages/functions/src/api/handlers.health");
 
     api.route("POST /projects", "packages/functions/src/api/handlers.createProject", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("GET /projects/{id}", "packages/functions/src/api/handlers.getProject", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("POST /projects/{id}/upload", "packages/functions/src/api/handlers.uploadBlobs", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("POST /projects/{id}/lanes/{lid}/manifest", "packages/functions/src/api/handlers.updateLaneManifest", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("POST /projects/{id}/jobs", "packages/functions/src/api/handlers.submitJob", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("GET /projects/{id}/jobs/{jid}", "packages/functions/src/api/handlers.getJob", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("GET /projects/{id}/artifacts/{aid}", "packages/functions/src/api/handlers.getArtifact", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
 
     api.route("DELETE /projects/{id}", "packages/functions/src/api/handlers.deleteProject", {
-      ...handlerDefaults,
       auth: protectedAuth
     });
+
+    api.route("POST /projects/{id}/github/connect/start", "packages/functions/src/api/github.connectStart", {
+      auth: protectedAuth
+    });
+
+    api.route("GET /projects/{id}/github/status", "packages/functions/src/api/github.getStatus", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/github/disconnect", "packages/functions/src/api/github.disconnect", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/github/api", "packages/functions/src/api/github.proxy", {
+      auth: protectedAuth
+    });
+
+    api.route("GET /projects/{id}/github/events", "packages/functions/src/api/github.listEvents", {
+      auth: protectedAuth
+    });
+
+    // Webhooks + setup callbacks originate from GitHub, not the desktop client.
+    api.route("GET /github/connect/callback", "packages/functions/src/api/github.connectCallback");
+    api.route("POST /github/webhooks", "packages/functions/src/api/github.webhook");
 
     const worker = jobsQueue.subscribe(
       {
@@ -416,8 +496,8 @@ export default $config({
           BLOBS_BUCKET_NAME: blobsBucket.name,
           MANIFESTS_BUCKET_NAME: manifestsBucket.name,
           ARTIFACTS_BUCKET_NAME: artifactsBucket.name,
-          LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "mock",
-          LLM_MODEL: process.env.ADE_LLM_MODEL ?? "claude-3-5-sonnet-latest",
+          LLM_PROVIDER: process.env.ADE_LLM_PROVIDER ?? "gemini",
+          LLM_MODEL: process.env.ADE_LLM_MODEL ?? "gemini-3-flash-preview",
           LLM_MAX_INPUT_TOKENS: process.env.ADE_LLM_MAX_INPUT_TOKENS ?? "200000",
           LLM_MAX_OUTPUT_TOKENS: process.env.ADE_LLM_MAX_OUTPUT_TOKENS ?? "4000",
           LLM_SECRET_ARN: llmSecretName,
@@ -446,45 +526,45 @@ export default $config({
       }
     );
 
-    const dlqAlarm = new aws.cloudwatch.MetricAlarm("JobsDlqVisibleAlarm", {
-      alarmName: `ade-${stage}-jobs-dlq-visible`,
-      alarmDescription: "ADE jobs dead-letter queue has visible messages.",
-      namespace: "AWS/SQS",
-      metricName: "ApproximateNumberOfMessagesVisible",
-      statistic: "Average",
-      period: 60,
-      evaluationPeriods: 1,
-      threshold: 0,
-      comparisonOperator: "GreaterThanThreshold",
-      treatMissingData: "notBreaching",
-      dimensions: {
-        QueueName: jobsDlq.name
-      }
-    });
+	    const dlqAlarm = new aws.cloudwatch.MetricAlarm("JobsDlqVisibleAlarm", {
+	      name: `ade-${stage}-jobs-dlq-visible`,
+	      alarmDescription: "ADE jobs dead-letter queue has visible messages.",
+	      namespace: "AWS/SQS",
+	      metricName: "ApproximateNumberOfMessagesVisible",
+	      statistic: "Average",
+	      period: 60,
+	      evaluationPeriods: 1,
+	      threshold: 0,
+	      comparisonOperator: "GreaterThanThreshold",
+	      treatMissingData: "notBreaching",
+	      dimensions: {
+	        QueueName: jobsDlq.nodes.queue.name
+	      }
+	    });
 
-    const queueAgeAlarm = new aws.cloudwatch.MetricAlarm("JobsQueueAgeAlarm", {
-      alarmName: `ade-${stage}-jobs-queue-age`,
-      alarmDescription: "ADE jobs queue oldest message age is above 5 minutes.",
-      namespace: "AWS/SQS",
-      metricName: "ApproximateAgeOfOldestMessage",
-      statistic: "Maximum",
+	    const queueAgeAlarm = new aws.cloudwatch.MetricAlarm("JobsQueueAgeAlarm", {
+	      name: `ade-${stage}-jobs-queue-age`,
+	      alarmDescription: "ADE jobs queue oldest message age is above 5 minutes.",
+	      namespace: "AWS/SQS",
+	      metricName: "ApproximateAgeOfOldestMessage",
+	      statistic: "Maximum",
       period: 60,
       evaluationPeriods: 3,
-      threshold: 300,
-      comparisonOperator: "GreaterThanOrEqualToThreshold",
-      treatMissingData: "notBreaching",
-      dimensions: {
-        QueueName: jobsQueue.name
-      }
-    });
+	      threshold: 300,
+	      comparisonOperator: "GreaterThanOrEqualToThreshold",
+	      treatMissingData: "notBreaching",
+	      dimensions: {
+	        QueueName: jobsQueue.nodes.queue.name
+	      }
+	    });
 
-    return {
+	    return {
       stage,
       region,
-      accountId: caller.accountId,
-      apiUrl: api.url,
-      apiId: api.id,
-      clerk: {
+	      accountId: caller.accountId,
+	      apiUrl: api.url,
+	      apiId: api.nodes.api.id,
+	      clerk: {
         publishableKey: clerkPublishableKey.value,
         oauthClientId: clerkOauthClientId.value,
         issuer: clerkIssuer,
@@ -508,11 +588,11 @@ export default $config({
         artifacts: artifactsTable.name,
         rateLimits: rateLimitsTable.name
       },
-      queues: {
-        jobs: jobsQueue.name,
-        jobsUrl: jobsQueue.url,
-        jobsDlq: jobsDlq.name
-      },
+	      queues: {
+	        jobs: jobsQueue.nodes.queue.name,
+	        jobsUrl: jobsQueue.url,
+	        jobsDlq: jobsDlq.nodes.queue.name
+	      },
       llmProviderSecretArn: llmSecretResourceArn,
       alarms: {
         jobsDlqVisible: dlqAlarm.arn,

@@ -3,7 +3,6 @@ import {
   AlertCircle,
   ExternalLink,
   FolderOpen,
-  Moon,
   Play,
   RefreshCw,
   RotateCcw,
@@ -11,7 +10,6 @@ import {
   ShieldCheck,
   Square,
   SquareDashed,
-  Sun,
   Trash2
 } from "lucide-react";
 import type {
@@ -217,7 +215,7 @@ function parseCommandLine(input: string): string[] {
       continue;
     }
 
-    if (ch === "\\" ) {
+    if (ch === "\\") {
       escaped = true;
       continue;
     }
@@ -473,8 +471,7 @@ export function ProjectHomePage() {
   const runLaneId = useAppStore((s) => s.runLaneId);
   const selectRunLane = useAppStore((s) => s.selectRunLane);
   const openRepo = useAppStore((s) => s.openRepo);
-  const theme = useAppStore((s) => s.theme);
-  const toggleTheme = useAppStore((s) => s.toggleTheme);
+
 
 
 
@@ -872,878 +869,871 @@ export function ProjectHomePage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [processItems, selectedProcessId, trustRequired, runWithRefresh, runtimeById, effectiveLaneId]);
 
-    return (
-      <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div>
-            <div className="text-sm font-semibold">Run</div>
-            <div className="text-xs text-muted-fg">Managed processes, lane-scoped stack controls, tests, and config</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setNotice(null);
-                refreshAll().catch(() => { });
-              }}
-              title="Refresh"
-            >
-              <RefreshCw className={cx("h-4 w-4", loading && "animate-spin")} />
-              Refresh
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => {
-                openRepo().catch((err) => {
-                  setError(err instanceof Error ? err.message : String(err));
-                });
-              }}
-            >
-              <FolderOpen className="h-4 w-4" />
-              Open repo
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                window.ade.project.openAdeFolder().catch((err) => {
-                  setError(err instanceof Error ? err.message : String(err));
-                });
-              }}
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open .ade
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => toggleTheme()}
-              title="Toggle theme"
-            >
-              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
-          </div>
+  return (
+    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <div>
+          <div className="text-sm font-semibold">Run</div>
+          <div className="text-xs text-muted-fg">Managed processes, lane-scoped stack controls, tests, and config</div>
         </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setNotice(null);
+              refreshAll().catch(() => { });
+            }}
+            title="Refresh"
+          >
+            <RefreshCw className={cx("h-4 w-4", loading && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              openRepo().catch((err) => {
+                setError(err instanceof Error ? err.message : String(err));
+              });
+            }}
+          >
+            <FolderOpen className="h-4 w-4" />
+            Open repo
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.ade.project.openAdeFolder().catch((err) => {
+                setError(err instanceof Error ? err.message : String(err));
+              });
+            }}
+          >
+            <ExternalLink className="h-4 w-4" />
+            Open .ade
+          </Button>
 
-        <div className="min-h-0 flex-1 overflow-auto p-3">
-          <div className="space-y-3">
-            {error ? (
-              <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="mt-0.5 h-4 w-4" />
-                  <div className="min-w-0">{error}</div>
-                </div>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        <div className="space-y-3">
+          {error ? (
+            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4" />
+                <div className="min-w-0">{error}</div>
               </div>
-            ) : null}
+            </div>
+          ) : null}
 
-            {notice ? (
-              <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{notice}</div>
-            ) : null}
+          {notice ? (
+            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{notice}</div>
+          ) : null}
 
-            {trustRequired ? (
-              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-start gap-2">
-                    <ShieldCheck className="mt-0.5 h-4 w-4" />
-                    <div>
-                      Shared config changed and is untrusted. Start/restart/run actions are blocked until you confirm.
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      runWithRefresh(async () => {
-                        await window.ade.projectConfig.confirmTrust({ sharedHash: config?.trust.sharedHash });
-                      })
-                    }
-                  >
-                    Trust shared config
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            <section className="rounded-md border border-border bg-card/70 p-3">
+          {trustRequired ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold">Project header</div>
-                  <div className="text-xs text-muted-fg">Repo summary and global stack controls</div>
+                <div className="flex min-w-0 items-start gap-2">
+                  <ShieldCheck className="mt-0.5 h-4 w-4" />
+                  <div>
+                    Shared config changed and is untrusted. Start/restart/run actions are blocked until you confirm.
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Chip>base: {project?.baseRef ?? "main"}</Chip>
-                  <Chip>{project?.displayName ?? "(no project)"}</Chip>
-                  <label className="flex items-center gap-2 text-xs text-muted-fg">
-                    <span>Running in:</span>
-                    <select
-                      className="h-7 rounded border border-border bg-card/80 px-2 text-xs"
-                      value={effectiveLaneId ?? ""}
-                      onChange={(e) => selectRunLane(e.target.value || null)}
-                    >
-                      <option value="">Select lane</option>
-                      {lanes.map((lane) => (
-                        <option key={lane.id} value={lane.id}>
-                          {lane.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {effectiveLaneName ? <Chip>{effectiveLaneName}</Chip> : null}
-                </div>
-              </div>
-
-              <div className="mt-2 text-xs text-muted-fg">{project?.rootPath ?? "Open a repository to manage processes/tests."}</div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
-                  variant="primary"
-                  disabled={trustRequired || !effectiveLaneId}
-                  onClick={() => runWithRefresh(async () => {
-                    if (!effectiveLaneId) return;
-                    await window.ade.processes.startAll({ laneId: effectiveLaneId });
-                  })}
+                  variant="outline"
+                  onClick={() =>
+                    runWithRefresh(async () => {
+                      await window.ade.projectConfig.confirmTrust({ sharedHash: config?.trust.sharedHash });
+                    })
+                  }
                 >
-                  <Play className="h-4 w-4" />
-                  Start all
+                  Trust shared config
                 </Button>
-                <Button size="sm" variant="outline" disabled={!effectiveLaneId} onClick={() => runWithRefresh(async () => {
+              </div>
+            </div>
+          ) : null}
+
+          <section className="rounded-md border border-border bg-card/70 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">Project header</div>
+                <div className="text-xs text-muted-fg">Repo summary and global stack controls</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Chip>base: {project?.baseRef ?? "main"}</Chip>
+                <Chip>{project?.displayName ?? "(no project)"}</Chip>
+                <label className="flex items-center gap-2 text-xs text-muted-fg">
+                  <span>Running in:</span>
+                  <select
+                    className="h-7 rounded border border-border bg-card/80 px-2 text-xs"
+                    value={effectiveLaneId ?? ""}
+                    onChange={(e) => selectRunLane(e.target.value || null)}
+                  >
+                    <option value="">Select lane</option>
+                    {lanes.map((lane) => (
+                      <option key={lane.id} value={lane.id}>
+                        {lane.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {effectiveLaneName ? <Chip>{effectiveLaneName}</Chip> : null}
+              </div>
+            </div>
+
+            <div className="mt-2 text-xs text-muted-fg">{project?.rootPath ?? "Open a repository to manage processes/tests."}</div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={trustRequired || !effectiveLaneId}
+                onClick={() => runWithRefresh(async () => {
                   if (!effectiveLaneId) return;
-                  await window.ade.processes.stopAll({ laneId: effectiveLaneId });
-                })}>
-                  <Square className="h-4 w-4" />
-                  Stop all
-                </Button>
+                  await window.ade.processes.startAll({ laneId: effectiveLaneId });
+                })}
+              >
+                <Play className="h-4 w-4" />
+                Start all
+              </Button>
+              <Button size="sm" variant="outline" disabled={!effectiveLaneId} onClick={() => runWithRefresh(async () => {
+                if (!effectiveLaneId) return;
+                await window.ade.processes.stopAll({ laneId: effectiveLaneId });
+              })}>
+                <Square className="h-4 w-4" />
+                Stop all
+              </Button>
 
-                {stackStatuses.map(({ stack, status }) => (
-                  <div key={stack.id} className="inline-flex items-center gap-1 rounded-md border border-border bg-card/80 px-2 py-1">
-                    <Chip className={cx("text-[11px]", stackTone(status))}>{status}</Chip>
-                    <span className="text-xs font-semibold">{stack.name}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2"
-                      disabled={trustRequired || !effectiveLaneId}
-                      onClick={() => runWithRefresh(async () => {
-                        if (!effectiveLaneId) return;
-                        await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: stack.id });
-                      })}
-                    >
-                      Start
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2"
-                      disabled={!effectiveLaneId}
-                      onClick={() => runWithRefresh(async () => {
-                        if (!effectiveLaneId) return;
-                        await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId: stack.id });
-                      })}
-                    >
-                      Stop
-                    </Button>
+              {stackStatuses.map(({ stack, status }) => (
+                <div key={stack.id} className="inline-flex items-center gap-1 rounded-md border border-border bg-card/80 px-2 py-1">
+                  <Chip className={cx("text-[11px]", stackTone(status))}>{status}</Chip>
+                  <span className="text-xs font-semibold">{stack.name}</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    disabled={trustRequired || !effectiveLaneId}
+                    onClick={() => runWithRefresh(async () => {
+                      if (!effectiveLaneId) return;
+                      await window.ade.processes.startStack({ laneId: effectiveLaneId, stackId: stack.id });
+                    })}
+                  >
+                    Start
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    disabled={!effectiveLaneId}
+                    onClick={() => runWithRefresh(async () => {
+                      if (!effectiveLaneId) return;
+                      await window.ade.processes.stopStack({ laneId: effectiveLaneId, stackId: stack.id });
+                    })}
+                  >
+                    Stop
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-md border border-border bg-card/70 p-3">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold">Quick add process</div>
+                <div className="text-xs text-muted-fg">Use this for common commands. You can fine-tune in Config editor.</div>
+              </div>
+              <Button size="sm" variant="outline" onClick={scrollToConfigEditor}>
+                Jump to config editor
+              </Button>
+            </div>
+
+            <div className="grid gap-2 md:grid-cols-[160px_1fr_1fr_auto_auto]">
+              <input
+                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                placeholder="Name (optional)"
+                value={quickProcessName}
+                onChange={(e) => setQuickProcessName(e.target.value)}
+              />
+              <input
+                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                placeholder="Working directory, e.g. apps/web"
+                value={quickProcessCwd}
+                onChange={(e) => setQuickProcessCwd(e.target.value)}
+              />
+              <input
+                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                placeholder='Command, e.g. "pnpm dev"'
+                value={quickProcessCommand}
+                onChange={(e) => setQuickProcessCommand(e.target.value)}
+              />
+              <Button size="sm" variant="primary" onClick={addQuickProcessDraft}>
+                Add process draft
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => saveConfig().catch(() => { })}>
+                Save config
+              </Button>
+            </div>
+            <div className="mt-2 text-[11px] text-muted-fg">
+              For commands that need a subdirectory, set <span className="font-mono">Working directory</span> instead of using <span className="font-mono">cd ... &&</span>.
+            </div>
+          </section>
+
+          <section className="rounded-md border border-border bg-card/70 p-3">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold">Managed processes</div>
+                <div className="text-xs text-muted-fg">Lifecycle, runtime state, and logs</div>
+              </div>
+              <Chip>{processItems.length} processes</Chip>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-[1.2fr_1fr]">
+              <div className="space-y-2">
+                {processItems.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
+                    No process definitions. Use "Quick add process" above or the config editor.
                   </div>
-                ))}
-              </div>
-            </section>
+                ) : null}
 
-            <section className="rounded-md border border-border bg-card/70 p-3">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-semibold">Quick add process</div>
-                  <div className="text-xs text-muted-fg">Use this for common commands. You can fine-tune in Config editor.</div>
-                </div>
-                <Button size="sm" variant="outline" onClick={scrollToConfigEditor}>
-                  Jump to config editor
-                </Button>
-              </div>
-
-              <div className="grid gap-2 md:grid-cols-[160px_1fr_1fr_auto_auto]">
-                <input
-                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                  placeholder="Name (optional)"
-                  value={quickProcessName}
-                  onChange={(e) => setQuickProcessName(e.target.value)}
-                />
-                <input
-                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                  placeholder="Working directory, e.g. apps/web"
-                  value={quickProcessCwd}
-                  onChange={(e) => setQuickProcessCwd(e.target.value)}
-                />
-                <input
-                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                  placeholder='Command, e.g. "pnpm dev"'
-                  value={quickProcessCommand}
-                  onChange={(e) => setQuickProcessCommand(e.target.value)}
-                />
-                <Button size="sm" variant="primary" onClick={addQuickProcessDraft}>
-                  Add process draft
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => saveConfig().catch(() => {})}>
-                  Save config
-                </Button>
-              </div>
-              <div className="mt-2 text-[11px] text-muted-fg">
-                For commands that need a subdirectory, set <span className="font-mono">Working directory</span> instead of using <span className="font-mono">cd ... &&</span>.
-              </div>
-            </section>
-
-            <section className="rounded-md border border-border bg-card/70 p-3">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold">Managed processes</div>
-                  <div className="text-xs text-muted-fg">Lifecycle, runtime state, and logs</div>
-                </div>
-                <Chip>{processItems.length} processes</Chip>
-              </div>
-
-              <div className="grid gap-3 xl:grid-cols-[1.2fr_1fr]">
-                <div className="space-y-2">
-                  {processItems.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
-                      No process definitions. Use "Quick add process" above or the config editor.
-                    </div>
-                  ) : null}
-
-                  <div className="overflow-hidden rounded-md border border-border bg-card/50">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-muted/50 font-medium text-muted-fg">
-                        <tr>
-                          <th className="px-3 py-2">Name</th>
-                          <th className="w-24 px-3 py-2">Status</th>
-                          <th className="w-24 px-3 py-2">Readiness</th>
-                          <th className="w-16 px-3 py-2">PID</th>
-                          <th className="w-20 px-3 py-2">Uptime</th>
-                          <th className="w-20 px-3 py-2">Port</th>
-                          <th className="w-32 px-3 py-2">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {processItems.map(({ definition, runtime: rowRuntime }) => {
-                          const active = selectedProcessId === definition.id;
-                          const isRunning = rowRuntime.status === "running" || rowRuntime.status === "starting" || rowRuntime.status === "degraded";
-                          const canStart = !isRunning && !trustRequired && Boolean(effectiveLaneId);
-                          const canStop = isRunning && Boolean(effectiveLaneId);
-                          return (
-                            <tr
-                              key={definition.id}
-                              className={cx("cursor-pointer transition-colors hover:bg-muted/30", active && "bg-accent/20")}
-                              onClick={() => setSelectedProcessId(definition.id)}
-                            >
-                              <td className="truncate px-3 py-1.5 font-medium" title={definition.name}>
-                                {definition.name}
-                                {active && <span className="ml-2 font-bold text-accent">●</span>}
-                              </td>
-                              <td className="px-3 py-1.5">
-                                <span className={cx("font-mono", statusTone(rowRuntime.status).split(" ")[0])}>
-                                  {rowRuntime.status}
-                                </span>
-                              </td>
-                              <td className="px-3 py-1.5">
-                                <span className={cx("font-mono", readinessTone(rowRuntime.readiness).split(" ")[0])}>
-                                  {rowRuntime.readiness}
-                                </span>
-                              </td>
-                              <td className="px-3 py-1.5 font-mono text-muted-fg">{rowRuntime.pid ?? "-"}</td>
-                              <td className="px-3 py-1.5 font-mono text-muted-fg">{formatUptime(rowRuntime, nowTick)}</td>
-                              <td className="px-3 py-1.5 font-mono text-muted-fg">
-                                {rowRuntime.ports.length ? rowRuntime.ports.join(",") : "-"}
-                              </td>
-                              <td className="px-3 py-1.5">
-                                <div className="flex items-center gap-1">
-                                  {isRunning ? (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      disabled={!canStop}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (!effectiveLaneId) return;
-                                        runWithRefresh(async () => {
-                                          await window.ade.processes.stop({ laneId: effectiveLaneId, processId: definition.id });
-                                        });
-                                      }}
-                                    >
-                                      Stop
-                                    </Button>
-                                  ) : (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      disabled={!canStart}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (!effectiveLaneId) return;
-                                        runWithRefresh(async () => {
-                                          await window.ade.processes.start({ laneId: effectiveLaneId, processId: definition.id });
-                                        });
-                                      }}
-                                    >
-                                      Start
-                                    </Button>
-                                  )}
+                <div className="overflow-hidden rounded-md border border-border bg-card/50">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-muted/50 font-medium text-muted-fg">
+                      <tr>
+                        <th className="px-3 py-2">Name</th>
+                        <th className="w-24 px-3 py-2">Status</th>
+                        <th className="w-24 px-3 py-2">Readiness</th>
+                        <th className="w-16 px-3 py-2">PID</th>
+                        <th className="w-20 px-3 py-2">Uptime</th>
+                        <th className="w-20 px-3 py-2">Port</th>
+                        <th className="w-32 px-3 py-2">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {processItems.map(({ definition, runtime: rowRuntime }) => {
+                        const active = selectedProcessId === definition.id;
+                        const isRunning = rowRuntime.status === "running" || rowRuntime.status === "starting" || rowRuntime.status === "degraded";
+                        const canStart = !isRunning && !trustRequired && Boolean(effectiveLaneId);
+                        const canStop = isRunning && Boolean(effectiveLaneId);
+                        return (
+                          <tr
+                            key={definition.id}
+                            className={cx("cursor-pointer transition-colors hover:bg-muted/30", active && "bg-accent/20")}
+                            onClick={() => setSelectedProcessId(definition.id)}
+                          >
+                            <td className="truncate px-3 py-1.5 font-medium" title={definition.name}>
+                              {definition.name}
+                              {active && <span className="ml-2 font-bold text-accent">●</span>}
+                            </td>
+                            <td className="px-3 py-1.5">
+                              <span className={cx("font-mono", statusTone(rowRuntime.status).split(" ")[0])}>
+                                {rowRuntime.status}
+                              </span>
+                            </td>
+                            <td className="px-3 py-1.5">
+                              <span className={cx("font-mono", readinessTone(rowRuntime.readiness).split(" ")[0])}>
+                                {rowRuntime.readiness}
+                              </span>
+                            </td>
+                            <td className="px-3 py-1.5 font-mono text-muted-fg">{rowRuntime.pid ?? "-"}</td>
+                            <td className="px-3 py-1.5 font-mono text-muted-fg">{formatUptime(rowRuntime, nowTick)}</td>
+                            <td className="px-3 py-1.5 font-mono text-muted-fg">
+                              {rowRuntime.ports.length ? rowRuntime.ports.join(",") : "-"}
+                            </td>
+                            <td className="px-3 py-1.5">
+                              <div className="flex items-center gap-1">
+                                {isRunning ? (
                                   <Button
                                     size="sm"
-                                    variant="ghost"
-                                    disabled={trustRequired || !effectiveLaneId}
+                                    variant="outline"
+                                    disabled={!canStop}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       if (!effectiveLaneId) return;
                                       runWithRefresh(async () => {
-                                        await window.ade.processes.restart({ laneId: effectiveLaneId, processId: definition.id });
+                                        await window.ade.processes.stop({ laneId: effectiveLaneId, processId: definition.id });
                                       });
                                     }}
                                   >
-                                    Restart
+                                    Stop
                                   </Button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-border bg-card/80 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="text-sm font-semibold">Process logs</div>
-                      <div className="text-xs text-muted-fg">
-                        {selectedProcessRuntime ? `${selectedProcessRuntime.processId} (${selectedProcessRuntime.status})` : "No process selected"}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setProcessPauseAutoscroll((v) => !v)}
-                        title="Pause autoscroll"
-                      >
-                        <SquareDashed className="h-4 w-4" />
-                        {processPauseAutoscroll ? "Resume" : "Pause"}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setProcessLogRaw("")}>Clear view</Button>
-                    </div>
-                  </div>
-
-                  <div className="mt-2">
-                    <input
-                      className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
-                      placeholder="Search log lines"
-                      value={processLogSearch}
-                      onChange={(e) => setProcessLogSearch(e.target.value)}
-                    />
-                  </div>
-
-                  <pre
-                    ref={processLogRef}
-                    className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
-                  >
-                    {visibleProcessLog || "(no output yet)"}
-                  </pre>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={!canStart}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      if (!effectiveLaneId) return;
+                                      runWithRefresh(async () => {
+                                        await window.ade.processes.start({ laneId: effectiveLaneId, processId: definition.id });
+                                      });
+                                    }}
+                                  >
+                                    Start
+                                  </Button>
+                                )}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={trustRequired || !effectiveLaneId}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    if (!effectiveLaneId) return;
+                                    runWithRefresh(async () => {
+                                      await window.ade.processes.restart({ laneId: effectiveLaneId, processId: definition.id });
+                                    });
+                                  }}
+                                >
+                                  Restart
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
-            </section>
 
-            <section className="rounded-md border border-border bg-card/70 p-3">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold">Test suites</div>
-                  <div className="text-xs text-muted-fg">Run suite buttons with last-run badges and logs</div>
-                </div>
-                <Chip>{suites.length} suites</Chip>
-              </div>
-
-              <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
-                <div className="space-y-2">
-                  {suites.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
-                      No test suites defined. Add suites in the config editor below.
+              <div className="rounded-md border border-border bg-card/80 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold">Process logs</div>
+                    <div className="text-xs text-muted-fg">
+                      {selectedProcessRuntime ? `${selectedProcessRuntime.processId} (${selectedProcessRuntime.status})` : "No process selected"}
                     </div>
-                  ) : null}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setProcessPauseAutoscroll((v) => !v)}
+                      title="Pause autoscroll"
+                    >
+                      <SquareDashed className="h-4 w-4" />
+                      {processPauseAutoscroll ? "Resume" : "Pause"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setProcessLogRaw("")}>Clear view</Button>
+                  </div>
+                </div>
 
-                  {suites.map((suite) => {
-                    const last = latestRunBySuite.get(suite.id);
-                    const running = last?.status === "running";
-                    return (
-                      <div key={suite.id} className="rounded-md border border-border bg-card/80 p-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold">{suite.name}</div>
-                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
-                              <Chip>{suite.id}</Chip>
-                              <Chip>last: {last?.status ?? "never"}</Chip>
-                              <Chip>duration: {formatDurationMs(last?.durationMs ?? null)}</Chip>
-                              <Chip>time: {formatDate(last?.startedAt ?? null)}</Chip>
-                            </div>
-                          </div>
+                <div className="mt-2">
+                  <input
+                    className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
+                    placeholder="Search log lines"
+                    value={processLogSearch}
+                    onChange={(e) => setProcessLogSearch(e.target.value)}
+                  />
+                </div>
 
-                          <div className="flex items-center gap-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={trustRequired || running || !effectiveLaneId}
-                              onClick={() => runWithRefresh(async () => {
-                                if (!effectiveLaneId) return;
-                                const next = await window.ade.tests.run({ laneId: effectiveLaneId, suiteId: suite.id });
-                                setSelectedRunId(next.id);
-                              })}
-                            >
-                              {last ? "Rerun" : "Run"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={!running || !last}
-                              onClick={() => {
-                                if (!last) return;
-                                runWithRefresh(async () => { await window.ade.tests.stop({ runId: last.id }); });
-                              }}
-                            >
-                              Stop
-                            </Button>
+                <pre
+                  ref={processLogRef}
+                  className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
+                >
+                  {visibleProcessLog || "(no output yet)"}
+                </pre>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-md border border-border bg-card/70 p-3">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold">Test suites</div>
+                <div className="text-xs text-muted-fg">Run suite buttons with last-run badges and logs</div>
+              </div>
+              <Chip>{suites.length} suites</Chip>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
+              <div className="space-y-2">
+                {suites.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
+                    No test suites defined. Add suites in the config editor below.
+                  </div>
+                ) : null}
+
+                {suites.map((suite) => {
+                  const last = latestRunBySuite.get(suite.id);
+                  const running = last?.status === "running";
+                  return (
+                    <div key={suite.id} className="rounded-md border border-border bg-card/80 p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold">{suite.name}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
+                            <Chip>{suite.id}</Chip>
+                            <Chip>last: {last?.status ?? "never"}</Chip>
+                            <Chip>duration: {formatDurationMs(last?.durationMs ?? null)}</Chip>
+                            <Chip>time: {formatDate(last?.startedAt ?? null)}</Chip>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
 
-                  <div className="rounded-md border border-border bg-card/80 p-2">
-                    <div className="mb-1 text-xs font-semibold text-muted-fg">Run history</div>
-                    <div className="max-h-[180px] space-y-1 overflow-auto">
-                      {runs.map((run) => (
-                        <button
-                          key={run.id}
-                          className={cx(
-                            "flex w-full items-center justify-between rounded border border-border px-2 py-1 text-left text-xs",
-                            selectedRunId === run.id && "ring-1 ring-accent/40"
-                          )}
-                          onClick={() => setSelectedRunId(run.id)}
-                        >
-                          <span className="truncate">{run.suiteName}</span>
-                          <span className="ml-2 shrink-0 text-muted-fg">{run.status}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-border bg-card/80 p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold">Suite logs</div>
-                      <div className="text-xs text-muted-fg">
-                        {selectedRun ? `${selectedRun.suiteName} • ${selectedRun.status}` : "Select a run"}
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={trustRequired || running || !effectiveLaneId}
+                            onClick={() => runWithRefresh(async () => {
+                              if (!effectiveLaneId) return;
+                              const next = await window.ade.tests.run({ laneId: effectiveLaneId, suiteId: suite.id });
+                              setSelectedRunId(next.id);
+                            })}
+                          >
+                            {last ? "Rerun" : "Run"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!running || !last}
+                            onClick={() => {
+                              if (!last) return;
+                              runWithRefresh(async () => { await window.ade.tests.stop({ runId: last.id }); });
+                            }}
+                          >
+                            Stop
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                    <Button size="sm" variant="ghost" onClick={() => setTestLogRaw("")}>Clear view</Button>
-                  </div>
+                  );
+                })}
 
-                  <div className="mt-2">
-                    <input
-                      className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
-                      placeholder="Search log lines"
-                      value={testLogSearch}
-                      onChange={(e) => setTestLogSearch(e.target.value)}
-                    />
+                <div className="rounded-md border border-border bg-card/80 p-2">
+                  <div className="mb-1 text-xs font-semibold text-muted-fg">Run history</div>
+                  <div className="max-h-[180px] space-y-1 overflow-auto">
+                    {runs.map((run) => (
+                      <button
+                        key={run.id}
+                        className={cx(
+                          "flex w-full items-center justify-between rounded border border-border px-2 py-1 text-left text-xs",
+                          selectedRunId === run.id && "ring-1 ring-accent/40"
+                        )}
+                        onClick={() => setSelectedRunId(run.id)}
+                      >
+                        <span className="truncate">{run.suiteName}</span>
+                        <span className="ml-2 shrink-0 text-muted-fg">{run.status}</span>
+                      </button>
+                    ))}
                   </div>
-
-                  <pre
-                    ref={testLogRef}
-                    className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
-                  >
-                    {visibleTestLog || "(no output yet)"}
-                  </pre>
                 </div>
               </div>
-            </section>
 
-            <section ref={configEditorRef} className="rounded-md border border-border bg-card/70 p-3">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-semibold">Config editor</div>
-                  <div className="text-xs text-muted-fg">Processes, stack buttons, and test suites</div>
+              <div className="rounded-md border border-border bg-card/80 p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Suite logs</div>
+                    <div className="text-xs text-muted-fg">
+                      {selectedRun ? `${selectedRun.suiteName} • ${selectedRun.status}` : "Select a run"}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setTestLogRaw("")}>Clear view</Button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-muted-fg">Editing</label>
-                  <select
-                    className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                    value={configTarget}
-                    onChange={(e) => setConfigTarget(e.target.value as "shared" | "local")}
+
+                <div className="mt-2">
+                  <input
+                    className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
+                    placeholder="Search log lines"
+                    value={testLogSearch}
+                    onChange={(e) => setTestLogSearch(e.target.value)}
+                  />
+                </div>
+
+                <pre
+                  ref={testLogRef}
+                  className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
+                >
+                  {visibleTestLog || "(no output yet)"}
+                </pre>
+              </div>
+            </div>
+          </section>
+
+          <section ref={configEditorRef} className="rounded-md border border-border bg-card/70 p-3">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold">Config editor</div>
+                <div className="text-xs text-muted-fg">Processes, stack buttons, and test suites</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-muted-fg">Editing</label>
+                <select
+                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                  value={configTarget}
+                  onChange={(e) => setConfigTarget(e.target.value as "shared" | "local")}
+                >
+                  <option value="shared">.ade/ade.yaml</option>
+                  <option value="local">.ade/local.yaml</option>
+                </select>
+                <Button size="sm" variant="primary" onClick={() => saveConfig().catch(() => { })}>
+                  <Save className="h-4 w-4" />
+                  Save config
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-md border border-border p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-semibold">Processes</div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setProcessRows((prev) => [
+                        ...prev,
+                        {
+                          id: `proc_${prev.length + 1}`,
+                          name: "",
+                          cwd: ".",
+                          commandLine: DEFAULT_PROCESS_COMMAND_LINE,
+                          commandJson: DEFAULT_PROCESS_COMMAND,
+                          envJson: DEFAULT_ENV,
+                          autostart: false,
+                          restart: "never",
+                          gracefulShutdownMs: "7000",
+                          dependsOnCsv: "",
+                          readinessType: "none",
+                          readinessPort: "",
+                          readinessPattern: ""
+                        }
+                      ])
+                    }
                   >
-                    <option value="shared">.ade/ade.yaml</option>
-                    <option value="local">.ade/local.yaml</option>
-                  </select>
-                  <Button size="sm" variant="primary" onClick={() => saveConfig().catch(() => { })}>
-                    <Save className="h-4 w-4" />
-                    Save config
+                    Add process
                   </Button>
                 </div>
-              </div>
 
-              <div className="space-y-3">
-                <div className="rounded-md border border-border p-2">
-                  <div className="mb-2 flex items-center justify-between">
-                    <div className="text-xs font-semibold">Processes</div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() =>
-                        setProcessRows((prev) => [
-                          ...prev,
-                          {
-                            id: `proc_${prev.length + 1}`,
-                            name: "",
-                            cwd: ".",
-                            commandLine: DEFAULT_PROCESS_COMMAND_LINE,
-                            commandJson: DEFAULT_PROCESS_COMMAND,
-                            envJson: DEFAULT_ENV,
-                            autostart: false,
-                            restart: "never",
-                            gracefulShutdownMs: "7000",
-                            dependsOnCsv: "",
-                            readinessType: "none",
-                            readinessPort: "",
-                            readinessPattern: ""
-                          }
-                        ])
-                      }
-                    >
-                      Add process
-                    </Button>
-                  </div>
-
-                  <div className="space-y-2">
-                    {processRows.map((row, idx) => (
-                      <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
-                        <div className="mb-2 flex items-center justify-between">
-                          <div className="text-xs font-semibold">{row.id || `process ${idx + 1}`}</div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setProcessRows((prev) => prev.filter((_, i) => i !== idx))}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Remove
-                          </Button>
-                        </div>
-
-                        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="id"
-                            value={row.id}
-                            onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="name"
-                            value={row.name}
-                            onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="cwd (use this instead of cd ... &&)"
-                            value={row.cwd}
-                            onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder='command, e.g. pnpm dev'
-                            value={row.commandLine}
-                            onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandLine: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder='env JSON, e.g. {"PORT":"3000"}'
-                            value={row.envJson}
-                            onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="dependsOn (comma-separated ids)"
-                            value={row.dependsOnCsv}
-                            onChange={(e) =>
-                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, dependsOnCsv: e.target.value } : p)))
-                            }
-                          />
-                          <select
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            value={row.restart}
-                            onChange={(e) =>
-                              setProcessRows((prev) =>
-                                prev.map((p, i) => (i === idx ? { ...p, restart: e.target.value as "never" | "on_crash" } : p))
-                              )
-                            }
-                          >
-                            <option value="never">restart: never</option>
-                            <option value="on_crash">restart: on_crash</option>
-                          </select>
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="gracefulShutdownMs"
-                            value={row.gracefulShutdownMs}
-                            onChange={(e) =>
-                              setProcessRows((prev) =>
-                                prev.map((p, i) => (i === idx ? { ...p, gracefulShutdownMs: e.target.value } : p))
-                              )
-                            }
-                          />
-                          <select
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            value={row.readinessType}
-                            onChange={(e) =>
-                              setProcessRows((prev) =>
-                                prev.map((p, i) =>
-                                  i === idx ? { ...p, readinessType: e.target.value as "none" | "port" | "logRegex" } : p
-                                )
-                              )
-                            }
-                          >
-                            <option value="none">readiness: none</option>
-                            <option value="port">readiness: port</option>
-                            <option value="logRegex">readiness: logRegex</option>
-                          </select>
-                          {row.readinessType === "port" ? (
-                            <input
-                              className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                              placeholder="readiness port"
-                              value={row.readinessPort}
-                              onChange={(e) =>
-                                setProcessRows((prev) =>
-                                  prev.map((p, i) => (i === idx ? { ...p, readinessPort: e.target.value } : p))
-                                )
-                              }
-                            />
-                          ) : null}
-                          {row.readinessType === "logRegex" ? (
-                            <input
-                              className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                              placeholder="readiness pattern"
-                              value={row.readinessPattern}
-                              onChange={(e) =>
-                                setProcessRows((prev) =>
-                                  prev.map((p, i) => (i === idx ? { ...p, readinessPattern: e.target.value } : p))
-                                )
-                              }
-                            />
-                          ) : null}
-                          <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-xs">
-                            <input
-                              type="checkbox"
-                              checked={row.autostart}
-                              onChange={(e) =>
-                                setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, autostart: e.target.checked } : p)))
-                              }
-                            />
-                            autostart
-                          </label>
-                          <details className="rounded-md border border-border bg-card px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
-                            <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
-                            <input
-                              className="mt-2 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
-                              placeholder='["npm","run","dev"]'
-                              value={row.commandJson}
-                              onChange={(e) =>
-                                setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandJson: e.target.value } : p)))
-                              }
-                            />
-                          </details>
-                        </div>
+                <div className="space-y-2">
+                  {processRows.map((row, idx) => (
+                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="text-xs font-semibold">{row.id || `process ${idx + 1}`}</div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setProcessRows((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Remove
+                        </Button>
                       </div>
-                    ))}
-                  </div>
-                </div>
 
-                <div className="rounded-md border border-border p-2">
-                  <div className="mb-2 flex items-center justify-between">
-                    <div className="text-xs font-semibold">Stack buttons</div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() =>
-                        setStackRows((prev) => [
-                          ...prev,
-                          { id: `stack_${prev.length + 1}`, name: "", processIdsCsv: "", startOrder: "parallel" }
-                        ])
-                      }
-                    >
-                      Add stack
-                    </Button>
-                  </div>
-
-                  <div className="space-y-2">
-                    {stackRows.map((row, idx) => (
-                      <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
-                        <div className="mb-2 flex items-center justify-between">
-                          <div className="text-xs font-semibold">{row.id || `stack ${idx + 1}`}</div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setStackRows((prev) => prev.filter((_, i) => i !== idx))}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Remove
-                          </Button>
-                        </div>
-
-                        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="id"
-                            value={row.id}
-                            onChange={(e) => setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="name"
-                            value={row.name}
-                            onChange={(e) =>
-                              setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="process ids (comma-separated)"
-                            value={row.processIdsCsv}
-                            onChange={(e) =>
-                              setStackRows((prev) =>
-                                prev.map((p, i) => (i === idx ? { ...p, processIdsCsv: e.target.value } : p))
-                              )
-                            }
-                          />
-                          <select
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            value={row.startOrder}
-                            onChange={(e) =>
-                              setStackRows((prev) =>
-                                prev.map((p, i) =>
-                                  i === idx ? { ...p, startOrder: e.target.value as "parallel" | "dependency" } : p
-                                )
-                              )
-                            }
-                          >
-                            <option value="parallel">startOrder: parallel</option>
-                            <option value="dependency">startOrder: dependency</option>
-                          </select>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-border p-2">
-                  <div className="mb-2 flex items-center justify-between">
-                    <div className="text-xs font-semibold">Test suites</div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() =>
-                        setSuiteRows((prev) => [
-                          ...prev,
-                          {
-                            id: `suite_${prev.length + 1}`,
-                            name: "",
-                            cwd: ".",
-                            commandJson: DEFAULT_TEST_COMMAND,
-                            envJson: DEFAULT_ENV,
-                            timeoutMs: "",
-                            tagsCsv: ""
+                      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="id"
+                          value={row.id}
+                          onChange={(e) =>
+                            setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))
                           }
-                        ])
-                      }
-                    >
-                      Add suite
-                    </Button>
-                  </div>
-
-                  <div className="space-y-2">
-                    {suiteRows.map((row, idx) => (
-                      <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
-                        <div className="mb-2 flex items-center justify-between">
-                          <div className="text-xs font-semibold">{row.id || `suite ${idx + 1}`}</div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setSuiteRows((prev) => prev.filter((_, i) => i !== idx))}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Remove
-                          </Button>
-                        </div>
-
-                        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="name"
+                          value={row.name}
+                          onChange={(e) =>
+                            setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="cwd (use this instead of cd ... &&)"
+                          value={row.cwd}
+                          onChange={(e) =>
+                            setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder='command, e.g. pnpm dev'
+                          value={row.commandLine}
+                          onChange={(e) =>
+                            setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandLine: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder='env JSON, e.g. {"PORT":"3000"}'
+                          value={row.envJson}
+                          onChange={(e) =>
+                            setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="dependsOn (comma-separated ids)"
+                          value={row.dependsOnCsv}
+                          onChange={(e) =>
+                            setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, dependsOnCsv: e.target.value } : p)))
+                          }
+                        />
+                        <select
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          value={row.restart}
+                          onChange={(e) =>
+                            setProcessRows((prev) =>
+                              prev.map((p, i) => (i === idx ? { ...p, restart: e.target.value as "never" | "on_crash" } : p))
+                            )
+                          }
+                        >
+                          <option value="never">restart: never</option>
+                          <option value="on_crash">restart: on_crash</option>
+                        </select>
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="gracefulShutdownMs"
+                          value={row.gracefulShutdownMs}
+                          onChange={(e) =>
+                            setProcessRows((prev) =>
+                              prev.map((p, i) => (i === idx ? { ...p, gracefulShutdownMs: e.target.value } : p))
+                            )
+                          }
+                        />
+                        <select
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          value={row.readinessType}
+                          onChange={(e) =>
+                            setProcessRows((prev) =>
+                              prev.map((p, i) =>
+                                i === idx ? { ...p, readinessType: e.target.value as "none" | "port" | "logRegex" } : p
+                              )
+                            )
+                          }
+                        >
+                          <option value="none">readiness: none</option>
+                          <option value="port">readiness: port</option>
+                          <option value="logRegex">readiness: logRegex</option>
+                        </select>
+                        {row.readinessType === "port" ? (
                           <input
                             className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="id"
-                            value={row.id}
-                            onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
+                            placeholder="readiness port"
+                            value={row.readinessPort}
+                            onChange={(e) =>
+                              setProcessRows((prev) =>
+                                prev.map((p, i) => (i === idx ? { ...p, readinessPort: e.target.value } : p))
+                              )
+                            }
                           />
+                        ) : null}
+                        {row.readinessType === "logRegex" ? (
                           <input
                             className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="name"
-                            value={row.name}
-                            onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))}
+                            placeholder="readiness pattern"
+                            value={row.readinessPattern}
+                            onChange={(e) =>
+                              setProcessRows((prev) =>
+                                prev.map((p, i) => (i === idx ? { ...p, readinessPattern: e.target.value } : p))
+                              )
+                            }
                           />
+                        ) : null}
+                        <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-xs">
                           <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="cwd"
-                            value={row.cwd}
-                            onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))}
+                            type="checkbox"
+                            checked={row.autostart}
+                            onChange={(e) =>
+                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, autostart: e.target.checked } : p)))
+                            }
                           />
+                          autostart
+                        </label>
+                        <details className="rounded-md border border-border bg-card px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
+                          <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
                           <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder='command JSON, e.g. ["npm","run","test:unit"]'
+                            className="mt-2 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
+                            placeholder='["npm","run","dev"]'
                             value={row.commandJson}
                             onChange={(e) =>
-                              setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandJson: e.target.value } : p)))
+                              setProcessRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandJson: e.target.value } : p)))
                             }
                           />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder='env JSON, e.g. {"CI":"1"}'
-                            value={row.envJson}
-                            onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))}
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-                            placeholder="timeoutMs (optional)"
-                            value={row.timeoutMs}
-                            onChange={(e) =>
-                              setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, timeoutMs: e.target.value } : p)))
-                            }
-                          />
-                          <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs md:col-span-2 xl:col-span-3"
-                            placeholder="tags (comma-separated: unit, lint, integration, e2e, custom)"
-                            value={row.tagsCsv}
-                            onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, tagsCsv: e.target.value } : p)))}
-                          />
-                        </div>
+                        </details>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            </section>
-          </div>
+
+              <div className="rounded-md border border-border p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-semibold">Stack buttons</div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setStackRows((prev) => [
+                        ...prev,
+                        { id: `stack_${prev.length + 1}`, name: "", processIdsCsv: "", startOrder: "parallel" }
+                      ])
+                    }
+                  >
+                    Add stack
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {stackRows.map((row, idx) => (
+                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="text-xs font-semibold">{row.id || `stack ${idx + 1}`}</div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setStackRows((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Remove
+                        </Button>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="id"
+                          value={row.id}
+                          onChange={(e) => setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="name"
+                          value={row.name}
+                          onChange={(e) =>
+                            setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="process ids (comma-separated)"
+                          value={row.processIdsCsv}
+                          onChange={(e) =>
+                            setStackRows((prev) =>
+                              prev.map((p, i) => (i === idx ? { ...p, processIdsCsv: e.target.value } : p))
+                            )
+                          }
+                        />
+                        <select
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          value={row.startOrder}
+                          onChange={(e) =>
+                            setStackRows((prev) =>
+                              prev.map((p, i) =>
+                                i === idx ? { ...p, startOrder: e.target.value as "parallel" | "dependency" } : p
+                              )
+                            )
+                          }
+                        >
+                          <option value="parallel">startOrder: parallel</option>
+                          <option value="dependency">startOrder: dependency</option>
+                        </select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-md border border-border p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-xs font-semibold">Test suites</div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setSuiteRows((prev) => [
+                        ...prev,
+                        {
+                          id: `suite_${prev.length + 1}`,
+                          name: "",
+                          cwd: ".",
+                          commandJson: DEFAULT_TEST_COMMAND,
+                          envJson: DEFAULT_ENV,
+                          timeoutMs: "",
+                          tagsCsv: ""
+                        }
+                      ])
+                    }
+                  >
+                    Add suite
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {suiteRows.map((row, idx) => (
+                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="text-xs font-semibold">{row.id || `suite ${idx + 1}`}</div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSuiteRows((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Remove
+                        </Button>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="id"
+                          value={row.id}
+                          onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="name"
+                          value={row.name}
+                          onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))}
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="cwd"
+                          value={row.cwd}
+                          onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))}
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder='command JSON, e.g. ["npm","run","test:unit"]'
+                          value={row.commandJson}
+                          onChange={(e) =>
+                            setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, commandJson: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder='env JSON, e.g. {"CI":"1"}'
+                          value={row.envJson}
+                          onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))}
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          placeholder="timeoutMs (optional)"
+                          value={row.timeoutMs}
+                          onChange={(e) =>
+                            setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, timeoutMs: e.target.value } : p)))
+                          }
+                        />
+                        <input
+                          className="h-8 rounded-md border border-border bg-card px-2 text-xs md:col-span-2 xl:col-span-3"
+                          placeholder="tags (comma-separated: unit, lint, integration, e2e, custom)"
+                          value={row.tagsCsv}
+                          onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, tagsCsv: e.target.value } : p)))}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
+}

@@ -38,6 +38,8 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitGetCommitMessageArgs,
+  GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
@@ -45,6 +47,18 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubStatus,
+  CreatePrFromLaneArgs,
+  LinkPrToLaneArgs,
+  PrEventPayload,
+  PrCheck,
+  PrReview,
+  PrStatus,
+  PrSummary,
+  UpdatePrDescriptionArgs,
+  LandPrArgs,
+  LandStackArgs,
+  LandResult,
   GetDiffChangesArgs,
   GetLaneConflictStatusArgs,
   GetFileDiffArgs,
@@ -52,6 +66,10 @@ import type {
   GetTestLogTailArgs,
   HostedArtifactResult,
   HostedBootstrapConfig,
+  HostedGitHubAppStatus,
+  HostedGitHubConnectStartResult,
+  HostedGitHubDisconnectResult,
+  HostedGitHubEventsResult,
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
@@ -112,7 +130,8 @@ contextBridge.exposeInMainWorld("ade", {
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
-    getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject)
+    getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject),
+    openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url })
   },
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
@@ -150,7 +169,7 @@ contextBridge.exposeInMainWorld("ade", {
     write: async (arg: { ptyId: string; data: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyWrite, arg),
     resize: async (arg: { ptyId: string; cols: number; rows: number }): Promise<void> =>
       ipcRenderer.invoke(IPC.ptyResize, arg),
-    dispose: async (arg: { ptyId: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyDispose, arg),
+    dispose: async (arg: { ptyId: string; sessionId?: string }): Promise<void> => ipcRenderer.invoke(IPC.ptyDispose, arg),
     onData: (cb: (ev: PtyDataEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PtyDataEvent) => cb(payload);
       ipcRenderer.on(IPC.ptyData, listener);
@@ -197,6 +216,10 @@ contextBridge.exposeInMainWorld("ade", {
     commit: async (args: GitCommitArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitCommit, args),
     listRecentCommits: async (args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> =>
       ipcRenderer.invoke(IPC.gitListRecentCommits, args),
+    listCommitFiles: async (args: GitListCommitFilesArgs): Promise<string[]> =>
+      ipcRenderer.invoke(IPC.gitListCommitFiles, args),
+    getCommitMessage: async (args: GitGetCommitMessageArgs): Promise<string> =>
+      ipcRenderer.invoke(IPC.gitGetCommitMessage, args),
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitRevertCommit, args),
     cherryPickCommit: async (args: GitCherryPickArgs): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitCherryPickCommit, args),
@@ -239,7 +262,35 @@ contextBridge.exposeInMainWorld("ade", {
     getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
     refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
     applyHostedNarrative: async (args: { laneId: string; narrative: string }): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args)
+      ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args),
+    generateNarrative: async (laneId: string): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsGenerateNarrative, { laneId })
+  },
+  github: {
+    getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),
+    setToken: async (token: string): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubSetToken, { token }),
+    clearToken: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubClearToken)
+  },
+  prs: {
+    createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> => ipcRenderer.invoke(IPC.prsCreateFromLane, args),
+    linkToLane: async (args: LinkPrToLaneArgs): Promise<PrSummary> => ipcRenderer.invoke(IPC.prsLinkToLane, args),
+    getForLane: async (laneId: string): Promise<PrSummary | null> => ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
+    listAll: async (): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsListAll),
+    refresh: async (args: { prId?: string } = {}): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsRefresh, args),
+    getStatus: async (prId: string): Promise<PrStatus> => ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
+    getChecks: async (prId: string): Promise<PrCheck[]> => ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
+    getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
+    updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateDescription, args),
+    draftDescription: async (laneId: string): Promise<{ title: string; body: string }> =>
+      ipcRenderer.invoke(IPC.prsDraftDescription, { laneId }),
+    land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
+    landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
+    openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
+    onEvent: (cb: (ev: PrEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.prsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.prsEvent, listener);
+    }
   },
   hosted: {
     getStatus: async (): Promise<HostedStatus> => ipcRenderer.invoke(IPC.hostedGetStatus),
@@ -254,7 +305,13 @@ contextBridge.exposeInMainWorld("ade", {
     getJob: async (jobId: string): Promise<HostedJobStatusResult> =>
       ipcRenderer.invoke(IPC.hostedGetJob, { jobId }),
     getArtifact: async (artifactId: string): Promise<HostedArtifactResult> =>
-      ipcRenderer.invoke(IPC.hostedGetArtifact, { artifactId })
+      ipcRenderer.invoke(IPC.hostedGetArtifact, { artifactId }),
+    github: {
+      getStatus: async (): Promise<HostedGitHubAppStatus> => ipcRenderer.invoke(IPC.hostedGithubGetStatus),
+      connectStart: async (): Promise<HostedGitHubConnectStartResult> => ipcRenderer.invoke(IPC.hostedGithubConnectStart),
+      disconnect: async (): Promise<HostedGitHubDisconnectResult> => ipcRenderer.invoke(IPC.hostedGithubDisconnect),
+      listEvents: async (): Promise<HostedGitHubEventsResult> => ipcRenderer.invoke(IPC.hostedGithubListEvents)
+    }
   },
   history: {
     listOperations: async (args: ListOperationsArgs = {}): Promise<OperationRecord[]> =>

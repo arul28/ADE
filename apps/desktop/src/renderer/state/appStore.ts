@@ -1,19 +1,20 @@
 import { create } from "zustand";
 import type { LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 
-type ThemeMode = "dark" | "light";
+export type ThemeId = "e-paper" | "bloomberg" | "github" | "rainbow" | "sky" | "pats";
+export const THEME_IDS: ThemeId[] = ["e-paper", "bloomberg", "github", "rainbow", "sky", "pats"];
 
-function readInitialTheme(): ThemeMode {
+function readInitialTheme(): ThemeId {
   try {
-    const raw = window.localStorage.getItem("ade.theme");
-    if (raw === "dark" || raw === "light") return raw;
+    const raw = window.localStorage.getItem("ade.theme") as ThemeId;
+    if (THEME_IDS.includes(raw)) return raw;
   } catch {
     // ignore
   }
-  return "dark";
+  return "e-paper";
 }
 
-function persistTheme(theme: ThemeMode) {
+function persistTheme(theme: ThemeId) {
   try {
     window.localStorage.setItem("ade.theme", theme);
   } catch {
@@ -27,22 +28,25 @@ type AppState = {
   selectedLaneId: string | null;
   runLaneId: string | null;
   focusedSessionId: string | null;
-  theme: ThemeMode;
+  theme: ThemeId;
   providerMode: ProviderMode;
+  laneInspectorTabs: Record<string, LaneInspectorTab>;
 
   setProject: (project: ProjectInfo) => void;
   setLanes: (lanes: LaneSummary[]) => void;
   selectLane: (laneId: string | null) => void;
+  setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
-  setTheme: (theme: ThemeMode) => void;
-  toggleTheme: () => void;
+  setTheme: (theme: ThemeId) => void;
   refreshProviderMode: () => Promise<void>;
 
   refreshProject: () => Promise<void>;
   refreshLanes: () => Promise<void>;
   openRepo: () => Promise<void>;
 };
+
+export type LaneInspectorTab = "terminals" | "packs" | "stack" | "conflicts" | "pr";
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
@@ -52,22 +56,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   focusedSessionId: null,
   theme: readInitialTheme(),
   providerMode: "guest",
+  laneInspectorTabs: {},
 
   setProject: (project) => set({ project }),
   setLanes: (lanes) => set({ lanes }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
+  setLaneInspectorTab: (laneId, tab) =>
+    set((prev) => ({
+      laneInspectorTabs: {
+        ...prev.laneInspectorTabs,
+        [laneId]: tab
+      }
+    })),
   selectRunLane: (laneId) => set({ runLaneId: laneId }),
   focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
   setTheme: (theme) => {
     persistTheme(theme);
     set({ theme });
   },
-  toggleTheme: () =>
-    set((state) => {
-      const next = state.theme === "dark" ? "light" : "dark";
-      persistTheme(next);
-      return { theme: next };
-    }),
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
@@ -80,7 +86,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const runLane = get().runLaneId;
     const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
     const nextRunLane = runLane && lanes.some((l) => l.id === runLane) ? runLane : nextSelected;
-    set({ lanes, selectedLaneId: nextSelected, runLaneId: nextRunLane });
+    set((prev) => {
+      const allowed = new Set(lanes.map((lane) => lane.id));
+      const nextTabs: Record<string, LaneInspectorTab> = {};
+      for (const [laneId, tab] of Object.entries(prev.laneInspectorTabs)) {
+        if (allowed.has(laneId)) nextTabs[laneId] = tab as LaneInspectorTab;
+      }
+      return { lanes, selectedLaneId: nextSelected, runLaneId: nextRunLane, laneInspectorTabs: nextTabs };
+    });
   },
 
   refreshProviderMode: async () => {
@@ -90,9 +103,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openRepo: async () => {
     const project = await window.ade.project.openRepo();
-    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null });
+    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {} });
     // Refresh lanes for the newly opened project.
     await get().refreshLanes();
-    await get().refreshProviderMode().catch(() => {});
+    await get().refreshProviderMode().catch(() => { });
   }
 }));
