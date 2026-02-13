@@ -12,6 +12,7 @@ import { HistoryPage } from "../history/HistoryPage";
 import { AutomationsPage } from "../automations/AutomationsPage";
 import { SettingsPage } from "./SettingsPage";
 import { StartupAuthPage } from "./StartupAuthPage";
+import { OnboardingPage } from "../onboarding/OnboardingPage";
 
 import { useAppStore } from "../../state/appStore";
 
@@ -40,6 +41,7 @@ export function App() {
           <Route element={<ShellLayout />}>
             <Route path="/" element={<Navigate to="/startup" replace />} />
             <Route path="/project" element={<ProjectHomePage />} />
+            <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/lanes" element={<LanesPage />} />
             <Route path="/files" element={<FilesPage />} />
             <Route path="/terminals" element={<TerminalsPage />} />

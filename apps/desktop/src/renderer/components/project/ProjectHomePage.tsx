@@ -31,6 +31,7 @@ import type {
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
+import { CiImportPanel } from "./CiImportPanel";
 
 const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
 const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
@@ -1353,6 +1354,12 @@ export function ProjectHomePage() {
               </div>
             </div>
           </section>
+
+          <CiImportPanel
+            onImported={() => {
+              refreshAll().catch(() => { });
+            }}
+          />
 
           <section ref={configEditorRef} className="rounded-md border border-border bg-card/70 p-3">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

@@ -5,6 +5,8 @@ import type {
   ApplyConflictProposalArgs,
   AttachLaneArgs,
   AppInfo,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
   ArchiveLaneArgs,
   AutomationRuleSummary,
   AutomationRun,
@@ -50,6 +52,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
@@ -76,6 +79,7 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportConfigBundleResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
   HostedGitHubAppStatus,
@@ -85,6 +89,7 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorDeleteResult,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
@@ -96,9 +101,13 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  CiScanResult,
+  CiImportRequest,
+  CiImportResult,
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
+  ImportBranchLaneArgs,
   ListOperationsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
@@ -160,6 +169,9 @@ contextBridge.exposeInMainWorld("ade", {
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
     openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder),
+    clearLocalData: async (args: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> =>
+      ipcRenderer.invoke(IPC.projectClearLocalData, args),
+    exportConfig: async (): Promise<ExportConfigBundleResult> => ipcRenderer.invoke(IPC.projectExportConfig),
     listRecent: async (): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectListRecent),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath })
@@ -185,6 +197,10 @@ contextBridge.exposeInMainWorld("ade", {
     generateInitialPacks: async (args: { laneIds?: string[] } = {}): Promise<void> =>
       ipcRenderer.invoke(IPC.onboardingGenerateInitialPacks, args),
     complete: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingComplete)
+  },
+  ci: {
+    scan: async (): Promise<CiScanResult> => ipcRenderer.invoke(IPC.ciScan),
+    import: async (req: CiImportRequest): Promise<CiImportResult> => ipcRenderer.invoke(IPC.ciImport, req)
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> => ipcRenderer.invoke(IPC.automationsList),
@@ -214,6 +230,7 @@ contextBridge.exposeInMainWorld("ade", {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
+    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesImportBranch, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
     reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => ipcRenderer.invoke(IPC.lanesReparent, args),
@@ -303,7 +320,17 @@ contextBridge.exposeInMainWorld("ade", {
     stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashDrop, args),
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),
-    push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args)
+    push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args),
+    getConflictState: async (laneId: string): Promise<GitConflictState> =>
+      ipcRenderer.invoke(IPC.gitGetConflictState, { laneId }),
+    rebaseContinue: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId }),
+    rebaseAbort: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId }),
+    mergeContinue: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitMergeContinue, { laneId }),
+    mergeAbort: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitMergeAbort, { laneId })
   },
   conflicts: {
     getLaneStatus: async (args: GetLaneConflictStatusArgs): Promise<ConflictStatus> =>
@@ -395,6 +422,7 @@ contextBridge.exposeInMainWorld("ade", {
     signOut: async (): Promise<void> => ipcRenderer.invoke(IPC.hostedSignOut),
     syncMirror: async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> =>
       ipcRenderer.invoke(IPC.hostedSyncMirror, args),
+    deleteMirrorData: async (): Promise<HostedMirrorDeleteResult> => ipcRenderer.invoke(IPC.hostedDeleteMirrorData),
     submitJob: async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> =>
       ipcRenderer.invoke(IPC.hostedSubmitJob, args),
     getJob: async (jobId: string): Promise<HostedJobStatusResult> =>

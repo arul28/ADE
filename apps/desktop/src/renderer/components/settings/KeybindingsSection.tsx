@@ -3,6 +3,7 @@ import { RefreshCw, Save, Trash2 } from "lucide-react";
 import type { KeybindingDefinition, KeybindingOverride, KeybindingsSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { useAppStore } from "../../state/appStore";
 
 type DraftRow = {
   id: string;
@@ -14,6 +15,7 @@ function effectiveBinding(def: KeybindingDefinition, overrides: Map<string, stri
 }
 
 export function KeybindingsSection() {
+  const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
   const [snapshot, setSnapshot] = React.useState<KeybindingsSnapshot | null>(null);
   const [draft, setDraft] = React.useState<Map<string, string>>(new Map());
   const [loading, setLoading] = React.useState(false);
@@ -49,6 +51,7 @@ export function KeybindingsSection() {
       const next = await window.ade.keybindings.set(overrides);
       setSnapshot(next);
       setDraft(new Map((next.overrides ?? []).map((o) => [o.id, o.binding] as const)));
+      await refreshKeybindings().catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -61,6 +64,7 @@ export function KeybindingsSection() {
     try {
       const next = await window.ade.keybindings.set([]);
       setSnapshot(next);
+      await refreshKeybindings().catch(() => {});
     } catch {
       // ignore
     }
@@ -75,6 +79,40 @@ export function KeybindingsSection() {
     });
   }, [snapshot]);
 
+  const conflicts = React.useMemo(() => {
+    const isMac = navigator.platform.toLowerCase().includes("mac");
+    const chordToIds = new Map<string, string[]>();
+    const normalizeChord = (chord: string): string => {
+      return chord
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "")
+        .replace(/\bmod\b/g, isMac ? "meta" : "ctrl");
+    };
+
+    for (const def of defs) {
+      const effective = effectiveBinding(def, draft);
+      for (const alt of effective.split(",").map((s) => s.trim()).filter(Boolean)) {
+        const key = normalizeChord(alt);
+        if (!key) continue;
+        const list = chordToIds.get(key) ?? [];
+        list.push(def.id);
+        chordToIds.set(key, list);
+      }
+    }
+
+    const byId = new Map<string, string[]>();
+    let chordCount = 0;
+    for (const ids of chordToIds.values()) {
+      if (ids.length <= 1) continue;
+      chordCount += 1;
+      for (const id of ids) {
+        byId.set(id, ids.filter((x) => x !== id));
+      }
+    }
+    return { byId, chordCount };
+  }, [defs, draft]);
+
   return (
     <section className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
       <div className="flex items-start justify-between gap-3">
@@ -84,6 +122,11 @@ export function KeybindingsSection() {
             Overrides use a simple comma-separated format like <span className="font-mono">Mod+K</span> or{" "}
             <span className="font-mono">J,ArrowDown</span>. (Binding application is incremental; some areas still use defaults.)
           </div>
+          {conflicts.chordCount > 0 ? (
+            <div className="mt-2 rounded border border-amber-900 bg-amber-950/20 px-2 py-1 text-xs text-amber-300">
+              {conflicts.chordCount} binding conflict{conflicts.chordCount === 1 ? "" : "s"} detected. Conflicting shortcuts may not behave predictably.
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void refresh()}>
@@ -123,6 +166,7 @@ export function KeybindingsSection() {
               {defs.map((def) => {
                 const override = draft.get(def.id) ?? "";
                 const effective = effectiveBinding(def, draft);
+                const conflictWith = conflicts.byId.get(def.id) ?? [];
                 return (
                   <tr key={def.id}>
                     <td className="px-3 py-2">
@@ -147,7 +191,20 @@ export function KeybindingsSection() {
                         }
                       />
                     </td>
-                    <td className="px-3 py-2 font-mono text-fg">{effective}</td>
+                    <td className="px-3 py-2">
+                      <div
+                        className={cn("font-mono", conflictWith.length ? "text-amber-300" : "text-fg")}
+                        title={conflictWith.length ? `Conflicts with: ${conflictWith.join(", ")}` : undefined}
+                      >
+                        {effective}
+                      </div>
+                      {conflictWith.length ? (
+                        <div className="mt-0.5 text-[11px] text-muted-fg">
+                          conflicts with {conflictWith.slice(0, 2).join(", ")}
+                          {conflictWith.length > 2 ? ` (+${conflictWith.length - 2} more)` : ""}
+                        </div>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
@@ -158,4 +215,3 @@ export function KeybindingsSection() {
     </section>
   );
 }
-

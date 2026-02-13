@@ -21,6 +21,27 @@ export type ProjectInfo = {
   baseRef: string;
 };
 
+export type ClearLocalAdeDataArgs = {
+  packs?: boolean;
+  logs?: boolean;
+  transcripts?: boolean;
+};
+
+export type ClearLocalAdeDataResult = {
+  deletedPaths: string[];
+  clearedAt: string;
+};
+
+export type ExportConfigBundleResult =
+  | { cancelled: true }
+  | { cancelled: false; savedPath: string; bytesWritten: number; exportedAt: string };
+
+export type HostedMirrorDeleteResult = {
+  deleted: true;
+  remoteProjectId: string;
+  deletedAt: string;
+};
+
 export type RecentProjectSummary = {
   rootPath: string;
   displayName: string;
@@ -1228,6 +1249,17 @@ export type GitPushArgs = {
   forceWithLease?: boolean;
 };
 
+export type GitConflictKind = "merge" | "rebase" | null;
+
+export type GitConflictState = {
+  laneId: string;
+  kind: GitConflictKind;
+  inProgress: boolean;
+  conflictedFiles: string[];
+  canContinue: boolean;
+  canAbort: boolean;
+};
+
 export type GitActionResult = {
   operationId: string;
   preHeadSha: string | null;
@@ -1526,6 +1558,65 @@ export type OnboardingExistingLaneCandidate = {
   hasRemote: boolean;
   ahead: number;
   behind: number;
+};
+
+export type CiProvider = "github-actions" | "gitlab-ci" | "circleci" | "jenkins";
+export type CiJobSafety = "local-safe" | "ci-only" | "unknown";
+
+export type CiJobCandidate = {
+  id: string;
+  provider: CiProvider;
+  filePath: string; // repo-relative
+  jobName: string;
+  commands: string[];
+  suggestedCommandLine: string | null;
+  suggestedCommand: string[] | null;
+  safety: CiJobSafety;
+  warnings: string[];
+};
+
+export type CiScanDiff = {
+  added: number;
+  removed: number;
+  changed: number;
+  unchanged: number;
+};
+
+export type CiImportMode = "import" | "sync";
+
+export type CiImportSelection = {
+  jobId: string;
+  kind: "process" | "testSuite";
+};
+
+export type CiImportState = {
+  fingerprint: string;
+  jobDigests: Record<string, string>;
+  importedAt: string;
+  importedJobs: Array<{
+    jobId: string;
+    kind: "process" | "testSuite";
+    targetId: string;
+  }>;
+};
+
+export type CiScanResult = {
+  providers: CiProvider[];
+  jobs: CiJobCandidate[];
+  fingerprint: string;
+  scannedAt: string;
+  lastImport: CiImportState | null;
+  diff: CiScanDiff | null;
+};
+
+export type CiImportRequest = {
+  selections: CiImportSelection[];
+  mode?: CiImportMode;
+};
+
+export type CiImportResult = {
+  snapshot: ProjectConfigSnapshot;
+  importState: CiImportState;
 };
 
 export type KeybindingOverride = {

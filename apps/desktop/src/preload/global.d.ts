@@ -3,6 +3,8 @@ import type {
   ApplyConflictProposalArgs,
   AttachLaneArgs,
   AppInfo,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
   ArchiveLaneArgs,
   ConflictProposal,
   ConflictEventPayload,
@@ -46,6 +48,7 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorDeleteResult,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
@@ -69,10 +72,15 @@ import type {
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
+  CiScanResult,
+  CiImportRequest,
+  CiImportResult,
+  ExportConfigBundleResult,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
@@ -96,6 +104,7 @@ import type {
   LandResult,
   ListOverlapsArgs,
   LaneSummary,
+  ImportBranchLaneArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
   ListLanesArgs,
@@ -162,6 +171,8 @@ declare global {
       project: {
         openRepo: () => Promise<ProjectInfo>;
         openAdeFolder: () => Promise<void>;
+        clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
+        exportConfig: () => Promise<ExportConfigBundleResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
         forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
@@ -184,6 +195,10 @@ declare global {
         generateInitialPacks: (args?: { laneIds?: string[] }) => Promise<void>;
         complete: () => Promise<OnboardingStatus>;
       };
+      ci: {
+        scan: () => Promise<CiScanResult>;
+        import: (req: CiImportRequest) => Promise<CiImportResult>;
+      };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;
         toggle: (args: { id: string; enabled: boolean }) => Promise<AutomationRuleSummary[]>;
@@ -200,6 +215,7 @@ declare global {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
+        importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
@@ -264,6 +280,11 @@ declare global {
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
+        getConflictState: (laneId: string) => Promise<GitConflictState>;
+        rebaseContinue: (laneId: string) => Promise<GitActionResult>;
+        rebaseAbort: (laneId: string) => Promise<GitActionResult>;
+        mergeContinue: (laneId: string) => Promise<GitActionResult>;
+        mergeAbort: (laneId: string) => Promise<GitActionResult>;
       };
       conflicts: {
         getLaneStatus: (args: GetLaneConflictStatusArgs) => Promise<ConflictStatus>;
@@ -325,6 +346,7 @@ declare global {
         signIn: (args?: HostedSignInArgs) => Promise<HostedSignInResult>;
         signOut: () => Promise<void>;
         syncMirror: (args?: HostedMirrorSyncArgs) => Promise<HostedMirrorSyncResult>;
+        deleteMirrorData: () => Promise<HostedMirrorDeleteResult>;
         submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
         getJob: (jobId: string) => Promise<HostedJobStatusResult>;
         getArtifact: (artifactId: string) => Promise<HostedArtifactResult>;

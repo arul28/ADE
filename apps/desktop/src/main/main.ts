@@ -33,6 +33,7 @@ import { createAgentToolsService } from "./services/agentTools/agentToolsService
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
+import { createCiService } from "./services/ci/ciService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -162,12 +163,19 @@ app.whenReady().then(async () => {
 	      logger.warn("sessions.reconciled_stale_running", { count: reconciledSessions });
 	    }
 	    const diffService = createDiffService({ laneService });
-	    const projectConfigService = createProjectConfigService({
-	      projectRoot,
-	      adeDir: adePaths.adeDir,
+    const projectConfigService = createProjectConfigService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
       projectId,
       db,
       logger
+    });
+
+    const ciService = createCiService({
+      db,
+      logger,
+      projectRoot,
+      projectConfigService
     });
 
     const packService = createPackService({
@@ -376,6 +384,7 @@ app.whenReady().then(async () => {
       jobEngine,
       automationService,
       automationPlannerService,
+      ciService,
       packService,
       projectConfigService,
       processService,

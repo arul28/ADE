@@ -1,10 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import fs from "node:fs";
+import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
   ArchiveLaneArgs,
   AutomationRuleSummary,
   AutomationRun,
@@ -46,6 +50,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
@@ -71,6 +76,7 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportConfigBundleResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
   HostedGitHubAppStatus,
@@ -80,6 +86,7 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorDeleteResult,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
@@ -89,6 +96,9 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
+  CiScanResult,
+  CiImportRequest,
+  CiImportResult,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
   OnboardingStatus,
@@ -165,6 +175,7 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
+import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 
@@ -178,6 +189,7 @@ export type AppContext = {
   terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
+  ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
@@ -275,6 +287,108 @@ export function registerIpc({
     await shell.openPath(ctx.adeDir);
   });
 
+  ipcMain.handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
+    const ctx = getCtx();
+    const clearedAt = new Date().toISOString();
+    const deletedPaths: string[] = [];
+
+    const rmrf = (absPath: string) => {
+      const resolved = path.resolve(absPath);
+      const allowedRoot = path.resolve(ctx.adeDir) + path.sep;
+      if (!resolved.startsWith(allowedRoot)) {
+        throw new Error("Refusing to delete outside .ade directory");
+      }
+      if (!fs.existsSync(resolved)) return;
+      fs.rmSync(resolved, { recursive: true, force: true });
+      deletedPaths.push(resolved);
+    };
+
+    if (arg.packs) rmrf(path.join(ctx.adeDir, "packs"));
+    if (arg.logs) rmrf(path.join(ctx.adeDir, "logs"));
+    if (arg.transcripts) rmrf(path.join(ctx.adeDir, "transcripts"));
+
+    return { deletedPaths, clearedAt };
+  });
+
+  ipcMain.handle(IPC.projectExportConfig, async (event): Promise<ExportConfigBundleResult> => {
+    const ctx = getCtx();
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+
+    const snapshot = ctx.projectConfigService.get();
+    const sharedPath = snapshot.paths.sharedPath;
+    const localPath = snapshot.paths.localPath;
+
+    const readText = (p: string): string => {
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return "";
+      }
+    };
+
+    const redactSecrets = (input: string): string => {
+      let output = input;
+      output = output.replace(
+        /((?:api[_-]?key|token|secret|password|refreshToken|accessToken|idToken)\s*:\s*)(["']?)[^\s"']{6,}\2/gi,
+        "$1<redacted>"
+      );
+      output = output.replace(
+        /-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g,
+        "<redacted-private-key>"
+      );
+      output = output.replace(
+        /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
+        "<redacted-token>"
+      );
+      return output;
+    };
+
+    const defaultName = `ade-config-${ctx.project.displayName.replace(/[^a-zA-Z0-9._-]+/g, "_")}-${new Date()
+      .toISOString()
+      .slice(0, 10)}.json`;
+    const defaultPath = path.join(ctx.project.rootPath, defaultName);
+
+    const result = win
+      ? await dialog.showSaveDialog(win, {
+          title: "Export ADE config",
+          defaultPath,
+          buttonLabel: "Export",
+          filters: [{ name: "JSON", extensions: ["json"] }]
+        })
+      : await dialog.showSaveDialog({
+          title: "Export ADE config",
+          defaultPath,
+          buttonLabel: "Export",
+          filters: [{ name: "JSON", extensions: ["json"] }]
+        });
+
+    if (result.canceled || !result.filePath) {
+      return { cancelled: true };
+    }
+
+    const exportedAt = new Date().toISOString();
+    const bundle = {
+      exportedAt,
+      project: ctx.project,
+      config: {
+        sharedPath,
+        localPath,
+        sharedYaml: readText(sharedPath),
+        localYamlRedacted: redactSecrets(readText(localPath))
+      }
+    };
+
+    const content = `${JSON.stringify(bundle, null, 2)}\n`;
+    fs.writeFileSync(result.filePath, content, "utf8");
+
+    return {
+      cancelled: false,
+      savedPath: result.filePath,
+      bytesWritten: Buffer.byteLength(content, "utf8"),
+      exportedAt
+    };
+  });
+
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
     const state = readGlobalState(globalStatePath);
     return (state.recentProjects ?? []).map((entry) => ({
@@ -363,6 +477,16 @@ export function registerIpc({
   ipcMain.handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     return ctx.onboardingService.complete();
+  });
+
+  ipcMain.handle(IPC.ciScan, async (): Promise<CiScanResult> => {
+    const ctx = getCtx();
+    return await ctx.ciService.scan();
+  });
+
+  ipcMain.handle(IPC.ciImport, async (_event, arg: CiImportRequest): Promise<CiImportResult> => {
+    const ctx = getCtx();
+    return await ctx.ciService.import(arg);
   });
 
   ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
@@ -730,6 +854,31 @@ export function registerIpc({
     return ctx.gitService.push(arg);
   });
 
+  ipcMain.handle(IPC.gitGetConflictState, async (_event, arg: { laneId: string }): Promise<GitConflictState> => {
+    const ctx = getCtx();
+    return await ctx.gitService.getConflictState({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitRebaseContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.rebaseContinue({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitRebaseAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.rebaseAbort({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitMergeContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.mergeContinue({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.mergeAbort({ laneId: arg?.laneId ?? "" });
+  });
+
   ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
     const ctx = getCtx();
     return await ctx.conflictService.getLaneStatus(arg);
@@ -967,6 +1116,11 @@ export function registerIpc({
   ipcMain.handle(IPC.hostedSyncMirror, async (_event, arg: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
     const ctx = getCtx();
     return await ctx.hostedAgentService.syncMirror(arg);
+  });
+
+  ipcMain.handle(IPC.hostedDeleteMirrorData, async (): Promise<HostedMirrorDeleteResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.deleteMirrorData();
   });
 
   ipcMain.handle(IPC.hostedSubmitJob, async (_event, arg: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> => {

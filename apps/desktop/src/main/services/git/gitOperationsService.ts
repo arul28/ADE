@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { runGit, runGitOrThrow } from "./git";
 import type {
@@ -5,6 +6,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
@@ -59,6 +61,38 @@ async function isUntrackedFile(worktreePath: string, relPath: string): Promise<b
   if (res.exitCode !== 0) return false;
   const lines = res.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   return lines.some((line) => line.startsWith("??"));
+}
+
+async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
+  const res = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: worktreePath, timeoutMs: 8_000 });
+  if (res.exitCode !== 0) return null;
+  const dir = res.stdout.trim();
+  return dir.length ? dir : null;
+}
+
+function detectConflictKind(gitDir: string): GitConflictState["kind"] {
+  try {
+    if (fs.existsSync(path.join(gitDir, "rebase-apply")) || fs.existsSync(path.join(gitDir, "rebase-merge"))) {
+      return "rebase";
+    }
+    if (fs.existsSync(path.join(gitDir, "MERGE_HEAD"))) {
+      return "merge";
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function parseNameOnly(stdout: string): string[] {
+  return Array.from(
+    new Set(
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
 }
 
 export function createGitOperationsService({
@@ -508,6 +542,98 @@ export function createGitOperationsService({
             cmd.push("--force-with-lease");
           }
           await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        }
+      });
+      return action;
+    },
+
+    async getConflictState(args: { laneId: string }): Promise<GitConflictState> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const gitDir = await getAbsoluteGitDir(lane.worktreePath);
+      const kind = gitDir ? detectConflictKind(gitDir) : null;
+
+      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      const conflictedFiles = unmergedRes.exitCode === 0 ? parseNameOnly(unmergedRes.stdout) : [];
+      const inProgress = kind != null;
+
+      return {
+        laneId,
+        kind,
+        inProgress,
+        conflictedFiles,
+        canContinue: inProgress && conflictedFiles.length === 0,
+        canAbort: inProgress
+      };
+    },
+
+    async rebaseContinue(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_rebase_continue",
+        reason: "rebase_continue",
+        fn: async (lane) => {
+          await runGitOrThrow(["-c", "core.editor=true", "rebase", "--continue"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 300_000
+          });
+        }
+      });
+      return action;
+    },
+
+    async rebaseAbort(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_rebase_abort",
+        reason: "rebase_abort",
+        fn: async (lane) => {
+          await runGitOrThrow(["rebase", "--abort"], { cwd: lane.worktreePath, timeoutMs: 300_000 });
+        }
+      });
+      return action;
+    },
+
+    async mergeContinue(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_merge_continue",
+        reason: "merge_continue",
+        fn: async (lane) => {
+          const res = await runGit(["-c", "core.editor=true", "merge", "--continue"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 300_000
+          });
+          if (res.exitCode === 0) return;
+
+          const combined = `${res.stderr ?? ""}\n${res.stdout ?? ""}`.trim();
+          // Older git versions don't support `merge --continue`. In that case,
+          // finishing a merge is equivalent to committing the merge result.
+          if (/unknown option.*--continue|usage:\\s*git\\s+merge\\b/i.test(combined)) {
+            await runGitOrThrow(["-c", "core.editor=true", "commit", "--no-edit"], {
+              cwd: lane.worktreePath,
+              timeoutMs: 300_000
+            });
+            return;
+          }
+
+          throw new Error(combined || "Failed to continue merge");
+        }
+      });
+      return action;
+    },
+
+    async mergeAbort(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_merge_abort",
+        reason: "merge_abort",
+        fn: async (lane) => {
+          await runGitOrThrow(["merge", "--abort"], { cwd: lane.worktreePath, timeoutMs: 300_000 });
         }
       });
       return action;

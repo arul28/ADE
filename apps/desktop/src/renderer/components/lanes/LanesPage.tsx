@@ -10,6 +10,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary } from "../../../shared/types";
+import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
 function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lanes: T[]): T[] {
   return [...lanes].sort((a, b) => {
@@ -315,6 +316,7 @@ export function LanesPage() {
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
   const baseRef = project?.baseRef;
 
@@ -591,6 +593,13 @@ export function LanesPage() {
     selectLane(nextId);
   }, [filteredLaneIds, selectedLaneId, filteredSet, pinnedLaneIds, lanesById, selectLane]);
 
+  const kbFilterFocus = useMemo(() => getEffectiveBinding(keybindings, "lanes.filter.focus", "/,Mod+F"), [keybindings]);
+  const kbNext = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.next", "J,ArrowDown"), [keybindings]);
+  const kbPrev = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.prev", "K,ArrowUp"), [keybindings]);
+  const kbNextTab = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.nextTab", "]"), [keybindings]);
+  const kbPrevTab = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.prevTab", "["), [keybindings]);
+  const kbConfirm = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.confirm", "Enter"), [keybindings]);
+
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -598,12 +607,9 @@ export function LanesPage() {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      const isMac = navigator.platform.toLowerCase().includes("mac");
-      const mod = isMac ? event.metaKey : event.ctrlKey;
-      const key = event.key.toLowerCase();
       const targetIsTyping = isTypingTarget(event.target);
 
-      if (!targetIsTyping && (event.key === "/" || (mod && key === "f"))) {
+      if (!targetIsTyping && eventMatchesBinding(event, kbFilterFocus)) {
         event.preventDefault();
         const input = document.getElementById("lanes-filter-input");
         if (input instanceof HTMLInputElement) {
@@ -628,25 +634,24 @@ export function LanesPage() {
         return;
       }
 
-      if (event.key === "[" || event.key === "]") {
+      if (eventMatchesBinding(event, kbPrevTab) || eventMatchesBinding(event, kbNextTab)) {
         event.preventDefault();
-        stepLaneSelection(event.key === "]" ? 1 : -1);
+        stepLaneSelection(eventMatchesBinding(event, kbNextTab) ? 1 : -1);
         return;
       }
 
-      const noMods = !event.metaKey && !event.ctrlKey && !event.altKey;
-      if (noMods && (event.key === "ArrowDown" || key === "j")) {
+      if (eventMatchesBinding(event, kbNext)) {
         event.preventDefault();
         stepLaneSelection(1);
         return;
       }
-      if (noMods && (event.key === "ArrowUp" || key === "k")) {
+      if (eventMatchesBinding(event, kbPrev)) {
         event.preventDefault();
         stepLaneSelection(-1);
         return;
       }
 
-      if (noMods && event.key === "Enter" && filteredLaneIds.length > 0) {
+      if (eventMatchesBinding(event, kbConfirm) && filteredLaneIds.length > 0) {
         event.preventDefault();
         const laneId = selectedLaneId && filteredSet.has(selectedLaneId)
           ? selectedLaneId
@@ -660,7 +665,22 @@ export function LanesPage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredLaneIds, filteredSet, selectedLaneId, selectLane, pinnedLaneIds, lanesById, laneFilter, stepLaneSelection]);
+  }, [
+    filteredLaneIds,
+    filteredSet,
+    selectedLaneId,
+    selectLane,
+    pinnedLaneIds,
+    lanesById,
+    laneFilter,
+    stepLaneSelection,
+    kbFilterFocus,
+    kbNext,
+    kbPrev,
+    kbNextTab,
+    kbPrevTab,
+    kbConfirm
+  ]);
 
   const activeFilterTokens = useMemo(() => {
     return new Set(

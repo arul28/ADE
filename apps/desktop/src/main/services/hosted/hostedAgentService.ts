@@ -15,6 +15,7 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorDeleteResult,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInResult,
@@ -1556,6 +1557,27 @@ export function createHostedAgentService({
     };
   };
 
+  const deleteMirrorData = async (): Promise<HostedMirrorDeleteResult> => {
+    const config = ensureHostedConfigured();
+    const remoteProjectId = config.remoteProjectId;
+    if (!remoteProjectId) {
+      throw new Error("No hosted remote project is configured for this repo yet.");
+    }
+
+    await apiRequest<{ deleted?: boolean }>({
+      method: "DELETE",
+      path: `/projects/${remoteProjectId}`
+    });
+
+    updateHostedConfig({ remoteProjectId: null });
+
+    return {
+      deleted: true,
+      remoteProjectId,
+      deletedAt: nowIso()
+    };
+  };
+
   return {
     getStatus,
 
@@ -1575,6 +1597,10 @@ export function createHostedAgentService({
 
     async syncMirror(args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> {
       return await syncMirror(args);
+    },
+
+    async deleteMirrorData(): Promise<HostedMirrorDeleteResult> {
+      return await deleteMirrorData();
     },
 
     async submitJob(args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> {

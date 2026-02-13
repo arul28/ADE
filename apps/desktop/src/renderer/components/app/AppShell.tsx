@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type { PrEventPayload } from "../../../shared/types";
+import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
 type PrToast = {
   id: string;
@@ -13,10 +14,14 @@ type PrToast = {
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
+  const location = useLocation();
   const setProject = useAppStore((s) => s.setProject);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
+  const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
   const providerMode = useAppStore((s) => s.providerMode);
+  const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
@@ -28,24 +33,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.ade.app
       .getProject()
       .then(setProject)
-      .then(() => Promise.all([refreshLanes(), refreshProviderMode()]))
+      .then(() => Promise.all([refreshLanes(), refreshProviderMode(), refreshKeybindings().catch(() => {})]))
+      .then(async () => {
+        const status = await window.ade.onboarding.getStatus().catch(() => null);
+        if (!status || status.completedAt) return;
+        if (location.pathname === "/onboarding") return;
+        navigate("/onboarding", { replace: true });
+      })
       .catch(() => {
         // Leave project unset; UI will show placeholders.
       });
-  }, [setProject, refreshLanes, refreshProviderMode]);
+  }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, navigate]);
+
+  const commandPaletteBinding = useMemo(
+    () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
+    [keybindings]
+  );
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const isMac = navigator.platform.toLowerCase().includes("mac");
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setCommandOpen(true);
-      }
+      if (!eventMatchesBinding(e, commandPaletteBinding)) return;
+      e.preventDefault();
+      setCommandOpen(true);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [commandPaletteBinding]);
 
   useEffect(() => {
     const dismiss = (id: string) => {
@@ -72,7 +85,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const cmdK = useMemo(() => (navigator.platform.toLowerCase().includes("mac") ? "Cmd" : "Ctrl"), []);
+  const commandHint = useMemo(() => {
+    const isMac = navigator.platform.toLowerCase().includes("mac");
+    const primary = commandPaletteBinding.split(",")[0]?.trim() ?? "Mod+K";
+    const normalized = primary.replace(/\bMod\b/g, isMac ? "Cmd" : "Ctrl");
+    return normalized;
+  }, [commandPaletteBinding]);
 
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
@@ -83,7 +101,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenCommandPalette={() => setCommandOpen(true)}
           commandHint={
             <>
-              {cmdK}+<span className="font-mono">K</span>
+              <span className="font-mono">{commandHint}</span>
             </>
           }
         />
