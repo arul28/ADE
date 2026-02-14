@@ -1,6 +1,6 @@
 # History — Operations Timeline & Replay
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -47,10 +47,7 @@ This timeline serves multiple purposes:
 - **Auditing**: The complete operation log provides accountability for changes,
   especially useful in team environments where understanding who did what matters.
 
-**Current status**: The core timeline (operation recording, display, filtering) is
-**implemented and working**. Checkpoint and event logging features are planned for
-**Phase 8** (Automations + Onboarding + Packs V2). Advanced timeline features
-(graph view, undo, replay, export) are planned for **Phase 9** (Advanced Features + Polish).
+**Current status**: Implemented and working (Phases 2 + 8). The core operations timeline is recorded and browsable, and Phase 8 adds checkpoints + pack events as first-class history artifacts. The UI favors readable activity summaries with deep links into lanes and packs; raw metadata remains available but is de-emphasized to reduce noise. Advanced timeline features (graph view, undo, replay, export) remain planned for Phase 9.
 
 ---
 

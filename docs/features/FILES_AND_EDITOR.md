@@ -1,6 +1,6 @@
 # Files & Editor — IDE-Style Workbench
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -24,9 +24,9 @@
   - [File Watching Architecture](#file-watching-architecture)
 - [Data Model](#data-model)
 - [Implementation Tracking](#implementation-tracking)
-  - [Phase 1 — File Tree & Basic Editor (TODO)](#phase-1--file-tree--basic-editor-todo)
-  - [Phase 2 — Diff & Conflict Modes (TODO)](#phase-2--diff--conflict-modes-todo)
-  - [Phase 3 — Advanced Editor Features (TODO)](#phase-3--advanced-editor-features-todo)
+  - [Phase 1 — File Tree & Basic Editor (DONE)](#phase-1--file-tree--basic-editor-done)
+  - [Phase 2 — Diff & Conflict Modes (DONE)](#phase-2--diff--conflict-modes-done)
+  - [Phase 3 — Advanced Editor Features (DONE)](#phase-3--advanced-editor-features-done)
 
 ---
 

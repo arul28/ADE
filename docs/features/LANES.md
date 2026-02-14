@@ -1,6 +1,6 @@
 # Lanes — Development Cockpit
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -94,14 +94,14 @@ The Lanes tab uses a resizable 3-pane layout optimized for parallel development 
 |    experiment-ui          |  |  Diff / Git Operations Panel             |  |
 |                           |  |                                         |  |
 |  ─── Stack Graph ───      |  |  Unstaged Changes (3 files)             |  |
-|  (placeholder)            |  |  Staged Changes (1 file)                |  |
+|  (mini graph + canvas)    |  |  Staged Changes (1 file)                |  |
 |                           |  |                                         |  |
 |                           |  |  [Stage All] [Commit] [Push]            |  |
 |                           |  +-----------------------------------------+  |
 +---------------------------+------------------------------------------------+
 ```
 
-All pane dividers are draggable for user-customized sizing.
+All pane dividers are draggable for user-customized sizing and are persisted across lane switches.
 
 ### Left Pane — Lane List & Stack Graph
 
@@ -122,7 +122,7 @@ The left pane is a scrollable list of all active lanes for the current project.
 - Right-click: Context menu with Rename, Archive, Delete, Open Folder, Create Child Lane.
 - Double-click: Open lane in a new tab in the center pane.
 
-**Stack graph** (bottom of left pane): A visual representation of parent-child lane relationships. This is currently a placeholder for future implementation.
+**Stack graph** (bottom of left pane): A lightweight visual representation of parent-child lane relationships (including clear connections back to the Primary lane). A one-click “Open canvas” action jumps to the full Workspace Graph for deeper exploration.
 
 **Create Lane button**: Opens a dialog to create a new lane. The user provides a name and optionally selects a parent lane (for stacking) and a base ref.
 

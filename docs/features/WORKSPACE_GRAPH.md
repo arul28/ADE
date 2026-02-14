@@ -1,6 +1,6 @@
 # Workspace Graph — Visual Topology Canvas
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -49,28 +49,15 @@ The graph also serves as an **environment mindmap**. The main branch (typically 
 
 Think of it as an infinite canvas where you can see your entire development topology at a glance — which branch maps to which environment, where the conflicts are, and which PRs are open.
 
-**Status**: This feature is planned for **Phase 7** (GitHub Integration + Workspace Graph). Some service-layer work has been completed ahead of schedule in Phase 4/5:
+**Current status**: Implemented (Phase 7). The `/graph` route renders the React Flow canvas and supports:
 
-- `laneService.reparent()` method exists for moving lanes between parents
-- `laneService.updateAppearance()` method exists for customizing color, icon, and tags
-- IPC channels `lanesReparent` and `lanesUpdateAppearance` are registered in `registerIpc.ts`
-- Preload bridge exposes `reparent` and `updateAppearance` methods to the renderer
-- Types for reparent (`ReparentArgs`), appearance (`AppearanceUpdate`), and graph state (`GraphState`) exist in `types.ts`
+- Stack / Risk / Activity / All view modes
+- Parent/child stack edges and primary topology edges
+- Conflict risk overlays (from the conflict service) and merge simulation on edge click
+- PR overlays and lane <-> PR actions
+- Drag-to-reparent with cycle detection, multi-select, filters, and layout persistence
 
-The `graph/` directory and `/graph` route exist but UI components are not yet built.
-
-The `docs/PHASE_4_5_UPDATES.md` document (Part 3) contains extended scope beyond the original 28 GRAPH tasks, including:
-
-- Drag-and-drop lane reparenting with cycle detection (WG14)
-- Multi-select reparent (WG15)
-- Batch operations with progress UI (WG16)
-- Collapsible sub-graphs (WG17)
-- Multiple view modes — Stack/Risk/Activity/All (WG18)
-- Custom node appearance — color, tags, icon (WG19)
-- Graph-level filtering (WG20)
-- Multiple saved layout presets (WG21)
-- Loading and skeleton states (WG23)
-- Conflict status animations (WG25)
+The Lanes tab also includes a lightweight mini stack graph for quick parent/child navigation, with an “Open canvas” button for the full graph.
 
 ---
 

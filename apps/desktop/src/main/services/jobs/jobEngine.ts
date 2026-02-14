@@ -2,6 +2,8 @@ import type { Logger } from "../logging/logger";
 import type { createPackService } from "../packs/packService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
+import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createByokLlmService } from "../byok/byokLlmService";
 
 type RefreshRequest = {
   laneId: string;
@@ -19,12 +21,16 @@ export function createJobEngine({
   logger,
   packService,
   conflictService,
-  hostedAgentService
+  hostedAgentService,
+  projectConfigService,
+  byokLlmService
 }: {
   logger: Logger;
   packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
   hostedAgentService?: ReturnType<typeof createHostedAgentService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  byokLlmService?: ReturnType<typeof createByokLlmService>;
 }) {
   const laneQueue = new Map<string, LaneQueueState>();
   const dirtyLaneQueue = new Set<string>();
@@ -64,8 +70,101 @@ export function createJobEngine({
           reason: payload.reason,
           laneId: payload.laneId
         });
-        void lanePack;
-        void hostedAgentService;
+
+        // If AI is configured, refresh the narrative in the background after deterministic refresh.
+        // This keeps packs useful without requiring users to click a separate "AI summary" button.
+        void (async () => {
+          const providerMode = projectConfigService?.get().effective.providerMode ?? "guest";
+          if (providerMode === "guest") return;
+
+          try {
+            packService.recordEvent({
+              packKey: lanePack.packKey,
+              eventType: "narrative_requested",
+              payload: {
+                laneId: payload.laneId,
+                providerMode,
+                trigger: payload.reason,
+                sessionId: payload.sessionId ?? null,
+                deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+                contentHash: lanePack.contentHash
+              }
+            });
+          } catch {
+            // ignore event creation failures
+          }
+
+          try {
+            if (providerMode === "hosted") {
+              if (!hostedAgentService?.getStatus().enabled) {
+                throw new Error("Hosted AI is selected but not ready. Go to Settings → Provider, grant consent, apply bootstrap, and sign in.");
+              }
+              const narrative = await hostedAgentService.requestLaneNarrative({
+                laneId: payload.laneId,
+                packBody: lanePack.body
+              });
+              packService.applyHostedNarrative({
+                laneId: payload.laneId,
+                narrative: narrative.narrative,
+                metadata: {
+                  jobId: narrative.jobId,
+                  artifactId: narrative.artifactId,
+                  provider: narrative.provider,
+                  model: narrative.model,
+                  inputTokens: narrative.inputTokens,
+                  outputTokens: narrative.outputTokens,
+                  latencyMs: narrative.latencyMs,
+                  trigger: payload.reason,
+                  sessionId: payload.sessionId ?? null
+                }
+              });
+              return;
+            }
+
+            if (providerMode === "byok") {
+              if (!byokLlmService) {
+                throw new Error("BYOK provider is selected but BYOK LLM service is unavailable.");
+              }
+              const narrative = await byokLlmService.generateLaneNarrative({
+                laneId: payload.laneId,
+                packBody: lanePack.body
+              });
+              packService.applyHostedNarrative({
+                laneId: payload.laneId,
+                narrative: narrative.narrative,
+                metadata: {
+                  source: "byok",
+                  provider: narrative.provider,
+                  model: narrative.model,
+                  trigger: payload.reason,
+                  sessionId: payload.sessionId ?? null
+                }
+              });
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn("jobs.refresh_lane.narrative_failed", {
+              laneId: payload.laneId,
+              providerMode,
+              error: message
+            });
+            try {
+              packService.recordEvent({
+                packKey: lanePack.packKey,
+                eventType: "narrative_failed",
+                payload: {
+                  laneId: payload.laneId,
+                  providerMode,
+                  trigger: payload.reason,
+                  sessionId: payload.sessionId ?? null,
+                  error: message
+                }
+              });
+            } catch {
+              // ignore event creation failures
+            }
+          }
+        })();
 
         logger.info("jobs.refresh_lane.done", payload);
       } catch (error) {

@@ -148,6 +148,7 @@ import type {
   TerminalSessionDetail,
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
+  UpdateSessionMetaArgs,
   TestRunSummary,
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
@@ -667,6 +668,11 @@ export function registerIpc({
     return ctx.sessionService.get(arg.sessionId);
   });
 
+  ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
+    const ctx = getCtx();
+    return ctx.sessionService.updateMeta(arg);
+  });
+
   ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number }): Promise<string> => {
     const ctx = getCtx();
     const session = ctx.sessionService.get(arg.sessionId);
@@ -985,6 +991,14 @@ export function registerIpc({
     return lanePack;
   });
 
+  ipcMain.handle(IPC.packsRefreshProjectPack, async (_event, arg: { laneId?: string | null } = {}): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.refreshProjectPack({
+      reason: "manual_refresh",
+      ...(arg.laneId ? { laneId: arg.laneId } : {})
+    });
+  });
+
   ipcMain.handle(IPC.packsApplyHostedNarrative, async (_event, arg: { laneId: string; narrative: string }): Promise<PackSummary> => {
     const ctx = getCtx();
     return ctx.packService.applyHostedNarrative({
@@ -1001,7 +1015,10 @@ export function registerIpc({
     }
 
     const providerMode = ctx.projectConfigService.get().effective.providerMode ?? "guest";
-    if (providerMode === "hosted" && ctx.hostedAgentService.getStatus().enabled) {
+    if (providerMode === "hosted") {
+      if (!ctx.hostedAgentService.getStatus().enabled) {
+        throw new Error("Hosted AI is selected but not ready. Go to Settings → Provider, grant consent, apply bootstrap, and sign in.");
+      }
       const narrative = await ctx.hostedAgentService.requestLaneNarrative({
         laneId: arg.laneId,
         packBody: lanePack.body
@@ -1011,7 +1028,12 @@ export function registerIpc({
         narrative: narrative.narrative,
         metadata: {
           jobId: narrative.jobId,
-          artifactId: narrative.artifactId
+          artifactId: narrative.artifactId,
+          provider: narrative.provider,
+          model: narrative.model,
+          inputTokens: narrative.inputTokens,
+          outputTokens: narrative.outputTokens,
+          latencyMs: narrative.latencyMs
         }
       });
     }

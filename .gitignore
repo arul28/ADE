@@ -5,3 +5,4 @@ infra/node_modules/
 infra/.sst/
 infra/.pulumi/
 /infra/.home
+/.npm-cache

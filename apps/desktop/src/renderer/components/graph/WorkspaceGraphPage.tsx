@@ -741,7 +741,7 @@ function GraphInner() {
 
   React.useEffect(() => {
     void refreshEnvironmentMappings();
-  }, [project?.id, refreshEnvironmentMappings]);
+  }, [project?.rootPath, refreshEnvironmentMappings]);
 
   const persistTimerRef = React.useRef<number | null>(null);
   const riskRefreshTimerRef = React.useRef<number | null>(null);

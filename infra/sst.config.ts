@@ -504,7 +504,17 @@ export default $config({
           RATE_LIMITS_TABLE_NAME: rateLimitsTable.name,
           RATE_LIMIT_JOBS_PER_MINUTE: process.env.ADE_RATE_LIMIT_JOBS_PER_MINUTE ?? "20",
           RATE_LIMIT_DAILY_JOBS: process.env.ADE_RATE_LIMIT_DAILY_JOBS ?? "500",
-          RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000"
+          RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000",
+
+          // Keep worker env aligned with shared env requirements (api + worker share env parsing).
+          // Missing these can crash SST dev/deploy during cold start even if a given job type doesn't use GitHub features.
+          GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
+          GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
+          GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
+          GITHUB_APP_ID: githubAppId.value,
+          GITHUB_APP_SLUG: githubAppSlug.value,
+          GITHUB_APP_PRIVATE_KEY_BASE64: githubAppPrivateKeyBase64.value,
+          GITHUB_WEBHOOK_SECRET: githubWebhookSecret.value
         },
         link: [
           jobsTable,

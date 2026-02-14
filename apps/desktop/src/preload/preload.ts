@@ -263,6 +263,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsList, args),
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
+    updateMeta: async (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null }): Promise<TerminalSessionSummary | null> =>
+      ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
@@ -382,6 +384,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.packsGetConflictPack, args),
     getPlanPack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetPlanPack, { laneId }),
     refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
+    refreshProjectPack: async (args: { laneId?: string | null } = {}): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshProjectPack, args),
     refreshFeaturePack: async (featureKey: string): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsRefreshFeaturePack, { featureKey }),
     refreshConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
@@ -402,7 +406,12 @@ contextBridge.exposeInMainWorld("ade", {
     listEvents: async (args: { packKey: string; limit?: number }): Promise<PackEvent[]> =>
       ipcRenderer.invoke(IPC.packsListEvents, args),
     listCheckpoints: async (args: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> =>
-      ipcRenderer.invoke(IPC.packsListCheckpoints, args)
+      ipcRenderer.invoke(IPC.packsListCheckpoints, args),
+    onEvent: (cb: (ev: PackEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PackEvent) => cb(payload);
+      ipcRenderer.on(IPC.packsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.packsEvent, listener);
+    }
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),

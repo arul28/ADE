@@ -17,6 +17,7 @@ import type {
   ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
   ProcessDefinition,
+  ProcessRestartPolicy,
   ProcessRuntime,
   ProcessRuntimeStatus,
   ProjectConfigCandidate,
@@ -250,7 +251,7 @@ type EditableProcessRow = {
   commandJson: string;
   envJson: string;
   autostart: boolean;
-  restart: "never" | "on_crash";
+  restart: ProcessRestartPolicy;
   gracefulShutdownMs: string;
   dependsOnCsv: string;
   readinessType: "none" | "port" | "logRegex";
@@ -1485,11 +1486,13 @@ export function ProjectHomePage() {
                           value={row.restart}
                           onChange={(e) =>
                             setProcessRows((prev) =>
-                              prev.map((p, i) => (i === idx ? { ...p, restart: e.target.value as "never" | "on_crash" } : p))
+                              prev.map((p, i) => (i === idx ? { ...p, restart: e.target.value as ProcessRestartPolicy } : p))
                             )
                           }
                         >
                           <option value="never">restart: never</option>
+                          <option value="on-failure">restart: on-failure</option>
+                          <option value="always">restart: always</option>
                           <option value="on_crash">restart: on_crash</option>
                         </select>
                         <input

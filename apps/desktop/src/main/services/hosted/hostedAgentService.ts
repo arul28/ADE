@@ -1123,6 +1123,11 @@ export function createHostedAgentService({
       jobId: string;
       artifactId: string;
       narrative: string;
+      provider: string | null;
+      model: string | null;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      latencyMs: number | null;
     }>
   >();
 
@@ -1701,6 +1706,11 @@ export function createHostedAgentService({
       jobId: string;
       artifactId: string;
       narrative: string;
+      provider: string | null;
+      model: string | null;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      latencyMs: number | null;
     }> {
       const requestKey = makeRequestKey("lane-narrative", {
         laneId: args.laneId,
@@ -1732,10 +1742,22 @@ export function createHostedAgentService({
               ? artifact.content
               : JSON.stringify(artifact.content, null, 2);
 
+          const meta = isRecord(artifact.content) && isRecord(artifact.content.metadata) ? artifact.content.metadata : null;
+          const provider = meta ? asString(meta.provider).trim() : "";
+          const model = meta ? asString(meta.model).trim() : "";
+          const inputTokens = meta ? Number(meta.inputTokens ?? NaN) : NaN;
+          const outputTokens = meta ? Number(meta.outputTokens ?? NaN) : NaN;
+          const latencyMs = meta ? Number(meta.latencyMs ?? NaN) : NaN;
+
           return {
             jobId: submission.jobId,
             artifactId: artifact.artifactId,
-            narrative
+            narrative,
+            provider: provider || null,
+            model: model || null,
+            inputTokens: Number.isFinite(inputTokens) ? inputTokens : null,
+            outputTokens: Number.isFinite(outputTokens) ? outputTokens : null,
+            latencyMs: Number.isFinite(latencyMs) ? latencyMs : null
           };
         }
       });

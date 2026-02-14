@@ -8,7 +8,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import type { Checkpoint, PackEvent, PackSummary, PackType, PackVersion, PackVersionSummary, SessionDeltaSummary, TestRunStatus } from "../../../shared/types";
+import type { Checkpoint, LaneSummary, PackEvent, PackSummary, PackType, PackVersion, PackVersionSummary, SessionDeltaSummary, TestRunStatus } from "../../../shared/types";
 
 type LaneSessionRow = {
   id: string;
@@ -138,6 +138,7 @@ function toPackSummaryFromRow(args: {
     deterministic_updated_at: string | null;
     narrative_updated_at: string | null;
     last_head_sha: string | null;
+    metadata_json?: string | null;
   } | null;
   version: { versionId: string; versionNumber: number; contentHash: string } | null;
 }): PackSummary {
@@ -145,6 +146,17 @@ function toPackSummaryFromRow(args: {
   const packPath = args.row?.pack_path ?? "";
   const body = packPath ? readFileIfExists(packPath) : "";
   const exists = packPath.length ? fs.existsSync(packPath) : false;
+  const metadata = (() => {
+    const raw = args.row?.metadata_json;
+    if (!raw || !raw.trim()) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      return parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
 
   return {
     packKey: args.packKey,
@@ -157,6 +169,7 @@ function toPackSummaryFromRow(args: {
     versionId: args.version?.versionId ?? null,
     versionNumber: args.version?.versionNumber ?? null,
     contentHash: args.version?.contentHash ?? null,
+    metadata,
     body
   };
 }
@@ -234,6 +247,31 @@ function statusFromCode(status: TestRunStatus): string {
   return "TIMED_OUT";
 }
 
+function humanToolLabel(toolType: string | null | undefined): string {
+  const normalized = String(toolType ?? "").trim().toLowerCase();
+  if (!normalized) return "Shell";
+  if (normalized === "claude") return "Claude";
+  if (normalized === "codex") return "Codex";
+  if (normalized === "cursor") return "Cursor";
+  if (normalized === "aider") return "Aider";
+  if (normalized === "continue") return "Continue";
+  if (normalized === "shell") return "Shell";
+  return normalized.slice(0, 1).toUpperCase() + normalized.slice(1);
+}
+
+function shellQuoteArg(arg: string): string {
+  const value = String(arg);
+  if (!value.length) return "''";
+  if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function formatCommand(command: unknown): string {
+  if (Array.isArray(command)) return command.map((part) => shellQuoteArg(String(part))).join(" ");
+  if (typeof command === "string") return command.trim();
+  return JSON.stringify(command);
+}
+
 function moduleFromPath(relPath: string): string {
   const normalized = relPath.replace(/\\/g, "/");
   const first = normalized.split("/")[0] ?? normalized;
@@ -260,7 +298,8 @@ export function createPackService({
   laneService,
   sessionService,
   projectConfigService,
-  operationService
+  operationService,
+  onEvent
 }: {
   db: AdeDb;
   logger: Logger;
@@ -271,8 +310,10 @@ export function createPackService({
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   operationService: ReturnType<typeof createOperationService>;
+  onEvent?: (event: PackEvent) => void;
 }) {
   const projectPackPath = path.join(packsDir, "project_pack.md");
+  const projectBootstrapPath = path.join(packsDir, "_bootstrap", "project_bootstrap.md");
 
   const getLanePackPath = (laneId: string) => path.join(packsDir, "lanes", laneId, "lane_pack.md");
   const getFeaturePackPath = (featureKey: string) => path.join(packsDir, "features", safeSegment(featureKey), "feature_pack.md");
@@ -421,7 +462,7 @@ export function createPackService({
     };
   };
 
-  const createPackEvent = (args: { packKey: string; eventType: string; payload?: Record<string, unknown> }): { eventId: string; createdAt: string } => {
+  const createPackEvent = (args: { packKey: string; eventType: string; payload?: Record<string, unknown> }): PackEvent => {
     const eventId = randomUUID();
     const createdAt = nowIso();
     const payload = args.payload ?? {};
@@ -440,20 +481,28 @@ export function createPackService({
       [eventId, projectId, args.packKey, args.eventType, JSON.stringify(payload), createdAt]
     );
 
+    const event: PackEvent = { id: eventId, packKey: args.packKey, eventType: args.eventType, payload, createdAt };
+
     try {
       const monthKey = createdAt.slice(0, 7); // YYYY-MM
       const monthDir = path.join(eventsDir, monthKey);
       ensureDir(monthDir);
       fs.writeFileSync(
         path.join(monthDir, `${eventId}.json`),
-        JSON.stringify({ id: eventId, packKey: args.packKey, eventType: args.eventType, payload, createdAt }, null, 2),
+        JSON.stringify(event, null, 2),
         "utf8"
       );
     } catch {
       // ignore event file write failures
     }
 
-    return { eventId, createdAt };
+    try {
+      onEvent?.(event);
+    } catch {
+      // ignore broadcast failures
+    }
+
+    return event;
   };
 
   const createPackVersion = (args: { packKey: string; packType: PackType; body: string }): { versionId: string; versionNumber: number; contentHash: string } => {
@@ -564,7 +613,7 @@ export function createPackService({
             sessionId: args.sessionId,
             sha: args.sha,
             diffStat,
-            packEventIds: [event.eventId],
+            packEventIds: [event.id],
             createdAt
           },
           null,
@@ -596,7 +645,7 @@ export function createPackService({
         args.sessionId,
         args.sha,
         JSON.stringify(diffStat),
-        JSON.stringify([event.eventId]),
+        JSON.stringify([event.id]),
         createdAt
       ]
     );
@@ -607,7 +656,7 @@ export function createPackService({
       sessionId: args.sessionId,
       sha: args.sha,
       diffStat,
-      packEventIds: [event.eventId],
+      packEventIds: [event.id],
       createdAt
     };
   };
@@ -716,15 +765,51 @@ export function createPackService({
     const lanes = await laneService.list({ includeArchived: true });
     const lane = lanes.find((candidate) => candidate.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
+    const primaryLane = lanes.find((candidate) => candidate.laneType === "primary") ?? null;
+    const parentLane = lane.parentLaneId ? lanes.find((candidate) => candidate.id === lane.parentLaneId) ?? null : null;
 
     const existingBody = readFileIfExists(getLanePackPath(laneId));
     const userIntent = extractSection(existingBody, USER_INTENT_START, USER_INTENT_END, "Describe lane intent and acceptance criteria here.");
     const userTodos = extractSection(existingBody, USER_TODOS_START, USER_TODOS_END, "- [ ] Add actionable todos for this lane\n- [ ] Note open risks before PR");
 
-    const recentDeltas = listRecentLaneSessionDeltas(laneId, 4);
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
     const latestTouchedFiles = latestDelta?.touchedFiles ?? [];
     const touchedModules = [...new Set(latestTouchedFiles.map(moduleFromPath))].slice(0, 10);
+
+    const recentSessions = db.all<{
+      id: string;
+      title: string;
+      goal: string | null;
+      toolType: string | null;
+      tracked: number;
+      startedAt: string;
+      endedAt: string | null;
+      exitCode: number | null;
+      filesChanged: number | null;
+      insertions: number | null;
+      deletions: number | null;
+    }>(
+      `
+        select
+          s.id as id,
+          s.title as title,
+          s.goal as goal,
+          s.tool_type as toolType,
+          s.tracked as tracked,
+          s.started_at as startedAt,
+          s.ended_at as endedAt,
+          s.exit_code as exitCode,
+          d.files_changed as filesChanged,
+          d.insertions as insertions,
+          d.deletions as deletions
+        from terminal_sessions s
+        left join session_deltas d on d.session_id = s.id
+        where s.lane_id = ?
+        order by s.started_at desc
+        limit 6
+      `,
+      [laneId]
+    );
 
     const testRows = db.all<{
       id: string;
@@ -743,57 +828,48 @@ export function createPackService({
       [projectId]
     );
 
-    const runtimeRows = db.all<{ process_key: string; status: string; readiness: string }>(
-      `
-        select process_key, status, readiness
-        from process_runtime
-        where project_id = ?
-      `,
-      [projectId]
-    );
-
     const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
     const headSha = await getHeadSha(worktreePath);
 
     const lines: string[] = [];
     lines.push(`# Lane Pack: ${lane.name}`);
     lines.push("");
-    lines.push(`- Deterministic updated: ${deterministicUpdatedAt}`);
-    lines.push(`- Trigger: ${reason}`);
-    lines.push(`- Provider mode: ${providerMode}`);
-    lines.push(`- Lane ID: ${lane.id}`);
+    lines.push(`Deterministic updated: ${deterministicUpdatedAt}`);
+    lines.push(`Trigger: ${reason}`);
+    if (providerMode && providerMode !== "guest") lines.push(`AI provider mode: ${providerMode}`);
+    lines.push("");
+
+    lines.push("## Lane snapshot");
     lines.push(`- Branch: ${lane.branchRef}`);
     lines.push(`- Base: ${lane.baseRef}`);
+    if (parentLane) lines.push(`- Parent: ${parentLane.name}`);
+    else if (primaryLane && lane.laneType !== "primary") lines.push(`- Parent: ${primaryLane.name} (primary)`);
     lines.push(`- HEAD: ${headSha ?? "unknown"}`);
-    lines.push(`- Status: ${lane.status.dirty ? "dirty" : "clean"}; ahead ${lane.status.ahead}; behind ${lane.status.behind}`);
+    lines.push(`- Working tree: ${lane.status.dirty ? "dirty" : "clean"} · ahead ${lane.status.ahead} · behind ${lane.status.behind}`);
     lines.push("");
+
     lines.push("## Intent");
     lines.push(USER_INTENT_START);
     lines.push(userIntent);
     lines.push(USER_INTENT_END);
     lines.push("");
 
-    lines.push("## Latest Session Delta");
-    if (latestDelta) {
-      lines.push(`- Session: ${latestDelta.sessionId}`);
-      lines.push(`- Time: ${latestDelta.startedAt} -> ${latestDelta.endedAt ?? "running"}`);
-      lines.push(`- SHAs: ${latestDelta.headShaStart ?? "?"} -> ${latestDelta.headShaEnd ?? "?"}`);
-      lines.push(`- Files changed: ${latestDelta.filesChanged}`);
-      lines.push(`- Line delta: +${latestDelta.insertions} / -${latestDelta.deletions}`);
-      if (latestDelta.failureLines.length) {
-        lines.push("- Potential failures:");
-        for (const failure of latestDelta.failureLines.slice(0, 6)) {
-          lines.push(`  - ${failure}`);
-        }
-      }
-      if (latestDelta.touchedFiles.length) {
-        lines.push("- Touched files:");
-        for (const touched of latestDelta.touchedFiles.slice(0, 20)) {
-          lines.push(`  - ${touched}`);
-        }
-      }
+    lines.push("## Recent work");
+    const latestSession = recentSessions[0] ?? null;
+    if (latestSession) {
+      const tool = humanToolLabel(latestSession.toolType);
+      const intent = (latestSession.goal ?? "").trim() || latestSession.title;
+      const trackedSuffix = latestSession.tracked === 1 ? "" : " (no context)";
+      const timing = `${latestSession.startedAt} → ${latestSession.endedAt ?? "running"}`;
+      const exit = latestSession.exitCode == null ? "" : ` · exit ${latestSession.exitCode}`;
+      const delta =
+        latestSession.filesChanged != null
+          ? ` · ${latestSession.filesChanged} files (+${latestSession.insertions ?? 0}/-${latestSession.deletions ?? 0})`
+          : "";
+      lines.push(`- Latest session: ${tool}${trackedSuffix}: ${intent}`);
+      lines.push(`  - Time: ${timing}${exit}${delta}`);
     } else {
-      lines.push("- No completed session delta captured yet.");
+      lines.push("- No sessions recorded yet.");
     }
     lines.push("");
 
@@ -807,10 +883,42 @@ export function createPackService({
     }
     lines.push("");
 
-    lines.push("## Recent Session Deltas");
-    if (recentDeltas.length) {
-      for (const delta of recentDeltas) {
-        lines.push(`- ${delta.sessionId}: ${delta.filesChanged} files, +${delta.insertions}/-${delta.deletions}, ended ${delta.endedAt ?? "running"}`);
+    if (latestDelta?.touchedFiles.length) {
+      lines.push("## Files touched (latest)");
+      for (const touched of latestDelta.touchedFiles.slice(0, 28)) {
+        lines.push(`- ${touched}`);
+      }
+      if (latestDelta.touchedFiles.length > 28) {
+        lines.push(`- … (${latestDelta.touchedFiles.length - 28} more)`);
+      }
+      lines.push("");
+    }
+
+    if (latestDelta?.failureLines.length) {
+      lines.push("## Potential errors (latest)");
+      for (const failure of latestDelta.failureLines.slice(0, 8)) {
+        lines.push(`- ${failure}`);
+      }
+      lines.push("");
+    }
+
+    lines.push("## Sessions (recent)");
+    const recentSessionItems = recentSessions.slice(0, 5);
+    if (recentSessionItems.length) {
+      for (const session of recentSessionItems) {
+        const tool = humanToolLabel(session.toolType);
+        const intent = (session.goal ?? "").trim() || session.title;
+        const outcome =
+          session.endedAt == null
+            ? "running"
+            : session.exitCode == null
+              ? "ended"
+              : session.exitCode === 0
+                ? "ok"
+                : `exit ${session.exitCode}`;
+        const delta =
+          session.filesChanged != null ? ` · ${session.filesChanged} files (+${session.insertions ?? 0}/-${session.deletions ?? 0})` : "";
+        lines.push(`- ${session.startedAt} · ${tool}: ${intent} · ${outcome}${delta}`);
       }
     } else {
       lines.push("- none");
@@ -824,16 +932,6 @@ export function createPackService({
       }
     } else {
       lines.push("- no test runs captured");
-    }
-    lines.push("");
-
-    lines.push("## Process State Pointers");
-    if (runtimeRows.length) {
-      for (const row of runtimeRows) {
-        lines.push(`- ${row.process_key}: ${row.status} (${row.readiness})`);
-      }
-    } else {
-      lines.push("- no managed process runtime state");
     }
     lines.push("");
 
@@ -853,6 +951,142 @@ export function createPackService({
     return { body: `${lines.join("\n")}\n`, lastHeadSha: headSha };
   };
 
+  const buildProjectBootstrap = async (args: { lanes: LaneSummary[] }): Promise<string> => {
+    const lanes = args.lanes;
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const historyRef = primary?.branchRef || primary?.baseRef || "HEAD";
+
+    const topLevelEntries = (() => {
+      try {
+        return fs
+          .readdirSync(projectRoot, { withFileTypes: true })
+          .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules")
+          .slice(0, 40)
+          .map((entry) => `${entry.isDirectory() ? "dir" : "file"}: ${entry.name}`);
+      } catch {
+        return [];
+      }
+    })();
+
+    const pickDocs = (): string[] => {
+      const out: string[] = [];
+      const push = (rel: string) => {
+        const normalized = rel.replace(/\\/g, "/");
+        if (out.includes(normalized)) return;
+        const abs = path.join(projectRoot, normalized);
+        try {
+          if (fs.statSync(abs).isFile()) out.push(normalized);
+        } catch {
+          // ignore
+        }
+      };
+
+      // Common docs that seed useful project context quickly.
+      push("README.md");
+      push("docs/README.md");
+      push("docs/PRD.md");
+      push("docs/architecture/SYSTEM_OVERVIEW.md");
+      push("docs/architecture/DESKTOP_APP.md");
+      push("docs/architecture/HOSTED_AGENT.md");
+      push("docs/features/LANES.md");
+      push("docs/features/PACKS.md");
+      push("docs/features/ONBOARDING_AND_SETTINGS.md");
+
+      const addDir = (relDir: string, limit: number) => {
+        const absDir = path.join(projectRoot, relDir);
+        try {
+          const entries = fs
+            .readdirSync(absDir)
+            .filter((name) => name.endsWith(".md"))
+            .slice(0, limit);
+          for (const name of entries) push(path.posix.join(relDir.replace(/\\/g, "/"), name));
+        } catch {
+          // ignore
+        }
+      };
+
+      addDir("docs/architecture", 6);
+      addDir("docs/features", 6);
+      addDir("docs/guides", 4);
+
+      return out.slice(0, 14);
+    };
+
+    const excerptDoc = (rel: string): { rel: string; title: string; blurb: string } | null => {
+      const abs = path.join(projectRoot, rel);
+      try {
+        const fd = fs.openSync(abs, "r");
+        try {
+          const MAX = 48_000;
+          const buf = Buffer.alloc(MAX);
+          const read = fs.readSync(fd, buf, 0, MAX, 0);
+          const raw = buf.slice(0, Math.max(0, read)).toString("utf8");
+          const lines = raw.split(/\r?\n/);
+          const titleLine = lines.find((line) => line.trim().startsWith("# "));
+          const title = titleLine ? titleLine.replace(/^#\s+/, "").trim() : path.basename(rel);
+          const blurbLines: string[] = [];
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            if (trimmed.startsWith("#")) continue;
+            if (/^table of contents/i.test(trimmed)) continue;
+            if (trimmed.startsWith("---")) continue;
+            blurbLines.push(trimmed);
+            if (blurbLines.join(" ").length > 220) break;
+          }
+          const blurb = blurbLines.slice(0, 2).join(" ");
+          return { rel, title, blurb };
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        return null;
+      }
+    };
+
+    const historyLines = await (async (): Promise<string[]> => {
+      const res = await runGit(["log", historyRef, "-n", "18", "--date=short", "--pretty=format:%h %ad %s"], {
+        cwd: projectRoot,
+        timeoutMs: 12_000
+      });
+      if (res.exitCode !== 0) return [];
+      return res.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    })();
+
+    const lines: string[] = [];
+    lines.push("## Bootstrap context (codebase + docs)");
+    lines.push("");
+    lines.push("### Repo map (top level)");
+    if (topLevelEntries.length) {
+      for (const entry of topLevelEntries) lines.push(`- ${entry}`);
+    } else {
+      lines.push("- (unavailable)");
+    }
+    lines.push("");
+
+    lines.push("### Docs index");
+    const docs = pickDocs().map(excerptDoc).filter(Boolean) as Array<{ rel: string; title: string; blurb: string }>;
+    if (docs.length) {
+      for (const doc of docs) {
+        lines.push(`- ${doc.rel}: ${doc.title}`);
+        if (doc.blurb) lines.push(`  - ${doc.blurb}`);
+      }
+    } else {
+      lines.push("- no docs found");
+    }
+    lines.push("");
+
+    lines.push(`### Git history seed (${historyRef})`);
+    if (historyLines.length) {
+      for (const entry of historyLines) lines.push(`- ${entry}`);
+    } else {
+      lines.push("- (no git history available)");
+    }
+    lines.push("");
+
+    return `${lines.join("\n")}\n`;
+  };
+
   const buildProjectPackBody = async ({
     reason,
     deterministicUpdatedAt,
@@ -865,36 +1099,45 @@ export function createPackService({
     const config = projectConfigService.get().effective;
     const lanes = await laneService.list({ includeArchived: false });
 
-    const topLevelEntries = fs
-      .readdirSync(projectRoot, { withFileTypes: true })
-      .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules")
-      .slice(0, 32)
-      .map((entry) => `${entry.isDirectory() ? "dir" : "file"}: ${entry.name}`);
+    const shouldBootstrap = reason === "onboarding_init" || !fs.existsSync(projectBootstrapPath);
+    if (shouldBootstrap) {
+      try {
+        const bootstrap = await buildProjectBootstrap({ lanes });
+        ensureDirFor(projectBootstrapPath);
+        fs.writeFileSync(projectBootstrapPath, bootstrap, "utf8");
+      } catch (error) {
+        // Don't fail pack refresh on bootstrap scan errors; emit minimal context instead.
+        logger.warn("packs.project_bootstrap_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    const bootstrapBody = readFileIfExists(projectBootstrapPath).trim();
 
     const lines: string[] = [];
     lines.push("# Project Pack");
     lines.push("");
-    lines.push(`- Deterministic updated: ${deterministicUpdatedAt}`);
-    lines.push(`- Trigger: ${reason}`);
-    if (sourceLaneId) lines.push(`- Source lane: ${sourceLaneId}`);
-    lines.push(`- Project root: ${projectRoot}`);
-    lines.push(`- Active lanes: ${lanes.length}`);
+    lines.push(`Deterministic updated: ${deterministicUpdatedAt}`);
+    lines.push(`Trigger: ${reason}`);
+    if (sourceLaneId) lines.push(`Source lane: ${sourceLaneId}`);
+    lines.push(`Active lanes: ${lanes.length}`);
     lines.push("");
 
-    lines.push("## Repo Map (Top Level)");
-    if (topLevelEntries.length) {
-      for (const entry of topLevelEntries) {
-        lines.push(`- ${entry}`);
-      }
+    if (bootstrapBody) {
+      lines.push(bootstrapBody);
     } else {
-      lines.push("- no readable entries");
+      lines.push("## Bootstrap context");
+      lines.push("- Bootstrap scan not generated yet.");
+      lines.push("- Run Onboarding → Generate Initial Packs, or refresh the Project pack once after onboarding.");
+      lines.push("");
     }
-    lines.push("");
 
     lines.push("## How To Run (Processes)");
     if (config.processes.length) {
       for (const proc of config.processes) {
-        lines.push(`- ${proc.id} (${proc.name}): ${JSON.stringify(proc.command)} (cwd=${proc.cwd})`);
+        const cmd = formatCommand(proc.command);
+        const cwd = proc.cwd && proc.cwd !== "." ? ` (cwd=${proc.cwd})` : "";
+        lines.push(`- ${proc.name}: ${cmd}${cwd}`);
       }
     } else {
       lines.push("- no managed process definitions");
@@ -904,7 +1147,9 @@ export function createPackService({
     lines.push("## How To Test (Test Suites)");
     if (config.testSuites.length) {
       for (const suite of config.testSuites) {
-        lines.push(`- ${suite.id} (${suite.name}): ${JSON.stringify(suite.command)} (cwd=${suite.cwd})`);
+        const cmd = formatCommand(suite.command);
+        const cwd = suite.cwd && suite.cwd !== "." ? ` (cwd=${suite.cwd})` : "";
+        lines.push(`- ${suite.name}: ${cmd}${cwd}`);
       }
     } else {
       lines.push("- no test suites configured");
@@ -914,7 +1159,7 @@ export function createPackService({
     lines.push("## Stack Buttons");
     if (config.stackButtons.length) {
       for (const stack of config.stackButtons) {
-        lines.push(`- ${stack.id} (${stack.name}): ${stack.processIds.join(", ")}`);
+        lines.push(`- ${stack.name}: ${stack.processIds.join(", ")}`);
       }
     } else {
       lines.push("- no stack buttons configured");
@@ -924,7 +1169,9 @@ export function createPackService({
     lines.push("## Lane Snapshot");
     if (lanes.length) {
       for (const lane of lanes) {
-        lines.push(`- ${lane.name} (${lane.branchRef}): dirty=${lane.status.dirty} ahead=${lane.status.ahead} behind=${lane.status.behind}`);
+        const dirty = lane.status.dirty ? "dirty" : "clean";
+        const stack = lane.parentLaneId ? "stacked" : lane.laneType === "primary" ? "primary" : "root";
+        lines.push(`- ${lane.name}: ${dirty} · ahead ${lane.status.ahead} · behind ${lane.status.behind} · ${stack}`);
       }
     } else {
       lines.push("- no active lanes");
@@ -950,6 +1197,7 @@ export function createPackService({
     deterministic_updated_at: string | null;
     narrative_updated_at: string | null;
     last_head_sha: string | null;
+    metadata_json: string | null;
   } | null => {
     return db.get<{
       pack_type: PackType;
@@ -958,6 +1206,7 @@ export function createPackService({
       deterministic_updated_at: string | null;
       narrative_updated_at: string | null;
       last_head_sha: string | null;
+      metadata_json: string | null;
     }>(
       `
         select
@@ -966,7 +1215,8 @@ export function createPackService({
           pack_path,
           deterministic_updated_at,
           narrative_updated_at,
-          last_head_sha
+          last_head_sha,
+          metadata_json
         from packs_index
         where pack_key = ?
           and project_id = ?
@@ -984,7 +1234,8 @@ export function createPackService({
       pack_path: fallback.packPath,
       deterministic_updated_at: null,
       narrative_updated_at: null,
-      last_head_sha: null
+      last_head_sha: null,
+      metadata_json: null
     };
     const version = readCurrentPackVersion(packKey);
     return toPackSummaryFromRow({ packKey, row: effectiveRow, version });
@@ -1171,6 +1422,7 @@ export function createPackService({
         deterministic_updated_at: string | null;
         narrative_updated_at: string | null;
         last_head_sha: string | null;
+        metadata_json: string | null;
       }>(
         `
           select
@@ -1178,7 +1430,8 @@ export function createPackService({
             pack_path,
             deterministic_updated_at,
             narrative_updated_at,
-            last_head_sha
+            last_head_sha,
+            metadata_json
           from packs_index
           where pack_key = 'project'
             and project_id = ?
@@ -1203,6 +1456,7 @@ export function createPackService({
         versionId: version?.versionId ?? null,
         versionNumber: version?.versionNumber ?? null,
         contentHash: version?.contentHash ?? null,
+        metadata: null,
         body
       };
     },
@@ -1214,6 +1468,7 @@ export function createPackService({
         deterministic_updated_at: string | null;
         narrative_updated_at: string | null;
         last_head_sha: string | null;
+        metadata_json: string | null;
       }>(
         `
           select
@@ -1221,7 +1476,8 @@ export function createPackService({
             pack_path,
             deterministic_updated_at,
             narrative_updated_at,
-            last_head_sha
+            last_head_sha,
+            metadata_json
           from packs_index
           where pack_key = ?
             and project_id = ?
@@ -1248,6 +1504,7 @@ export function createPackService({
         versionId: version?.versionId ?? null,
         versionNumber: version?.versionNumber ?? null,
         contentHash: version?.contentHash ?? null,
+        metadata: null,
         body
       };
     },
@@ -1423,6 +1680,7 @@ export function createPackService({
           packKey,
           eventType: "refresh_triggered",
           payload: {
+            operationId: op.operationId,
             trigger: args.reason,
             laneId: args.laneId,
             sessionId: args.sessionId ?? null
@@ -1447,6 +1705,15 @@ export function createPackService({
           }
         }
 
+        const metadata = {
+          reason: args.reason,
+          sessionId: args.sessionId ?? null,
+          latestDeltaSessionId: latestDelta?.sessionId ?? null,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        };
+
         upsertPackIndex({
           db,
           projectId,
@@ -1457,14 +1724,7 @@ export function createPackService({
           deterministicUpdatedAt,
           narrativeUpdatedAt: null,
           lastHeadSha,
-          metadata: {
-            reason: args.reason,
-            sessionId: args.sessionId ?? null,
-            latestDeltaSessionId: latestDelta?.sessionId ?? null,
-            versionId: version.versionId,
-            versionNumber: version.versionNumber,
-            contentHash: version.contentHash
-          }
+          metadata
         });
 
         operationService.finish({
@@ -1493,6 +1753,7 @@ export function createPackService({
           versionId: version.versionId,
           versionNumber: version.versionNumber,
           contentHash: version.contentHash,
+          metadata,
           body
         };
       } catch (error) {
@@ -1533,12 +1794,21 @@ export function createPackService({
           packKey,
           eventType: "refresh_triggered",
           payload: {
+            operationId: op.operationId,
             trigger: args.reason,
             laneId: args.laneId ?? null
           }
         });
 
         const version = createPackVersion({ packKey, packType: "project", body });
+
+        const metadata = {
+          reason: args.reason,
+          sourceLaneId: args.laneId ?? null,
+          versionId: version.versionId,
+          versionNumber: version.versionNumber,
+          contentHash: version.contentHash
+        };
 
         upsertPackIndex({
           db,
@@ -1550,13 +1820,7 @@ export function createPackService({
           deterministicUpdatedAt,
           narrativeUpdatedAt: null,
           lastHeadSha: null,
-          metadata: {
-            reason: args.reason,
-            sourceLaneId: args.laneId ?? null,
-            versionId: version.versionId,
-            versionNumber: version.versionNumber,
-            contentHash: version.contentHash
-          }
+          metadata
         });
 
         operationService.finish({
@@ -1583,6 +1847,7 @@ export function createPackService({
           versionId: version.versionId,
           versionNumber: version.versionNumber,
           contentHash: version.contentHash,
+          metadata,
           body
         };
       } catch (error) {
@@ -2038,6 +2303,14 @@ export function createPackService({
 
       const version = createPackVersion({ packKey, packType: "lane", body: updatedBody });
 
+      const metadata = {
+        source: "hosted",
+        ...(args.metadata ?? {}),
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        contentHash: version.contentHash
+      };
+
       upsertPackIndex({
         db,
         projectId,
@@ -2048,13 +2321,7 @@ export function createPackService({
         deterministicUpdatedAt: existingRow?.deterministic_updated_at ?? now,
         narrativeUpdatedAt: now,
         lastHeadSha: existingRow?.last_head_sha ?? null,
-        metadata: {
-          source: "hosted",
-          ...(args.metadata ?? {}),
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        }
+        metadata
       });
 
       maybeCleanupPacks();
@@ -2070,8 +2337,13 @@ export function createPackService({
         versionId: version.versionId,
         versionNumber: version.versionNumber,
         contentHash: version.contentHash,
+        metadata,
         body: updatedBody
       };
+    },
+
+    recordEvent(args: { packKey: string; eventType: string; payload?: Record<string, unknown> }): PackEvent {
+      return createPackEvent(args);
     }
   };
 }

@@ -69,8 +69,9 @@ export function TerminalsPage() {
       if (filterStatus !== "all" && s.status !== filterStatus) return false;
       if (!needle) return true;
       return (
-        s.title.toLowerCase().includes(needle) ||
+        (s.goal ?? s.title).toLowerCase().includes(needle) ||
         s.laneName.toLowerCase().includes(needle) ||
+        (s.toolType ?? "").toLowerCase().includes(needle) ||
         (s.lastOutputPreview ?? "").toLowerCase().includes(needle)
       );
     });
@@ -197,11 +198,12 @@ export function TerminalsPage() {
               <div key={s.id} className="rounded-lg border border-border bg-card/70 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">{s.title}</div>
+                    <div className="truncate text-sm font-semibold">{(s.goal ?? s.title).trim()}</div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
                       <span className="truncate">lane: {s.laneName}</span>
                       <Chip className="text-[11px]">{s.status}</Chip>
-                      {!s.tracked ? <Chip className="text-[11px]">ghost</Chip> : null}
+                      {s.toolType ? <Chip className="text-[11px]">{s.toolType}</Chip> : null}
+                      {!s.tracked ? <Chip className="text-[11px]">no context</Chip> : null}
                       {s.exitCode != null ? <Chip className="text-[11px]">exit {s.exitCode}</Chip> : null}
                       <Chip className="text-[11px]">{new Date(s.startedAt).toLocaleString()}</Chip>
                     </div>
@@ -236,9 +238,20 @@ export function TerminalsPage() {
                         focusSession(s.id);
                         navigate(`/lanes?laneId=${encodeURIComponent(s.laneId)}&sessionId=${encodeURIComponent(s.id)}`);
                       }}
-                      title="Jump to lane"
+                      title="Open lane"
                     >
-                      Jump
+                      Lane
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        selectLane(s.laneId);
+                        navigate(`/lanes?laneId=${encodeURIComponent(s.laneId)}&inspectorTab=packs`);
+                      }}
+                      title="Open lane pack"
+                    >
+                      Packs
                     </Button>
                   </div>
                 </div>

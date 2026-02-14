@@ -1,6 +1,6 @@
 # ADE Implementation Plan
 
-> Last updated: 2026-02-12
+> Last updated: 2026-02-14
 
 ---
 
@@ -79,8 +79,8 @@ This document is the master implementation plan for ADE (Agentic Development Env
 | 4 | Stacks + Restack | DONE | Parent-child lanes, stack graph, restack operations, overlay policies, vertical connectors |
 | 5 | Conflict Radar + Resolution | DONE | Conflict prediction, risk matrix, merge simulation, Monaco conflict diff, risk tooltips, status badges |
 | 6 | Cloud Infrastructure + Auth + LLM Gateway | DONE | AWS SST stack, Clerk auth, LLM gateway, mirror sync, pack narratives, conflict proposals |
-| 7 | GitHub Integration + Workspace Graph | NOT STARTED | GitHub PR CRUD, stacked PRs, land flow, React Flow canvas, graph interactions, view modes |
-| 8 | Automations + Onboarding + Packs V2 | NOT STARTED | Trigger-action rules, onboarding wizard, CI/CD import, checkpoints, pack versioning |
+| 7 | GitHub Integration + Workspace Graph | DONE | GitHub PR CRUD + polling, hosted GitHub app connect, React Flow canvas (stack/risk/activity/all), PR workflows from lanes + graph |
+| 8 | Automations + Onboarding + Packs V2 | DONE | Automations engine + UI, onboarding defaults detection + initial pack bootstrap, pack versions/events/checkpoints + narrative refresh pipeline |
 | 9 | Advanced Features + Polish + Runtime Isolation | NOT STARTED | History graph, terminal tiling, advanced git, agent CLI tools, runtime isolation |
 
 ---
@@ -774,7 +774,7 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 
 ### Phase 7: GitHub Integration + Canvas PR Workflow + Lane Commit Graph
 
-**Status**: IMPLEMENTED (Desktop)
+**Status**: DONE
 
 **Goal**: Connect ADE to GitHub for PR lifecycle management, extend the existing workspace canvas into an interactive PR orchestration surface where developers can open PRs, merge, and resolve conflicts visually, rework the lane detail UI with an inline commit graph, and ensure the conflict resolution pipeline is fully operational end-to-end.
 
@@ -1022,7 +1022,7 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 
 ### Phase 8: Automations + Onboarding + Packs V2
 
-**Status**: IN PROGRESS (core implemented: automations, onboarding wizard, packs v2; remaining onboarding seeding/import items tracked in feature docs)
+**Status**: DONE
 
 **Goal**: Add user-configurable automation workflows, a guided onboarding experience with intelligent project detection, and evolve the pack system to support versioning, checkpoints, and new pack types.
 

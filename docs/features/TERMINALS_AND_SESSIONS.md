@@ -1,6 +1,6 @@
 # Terminals & Sessions — Command Center
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -18,7 +18,7 @@
   - [Lane Terminal Panel](#lane-terminal-panel)
   - [Terminal View](#terminal-view)
   - [Session Delta Card](#session-delta-card)
-  - [Tiling Layout (Future)](#tiling-layout-future)
+  - [Tiling Layout](#tiling-layout)
   - [Session Lifecycle](#session-lifecycle)
 - [Technical Implementation](#technical-implementation)
   - [Services](#services)
@@ -105,7 +105,7 @@ An **untracked session** is a terminal launched with context recording disabled.
 - Sensitive operations where transcript capture is undesirable (e.g., entering credentials, viewing secrets)
 - Debugging or exploration that the developer explicitly wants excluded from project history
 
-Untracked sessions still appear in the session list (marked with a "ghost" badge) so the developer can see what's running, but they produce no persistent artifacts. The "New Terminal" button offers a dropdown: "New Terminal" (default, tracked) and "New Terminal (Untracked)".
+Untracked sessions still appear in the session list (marked with a "no context" badge) so the developer can see what's running, but they produce no persistent artifacts. Terminals can be launched either with context (tracked) or without context (untracked).
 
 **Implementation note**: When `tracked: false` is passed to `ade.pty.create`, the PTY service skips transcript file creation, the session service skips delta computation on exit, and the job engine receives no session-end trigger.
 
@@ -197,7 +197,13 @@ Inside the Lanes tab, each lane has a "Terminals" sub-tab that shows sessions sc
 - For running sessions: Interactive — user can type commands and see output in real-time.
 - For ended sessions: Read-only — shows the captured transcript.
 
-**Create new terminal button**: Spawns a new PTY in this lane's worktree directory and creates a corresponding session record.
+**Quick launch buttons**: One-click launch for common agent tools (Claude Code, Codex) and a plain Shell. A settings cog in the terminal area allows:
+- Toggle "launch with context" vs "without context" defaults
+- Manage the quick buttons (add/remove custom commands)
+
+**Close button per tab**: Running sessions have an explicit close (kill) button per tab/session.
+
+**Session summary**: Sessions are labeled by a short, human-readable goal/intent (not internal IDs or jargon).
 
 ### Terminal View
 
@@ -244,17 +250,17 @@ When a session ends, ADE computes a delta and displays it as a card below or bes
 - Change type grouping: Modified, Added, and Deleted files shown separately.
 - Potential issues: Lines from the transcript matching failure patterns (error keywords, stack traces, non-zero exit codes).
 
-### Tiling Layout (Future)
+### Tiling Layout
 
-A future enhancement will allow multiple terminals to be visible simultaneously in a tiled grid layout.
+A lightweight tiling mode allows multiple running terminals to be visible simultaneously in a tiled grid layout.
 
-**Planned capabilities**:
-- Split the terminal area horizontally or vertically.
-- Each tile shows a different session's terminal.
-- Drag tiles to rearrange.
-- Resize tiles by dragging dividers.
-- Keyboard shortcuts to navigate between tiles.
-- Grid view: Overview of all running terminals as small tiles, click to focus.
+**Current capabilities**:
+- Toggle between a tab view (single focused session) and a grid view (all running sessions).
+- Each tile shows a running session terminal with focus and close actions.
+
+**Deferred enhancements**:
+- Arbitrary split panes (horizontal/vertical) and drag-to-rearrange.
+- Keyboard navigation between tiles beyond the global focus model.
 
 ### Session Lifecycle
 

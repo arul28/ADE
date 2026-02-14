@@ -1,6 +1,6 @@
 # Automations — Trigger-Action Workflows
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -38,7 +38,7 @@ the core session-end pipeline (session end, checkpoint creation, pack refresh).
 Automations generalize this into a user-configurable system where any supported
 trigger can invoke any supported action, with conditional execution and chaining.
 
-The automation service is implemented in **Phase 8** (Automations + Onboarding + Packs V2).
+Automations are implemented and working as part of **Phase 8** (Automations + Onboarding + Packs V2).
 
 ---
 

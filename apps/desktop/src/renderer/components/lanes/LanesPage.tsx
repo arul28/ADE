@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GripHorizontal, GripVertical, Home, Layers3, Link2, Pin, Play, Plus, X } from "lucide-react";
+import { ArrowUpRight, GripHorizontal, GripVertical, Home, Layers3, Link2, Pin, Play, Plus, X } from "lucide-react";
 import { LaneDetail } from "./LaneDetail";
 import { LaneInspector } from "./LaneInspector";
 import { useAppStore } from "../../state/appStore";
@@ -11,6 +11,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary, RestackSuggestion } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { useDockLayout } from "../ui/DockLayoutState";
 
 function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lanes: T[]): T[] {
   return [...lanes].sort((a, b) => {
@@ -31,15 +32,26 @@ function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const childrenByParent = new Map<string, LaneSummary[]>();
   const roots: LaneSummary[] = [];
+  const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+  const primaryId = primary?.id ?? null;
 
   for (const lane of lanes) {
-    if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) {
+    if (lane.laneType === "primary") {
       roots.push(lane);
       continue;
     }
-    const children = childrenByParent.get(lane.parentLaneId) ?? [];
+    const effectiveParentId =
+      lane.parentLaneId && laneById.has(lane.parentLaneId)
+        ? lane.parentLaneId
+        : primaryId;
+    if (!effectiveParentId || effectiveParentId === lane.id) {
+      roots.push(lane);
+      continue;
+    }
+
+    const children = childrenByParent.get(effectiveParentId) ?? [];
     children.push(lane);
-    childrenByParent.set(lane.parentLaneId, children);
+    childrenByParent.set(effectiveParentId, children);
   }
 
   const byCreatedAsc = (a: LaneSummary, b: LaneSummary) => {
@@ -191,7 +203,59 @@ function StackGraph({
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const layout = React.useMemo(() => computeTreeLayout(lanes), [lanes]);
+  const layout = React.useMemo(() => {
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryId = primary?.id ?? null;
+
+    const parentById = new Map<string, string | null>();
+    for (const lane of lanes) {
+      if (lane.laneType === "primary") {
+        parentById.set(lane.id, null);
+        continue;
+      }
+      const parent =
+        lane.parentLaneId && laneById.has(lane.parentLaneId)
+          ? lane.parentLaneId
+          : primaryId;
+      parentById.set(lane.id, parent ?? null);
+    }
+
+    const depthMemo = new Map<string, number>();
+    const visiting = new Set<string>();
+    const depthFor = (laneId: string): number => {
+      if (depthMemo.has(laneId)) return depthMemo.get(laneId)!;
+      if (visiting.has(laneId)) return 0; // cycle guard
+      visiting.add(laneId);
+      const lane = laneById.get(laneId);
+      if (!lane) {
+        visiting.delete(laneId);
+        depthMemo.set(laneId, 0);
+        return 0;
+      }
+      if (lane.laneType === "primary") {
+        visiting.delete(laneId);
+        depthMemo.set(laneId, 0);
+        return 0;
+      }
+      const parent = parentById.get(laneId) ?? null;
+      const depth = parent ? depthFor(parent) + 1 : 0;
+      visiting.delete(laneId);
+      depthMemo.set(laneId, depth);
+      return depth;
+    };
+
+    return lanes.map((lane, idx) => {
+      const depth = depthFor(lane.id);
+      return {
+        lane,
+        row: idx,
+        depth,
+        dotX: TREE_LEFT_PAD + depth * TREE_INDENT,
+        dotY: idx * TREE_ROW_H + TREE_ROW_H / 2
+      } satisfies TreeNodeLayout;
+    });
+  }, [lanes]);
   const layoutById = React.useMemo(() => new Map(layout.map((n) => [n.lane.id, n])), [layout]);
 
   const totalHeight = layout.length * TREE_ROW_H + 4;
@@ -199,14 +263,23 @@ function StackGraph({
   // Build parent → children map
   const childrenByParent = React.useMemo(() => {
     const map = new Map<string, TreeNodeLayout[]>();
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryId = primary?.id ?? null;
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     for (const node of layout) {
-      if (!node.lane.parentLaneId) continue;
-      const arr = map.get(node.lane.parentLaneId) ?? [];
+      const parentId =
+        node.lane.laneType === "primary"
+          ? null
+          : node.lane.parentLaneId && laneById.has(node.lane.parentLaneId)
+            ? node.lane.parentLaneId
+            : primaryId;
+      if (!parentId) continue;
+      const arr = map.get(parentId) ?? [];
       arr.push(node);
-      map.set(node.lane.parentLaneId, arr);
+      map.set(parentId, arr);
     }
     return map;
-  }, [layout]);
+  }, [layout, lanes]);
 
   // Build tree-style SVG connectors: vertical line from parent down, horizontal branches to children
   const connectors: React.ReactNode[] = [];
@@ -290,7 +363,13 @@ function StackGraph({
                 height: TREE_ROW_H - 6
               }}
               onClick={() => onSelect(lane.id)}
-              title={lane.parentLaneId ? `Child of ${layoutById.get(lane.parentLaneId)?.lane.name ?? "parent"}` : "Root"}
+              title={
+                lane.parentLaneId
+                  ? `Child of ${layoutById.get(lane.parentLaneId)?.lane.name ?? "parent"}`
+                  : lane.laneType === "primary"
+                    ? "Primary lane"
+                    : "Based on primary"
+              }
             >
               <span className="truncate max-w-[160px]">{lane.name}</span>
               {(lane.status.ahead > 0 || lane.status.behind > 0) && (
@@ -319,6 +398,9 @@ export function LanesPage() {
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
   const baseRef = project?.baseRef;
+
+  const verticalLayout = useDockLayout("lanes:layout:vertical", { stackGraphSize: 14 });
+  const inspectorLayout = useDockLayout("lanes:layout:inspector", { inspectorSize: 42 });
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
@@ -1054,10 +1136,37 @@ export function LanesPage() {
         </div>
       ) : null}
 
-      <Group id="lanes-vertical-split" orientation="vertical" className="flex-1 min-h-0">
-        <Panel id="stack-graph-panel" defaultSize={14} minSize={3} collapsible>
+      <Group
+        key={verticalLayout.loaded ? "lanes-vertical:loaded" : "lanes-vertical:loading"}
+        id="lanes-vertical-split"
+        orientation="vertical"
+        className="flex-1 min-h-0"
+      >
+        <Panel
+          id="stack-graph-panel"
+          defaultSize={Math.max(3, Math.min(45, Number(verticalLayout.layout.stackGraphSize ?? 14)))}
+          minSize={3}
+          collapsible
+          onResize={(size) => {
+            const next = Number(size);
+            if (!Number.isFinite(next)) return;
+            verticalLayout.saveLayout({ ...verticalLayout.layout, stackGraphSize: next });
+          }}
+        >
           <div className="flex h-full flex-col bg-card/35">
-            <div className="shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack graph</div>
+            <div className="shrink-0 flex items-center justify-between px-2 py-1">
+              <div className="text-[10px] uppercase tracking-wider text-muted-fg">Stack</div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => navigate("/graph")}
+                title="Open workspace canvas"
+              >
+                <ArrowUpRight className="h-3 w-3" />
+                Open canvas
+              </Button>
+            </div>
             <StackGraph
               lanes={stackGraphLanes}
               selectedLaneId={selectedLaneId}
@@ -1079,15 +1188,30 @@ export function LanesPage() {
               />
             </div>
           ) : (
-            <Group key={visibleLaneIds.join("|")} id="lanes-split-columns" orientation="horizontal" className="h-full w-full">
+            <Group
+              key={`lanes-split-columns:${visibleLaneIds.length}`}
+              id="lanes-split-columns"
+              orientation="horizontal"
+              className="h-full w-full"
+            >
               {visibleLaneIds.map((laneId, index) => {
                 const lane = lanesById.get(laneId);
                 const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
                 return (
                   <React.Fragment key={laneId}>
                     <Panel id={`lane-column:${laneId}`} minSize={18} defaultSize={defaultSize} className="h-full min-h-0 min-w-0">
-                      <Group id={`lane-stack:${laneId}`} orientation="horizontal" className="h-full min-h-0 w-full">
-                        <Panel id={`lane-changes:${laneId}`} minSize={30} defaultSize={58} className="h-full min-h-0">
+                      <Group
+                        key={`lane-stack:${laneId}:${inspectorLayout.loaded ? "loaded" : "loading"}`}
+                        id={`lane-stack:${laneId}`}
+                        orientation="horizontal"
+                        className="h-full min-h-0 w-full"
+                      >
+                        <Panel
+                          id={`lane-changes:${laneId}`}
+                          minSize={30}
+                          defaultSize={Math.max(20, 100 - Math.max(22, Math.min(60, Number(inspectorLayout.layout.inspectorSize ?? 42))))}
+                          className="h-full min-h-0"
+                        >
                           <LaneDetail overrideLaneId={laneId} isPrimary={lane?.laneType === "primary"} />
                         </Panel>
                         <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
@@ -1095,7 +1219,17 @@ export function LanesPage() {
                             <GripVertical className="h-3 w-3" />
                           </div>
                         </Separator>
-                        <Panel id={`lane-inspector:${laneId}`} minSize={22} defaultSize={42} className="h-full min-h-0">
+                        <Panel
+                          id={`lane-inspector:${laneId}`}
+                          minSize={22}
+                          defaultSize={Math.max(22, Math.min(60, Number(inspectorLayout.layout.inspectorSize ?? 42)))}
+                          className="h-full min-h-0"
+                          onResize={(size) => {
+                            const next = Number(size);
+                            if (!Number.isFinite(next)) return;
+                            inspectorLayout.saveLayout({ ...inspectorLayout.layout, inspectorSize: next });
+                          }}
+                        >
                           <LaneInspector overrideLaneId={laneId} hideHeader />
                         </Panel>
                       </Group>

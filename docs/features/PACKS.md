@@ -1,6 +1,6 @@
 # Packs — Context, History & Narratives
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -60,9 +60,9 @@ human-readable summaries (initially template-based, eventually LLM-generated).
 
 **Current status**: Core pack functionality (generation, storage, display, refresh)
 is **implemented and working**. LLM-powered narratives, pack sync to hosted mirror,
-and pack privacy controls (redaction) are **implemented** (Phase 6). Advanced features
-(checkpoints, versioning, event logging) are planned for **Phase 8**. Pack retention
-and cleanup policy is planned for **Phase 7**.
+and pack privacy controls (redaction) are **implemented** (Phase 6). Packs V2 features
+(checkpoints, versioning, event logging) are **implemented** (Phase 8). Pack retention
+and cleanup policy is **implemented** (Phase 7/8).
 
 ---
 
@@ -83,7 +83,7 @@ Checkpoints are the atoms of pack history. Each lane pack is built from its
 sequence of checkpoints, and navigating between checkpoints allows replaying
 the development timeline.
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented. Checkpoints are created at session boundaries and indexed for browsing.
 
 ### Pack Event
 
@@ -100,7 +100,7 @@ Event types:
 | `refresh_triggered` | Manual or automatic refresh | `{ trigger, packType }` |
 | `version_created` | Pack snapshot saved | `{ versionId, versionNumber }` |
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented. Pack events are append-only, stored in SQLite, and surfaced as a human-readable activity feed in the UI.
 
 ### Pack Version
 
@@ -113,7 +113,7 @@ saved as markdown files with a content hash, enabling:
 
 Each version has a monotonically increasing version number within its pack scope.
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented. Versions are immutable snapshots with content hashes and a built-in diff viewer.
 
 ### Pack Head
 
@@ -125,7 +125,7 @@ This separation between immutable versions and mutable heads enables concurrent
 access: readers always see a consistent snapshot, and writers create new versions
 without disturbing readers.
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented via `packs_index` + version pointers. The UI reads the current pack and can diff prior versions.
 
 ### Pack Types
 
@@ -146,41 +146,27 @@ without disturbing readers.
 Accessible from the Lanes tab as a "Packs" sub-tab, the Pack Viewer displays
 pack content with interactive features.
 
-**Layout**:
+**Layout** (lane inspector):
 
 ```
 +---------------------------------------------------+
-|  Pack Viewer                          [Refresh ↻]  |
-+-------------------------+-------------------------+
-|                         |                         |
-|  Project Pack           |  Lane Pack              |
-|                         |  (for selected lane)    |
-|  ## Project Overview    |                         |
-|  Active lanes: 3        |  ## Lane: feature/auth  |
-|  Recent activity: ...   |  Branch: feature/auth   |
-|                         |  Sessions: 4            |
-|  ## Lane Summary        |                         |
-|  - feature/auth (3c)    |  ## Changes             |
-|  - feature/ui (1c)      |  +42 / -12, 8 files    |
-|  - bugfix/login (2c)    |                         |
-|                         |  ## Narrative            |
-|                         |  Implemented the auth... |
-|                         |                         |
-+-------------------------+-------------------------+
+|  Pack Viewer   [Lane|Project]  [Refresh] [AI...]   |
++---------------------------------------------------+
+|                                                   |
+|  (Selected pack body as readable markdown text)    |
+|                                                   |
++---------------------------------------------------+
 |  Freshness: ● Up to date    Last refresh: 2m ago  |
 +---------------------------------------------------+
 ```
 
 **Features**:
 
-- **Side-by-side view**: Project pack on the left, lane pack on the right
-- **Rendered markdown**: Pack content displayed as formatted markdown with
-  syntax highlighting for code blocks
-- **Refresh button**: Manually trigger pack regeneration for the current lane
-  (and project pack if stale)
-- **Freshness indicator**: Badge showing how current the pack is (see below)
-- **Edit button** (future): Edit the narrative section to override auto-generated
-  content
+- **Two clear pack scopes**: A toggle switches between the Project pack and the selected Lane pack.
+- **Refresh button**: Triggers deterministic pack regeneration (always available).
+- **AI details button**: Re-runs AI pack details on demand (lane pack only). AI details also refresh automatically in the background after deterministic refresh when Hosted/BYOK is enabled.
+- **Activity feed**: Human-readable pack events (refreshes, AI updates, failures) with deep links into the History tab.
+- **Versions + diff**: Immutable snapshots with a built-in diff viewer.
 
 ### Pack Freshness Indicator
 
@@ -587,13 +573,13 @@ interface PackRefreshJob {
 | PACK-006 | Pack files on filesystem (`.ade/packs/` directory) | DONE |
 | PACK-007 | Job engine triggers pack refresh on session end | DONE |
 | PACK-008 | Job deduplication for pack refreshes (one refresh per lane) | DONE |
-| PACK-009 | Pack viewer component (side-by-side project + lane packs) | DONE |
+| PACK-009 | Pack viewer component (lane/project toggle + activity + versions) | DONE |
 | PACK-010 | Pack freshness indicator (green/yellow/red badge) | DONE |
 | PACK-011 | Manual pack refresh button | DONE |
 
 ### Checkpoints & Event Logging
 
-These tasks are planned for **Phase 8**.
+Implemented (Phase 8).
 
 | ID | Task | Status |
 |----|------|--------|
@@ -603,7 +589,7 @@ These tasks are planned for **Phase 8**.
 
 ### Versioning System
 
-These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
+Implemented (Phase 8).
 
 | ID | Task | Status |
 |----|------|--------|
@@ -613,7 +599,7 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 
 ### Additional Pack Types
 
-These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
+Implemented (Phase 8).
 
 | ID | Task | Status |
 |----|------|--------|
@@ -641,9 +627,9 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-027 | Initial project pack bootstrap (codebase scan + git history analysis) | TODO — **Phase 8** (Onboarding) |
-| PACK-028 | Documentation-seeded pack generation (import existing docs for richer Project Pack) | TODO — **Phase 8** (Onboarding) |
-| PACK-029 | Existing lane pack hydration (generate Lane Packs for pre-existing branches) | TODO — **Phase 8** (Onboarding) |
+| PACK-027 | Initial project pack bootstrap (repo map + git history seed) | DONE — Phase 8 |
+| PACK-028 | Documentation-seeded pack generation (docs index + bootstrap context) | DONE — Phase 8 |
+| PACK-029 | Existing lane pack hydration (generate Lane Packs for existing lanes) | DONE — Phase 8 |
 | PACK-030 | Guest mode template narratives (template-based fallback when no LLM provider) | DONE (Phase 3) |
 
 ### Current State

@@ -1,6 +1,6 @@
 # Onboarding & Settings — Setup, Trust & Preferences
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -35,7 +35,7 @@ behavior before any changes are made. The settings page provides ongoing control
 over those same concerns. Together, these features establish the trust foundation
 that every other ADE feature builds on.
 
-**Current status**: Basic onboarding (ONBOARD-001 through ONBOARD-006), guest mode (ONBOARD-025, ONBOARD-026), hosted agent consent flow (ONBOARD-012), provider configuration UI (ONBOARD-014), and API key management (ONBOARD-015) are **implemented**. The onboarding wizard (defaults detection, config review, existing-branch import, initial pack generation) is implemented in **Phase 8**.
+**Current status**: Onboarding wizard (defaults detection, config review, existing-lane import, initial deterministic pack generation), guest mode, hosted agent consent + bootstrap flow, and provider configuration (Hosted/BYOK/CLI) are **implemented and working** (Phases 3, 6, 8). Onboarding now seeds the Project Pack with a lightweight deterministic bootstrap (codebase map + docs index + git history seed) so the initial context is immediately useful even before any AI details are generated.
 
 ---
 
@@ -74,12 +74,11 @@ previews, maintaining an audit trail, and providing escape hatches.
 ADE can be used without creating an account or configuring an LLM provider. In **Guest Mode**:
 
 - All local features work: lanes, terminals, git operations, process management, test suites, file editing
-- Context tracking (packs, checkpoints, narratives) is **disabled** — these require an LLM connection or hosted agent account
-- Conflict prediction runs in **heuristic-only mode** (file-overlap detection, no LLM-powered resolution proposals)
-- The History tab records operations but without pack-enriched context
-- The Workspace Graph renders topology and stack edges, but risk edges default to "unknown" (gray)
+- Deterministic context tracking works locally: packs, checkpoints, pack events, and operation history continue to record and refresh
+- AI-powered features are disabled: hosted mirror sync, hosted narratives, hosted conflict proposals, and AI PR drafting
+- Conflict prediction and merge simulation still run locally; only AI-generated resolution proposals are unavailable
 
-Guest Mode is the default state before onboarding is completed. Users can remain in Guest Mode indefinitely. A persistent banner shows: "Running in Guest Mode — context tracking disabled. [Set up provider →]" with a link to the Settings page.
+Guest Mode is the default state before onboarding is completed. Users can remain in Guest Mode indefinitely. A persistent banner shows: "Running in Guest Mode — AI details disabled. [Set up provider →]" with a link to the Settings page.
 
 Guest Mode ensures ADE is immediately useful for git workflow management and terminal orchestration even without any cloud or LLM setup.
 
@@ -111,13 +110,13 @@ Presented as a step-by-step wizard when the opened repository lacks a `.ade/` di
 
 **Step 5 — Hosted Agent Consent** (optional): Explains what data leaves the machine, what stays local, and how to revoke. Options: "Enable Hosted Agent", "Use BYOK", "Stay Local", "Decide Later".
 
-**Step 5.5 — Initial Pack Generation** (optional, requires provider): If a provider is configured (Hosted, BYOK, or CLI), ADE offers to generate initial packs:
+**Step 5.5 — Initial Pack Generation**: ADE generates initial deterministic packs to bootstrap context. If Hosted or BYOK is configured, ADE also generates AI details in the background after the deterministic refresh:
 
-- **Codebase scan**: ADE analyzes the repository structure, key files (`README.md`, `package.json`, `Cargo.toml`, etc.), directory layout, and git history to bootstrap a **Project Pack** with architecture overview, conventions, and technology stack.
-- **Existing documentation import**: ADE asks: "Do you have existing project documentation? (e.g., PRD, architecture docs, design specs)". If the user provides file paths or a docs directory, ADE uses the LLM to ingest those documents and seed the Project Pack with richer, more accurate context than codebase analysis alone.
+- **Codebase scan**: ADE builds a lightweight project map (top-level folders, key files) and seeds the Project Pack with a deterministic bootstrap.
+- **Existing documentation import**: ADE indexes the repository’s `docs/` directory (and key top-level markdown files) and includes a docs map in the Project Pack bootstrap. If Hosted/BYOK is enabled, AI details can summarize and cross-link this material.
 - **Existing lane detection**: If the repository already has branches or worktrees, ADE offers to create lanes for them and generate initial **Lane Packs** by analyzing each branch's diff against the base, commit history, and any existing documentation references.
 
-This step is skipped entirely in Guest Mode. Users can trigger initial pack generation later from Settings → Data Management → "Generate Initial Packs".
+In Guest Mode, deterministic packs are still generated; only AI details are skipped. Users can re-run initial pack generation later from Settings → Data Management → "Generate Initial Packs".
 
 **Step 6 — Done**: Wizard closes, main UI loads, toast confirms initialization.
 
@@ -139,7 +138,7 @@ This step is skipped entirely in Guest Mode. Users can trigger initial pack gene
 
 **Data Management**: Clear local data, export project config, delete hosted mirror data.
 
-**Guest Mode Banner**: When no provider is configured, a persistent banner appears at the top of every page: "Running in Guest Mode — context tracking disabled. [Set up provider →]". The banner links to the Provider Configuration section.
+**Guest Mode Banner**: When no provider is configured, a persistent banner appears at the top of every page: "Running in Guest Mode — AI details disabled. [Set up provider →]". The banner links to the Provider Configuration section.
 
 ---
 
@@ -151,7 +150,7 @@ This step is skipped entirely in Guest Mode. Users can trigger initial pack gene
 |---------|--------|------|
 | `projectService` | Exists | Repository initialization, `.ade/` creation, project metadata |
 | `projectConfigService` | Exists | Config CRUD, validation, trust confirmation, schema enforcement |
-| `onboardingService` | Planned | Detection of project defaults, suggested config generation, wizard state |
+| `onboardingService` | Exists | Detection of project defaults, suggested config generation, wizard state, initial pack generation |
 | `kvDb` | Exists | Persists theme and local settings outside YAML config |
 
 ### IPC Channels
@@ -165,9 +164,9 @@ This step is skipped entirely in Guest Mode. Users can trigger initial pack gene
 | `ade.projectConfig.save(config)` | Exists | Writes to `ade.yaml` and/or `local.yaml` |
 | `ade.projectConfig.confirmTrust()` | Exists | Marks shared config as trusted |
 | `ade.app.getInfo()` | Exists | Returns `AppInfo` (version, platform, etc.) |
-| `ade.onboarding.detectDefaults(repoPath)` | Planned | Scans repo, returns detection results |
-| `ade.onboarding.generateConfig(detections)` | Planned | Generates suggested `ade.yaml` |
-| `ade.onboarding.scanCodebase(repoPath)` | Planned | Analyzes repo structure, returns codebase summary for pack seeding |
+| `ade.onboarding.detectDefaults(repoPath)` | Exists | Scans repo, returns detection results |
+| `ade.onboarding.generateConfig(detections)` | Exists | Generates suggested `ade.yaml` |
+| `ade.onboarding.scanCodebase(repoPath)` | Exists | Analyzes repo structure, returns codebase summary for pack seeding |
 | `ade.onboarding.importDocs(paths)` | Planned | Ingests existing documentation files, returns structured content for pack seeding |
 | `ade.onboarding.detectExistingLanes(repoPath)` | Planned | Scans for existing branches/worktrees, returns candidates for lane creation |
 | `ade.onboarding.generateInitialPacks(args)` | Planned | Triggers initial pack generation for project and detected lanes |
@@ -299,11 +298,11 @@ interface DetectionResult {
 | ONBOARD-018 | Data management | Clear local data, export config, delete hosted data | DONE — Phase 8 |
 | ONBOARD-019 | Welcome guide | In-app getting started with feature highlights | DONE — Phase 8 (onboarding welcome step) |
 | ONBOARD-020 | Project switching | Recent projects list with quick-switch | DONE — Phase 8 |
-| ONBOARD-021 | Initial codebase scan for pack seeding | Analyze repo structure, key files, and git history to bootstrap Project Pack | TODO — **Phase 8** |
-| ONBOARD-022 | Existing documentation import | Ask user for docs directory/files, ingest via LLM for richer pack seeding | TODO — **Phase 8** |
+| ONBOARD-021 | Initial codebase scan for pack seeding | Build a lightweight deterministic project bootstrap (repo map + git history seed) for the Project Pack | DONE — Phase 8 |
+| ONBOARD-022 | Existing documentation import | Index `docs/` and key markdown files into the Project Pack bootstrap; AI details can summarize when Hosted/BYOK is enabled | DONE — Phase 8 |
 | ONBOARD-023 | Existing lane/branch detection | Detect existing branches and worktrees, offer to create lanes and generate Lane Packs | DONE — Phase 8 |
 | ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | DONE — Phase 8 |
-| ONBOARD-025 | Guest mode | No-account usage with local features only, context tracking disabled | DONE |
+| ONBOARD-025 | Guest mode | No-account usage with local features only; AI details disabled | DONE |
 | ONBOARD-026 | Guest mode banner | Persistent "Guest Mode" banner with provider setup link | DONE |
 
 ### Dependency Notes
@@ -314,10 +313,10 @@ interface DetectionResult {
 - ONBOARD-012, ONBOARD-014, ONBOARD-015 completed in **Phase 6** (Cloud Infrastructure).
 - ONBOARD-016/017 are independent of all other tasks.
 - ONBOARD-020 requires a project registry service (**Phase 8**).
-- ONBOARD-021 through ONBOARD-024 require a configured LLM provider from **Phase 6** (skipped in Guest Mode); scheduled for **Phase 8**.
+- ONBOARD-021 through ONBOARD-024 run deterministically in all modes; AI details are only generated when Hosted/BYOK is configured (and are skipped in Guest Mode).
 - ONBOARD-025 and ONBOARD-026 are independent and were implemented in Phase 2/3.
 - PROJ-036 and PROJ-037 (CI/CD import for onboarding detection) are planned for **Phase 8**.
 
 ---
 
-*This document describes the Onboarding and Settings features for ADE. Basic setup (ONBOARD-001 through ONBOARD-006) and guest mode (ONBOARD-025, ONBOARD-026) are implemented. Phase 6 implements hosted agent consent and provider configuration. Phase 8 implements the onboarding wizard and several settings enhancements; remaining planned items are called out above.*
+*This document describes the Onboarding and Settings features for ADE. Basic setup (ONBOARD-001 through ONBOARD-006) and guest mode (ONBOARD-025, ONBOARD-026) are implemented. Phase 6 implements hosted agent consent and provider configuration. Phase 8 implements the onboarding wizard and deterministic context bootstrap; remaining planned items are called out above.*

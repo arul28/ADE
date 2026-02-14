@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import type { OperationRecord } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -24,7 +25,52 @@ function statusTone(status: OperationRecord["status"]): string {
   return "text-muted-fg border-border";
 }
 
+function toRelativeTime(iso: string): string {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return iso;
+  const deltaMs = Math.max(0, Date.now() - ts);
+  const mins = Math.floor(deltaMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function humanKind(kind: string): string {
+  const raw = kind.replace(/[._]/g, " ").replace(/\s+/g, " ").trim();
+  if (!raw) return kind;
+  return raw.slice(0, 1).toUpperCase() + raw.slice(1);
+}
+
+function describeOperation(row: OperationRecord, meta: Record<string, unknown> | null): { title: string; detail: string } {
+  const lane = row.laneName ?? "project";
+  const reason = typeof meta?.reason === "string" ? (meta.reason as string) : typeof meta?.trigger === "string" ? (meta.trigger as string) : null;
+  const msg = typeof meta?.message === "string" ? (meta.message as string) : null;
+
+  if (row.kind === "pack_update_lane") {
+    return { title: "Lane pack refreshed", detail: `${lane}${reason ? ` · trigger: ${reason}` : ""}` };
+  }
+  if (row.kind === "pack_update_project") {
+    return { title: "Project pack refreshed", detail: `${reason ? `trigger: ${reason}` : lane}` };
+  }
+
+  if (row.kind === "git.commit" || row.kind === "git_commit") {
+    const commitMsg = typeof meta?.message === "string" ? (meta.message as string) : null;
+    return { title: "Git commit", detail: `${lane}${commitMsg ? ` · ${commitMsg}` : ""}` };
+  }
+
+  if (row.kind.startsWith("git.") || row.kind.startsWith("git_")) {
+    return { title: `Git: ${humanKind(row.kind.replace(/^git[._]/, ""))}`, detail: `${lane}${msg ? ` · ${msg}` : ""}` };
+  }
+
+  return { title: humanKind(row.kind), detail: lane };
+}
+
 export function HistoryPage() {
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const lanes = useAppStore((s) => s.lanes);
   const [rows, setRows] = useState<OperationRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -32,6 +78,19 @@ export function HistoryPage() {
   const [statusFilter, setStatusFilter] = useState<OperationRecord["status"] | "all">("all");
   const [kindFilter, setKindFilter] = useState<string>("all");
   const [selectedOperationId, setSelectedOperationId] = useState<string | null>(null);
+
+  const operationIdParam = params.get("operationId");
+  const laneIdParam = params.get("laneId");
+
+  useEffect(() => {
+    if (laneIdParam && laneIdParam !== laneFilter) {
+      setLaneFilter(laneIdParam);
+    }
+    if (operationIdParam && operationIdParam !== selectedOperationId) {
+      setSelectedOperationId(operationIdParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = async () => {
     setLoading(true);
@@ -42,7 +101,9 @@ export function HistoryPage() {
         limit: 500
       });
       setRows(next);
-      if (next.length && !next.some((row) => row.id === selectedOperationId)) {
+      if (operationIdParam && next.some((row) => row.id === operationIdParam)) {
+        setSelectedOperationId(operationIdParam);
+      } else if (next.length && !next.some((row) => row.id === selectedOperationId)) {
         setSelectedOperationId(next[0]!.id);
       }
       if (!next.length) {
@@ -81,6 +142,13 @@ export function HistoryPage() {
 
   const selected = filtered.find((row) => row.id === selectedOperationId) ?? filtered[0] ?? null;
   const metadata = selected ? parseMetadata(selected.metadataJson) : null;
+  const described = selected ? describeOperation(selected, metadata) : null;
+  const metaError =
+    metadata && typeof (metadata as any).error === "string"
+      ? String((metadata as any).error)
+      : metadata && typeof (metadata as any).errorMessage === "string"
+        ? String((metadata as any).errorMessage)
+        : null;
 
   return (
     <div className="flex h-full min-h-0 gap-3">
@@ -155,14 +223,21 @@ export function HistoryPage() {
                       ? "border-accent bg-accent/10"
                       : "border-border bg-card/70 hover:bg-muted/40"
                   }`}
-                  onClick={() => setSelectedOperationId(row.id)}
+                  onClick={() => {
+                    setSelectedOperationId(row.id);
+                    const nextParams = new URLSearchParams(params);
+                    nextParams.set("operationId", row.id);
+                    if (laneFilter !== "all") nextParams.set("laneId", laneFilter);
+                    else nextParams.delete("laneId");
+                    setParams(nextParams, { replace: true });
+                  }}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="truncate text-xs font-semibold">{row.kind}</div>
+                    <div className="truncate text-xs font-semibold">{describeOperation(row, parseMetadata(row.metadataJson)).title}</div>
                     <Chip className={`text-[10px] ${statusTone(row.status)}`}>{row.status}</Chip>
                   </div>
                   <div className="mt-1 truncate text-[11px] text-muted-fg">
-                    lane: {row.laneName ?? "project"} · {new Date(row.startedAt).toLocaleString()}
+                    {describeOperation(row, parseMetadata(row.metadataJson)).detail} · {toRelativeTime(row.startedAt)}
                   </div>
                 </button>
               ))}
@@ -180,6 +255,18 @@ export function HistoryPage() {
             <EmptyState title="No event selected" description="Select an operation from the timeline." />
           ) : (
             <div className="space-y-3 text-xs">
+              <div className="rounded border border-border bg-card/70 p-2">
+                <div className="text-[11px] text-muted-fg">Summary</div>
+                <div className="mt-1 font-semibold">{described?.title ?? selected.kind}</div>
+                <div className="mt-1 text-[11px] text-muted-fg">{described?.detail ?? (selected.laneName ?? "project")}</div>
+              </div>
+
+              {metaError ? (
+                <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[11px] text-red-200">
+                  {metaError}
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded border border-border bg-card/70 p-2">
                   <div className="text-[11px] text-muted-fg">Kind</div>
@@ -202,6 +289,26 @@ export function HistoryPage() {
               <div className="rounded border border-border bg-card/70 p-2">
                 <div className="text-[11px] text-muted-fg">Lane</div>
                 <div className="mt-1">{selected.laneName ?? "project"}</div>
+                {selected.laneId ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selected.laneId!)}`)}
+                      title="Open lane"
+                    >
+                      Open lane
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selected.laneId!)}&inspectorTab=packs`)}
+                      title="Open lane packs"
+                    >
+                      Open packs
+                    </Button>
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded border border-border bg-card/70 p-2">
@@ -211,12 +318,12 @@ export function HistoryPage() {
                 <div className="mt-1 break-all">{selected.postHeadSha ?? "(none)"}</div>
               </div>
 
-              <div className="rounded border border-border bg-card/70 p-2">
-                <div className="text-[11px] text-muted-fg">Metadata</div>
-                <pre className="mt-1 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed">
+              <details className="rounded border border-border bg-card/70 p-2">
+                <summary className="cursor-pointer text-[11px] text-muted-fg">Metadata (raw)</summary>
+                <pre className="mt-2 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed">
                   {metadata ? JSON.stringify(metadata, null, 2) : "(none)"}
                 </pre>
-              </div>
+              </details>
             </div>
           )}
         </div>

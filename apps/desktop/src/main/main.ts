@@ -222,7 +222,8 @@ app.whenReady().then(async () => {
       laneService,
       sessionService,
       projectConfigService,
-      operationService
+      operationService,
+      onEvent: (event) => broadcast(IPC.packsEvent, event)
     });
 
     const onboardingService = createOnboardingService({
@@ -300,7 +301,9 @@ app.whenReady().then(async () => {
       logger,
       packService,
       conflictService,
-      hostedAgentService
+      hostedAgentService,
+      projectConfigService,
+      byokLlmService
     });
 
     const prService = createPrService({

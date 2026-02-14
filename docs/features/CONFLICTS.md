@@ -1,6 +1,6 @@
 # Conflicts — Radar, Prediction & Resolution
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -36,7 +36,7 @@ proactive, guided workflow. Developers can see at a glance which lanes are safe 
 merge, which ones are drifting from the base branch, and which pairs of lanes are
 on a collision course.
 
-**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5, merged in `codex/ade-phase-4-5` branch). Resolution proposals via hosted agent are planned for Phase 6.
+**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via hosted agent (diff preview, apply, undo) are **implemented** (Phase 6).
 
 ---
 

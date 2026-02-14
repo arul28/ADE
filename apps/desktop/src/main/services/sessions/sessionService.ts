@@ -1,8 +1,21 @@
 import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
-import type { TerminalSessionDetail, TerminalSessionStatus, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  TerminalSessionDetail,
+  TerminalSessionStatus,
+  TerminalSessionSummary,
+  TerminalToolType,
+  UpdateSessionMetaArgs
+} from "../../../shared/types";
 
 export function createSessionService({ db }: { db: AdeDb }) {
+  const normalizeToolType = (raw: unknown): TerminalToolType | null => {
+    const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+    if (!value) return null;
+    const allowed: TerminalToolType[] = ["shell", "claude", "codex", "cursor", "aider", "continue", "other"];
+    return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
+  };
+
   const list = ({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
@@ -26,6 +39,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
       laneName: string;
       ptyId: string | null;
       tracked: number;
+      pinned: number;
+      goal: string | null;
+      toolType: string | null;
       title: string;
       status: TerminalSessionStatus;
       startedAt: string;
@@ -43,6 +59,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
           l.name as laneName,
           s.pty_id as ptyId,
           s.tracked as tracked,
+          s.pinned as pinned,
+          s.goal as goal,
+          s.tool_type as toolType,
           s.title as title,
           s.status as status,
           s.started_at as startedAt,
@@ -61,7 +80,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
       params
     );
 
-    return rows.map((row) => ({ ...row, tracked: row.tracked === 1 })) as TerminalSessionSummary[];
+    return rows.map((row) => ({
+      ...row,
+      tracked: row.tracked === 1,
+      pinned: row.pinned === 1,
+      goal: row.goal ?? null,
+      toolType: normalizeToolType(row.toolType)
+    })) as TerminalSessionSummary[];
   };
 
   return {
@@ -97,6 +122,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
             l.name as laneName,
             s.pty_id as ptyId,
             s.tracked as tracked,
+            s.pinned as pinned,
+            s.goal as goal,
+            s.tool_type as toolType,
             s.title as title,
             s.status as status,
             s.started_at as startedAt,
@@ -113,7 +141,46 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `,
         [sessionId]
       );
-      return row ? ({ ...row, tracked: (row as any).tracked === 1 } as TerminalSessionDetail) : null;
+      return row
+        ? ({
+            ...row,
+            tracked: (row as any).tracked === 1,
+            pinned: (row as any).pinned === 1,
+            goal: (row as any).goal ?? null,
+            toolType: normalizeToolType((row as any).toolType)
+          } as TerminalSessionDetail)
+        : null;
+    },
+
+    updateMeta(args: UpdateSessionMetaArgs): TerminalSessionSummary | null {
+      const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return null;
+
+      const sets: string[] = [];
+      const params: (string | number | null)[] = [];
+
+      if (typeof args.pinned === "boolean") {
+        sets.push("pinned = ?");
+        params.push(args.pinned ? 1 : 0);
+      }
+
+      if (args.goal !== undefined) {
+        sets.push("goal = ?");
+        params.push(args.goal == null ? null : String(args.goal));
+      }
+
+      if (args.toolType !== undefined) {
+        const normalized = normalizeToolType(args.toolType);
+        sets.push("tool_type = ?");
+        params.push(normalized);
+      }
+
+      if (sets.length) {
+        params.push(sessionId);
+        db.run(`update terminal_sessions set ${sets.join(", ")} where id = ?`, params);
+      }
+
+      return this.get(sessionId);
     },
 
     create({

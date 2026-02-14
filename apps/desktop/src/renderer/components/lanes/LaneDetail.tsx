@@ -7,6 +7,7 @@ import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
+import { useDockLayout } from "../ui/DockLayoutState";
 import type {
   DiffChanges,
   FileDiff,
@@ -45,6 +46,9 @@ export function LaneDetail({
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const laneName = lane?.name ?? null;
+
+  const vSplitLayout = useDockLayout("lane-detail:layout:vsplit", { topSize: 38 });
+  const topColsLayout = useDockLayout("lane-detail:layout:top-cols", { filesSize: 55 });
 
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
@@ -733,19 +737,40 @@ export function LaneDetail({
       {/* === Main content: vertical resizable split === */}
       <div className="flex-1 min-h-0">
         <Group
-          id={`lane-detail-vsplit:${laneId ?? "none"}`}
+          key={vSplitLayout.loaded ? "lane-detail-vsplit:loaded" : "lane-detail-vsplit:loading"}
+          id="lane-detail-vsplit"
           orientation="vertical"
           className="h-full"
         >
           {/* Top panel: files + commits side by side */}
-          <Panel id={`lane-detail-top:${laneId ?? "none"}`} minSize={15} defaultSize={38}>
+          <Panel
+            id="lane-detail-top"
+            minSize={15}
+            defaultSize={Math.max(15, Math.min(85, Number(vSplitLayout.layout.topSize ?? 38)))}
+            onResize={(size) => {
+              const next = Number(size);
+              if (!Number.isFinite(next)) return;
+              vSplitLayout.saveLayout({ ...vSplitLayout.layout, topSize: next });
+            }}
+          >
             <Group
-              id={`lane-detail-top-cols:${laneId ?? "none"}`}
+              key={topColsLayout.loaded ? "lane-detail-top-cols:loaded" : "lane-detail-top-cols:loading"}
+              id="lane-detail-top-cols"
               orientation="horizontal"
               className="h-full"
             >
               {/* Unified file list */}
-              <Panel id={`lane-detail-files:${laneId ?? "none"}`} minSize={20} defaultSize={55} className="min-w-0">
+              <Panel
+                id="lane-detail-files"
+                minSize={20}
+                defaultSize={Math.max(20, Math.min(80, Number(topColsLayout.layout.filesSize ?? 55)))}
+                className="min-w-0"
+                onResize={(size) => {
+                  const next = Number(size);
+                  if (!Number.isFinite(next)) return;
+                  topColsLayout.saveLayout({ ...topColsLayout.layout, filesSize: next });
+                }}
+              >
                 <div className="flex flex-col h-full min-h-0">
                   <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
                     <div className="flex items-center gap-2">
@@ -821,7 +846,7 @@ export function LaneDetail({
               </Separator>
 
               {/* Commits timeline */}
-              <Panel id={`lane-detail-commits:${laneId ?? "none"}`} minSize={20} defaultSize={45} className="min-w-0">
+              <Panel id="lane-detail-commits" minSize={20} defaultSize={45} className="min-w-0">
                 <CommitTimeline
                   laneId={laneId ?? null}
                   selectedSha={selectedCommit?.sha ?? null}
@@ -843,7 +868,7 @@ export function LaneDetail({
           </Separator>
 
           {/* Bottom panel: diff viewer */}
-          <Panel id={`lane-detail-bottom:${laneId ?? "none"}`} minSize={20} defaultSize={62} className="min-h-0">
+          <Panel id="lane-detail-bottom" minSize={20} defaultSize={62} className="min-h-0">
             <div className="h-full bg-bg">
               {renderDiffSection()}
             </div>

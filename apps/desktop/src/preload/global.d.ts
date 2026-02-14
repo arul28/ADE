@@ -238,6 +238,7 @@ declare global {
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
+        updateMeta: (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null }) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
       };
@@ -315,6 +316,7 @@ declare global {
         getConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
         getPlanPack: (laneId: string) => Promise<PackSummary>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
+        refreshProjectPack: (args?: { laneId?: string | null }) => Promise<PackSummary>;
         refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
         refreshConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
         savePlanPack: (args: { laneId: string; body: string }) => Promise<PackSummary>;
@@ -326,6 +328,7 @@ declare global {
         updateNarrative: (args: { packKey: string; narrative: string }) => Promise<PackSummary>;
         listEvents: (args: { packKey: string; limit?: number }) => Promise<PackEvent[]>;
         listCheckpoints: (args?: { laneId?: string; limit?: number }) => Promise<Checkpoint[]>;
+        onEvent: (cb: (ev: PackEvent) => void) => () => void;
       };
       github: {
         getStatus: () => Promise<GitHubStatus>;

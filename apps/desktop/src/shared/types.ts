@@ -1398,6 +1398,7 @@ export type PackSummary = {
   versionId?: string | null;
   versionNumber?: number | null;
   contentHash?: string | null;
+  metadata?: Record<string, unknown> | null;
   body: string;
 };
 

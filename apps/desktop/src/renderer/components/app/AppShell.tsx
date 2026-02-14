@@ -5,7 +5,7 @@ import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { PrEventPayload } from "../../../shared/types";
+import type { HostedStatus, PrEventPayload } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
 type PrToast = {
@@ -28,6 +28,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false);
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
+  const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
+  const [hostedStatusError, setHostedStatusError] = useState<string | null>(null);
 
   useEffect(() => {
     window.ade.app
@@ -44,6 +46,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // Leave project unset; UI will show placeholders.
       });
   }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, navigate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHostedStatus(null);
+    setHostedStatusError(null);
+    if (providerMode !== "hosted") return;
+    window.ade.hosted
+      .getStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setHostedStatus(status);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setHostedStatusError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerMode]);
 
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -109,8 +131,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {providerMode === "guest" ? (
         <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
-          Running in Guest Mode - context tracking disabled. <Link to="/settings" className="underline">Set up provider</Link>
+          Running in Guest Mode - AI details disabled. <Link to="/settings" className="underline">Set up provider</Link>
         </div>
+      ) : null}
+      {providerMode === "hosted" ? (
+        hostedStatusError ? (
+          <div className="shrink-0 border-b border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-900">
+            Hosted AI error: {hostedStatusError} <Link to="/settings" className="underline">Open Settings</Link>
+          </div>
+        ) : hostedStatus && (!hostedStatus.consentGiven || !hostedStatus.apiConfigured || !hostedStatus.auth.signedIn) ? (
+          <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+            Hosted AI not ready:
+            {!hostedStatus.consentGiven ? " consent not granted;" : ""}
+            {!hostedStatus.apiConfigured ? " missing API config;" : ""}
+            {!hostedStatus.auth.signedIn ? " not signed in;" : ""}
+            {" "}
+            <Link to="/settings" className="underline">Fix in Settings</Link>
+          </div>
+        ) : null
       ) : null}
 
       <div className="flex-1 flex min-h-0">
