@@ -2,14 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GripHorizontal, GripVertical, Home, Link2, Pin, Play, Plus, X } from "lucide-react";
+import { GripHorizontal, GripVertical, Home, Layers3, Link2, Pin, Play, Plus, X } from "lucide-react";
 import { LaneDetail } from "./LaneDetail";
 import { LaneInspector } from "./LaneInspector";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
-import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary } from "../../../shared/types";
+import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary, RestackSuggestion } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
 function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lanes: T[]): T[] {
@@ -345,9 +345,16 @@ export function LanesPage() {
   const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
+  const [restackSuggestions, setRestackSuggestions] = useState<RestackSuggestion[]>([]);
+  const [restackBusyLaneId, setRestackBusyLaneId] = useState<string | null>(null);
+  const [restackSuggestionError, setRestackSuggestionError] = useState<string | null>(null);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  const restackByLaneId = useMemo(
+    () => new Map(restackSuggestions.map((s) => [s.laneId, s] as const)),
+    [restackSuggestions]
+  );
 
   const filteredLanes = useMemo(() => {
     return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
@@ -355,6 +362,10 @@ export function LanesPage() {
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
+  const visibleRestackSuggestions = useMemo(() => {
+    const laneIdSet = new Set(filteredLaneIds);
+    return restackSuggestions.filter((s) => laneIdSet.has(s.laneId));
+  }, [restackSuggestions, filteredLaneIds]);
 
   const loadConflictStatuses = useCallback(async () => {
     try {
@@ -366,6 +377,15 @@ export function LanesPage() {
       setConflictStatusByLane(next);
     } catch {
       // best effort: lane rendering should still work without conflict data
+    }
+  }, []);
+
+  const refreshRestackSuggestions = useCallback(async () => {
+    try {
+      const next = await window.ade.lanes.listRestackSuggestions();
+      setRestackSuggestions(next);
+    } catch {
+      // best effort
     }
   }, []);
 
@@ -436,6 +456,15 @@ export function LanesPage() {
     });
     return unsubscribe;
   }, [loadConflictStatuses, pushConflictChips]);
+
+  useEffect(() => {
+    void refreshRestackSuggestions();
+    const unsubscribe = window.ade.lanes.onRestackSuggestionsEvent((event) => {
+      if (event.type !== "restack-suggestions-updated") return;
+      setRestackSuggestions(event.suggestions);
+    });
+    return unsubscribe;
+  }, [refreshRestackSuggestions]);
 
   useEffect(() => {
     return () => {
@@ -692,6 +721,48 @@ export function LanesPage() {
     );
   }, [laneFilter]);
 
+  const restackNow = async (laneId: string) => {
+    setRestackSuggestionError(null);
+    setRestackBusyLaneId(laneId);
+    try {
+      const result = await window.ade.lanes.restack({ laneId, recursive: true });
+      if (result.error) {
+        throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
+      }
+      await Promise.all([refreshLanes(), refreshRestackSuggestions()]);
+    } catch (err) {
+      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestackBusyLaneId(null);
+    }
+  };
+
+  const dismissRestackSuggestion = async (laneId: string) => {
+    setRestackSuggestionError(null);
+    setRestackBusyLaneId(laneId);
+    try {
+      await window.ade.lanes.dismissRestackSuggestion({ laneId });
+      await refreshRestackSuggestions();
+    } catch (err) {
+      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestackBusyLaneId(null);
+    }
+  };
+
+  const deferRestackSuggestion = async (laneId: string, minutes: number) => {
+    setRestackSuggestionError(null);
+    setRestackBusyLaneId(laneId);
+    try {
+      await window.ade.lanes.deferRestackSuggestion({ laneId, minutes });
+      await refreshRestackSuggestions();
+    } catch (err) {
+      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestackBusyLaneId(null);
+    }
+  };
+
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       <div className="border-b border-border px-2 py-1.5">
@@ -818,6 +889,7 @@ export function LanesPage() {
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const conflictStatus = conflictStatusByLane[lane.id];
           const chips = conflictChipsByLane[lane.id] ?? [];
+          const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
 
           return (
             <button
@@ -844,6 +916,14 @@ export function LanesPage() {
               <span className="truncate">{lane.name}</span>
               {isPrimary ? <span className="rounded border border-emerald-400 px-1 text-[10px] text-emerald-700">HOME</span> : null}
               {!isPrimary && isPinned ? <span className="rounded border border-amber-400 px-1 text-[10px] text-amber-800">PINNED</span> : null}
+              {restackSuggestion ? (
+                <span
+                  className="rounded border border-amber-400/70 bg-amber-500/10 px-1 text-[10px] text-amber-800"
+                  title={`Behind parent by ${restackSuggestion.behindCount} commit(s). Restack suggested.`}
+                >
+                  RESTACK {restackSuggestion.behindCount}
+                </span>
+              ) : null}
               {chips.slice(0, 1).map((chip, index) => (
                 <span
                   key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
@@ -893,6 +973,86 @@ export function LanesPage() {
           );
         })}
       </div>
+
+      {visibleRestackSuggestions.length > 0 ? (
+        <div className="border-b border-border bg-amber-500/5 px-2 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Restack suggested</div>
+            <div className="text-[11px] text-muted-fg">{visibleRestackSuggestions.length} lane(s) behind parent</div>
+          </div>
+          <div className="mt-2 space-y-2">
+            {visibleRestackSuggestions.slice(0, 3).map((s) => {
+              const lane = lanesById.get(s.laneId) ?? null;
+              if (!lane) return null;
+              const busy = restackBusyLaneId === s.laneId;
+              return (
+                <div
+                  key={`restack:${s.laneId}`}
+                  className="flex flex-wrap items-start justify-between gap-2 rounded border border-border bg-card/60 p-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
+                      {s.hasPr ? (
+                        <span className="rounded border border-sky-400/70 bg-sky-500/10 px-1 text-[10px] text-sky-700">
+                          PR
+                        </span>
+                      ) : null}
+                      <span className="font-mono text-[11px] text-muted-fg">{s.behindCount} behind</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-muted-fg">
+                      What ADE will do: rebase this lane (and its children) onto its parent to pick up new commits.
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={Boolean(restackBusyLaneId)}
+                      onClick={() => void deferRestackSuggestion(s.laneId, 60)}
+                      title="Hide this suggestion for 1 hour"
+                    >
+                      Defer 1h
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={Boolean(restackBusyLaneId)}
+                      onClick={() => void dismissRestackSuggestion(s.laneId)}
+                      title="Dismiss until the parent advances again"
+                    >
+                      Dismiss
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={Boolean(restackBusyLaneId)}
+                      onClick={() => void restackNow(s.laneId)}
+                      title="Rebase this lane onto its parent (recursive)"
+                    >
+                      <Layers3 className="mr-1 h-3 w-3" />
+                      {busy ? "Restacking..." : "Restack now"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            {visibleRestackSuggestions.length > 3 ? (
+              <div className="text-[11px] text-muted-fg">
+                + {visibleRestackSuggestions.length - 3} more suggestions (narrow the filter to see them).
+              </div>
+            ) : null}
+            {restackSuggestionError ? (
+              <div className="rounded border border-red-500/40 bg-red-900/20 p-2 text-[11px] text-red-200">
+                {restackSuggestionError}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <Group id="lanes-vertical-split" orientation="vertical" className="flex-1 min-h-0">
         <Panel id="stack-graph-panel" defaultSize={14} minSize={3} collapsible>

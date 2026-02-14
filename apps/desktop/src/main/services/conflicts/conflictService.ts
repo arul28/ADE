@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -11,16 +11,21 @@ import type {
   ConflictFileType,
   ConflictOverlap,
   ConflictProposal,
+  ConflictProposalPreview,
+  ConflictProposalPreviewFile,
+  ConflictProposalProvider,
   ConflictProposalStatus,
   ConflictPrediction,
   ConflictRiskLevel,
   ConflictStatus,
   ConflictStatusValue,
   GetLaneConflictStatusArgs,
+  GitConflictState,
   LaneSummary,
   ListOverlapsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
@@ -33,6 +38,7 @@ import type { createOperationService } from "../history/operationService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createByokLlmService } from "../byok/byokLlmService";
+import type { createPackService } from "../packs/packService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
@@ -347,6 +353,7 @@ export function createConflictService({
   projectRoot,
   laneService,
   projectConfigService,
+  packService,
   operationService,
   hostedAgentService,
   byokLlmService,
@@ -359,6 +366,7 @@ export function createConflictService({
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  packService?: ReturnType<typeof createPackService>;
   operationService?: ReturnType<typeof createOperationService>;
   hostedAgentService?: ReturnType<typeof createHostedAgentService>;
   byokLlmService?: ReturnType<typeof createByokLlmService>;
@@ -400,6 +408,29 @@ export function createConflictService({
     return lanes.filter((lane) => !lane.archivedAt);
   };
 
+  const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
+
+  const preparedContexts = new Map<
+    string,
+    {
+      preparedAt: string;
+      laneId: string;
+      peerLaneId: string | null;
+      provider: ConflictProposalProvider;
+      conflictContext: Record<string, unknown>;
+    }
+  >();
+  const PREPARED_TTL_MS = 20 * 60_000;
+
+  const cleanupPreparedContexts = () => {
+    const cutoff = Date.now() - PREPARED_TTL_MS;
+    for (const [digest, entry] of preparedContexts.entries()) {
+      const ts = Date.parse(entry.preparedAt);
+      const ms = Number.isFinite(ts) ? ts : Date.now();
+      if (ms < cutoff) preparedContexts.delete(digest);
+    }
+  };
+
   const packsRootDir = conflictPacksDir ? path.dirname(conflictPacksDir) : null;
 
   const readLanePackBody = (laneId: string): string | null => {
@@ -414,6 +445,91 @@ export function createConflictService({
     } catch {
       return null;
     }
+  };
+
+  const safeReadText = (absPath: string, maxBytes: number): string => {
+    try {
+      const fd = fs.openSync(absPath, "r");
+      try {
+        const buf = Buffer.alloc(maxBytes);
+        const read = fs.readSync(fd, buf, 0, maxBytes, 0);
+        return buf.slice(0, Math.max(0, read)).toString("utf8");
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return "";
+    }
+  };
+
+  const ensureRelativeRepoPath = (relPath: string): string => {
+    const normalized = relPath.trim().replace(/\\/g, "/");
+    if (!normalized.length) throw new Error("File path is required");
+    if (normalized.includes("\0")) throw new Error("Invalid file path");
+    if (path.isAbsolute(normalized)) throw new Error("Path must be repo-relative");
+    if (normalized.startsWith("../") || normalized === ".." || normalized.includes("/../")) {
+      throw new Error("Path escapes lane root");
+    }
+    return normalized;
+  };
+
+  const readGitConflictState = async (laneId: string): Promise<GitConflictState & { mergeHeadSha: string | null }> => {
+    const lane = laneService.getLaneBaseAndBranch(laneId);
+    const gitDirRes = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    const gitDir = gitDirRes.exitCode === 0 ? gitDirRes.stdout.trim() : "";
+    const hasRebase =
+      gitDir.length > 0 &&
+      (fs.existsSync(path.join(gitDir, "rebase-apply")) || fs.existsSync(path.join(gitDir, "rebase-merge")));
+    const hasMerge = gitDir.length > 0 && fs.existsSync(path.join(gitDir, "MERGE_HEAD"));
+    const kind: GitConflictState["kind"] = hasRebase ? "rebase" : hasMerge ? "merge" : null;
+
+    const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
+
+    let mergeHeadSha: string | null = null;
+    if (kind === "merge" && gitDir.length) {
+      try {
+        const raw = fs.readFileSync(path.join(gitDir, "MERGE_HEAD"), "utf8").trim();
+        if (raw) mergeHeadSha = raw;
+      } catch {
+        // ignore
+      }
+    }
+
+    const inProgress = kind != null;
+    return {
+      laneId,
+      kind,
+      inProgress,
+      conflictedFiles,
+      canContinue: inProgress && conflictedFiles.length === 0,
+      canAbort: inProgress,
+      mergeHeadSha
+    };
+  };
+
+  const extractMarkerPreview = (laneId: string, relPath: string, warnings: string[]): string | null => {
+    const filePath = ensureRelativeRepoPath(relPath);
+    const lane = laneService.getLaneBaseAndBranch(laneId);
+    const abs = path.join(lane.worktreePath, filePath);
+    const raw = safeReadText(abs, 48_000);
+    if (!raw) return null;
+    if (raw.includes("\u0000")) return null;
+
+    const idx = raw.indexOf("<<<<<<<");
+    if (idx < 0) {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const excerpt = trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}\n...(truncated)...\n` : trimmed;
+      if (trimmed.length > 2000) warnings.push(`Marker preview truncated for ${filePath}.`);
+      return excerpt;
+    }
+
+    const start = Math.max(0, idx - 1600);
+    const end = Math.min(raw.length, idx + 3200);
+    const excerpt = raw.slice(start, end).trim();
+    if (start > 0 || end < raw.length) warnings.push(`Marker preview excerpted for ${filePath}.`);
+    return excerpt;
   };
 
   const getLatestRows = (): Map<string, ConflictPredictionRow> => {
@@ -1253,116 +1369,297 @@ export function createConflictService({
     return row?.id ?? null;
   };
 
-  const requestProposal = async (args: RequestConflictProposalArgs): Promise<ConflictProposal> => {
-    const lanes = await listActiveLanes();
-    const lane = lanes.find((entry) => entry.id === args.laneId);
-    if (!lane) {
-      throw new Error(`Lane not found: ${args.laneId}`);
+  const findExistingProposalIdForDigest = (args: { laneId: string; peerLaneId: string | null; contextDigest: string }): string | null => {
+    const rows = db.all<{ id: string; peer_lane_id: string | null; metadata_json: string | null }>(
+      `
+        select id, peer_lane_id, metadata_json
+        from conflict_proposals
+        where project_id = ?
+          and lane_id = ?
+        order by created_at desc
+        limit 50
+      `,
+      [projectId, args.laneId]
+    );
+    for (const row of rows) {
+      const peer = row.peer_lane_id ?? null;
+      if (peer !== args.peerLaneId) continue;
+      const meta = safeParseMetadata(row.metadata_json);
+      if (typeof meta.contextDigest === "string" && meta.contextDigest === args.contextDigest) {
+        return row.id;
+      }
     }
+    return null;
+  };
+
+  const prepareProposal = async (args: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
+    cleanupPreparedContexts();
+
+    const laneId = args.laneId.trim();
+    if (!laneId) throw new Error("laneId is required");
+    const peerLaneId = args.peerLaneId?.trim() || null;
+
+    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+    const usingHosted = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
+    const usingByok = providerMode === "byok";
+    if (!usingHosted && !usingByok) {
+      throw new Error("AI conflict resolution requires Hosted or BYOK provider mode.");
+    }
+    if (usingByok && !byokLlmService) {
+      throw new Error("BYOK provider is enabled but BYOK LLM service is unavailable.");
+    }
+    const provider: ConflictProposalProvider = usingHosted ? "hosted" : "byok";
+
+    const lanes = await listActiveLanes();
+    const lane = lanes.find((entry) => entry.id === laneId);
+    if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
     // CONF-022: stack-aware conflict resolution. If a lane is stacked, resolve parent conflicts first.
     if (lane.parentLaneId) {
       const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
       if (parentStatus && parentStatus.status !== "merge-ready") {
-        throw new Error(
-          `Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`
-        );
+        throw new Error(`Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`);
       }
     }
 
-    const peerLaneId = args.peerLaneId ?? null;
+    const warnings: string[] = [];
+    const MAX_FILES = 6;
+    const MAX_DIFF_CHARS = 6_000;
+    const MAX_PACK_CHARS = 10_000;
 
-    const overlaps = await listOverlaps({ laneId: args.laneId });
-    const status = await getLaneStatus({ laneId: args.laneId });
+    const truncate = (label: string, text: string, maxChars: number): string => {
+      const clean = text ?? "";
+      if (clean.length <= maxChars) return clean;
+      warnings.push(`${label} truncated to ${maxChars} characters.`);
+      return `${clean.slice(0, maxChars)}\n...(truncated)...\n`;
+    };
+
+    const preparedAt = new Date().toISOString();
+
+    if (packService) {
+      await packService.refreshLanePack({ laneId, reason: "conflict_proposal_prepare" });
+      if (peerLaneId) {
+        await packService.refreshLanePack({ laneId: peerLaneId, reason: "conflict_proposal_prepare" });
+      }
+      await packService.refreshConflictPack({ laneId, peerLaneId, reason: "conflict_proposal_prepare" });
+    }
+
+    const conflictState = await readGitConflictState(laneId);
+    const activeConflict: GitConflictState = {
+      laneId,
+      kind: conflictState.kind,
+      inProgress: conflictState.inProgress,
+      conflictedFiles: conflictState.conflictedFiles,
+      canContinue: conflictState.canContinue,
+      canAbort: conflictState.canAbort
+    };
+
+    const overlaps = await listOverlaps({ laneId });
+    const status = await getLaneStatus({ laneId });
     const overlapEntry = overlaps.find((entry) => entry.peerId === peerLaneId) ?? null;
     const overlapPaths = (overlapEntry?.files ?? []).map((file) => file.path).filter(Boolean);
 
-    const lanePackBody = readLanePackBody(args.laneId);
-    const peerPackBody = peerLaneId ? readLanePackBody(peerLaneId) : null;
+    const includeFromConflicts = activeConflict.inProgress && activeConflict.conflictedFiles.length > 0;
+    const includeReason: ConflictProposalPreviewFile["includeReason"] = includeFromConflicts ? "conflicted" : "overlap";
+    const selectedPaths = uniqueSorted(includeFromConflicts ? activeConflict.conflictedFiles : overlapPaths).slice(0, MAX_FILES);
+    if (selectedPaths.length === 0) {
+      warnings.push("No conflicted/overlap files found; proposal context will be minimal.");
+    }
 
-    const overlapDiffs = await (async () => {
-      const MAX_FILES = 6;
-      const MAX_DIFF_CHARS = 9000;
+    let conflictPackExcerpt: string | null = null;
+    if (packService) {
+      const pack = packService.getConflictPack({ laneId, peerLaneId });
+      const trimmed = pack.body.trim();
+      if (trimmed.length) {
+        conflictPackExcerpt = truncate("Conflict pack", trimmed, MAX_PACK_CHARS);
+      }
+    }
 
-      const truncate = (text: string): string => {
-        if (text.length <= MAX_DIFF_CHARS) return text;
-        return `${text.slice(0, MAX_DIFF_CHARS)}\n...(truncated)...\n`;
-      };
+    const files: ConflictProposalPreviewFile[] = [];
+    const laneGit = laneService.getLaneBaseAndBranch(laneId);
+    const laneHeadSha = await readHeadSha(laneGit.worktreePath).catch(() => "");
+    const mergeHeadSha = (conflictState.mergeHeadSha ?? "").trim();
 
-      const laneGit = laneService.getLaneBaseAndBranch(args.laneId);
-      const laneHeadSha = await readHeadSha(laneGit.worktreePath).catch(() => "");
-      if (!laneHeadSha) return null;
+    const diffMode = await (async (): Promise<
+      | { kind: "merge-head"; base: string; laneHeadSha: string; peerHeadSha: string }
+      | { kind: "peer-lane"; base: string; laneHeadSha: string; peerHeadSha: string }
+      | { kind: "base-ref"; baseRef: string; laneHeadSha: string }
+      | { kind: "none" }
+    > => {
+      if (!laneHeadSha) return { kind: "none" };
+
+      if (activeConflict.kind === "merge" && mergeHeadSha.length) {
+        const base = await readMergeBase(laneGit.worktreePath, laneHeadSha, mergeHeadSha).catch(() => "");
+        if (base.trim().length) return { kind: "merge-head", base: base.trim(), laneHeadSha, peerHeadSha: mergeHeadSha };
+      }
 
       if (peerLaneId) {
         const peerGit = laneService.getLaneBaseAndBranch(peerLaneId);
         const peerHeadSha = await readHeadSha(peerGit.worktreePath).catch(() => "");
-        if (!peerHeadSha) return null;
-        const mergeBaseSha = await readMergeBase(laneGit.worktreePath, laneHeadSha, peerHeadSha).catch(() => "");
-        const base = mergeBaseSha.trim();
-        if (!base) return null;
-
-        const files: Array<{ path: string; laneDiff: string; peerDiff: string }> = [];
-        for (const filePath of overlapPaths.slice(0, MAX_FILES)) {
-          const [laneDiff, peerDiff] = await Promise.all([
-            runGit(["diff", "--unified=3", `${base}..${laneHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
-              .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : "")),
-            runGit(["diff", "--unified=3", `${base}..${peerHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
-              .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : ""))
-          ]);
-          files.push({ path: filePath, laneDiff, peerDiff });
+        if (peerHeadSha) {
+          const base = await readMergeBase(laneGit.worktreePath, laneHeadSha, peerHeadSha).catch(() => "");
+          if (base.trim().length) return { kind: "peer-lane", base: base.trim(), laneHeadSha, peerHeadSha };
         }
-
-        return {
-          mergeBaseSha: base,
-          laneHeadSha,
-          peerHeadSha,
-          files
-        };
       }
 
       const parentLane = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
       const baseRef = parentLane?.branchRef ?? lane.baseRef;
-      const files: Array<{ path: string; laneDiff: string }> = [];
-      for (const filePath of overlapPaths.slice(0, MAX_FILES)) {
-        const diff = await runGit(["diff", "--unified=3", `${baseRef}..${laneHeadSha}`, "--", filePath], { cwd: laneGit.worktreePath, timeoutMs: 25_000 })
-          .then((res) => (res.exitCode === 0 ? truncate(res.stdout) : ""));
-        files.push({ path: filePath, laneDiff: diff });
-      }
-      return {
-        baseRef,
-        laneHeadSha,
-        files
-      };
-    })().catch(() => null);
+      return { kind: "base-ref", baseRef, laneHeadSha };
+    })();
 
-    let conflictContext: Record<string, unknown> = {
-      laneId: args.laneId,
+    for (const rawPath of selectedPaths) {
+      const filePath = rawPath.trim();
+      if (!filePath) continue;
+      try {
+        ensureRelativeRepoPath(filePath);
+      } catch (err) {
+        warnings.push(err instanceof Error ? err.message : String(err));
+        continue;
+      }
+
+      const markerPreview = activeConflict.inProgress ? extractMarkerPreview(laneId, filePath, warnings) : null;
+
+      const laneDiff = await (async () => {
+        if (diffMode.kind === "merge-head" || diffMode.kind === "peer-lane") {
+          const res = await runGit(["diff", "--unified=3", `${diffMode.base}..${diffMode.laneHeadSha}`, "--", filePath], {
+            cwd: laneGit.worktreePath,
+            timeoutMs: 25_000
+          });
+          return res.exitCode === 0 ? truncate(`Lane diff (${filePath})`, res.stdout, MAX_DIFF_CHARS) : "";
+        }
+        if (diffMode.kind === "base-ref") {
+          const res = await runGit(["diff", "--unified=3", `${diffMode.baseRef}..${diffMode.laneHeadSha}`, "--", filePath], {
+            cwd: laneGit.worktreePath,
+            timeoutMs: 25_000
+          });
+          return res.exitCode === 0 ? truncate(`Lane diff (${filePath})`, res.stdout, MAX_DIFF_CHARS) : "";
+        }
+        return "";
+      })();
+
+      const peerDiff = await (async () => {
+        if (diffMode.kind === "merge-head" || diffMode.kind === "peer-lane") {
+          const res = await runGit(["diff", "--unified=3", `${diffMode.base}..${diffMode.peerHeadSha}`, "--", filePath], {
+            cwd: laneGit.worktreePath,
+            timeoutMs: 25_000
+          });
+          return res.exitCode === 0 ? truncate(`Peer diff (${filePath})`, res.stdout, MAX_DIFF_CHARS) : "";
+        }
+        return null;
+      })();
+
+      files.push({
+        path: filePath,
+        includeReason,
+        markerPreview: markerPreview ?? null,
+        laneDiff,
+        peerDiff: peerDiff ?? null
+      });
+    }
+
+    const overlapSummary = overlapEntry
+      ? {
+          peerId: overlapEntry.peerId,
+          peerName: overlapEntry.peerName,
+          riskLevel: overlapEntry.riskLevel,
+          fileCount: overlapEntry.files.length,
+          files: overlapEntry.files.slice(0, 40)
+        }
+      : null;
+
+    const conflictContext: Record<string, unknown> = {
+      laneId,
       peerLaneId,
-      overlaps,
+      preparedAt,
+      provider,
       status,
-      ...(lanePackBody ? { lanePackBody } : {}),
-      ...(peerPackBody ? { peerPackBody } : {}),
-      ...(overlapDiffs ? { overlapDiffs } : {})
+      overlapSummary,
+      activeConflict,
+      ...(mergeHeadSha.length ? { mergeHeadSha } : {}),
+      ...(conflictPackExcerpt ? { conflictPackExcerpt } : {}),
+      files,
+      limits: {
+        maxFiles: MAX_FILES,
+        maxDiffChars: MAX_DIFF_CHARS,
+        maxConflictPackChars: MAX_PACK_CHARS
+      }
     };
 
-    if (conflictPacksDir) {
-      const packPath = path.join(conflictPacksDir, `${args.laneId}.json`);
-      if (fs.existsSync(packPath)) {
-        try {
-          const raw = fs.readFileSync(packPath, "utf8");
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === "object") {
-            conflictContext = {
-              ...conflictContext,
-              ...(parsed as Record<string, unknown>),
-              laneId: args.laneId,
-              peerLaneId
-            };
-          }
-        } catch {
-          // Ignore malformed conflict pack and fall back to runtime context.
-        }
+    const contextDigest = sha256(JSON.stringify(conflictContext));
+    preparedContexts.set(contextDigest, {
+      preparedAt,
+      laneId,
+      peerLaneId,
+      provider,
+      conflictContext
+    });
+
+    const existingProposalId = findExistingProposalIdForDigest({ laneId, peerLaneId, contextDigest });
+    const approxChars = JSON.stringify(conflictContext).length;
+
+    logger.info("conflicts.proposal_prepared", {
+      laneId,
+      peerLaneId,
+      provider,
+      fileCount: files.length,
+      approxChars,
+      activeKind: activeConflict.kind,
+      activeInProgress: activeConflict.inProgress
+    });
+
+    return {
+      laneId,
+      peerLaneId,
+      provider,
+      preparedAt,
+      contextDigest,
+      activeConflict,
+      conflictPackExcerpt,
+      files,
+      stats: {
+        approxChars,
+        conflictPackChars: conflictPackExcerpt?.length ?? 0,
+        fileCount: files.length
+      },
+      warnings,
+      existingProposalId
+    };
+  };
+
+  const requestProposal = async (args: RequestConflictProposalArgs): Promise<ConflictProposal> => {
+    cleanupPreparedContexts();
+
+    const laneId = args.laneId.trim();
+    if (!laneId) throw new Error("laneId is required");
+    const peerLaneId = args.peerLaneId?.trim() || null;
+    const contextDigest = args.contextDigest.trim();
+    if (!contextDigest) throw new Error("contextDigest is required (prepare context first).");
+
+    const prepared = preparedContexts.get(contextDigest);
+    if (!prepared) {
+      throw new Error("Conflict context is missing or expired. Prepare a fresh preview before requesting AI.");
+    }
+    if (prepared.laneId !== laneId || prepared.peerLaneId !== peerLaneId) {
+      throw new Error("Prepared conflict context does not match the requested lane/peer.");
+    }
+
+    const lanes = await listActiveLanes();
+    const lane = lanes.find((entry) => entry.id === laneId);
+    if (!lane) throw new Error(`Lane not found: ${laneId}`);
+
+    // Stack-aware check again: lane stacks can change between preview and request.
+    if (lane.parentLaneId) {
+      const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
+      if (parentStatus && parentStatus.status !== "merge-ready") {
+        throw new Error(`Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`);
       }
+    }
+
+    const existingId = findExistingProposalIdForDigest({ laneId, peerLaneId, contextDigest });
+    if (existingId) {
+      const row = getProposalRow(existingId);
+      if (!row) throw new Error("Failed to load existing proposal");
+      return rowToProposal(row);
     }
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
@@ -1372,26 +1669,30 @@ export function createConflictService({
     if (!usingHosted && !usingByok) {
       throw new Error("AI conflict resolution requires Hosted or BYOK provider mode.");
     }
-
     if (usingByok && !byokLlmService) {
       throw new Error("BYOK provider is enabled but BYOK LLM service is unavailable.");
     }
 
+    const provider: ConflictProposalProvider = usingHosted ? "hosted" : "byok";
+    if (provider !== prepared.provider) {
+      throw new Error("Provider mode changed since preview. Prepare a fresh preview before requesting AI.");
+    }
+
     const result = usingHosted
       ? await hostedAgentService!.requestConflictProposal({
-          laneId: args.laneId,
-          peerLaneId: args.peerLaneId ?? null,
-          conflictContext
+          laneId,
+          peerLaneId,
+          conflictContext: prepared.conflictContext
         })
       : await byokLlmService!.proposeConflictResolution({
-          laneId: args.laneId,
-          peerLaneId: args.peerLaneId ?? null,
-          conflictContext
+          laneId,
+          peerLaneId,
+          conflictContext: prepared.conflictContext
         });
 
     const createdAt = new Date().toISOString();
     const proposalId = randomUUID();
-    const predictionId = getLatestPredictionId(args.laneId, args.peerLaneId ?? null);
+    const predictionId = getLatestPredictionId(laneId, peerLaneId);
 
     db.run(
       `
@@ -1417,8 +1718,8 @@ export function createConflictService({
       [
         proposalId,
         projectId,
-        args.laneId,
-        args.peerLaneId ?? null,
+        laneId,
+        peerLaneId,
         predictionId,
         usingHosted ? "hosted" : "local",
         result.confidence,
@@ -1427,9 +1728,11 @@ export function createConflictService({
         usingHosted ? (result as any).jobId : null,
         usingHosted ? (result as any).artifactId : null,
         JSON.stringify({
-          provider: usingHosted ? "hosted" : "byok",
+          provider,
           model: usingHosted ? null : (result as any).model,
-          rawContent: result.rawContent
+          rawContent: result.rawContent,
+          contextDigest,
+          preparedAt: prepared.preparedAt
         }),
         createdAt,
         createdAt
@@ -1437,9 +1740,7 @@ export function createConflictService({
     );
 
     const row = getProposalRow(proposalId);
-    if (!row) {
-      throw new Error("Failed to persist conflict proposal");
-    }
+    if (!row) throw new Error("Failed to persist conflict proposal");
     return rowToProposal(row);
   };
 
@@ -1650,6 +1951,7 @@ export function createConflictService({
     runPrediction,
     getBatchAssessment,
     listProposals,
+    prepareProposal,
     requestProposal,
     applyProposal,
     undoProposal

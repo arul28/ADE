@@ -1,21 +1,61 @@
 import React from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import {
+  AlertCircle,
+  CheckCircle2,
+  GitBranch,
+  RefreshCw,
+  Sparkles,
+  Wand2
+} from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import type {
   BatchAssessmentResult,
   ConflictOverlap,
   ConflictProposal,
+  ConflictProposalPreview,
   ConflictStatus,
+  GitConflictState,
+  LaneSummary,
+  RestackSuggestion,
   RiskMatrixEntry
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
+import { cn } from "../ui/cn";
 import { RiskMatrix } from "./RiskMatrix";
 import { ConflictSummary } from "./ConflictSummary";
 import { MergeSimulationPanel } from "./MergeSimulationPanel";
-import { cn } from "../ui/cn";
 
 type ViewMode = "summary" | "matrix";
+
 type LaneStatusFilter = "conflict" | "at-risk" | "clean" | "unknown" | null;
+
+type MergePlanState = {
+  targetLaneId: string;
+  sourceLaneIds: string[];
+  cursor: number;
+  activeMerge?: { targetLaneId: string; sourceLaneId: string } | null;
+};
+
+function previewLines(title: string, bullets: string[]) {
+  return (
+    <div className="rounded border border-border bg-card/40 p-3 text-xs">
+      <div className="flex items-center gap-2 font-semibold text-fg">
+        <Wand2 className="h-4 w-4 text-muted-fg" />
+        {title}
+      </div>
+      <ul className="mt-2 space-y-1 text-muted-fg">
+        {bullets.map((b) => (
+          <li key={b} className="flex gap-2">
+            <span className="text-muted-fg">•</span>
+            <span className="min-w-0">{b}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function pairKey(a: string, b: string): string {
   return a < b ? `${a}::${b}` : `${b}::${a}`;
@@ -49,9 +89,40 @@ function filterLaneByStatus(status: ConflictStatus["status"] | undefined, filter
   return classifyStatus(status) === filter;
 }
 
+function formatShortSha(sha: string | null | undefined): string {
+  const s = (sha ?? "").trim();
+  if (!s) return "-";
+  return s.length > 10 ? s.slice(0, 10) : s;
+}
+
+function uniqueSorted(values: Iterable<string>): string[] {
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+}
+
+function lanesById(lanes: LaneSummary[]): Map<string, LaneSummary> {
+  return new Map(lanes.map((lane) => [lane.id, lane] as const));
+}
+
+function sortMergeSources(lanes: LaneSummary[], sourceLaneIds: string[]): string[] {
+  const byId = lanesById(lanes);
+  return [...sourceLaneIds]
+    .filter((id) => byId.has(id))
+    .sort((a, b) => {
+      const laneA = byId.get(a)!;
+      const laneB = byId.get(b)!;
+      const depthDelta = (laneA.stackDepth ?? 0) - (laneB.stackDepth ?? 0);
+      if (depthDelta !== 0) return depthDelta;
+      const aTs = Date.parse(laneA.createdAt);
+      const bTs = Date.parse(laneB.createdAt);
+      if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
+      return laneA.name.localeCompare(laneB.name);
+    });
+}
+
 export function ConflictsPage() {
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const providerMode = useAppStore((s) => s.providerMode);
 
   const [batch, setBatch] = React.useState<BatchAssessmentResult | null>(null);
   const [overlaps, setOverlaps] = React.useState<ConflictOverlap[]>([]);
@@ -62,11 +133,52 @@ export function ConflictsPage() {
   const [loading, setLoading] = React.useState(false);
   const [progress, setProgress] = React.useState<{ completedPairs: number; totalPairs: number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const [proposalError, setProposalError] = React.useState<string | null>(null);
-  const [comparisonLaneIds, setComparisonLaneIds] = React.useState<string[]>([]);
-  const [runningSelectedCompare, setRunningSelectedCompare] = React.useState(false);
+
+  const [gitConflict, setGitConflict] = React.useState<GitConflictState | null>(null);
+  const [gitConflictBusy, setGitConflictBusy] = React.useState(false);
+  const [gitConflictError, setGitConflictError] = React.useState<string | null>(null);
+
+  const [restackSuggestions, setRestackSuggestions] = React.useState<RestackSuggestion[]>([]);
+
   const [proposals, setProposals] = React.useState<ConflictProposal[]>([]);
   const [proposalBusy, setProposalBusy] = React.useState(false);
+  const [proposalError, setProposalError] = React.useState<string | null>(null);
+
+  const [proposalPeerLaneId, setProposalPeerLaneId] = React.useState<string | null>(null);
+  const [proposalPreview, setProposalPreview] = React.useState<ConflictProposalPreview | null>(null);
+  const [prepareBusy, setPrepareBusy] = React.useState(false);
+  const [prepareError, setPrepareError] = React.useState<string | null>(null);
+  const [sendBusy, setSendBusy] = React.useState(false);
+  const [sendError, setSendError] = React.useState<string | null>(null);
+
+  const [applyMode, setApplyMode] = React.useState<"unstaged" | "staged" | "commit">("staged");
+  const [commitMessage, setCommitMessage] = React.useState("Resolve conflicts (ADE)");
+
+  const [continueBusy, setContinueBusy] = React.useState(false);
+  const [continueError, setContinueError] = React.useState<string | null>(null);
+
+  const [abortOpen, setAbortOpen] = React.useState(false);
+  const [abortConfirm, setAbortConfirm] = React.useState("");
+  const [abortBusy, setAbortBusy] = React.useState(false);
+  const [abortError, setAbortError] = React.useState<string | null>(null);
+
+  const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+
+  const [mergePlan, setMergePlan] = React.useState<MergePlanState | null>(null);
+  const [mergePlanBusy, setMergePlanBusy] = React.useState(false);
+  const [mergePlanError, setMergePlanError] = React.useState<string | null>(null);
+  const [mergeConfirmOpen, setMergeConfirmOpen] = React.useState(false);
+  const [pendingMerge, setPendingMerge] = React.useState<{ targetLaneId: string; sourceLaneId: string } | null>(null);
+
+  const [integrationBaseLaneId, setIntegrationBaseLaneId] = React.useState<string>(primaryLane?.id ?? "");
+  const [integrationName, setIntegrationName] = React.useState("Integration lane");
+  const [integrationBusy, setIntegrationBusy] = React.useState(false);
+  const [integrationError, setIntegrationError] = React.useState<string | null>(null);
+  const [integrationLaneId, setIntegrationLaneId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!integrationBaseLaneId && primaryLane?.id) setIntegrationBaseLaneId(primaryLane.id);
+  }, [integrationBaseLaneId, primaryLane?.id]);
 
   const statusByLane = React.useMemo(() => {
     const map = new Map<string, ConflictStatus>();
@@ -124,6 +236,14 @@ export function ConflictsPage() {
     return matrixByPair.get(pairKey(selectedPair.laneAId, selectedPair.laneBId)) ?? null;
   }, [matrixByPair, selectedPair]);
 
+  const restackByLaneId = React.useMemo(() => {
+    const map = new Map<string, RestackSuggestion>();
+    for (const s of restackSuggestions) map.set(s.laneId, s);
+    return map;
+  }, [restackSuggestions]);
+
+  const selectedRestackSuggestion = selectedLaneId ? restackByLaneId.get(selectedLaneId) ?? null : null;
+
   const loadBatch = React.useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -161,6 +281,29 @@ export function ConflictsPage() {
     }
   }, []);
 
+  const refreshGitConflict = React.useCallback(async (laneId: string) => {
+    setGitConflictBusy(true);
+    setGitConflictError(null);
+    try {
+      const next = await window.ade.git.getConflictState(laneId);
+      setGitConflict(next);
+    } catch (err) {
+      setGitConflictError(err instanceof Error ? err.message : String(err));
+      setGitConflict(null);
+    } finally {
+      setGitConflictBusy(false);
+    }
+  }, []);
+
+  const refreshRestackSuggestions = React.useCallback(async () => {
+    try {
+      const next = await window.ade.lanes.listRestackSuggestions();
+      setRestackSuggestions(next);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   React.useEffect(() => {
     void loadBatch();
   }, [loadBatch]);
@@ -180,11 +323,30 @@ export function ConflictsPage() {
   React.useEffect(() => {
     if (!selectedLaneId) {
       setOverlaps([]);
+      setProposals([]);
+      setGitConflict(null);
       return;
     }
     void loadLaneOverlaps(selectedLaneId);
     void loadProposals(selectedLaneId);
-  }, [selectedLaneId, loadLaneOverlaps, loadProposals]);
+    void refreshGitConflict(selectedLaneId);
+
+    // Reset AI preview when switching lanes.
+    setProposalPeerLaneId(null);
+    setProposalPreview(null);
+    setPrepareError(null);
+    setSendError(null);
+  }, [selectedLaneId, loadLaneOverlaps, loadProposals, refreshGitConflict]);
+
+  React.useEffect(() => {
+    void refreshRestackSuggestions();
+    const unsubscribe = window.ade.lanes.onRestackSuggestionsEvent((event) => {
+      if (event.type === "restack-suggestions-updated") {
+        setRestackSuggestions(event.suggestions);
+      }
+    });
+    return unsubscribe;
+  }, [refreshRestackSuggestions]);
 
   React.useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -205,70 +367,144 @@ export function ConflictsPage() {
     setStatusFilter((prev) => (prev === value ? null : value));
   };
 
-  React.useEffect(() => {
-    if (!batch?.truncated) return;
-    const allowedLaneIds = new Set(lanes.map((lane) => lane.id));
-    setComparisonLaneIds((prev) => {
-      const preserved = prev.filter((laneId) => allowedLaneIds.has(laneId));
-      if (preserved.length > 0) {
-        return preserved.slice(0, batch.maxAutoLanes ?? 15);
+  const continueMergeOrRebase = async () => {
+    if (!selectedLaneId || !gitConflict?.inProgress || !gitConflict.kind) return;
+    setContinueBusy(true);
+    setContinueError(null);
+    try {
+      if (gitConflict.kind === "rebase") {
+        await window.ade.git.rebaseContinue(selectedLaneId);
+      } else {
+        await window.ade.git.mergeContinue(selectedLaneId);
       }
-      const fallback = (batch.comparedLaneIds ?? lanes.map((lane) => lane.id))
-        .filter((laneId) => allowedLaneIds.has(laneId))
-        .slice(0, batch.maxAutoLanes ?? 15);
-      return fallback;
-    });
-  }, [batch?.truncated, batch?.comparedLaneIds, batch?.maxAutoLanes, lanes]);
+      await Promise.all([
+        refreshGitConflict(selectedLaneId),
+        refreshLanes(),
+        loadBatch()
+      ]);
 
-  const toggleComparisonLane = (laneId: string) => {
-    const max = batch?.maxAutoLanes ?? 15;
-    setComparisonLaneIds((prev) => {
-      if (prev.includes(laneId)) return prev.filter((entry) => entry !== laneId);
-      if (prev.length >= max) return prev;
-      return [...prev, laneId];
-    });
+      // If a merge-plan merge was blocked on conflicts, treat this as “merge complete” and advance.
+      setMergePlan((prev) => {
+        if (!prev?.activeMerge) return prev;
+        if (prev.activeMerge.targetLaneId !== selectedLaneId) return prev;
+        return {
+          ...prev,
+          cursor: Math.min(prev.cursor + 1, prev.sourceLaneIds.length),
+          activeMerge: null
+        };
+      });
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setContinueBusy(false);
+    }
   };
 
-  const runSelectedComparison = async () => {
-    if (comparisonLaneIds.length < 2) {
-      setError("Select at least 2 lanes to run pairwise risk comparison.");
+  const runAbort = async () => {
+    if (!selectedLaneId || !gitConflict?.inProgress || !gitConflict.kind) return;
+    if (abortConfirm.trim().toUpperCase() !== "ABORT") {
+      setAbortError('Type "ABORT" to confirm.');
       return;
     }
-    setRunningSelectedCompare(true);
-    setError(null);
+    setAbortBusy(true);
+    setAbortError(null);
     try {
-      const next = await window.ade.conflicts.runPrediction({ laneIds: comparisonLaneIds });
-      setBatch(next);
-      setProgress(next.progress ?? null);
+      if (gitConflict.kind === "rebase") {
+        await window.ade.git.rebaseAbort(selectedLaneId);
+      } else {
+        await window.ade.git.mergeAbort(selectedLaneId);
+      }
+      setAbortOpen(false);
+      setAbortConfirm("");
+      await Promise.all([
+        refreshGitConflict(selectedLaneId),
+        refreshLanes(),
+        loadBatch()
+      ]);
+
+      // Abort also clears merge-plan progress for the blocked merge.
+      setMergePlan((prev) => {
+        if (!prev?.activeMerge) return prev;
+        if (prev.activeMerge.targetLaneId !== selectedLaneId) return prev;
+        return { ...prev, activeMerge: null };
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setAbortError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunningSelectedCompare(false);
+      setAbortBusy(false);
     }
   };
 
-  const requestProposal = async () => {
+  const runPrepareProposal = async () => {
     if (!selectedLaneId) return;
-    setProposalBusy(true);
-    setProposalError(null);
+    if (providerMode !== "hosted" && providerMode !== "byok") {
+      setPrepareError("AI proposals require Hosted or BYOK provider mode.");
+      return;
+    }
+
+    setPrepareBusy(true);
+    setPrepareError(null);
+    setSendError(null);
     try {
-      await window.ade.conflicts.requestProposal({ laneId: selectedLaneId });
+      const preview = await window.ade.conflicts.prepareProposal({
+        laneId: selectedLaneId,
+        peerLaneId: proposalPeerLaneId
+      });
+      setProposalPreview(preview);
+      // Also refresh conflict state after pack refresh to reflect any recently resolved files.
+      await refreshGitConflict(selectedLaneId);
+    } catch (err) {
+      setPrepareError(err instanceof Error ? err.message : String(err));
+      setProposalPreview(null);
+    } finally {
+      setPrepareBusy(false);
+    }
+  };
+
+  const runSendProposal = async () => {
+    if (!selectedLaneId || !proposalPreview) return;
+    setSendBusy(true);
+    setSendError(null);
+    try {
+      await window.ade.conflicts.requestProposal({
+        laneId: selectedLaneId,
+        peerLaneId: proposalPeerLaneId,
+        contextDigest: proposalPreview.contextDigest
+      });
       await loadProposals(selectedLaneId);
       await loadBatch();
     } catch (err) {
-      setProposalError(err instanceof Error ? err.message : String(err));
+      setSendError(err instanceof Error ? err.message : String(err));
     } finally {
-      setProposalBusy(false);
+      setSendBusy(false);
     }
   };
 
-  const applyProposal = async (proposalId: string) => {
+  const applyProposal = async (proposalId: string, withContinue: boolean) => {
     if (!selectedLaneId) return;
+    const inProgress = gitConflict?.inProgress ?? false;
+    const effectiveApplyMode = inProgress && applyMode === "commit" ? "staged" : applyMode;
+
     setProposalBusy(true);
     setProposalError(null);
     try {
-      await window.ade.conflicts.applyProposal({ laneId: selectedLaneId, proposalId });
-      await Promise.all([loadProposals(selectedLaneId), loadBatch(), refreshLanes()]);
+      await window.ade.conflicts.applyProposal({
+        laneId: selectedLaneId,
+        proposalId,
+        applyMode: effectiveApplyMode,
+        ...(effectiveApplyMode === "commit" ? { commitMessage } : {})
+      });
+      await Promise.all([loadProposals(selectedLaneId), loadBatch(), refreshLanes(), refreshGitConflict(selectedLaneId)]);
+
+      if (withContinue) {
+        const next = await window.ade.git.getConflictState(selectedLaneId);
+        setGitConflict(next);
+        if (next.inProgress && next.canContinue && next.kind) {
+          if (next.kind === "rebase") await window.ade.git.rebaseContinue(selectedLaneId);
+          else await window.ade.git.mergeContinue(selectedLaneId);
+          await Promise.all([refreshGitConflict(selectedLaneId), refreshLanes(), loadBatch()]);
+        }
+      }
     } catch (err) {
       setProposalError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -282,7 +518,7 @@ export function ConflictsPage() {
     setProposalError(null);
     try {
       await window.ade.conflicts.undoProposal({ laneId: selectedLaneId, proposalId });
-      await Promise.all([loadProposals(selectedLaneId), loadBatch(), refreshLanes()]);
+      await Promise.all([loadProposals(selectedLaneId), loadBatch(), refreshLanes(), refreshGitConflict(selectedLaneId)]);
     } catch (err) {
       setProposalError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -290,10 +526,186 @@ export function ConflictsPage() {
     }
   };
 
+  const runRestack = async (laneId: string) => {
+    setMergePlanError(null);
+    setIntegrationError(null);
+    setError(null);
+    try {
+      const res = await window.ade.lanes.restack({ laneId, recursive: true });
+      await Promise.all([refreshRestackSuggestions(), refreshLanes(), loadBatch()]);
+      if (res.error) {
+        setError(res.error);
+        // Restack failures can leave a rebase in progress; refresh conflict state if that lane is selected.
+        if (selectedLaneId === laneId) {
+          await refreshGitConflict(laneId);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const dismissRestackSuggestion = async (laneId: string) => {
+    try {
+      await window.ade.lanes.dismissRestackSuggestion({ laneId });
+      await refreshRestackSuggestions();
+    } catch {
+      // ignore
+    }
+  };
+
+  const deferRestackSuggestion = async (laneId: string, minutes: number) => {
+    try {
+      await window.ade.lanes.deferRestackSuggestion({ laneId, minutes });
+      await refreshRestackSuggestions();
+    } catch {
+      // ignore
+    }
+  };
+
+  const initMergePlan = () => {
+    const fallbackTarget = selectedLaneId ?? primaryLane?.id ?? lanes[0]?.id ?? "";
+    const targetLaneId = mergePlan?.targetLaneId?.trim() || fallbackTarget;
+    const defaultSources = lanes
+      .filter((lane) => lane.id !== targetLaneId && lane.laneType !== "primary")
+      .map((lane) => lane.id)
+      .slice(0, 6);
+
+    setMergePlan({
+      targetLaneId,
+      sourceLaneIds: defaultSources,
+      cursor: 0,
+      activeMerge: null
+    });
+  };
+
+  const startNextMerge = () => {
+    if (!mergePlan) return;
+    const orderedSources = sortMergeSources(lanes, mergePlan.sourceLaneIds);
+    const sourceLaneId = orderedSources[mergePlan.cursor];
+    if (!sourceLaneId) return;
+    setPendingMerge({ targetLaneId: mergePlan.targetLaneId, sourceLaneId });
+    setMergeConfirmOpen(true);
+  };
+
+  const runPendingMerge = async () => {
+    if (!pendingMerge) return;
+    const { targetLaneId, sourceLaneId } = pendingMerge;
+    const byId = lanesById(lanes);
+    const target = byId.get(targetLaneId);
+    const source = byId.get(sourceLaneId);
+    if (!target || !source) {
+      setMergePlanError("Target/source lane not found.");
+      setMergeConfirmOpen(false);
+      setPendingMerge(null);
+      return;
+    }
+
+    setMergePlanBusy(true);
+    setMergePlanError(null);
+    try {
+      await window.ade.git.sync({
+        laneId: targetLaneId,
+        mode: "merge",
+        baseRef: source.branchRef
+      });
+
+      await Promise.all([refreshLanes(), loadBatch(), refreshGitConflict(targetLaneId)]);
+
+      const conflictState = await window.ade.git.getConflictState(targetLaneId);
+      setGitConflict(conflictState);
+
+      setMergePlan((prev) => {
+        if (!prev) return prev;
+        const ordered = sortMergeSources(lanes, prev.sourceLaneIds);
+        const current = ordered[prev.cursor];
+        if (!current || current !== sourceLaneId) {
+          return { ...prev, activeMerge: null };
+        }
+
+        if (conflictState.inProgress && conflictState.kind === "merge" && conflictState.conflictedFiles.length > 0) {
+          return {
+            ...prev,
+            activeMerge: { targetLaneId, sourceLaneId }
+          };
+        }
+
+        return {
+          ...prev,
+          cursor: Math.min(prev.cursor + 1, ordered.length),
+          activeMerge: null
+        };
+      });
+    } catch (err) {
+      setMergePlanError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMergePlanBusy(false);
+      setMergeConfirmOpen(false);
+      setPendingMerge(null);
+    }
+  };
+
+  const createIntegrationLane = async () => {
+    if (!integrationBaseLaneId) {
+      setIntegrationError("Pick a base lane for the integration lane.");
+      return;
+    }
+    const name = integrationName.trim();
+    if (!name) {
+      setIntegrationError("Integration lane name is required.");
+      return;
+    }
+
+    setIntegrationBusy(true);
+    setIntegrationError(null);
+    try {
+      const created = await window.ade.lanes.createChild({
+        parentLaneId: integrationBaseLaneId,
+        name,
+        description: "Integration lane created by ADE Conflicts assistant"
+      });
+      setIntegrationLaneId(created.id);
+      await refreshLanes();
+      setSelectedLaneId(created.id);
+      setMergePlan({
+        targetLaneId: created.id,
+        sourceLaneIds: [],
+        cursor: 0,
+        activeMerge: null
+      });
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIntegrationBusy(false);
+    }
+  };
+
+  const suggestedPeerEntries = React.useMemo(() => {
+    const entries = overlaps
+      .map((o) => ({ peerId: o.peerId, peerName: o.peerName, riskLevel: o.riskLevel, count: o.files.length }))
+      .sort((a, b) => b.count - a.count || a.peerName.localeCompare(b.peerName));
+    return entries;
+  }, [overlaps]);
+
+  const orderedMergeSources = React.useMemo(() => {
+    if (!mergePlan) return [];
+    return sortMergeSources(lanes, mergePlan.sourceLaneIds);
+  }, [lanes, mergePlan]);
+
+  const mergeTargetLane = React.useMemo(() => {
+    if (!mergePlan?.targetLaneId) return null;
+    return lanes.find((l) => l.id === mergePlan.targetLaneId) ?? null;
+  }, [lanes, mergePlan?.targetLaneId]);
+
+  const mergeActive = mergePlan?.activeMerge ?? null;
+  const mergeActiveSource = mergeActive ? lanes.find((l) => l.id === mergeActive.sourceLaneId) ?? null : null;
+
+  const aiEnabled = providerMode === "hosted" || providerMode === "byok";
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <div className="text-sm font-semibold text-fg">Conflict Radar</div>
+        <div className="text-sm font-semibold text-fg">Conflicts</div>
         <div className="text-xs text-muted-fg">
           lanes: {lanes.length} · conflicts: {batch?.lanes.filter((entry) => entry.status === "conflict-predicted" || entry.status === "conflict-active").length ?? 0}
         </div>
@@ -309,7 +721,7 @@ export function ConflictsPage() {
             variant="outline"
             onClick={() =>
               void window.ade.conflicts
-                .runPrediction(batch?.truncated && comparisonLaneIds.length > 1 ? { laneIds: comparisonLaneIds } : {})
+                .runPrediction({})
                 .then((next) => {
                   setBatch(next);
                   setProgress(next.progress ?? null);
@@ -327,49 +739,7 @@ export function ConflictsPage() {
 
       {error ? <div className="border-b border-red-800 bg-red-900/30 px-3 py-2 text-xs text-red-200">{error}</div> : null}
 
-      {batch?.truncated ? (
-        <div className="border-b border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-200">
-          <div>
-            Too many lanes for automatic risk assessment. Showing {batch.comparedLaneIds?.length ?? batch.maxAutoLanes ?? 15} of {batch.totalLanes ?? lanes.length} lanes.
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {lanes.map((lane) => {
-              const checked = comparisonLaneIds.includes(lane.id);
-              return (
-                <button
-                  key={lane.id}
-                  type="button"
-                  onClick={() => toggleComparisonLane(lane.id)}
-                  className={cn(
-                    "rounded border px-2 py-0.5 text-[11px]",
-                    checked
-                      ? "border-amber-300/70 bg-amber-500/25 text-amber-100"
-                      : "border-amber-700/60 bg-transparent text-amber-200/80"
-                  )}
-                >
-                  {checked ? "✓ " : ""}{lane.name}
-                </button>
-              );
-            })}
-          </div>
-          <div className="mt-2 flex items-center gap-2">
-            <span className="text-[11px] text-amber-100/90">
-              selected {comparisonLaneIds.length}/{batch.maxAutoLanes ?? 15}
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={() => void runSelectedComparison()}
-              disabled={runningSelectedCompare || comparisonLaneIds.length < 2}
-            >
-              {runningSelectedCompare ? "Computing…" : "Compare selected"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr_320px]">
+      <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr_380px]">
         <aside className="min-h-0 overflow-auto border-r border-border bg-card/20 p-2">
           <div className="mb-2 flex flex-wrap gap-1">
             <Chip
@@ -405,6 +775,7 @@ export function ConflictsPage() {
           {filteredLanes.map((lane) => {
             const status = statusByLane.get(lane.id) ?? null;
             const selected = lane.id === selectedLaneId;
+            const restack = restackByLaneId.get(lane.id) ?? null;
             return (
               <button
                 key={lane.id}
@@ -413,13 +784,22 @@ export function ConflictsPage() {
                   setSelectedLaneId(lane.id);
                   setViewMode("summary");
                 }}
-                className={`mb-2 block w-full rounded border px-2 py-2 text-left ${
+                className={cn(
+                  "mb-2 block w-full rounded border px-2 py-2 text-left",
                   selected ? "border-accent bg-accent/20" : "border-border bg-card/50 hover:bg-muted/70"
-                }`}
+                )}
               >
                 <div className="flex items-center gap-2">
-                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${statusDotClass(status?.status ?? null)}`} />
+                  <span className={cn("inline-block h-2.5 w-2.5 rounded-full", statusDotClass(status?.status ?? null))} />
                   <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
+                  {restack ? (
+                    <span
+                      className="ml-auto rounded border border-amber-700/60 bg-amber-900/20 px-1.5 py-0.5 text-[10px] text-amber-200"
+                      title={`Parent advanced; behind ${restack.behindCount} commit(s).`}
+                    >
+                      restack
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-1 text-[11px] text-muted-fg">
                   {(status?.status ?? "unknown")} · overlaps {status?.overlappingFileCount ?? 0}
@@ -430,116 +810,791 @@ export function ConflictsPage() {
         </aside>
 
         <main className="min-h-0 overflow-auto border-r border-border p-3">
-          {viewMode === "matrix" ? (
+          {selectedLane ? (
             <div className="space-y-3">
-              <RiskMatrix
-                lanes={sortedLanes}
-                entries={batch?.matrix ?? []}
-                overlaps={batch?.overlaps ?? []}
-                selectedPair={selectedPair}
-                loading={loading}
-                progress={progress}
-                onSelectPair={(pair) => {
-                  setSelectedPair(pair);
-                  setViewMode("matrix");
-                  setSelectedLaneId(pair.laneAId);
-                }}
-              />
-              {selectedPairEntry ? (
-                <div className="rounded border border-border bg-card/40 p-3 text-xs">
-                  <div className="font-semibold text-fg">
-                    Pair: {lanes.find((lane) => lane.id === selectedPairEntry.laneAId)?.name ?? selectedPairEntry.laneAId}
-                    {" vs "}
-                    {lanes.find((lane) => lane.id === selectedPairEntry.laneBId)?.name ?? selectedPairEntry.laneBId}
+              <div className="rounded border border-border bg-card/40 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <GitBranch className="h-4 w-4 text-muted-fg" />
+                      <div className="truncate text-sm font-semibold text-fg">{selectedLane.name}</div>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-fg">
+                      branch: <span className="text-fg">{selectedLane.branchRef}</span> · base: {selectedLane.baseRef}
+                      {selectedLane.parentLaneId ? (
+                        <>
+                          {" "}· parent: {lanes.find((l) => l.id === selectedLane.parentLaneId)?.name ?? selectedLane.parentLaneId}
+                        </>
+                      ) : null}
+                      {selectedLane.laneType === "primary" ? <span className="ml-2 text-[11px] text-muted-fg">(edit-protected)</span> : null}
+                    </div>
                   </div>
-                  <div className="mt-1 text-muted-fg">
-                    risk: {selectedPairEntry.riskLevel} · overlap files: {selectedPairEntry.overlapCount} · has conflict: {selectedPairEntry.hasConflict ? "yes" : "no"}
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={() => void window.ade.lanes.openFolder({ laneId: selectedLane.id })}>
+                      Open folder
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void refreshGitConflict(selectedLane.id)}
+                      disabled={gitConflictBusy}
+                      title="Refresh merge/rebase state"
+                    >
+                      <RefreshCw className={cn("h-4 w-4", gitConflictBusy && "animate-spin")} />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {selectedRestackSuggestion ? (
+                <div className="rounded border border-amber-700/60 bg-amber-900/20 p-3 text-xs">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 text-amber-200" />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-amber-100">Parent advanced: restack recommended</div>
+                      <div className="mt-1 text-amber-200/80">
+                        This lane is behind its parent by {selectedRestackSuggestion.behindCount} commit(s). Restacking early can reduce conflicts downstream.
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runRestack(selectedLane.id)}>
+                          Restack now
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void deferRestackSuggestion(selectedLane.id, 60)}>
+                          Defer 1h
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void deferRestackSuggestion(selectedLane.id, 24 * 60)}>
+                          Defer 1d
+                        </Button>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void dismissRestackSuggestion(selectedLane.id)}>
+                          Dismiss
+                        </Button>
+                      </div>
+                      <div className="mt-2 text-[11px] text-amber-200/80">
+                        What ADE will do: run a stack-aware rebase for this lane (and its children).
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}
+
+              <div className="rounded border border-border bg-card/40 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Active Merge/Rebase</div>
+                    <div className="mt-1 text-xs text-muted-fg">
+                      {gitConflictError ? (
+                        <span className="text-red-200">{gitConflictError}</span>
+                      ) : gitConflict?.inProgress ? (
+                        <span className="text-fg">
+                          {gitConflict.kind === "merge" ? "MERGE" : "REBASE"} in progress · conflicted files: {gitConflict.conflictedFiles.length}
+                        </span>
+                      ) : (
+                        <span>no merge/rebase in progress</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!gitConflict?.inProgress || !gitConflict?.canContinue || continueBusy}
+                      onClick={() => void continueMergeOrRebase()}
+                      title={gitConflict?.inProgress && !gitConflict?.canContinue ? "Resolve all conflicted files first" : "Continue"}
+                    >
+                      {continueBusy ? "Continuing..." : "Continue"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-red-700/60 text-red-200 hover:bg-red-900/20"
+                      disabled={!gitConflict?.inProgress}
+                      onClick={() => {
+                        setAbortOpen(true);
+                        setAbortConfirm("");
+                        setAbortError(null);
+                      }}
+                    >
+                      Abort...
+                    </Button>
+                  </div>
+                </div>
+
+                {continueError ? (
+                  <div className="mt-2 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{continueError}</div>
+                ) : null}
+
+                {gitConflict?.inProgress && gitConflict.conflictedFiles.length > 0 ? (
+                  <div className="mt-3">
+                    <div className="text-[11px] font-semibold text-fg">Conflicted files</div>
+                    <div className="mt-1 grid gap-1 md:grid-cols-2">
+                      {gitConflict.conflictedFiles.slice(0, 24).map((p) => (
+                        <div key={p} className="truncate rounded border border-border bg-bg/40 px-2 py-1 text-[11px] text-muted-fg" title={p}>
+                          {p}
+                        </div>
+                      ))}
+                      {gitConflict.conflictedFiles.length > 24 ? (
+                        <div className="text-[11px] text-muted-fg">… ({gitConflict.conflictedFiles.length - 24} more)</div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {mergeActive && mergeActiveSource ? (
+                  <div className="mt-3 rounded border border-amber-700/60 bg-amber-900/20 p-2 text-xs text-amber-200">
+                    Merge plan is paused: merging <span className="text-amber-100 font-semibold">{mergeActiveSource.name}</span> into <span className="text-amber-100 font-semibold">{mergeTargetLane?.name ?? mergeActive.targetLaneId}</span>.
+                    Resolve conflicts above, then click Continue.
+                  </div>
+                ) : null}
+              </div>
+
+              {viewMode === "matrix" ? (
+                <div className="space-y-3">
+                  <RiskMatrix
+                    lanes={sortedLanes}
+                    entries={batch?.matrix ?? []}
+                    overlaps={batch?.overlaps ?? []}
+                    selectedPair={selectedPair}
+                    loading={loading}
+                    progress={progress}
+                    onSelectPair={(pair) => {
+                      setSelectedPair(pair);
+                      setViewMode("matrix");
+                      setSelectedLaneId(pair.laneAId);
+                    }}
+                  />
+                  {selectedPairEntry ? (
+                    <div className="rounded border border-border bg-card/40 p-3 text-xs">
+                      <div className="font-semibold text-fg">
+                        Pair: {lanes.find((lane) => lane.id === selectedPairEntry.laneAId)?.name ?? selectedPairEntry.laneAId}
+                        {" vs "}
+                        {lanes.find((lane) => lane.id === selectedPairEntry.laneBId)?.name ?? selectedPairEntry.laneBId}
+                      </div>
+                      <div className="mt-1 text-muted-fg">
+                        risk: {selectedPairEntry.riskLevel} · overlap files: {selectedPairEntry.overlapCount} · has conflict: {selectedPairEntry.hasConflict ? "yes" : "no"}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <ConflictSummary lane={selectedLane} status={selectedStatus} overlaps={overlaps} />
+                  <MergeSimulationPanel
+                    lanes={sortedLanes}
+                    initialLaneAId={selectedLaneId}
+                    initialLaneBId={selectedPair && selectedPair.laneAId !== selectedPair.laneBId ? selectedPair.laneBId : null}
+                  />
+
+                  <div className="rounded border border-border bg-card/40 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Workflows</div>
+                    <div className="mt-2 grid gap-3 lg:grid-cols-2">
+                      <div className="rounded border border-border bg-bg/30 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-xs font-semibold text-fg">Merge one-by-one</div>
+                            <div className="mt-1 text-[11px] text-muted-fg">
+                              Merge selected lanes into a target lane, sequentially. Conflicts pause the plan.
+                            </div>
+                          </div>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={initMergePlan}>
+                            {mergePlan ? "Reset" : "Set up"}
+                          </Button>
+                        </div>
+
+                        {mergePlan ? (
+                          <div className="mt-3 space-y-2">
+                            {previewLines("What ADE will do", [
+                              "For each selected lane: run git fetch --prune in the target lane.",
+                              "Run git merge --no-edit <source-branch> in the target lane.",
+                              "If conflicts occur, you resolve them and click Continue."
+                            ])}
+
+                            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                              <span className="text-muted-fg">Target</span>
+                              <select
+                                className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                                value={mergePlan.targetLaneId}
+                                onChange={(e) => setMergePlan((prev) => (prev ? { ...prev, targetLaneId: e.target.value } : prev))}
+                              >
+                                {lanes.map((lane) => (
+                                  <option key={lane.id} value={lane.id}>
+                                    {lane.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {mergeTargetLane?.laneType === "primary" ? (
+                                <span className="rounded border border-amber-700/60 bg-amber-900/20 px-1.5 py-0.5 text-[10px] text-amber-200">
+                                  merging into primary modifies your base branch
+                                </span>
+                              ) : null}
+                            </div>
+
+                            <div className="max-h-32 overflow-auto rounded border border-border bg-bg/30 p-2 text-[11px]">
+                              {lanes
+                                .filter((lane) => lane.id !== mergePlan.targetLaneId && lane.laneType !== "primary")
+                                .map((lane) => {
+                                  const checked = mergePlan.sourceLaneIds.includes(lane.id);
+                                  return (
+                                    <label key={lane.id} className="flex items-center gap-2 py-0.5">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={(e) =>
+                                          setMergePlan((prev) => {
+                                            if (!prev) return prev;
+                                            const next = new Set(prev.sourceLaneIds);
+                                            if (e.target.checked) next.add(lane.id);
+                                            else next.delete(lane.id);
+                                            return { ...prev, sourceLaneIds: Array.from(next), cursor: 0, activeMerge: null };
+                                          })
+                                        }
+                                      />
+                                      <span className="truncate text-fg" title={lane.branchRef}>
+                                        {lane.name}
+                                      </span>
+                                      <span className="ml-auto text-muted-fg">depth {lane.stackDepth}</span>
+                                    </label>
+                                  );
+                                })}
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2 text-[11px] text-muted-fg">
+                              <span>
+                                order: {orderedMergeSources.length} lane(s)
+                              </span>
+                              <span>
+                                step: {mergePlan.cursor + 1}/{Math.max(1, orderedMergeSources.length)}
+                              </span>
+                            </div>
+
+                            {mergePlanError ? (
+                              <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{mergePlanError}</div>
+                            ) : null}
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                disabled={mergePlanBusy || orderedMergeSources.length === 0 || mergePlan.cursor >= orderedMergeSources.length || !!mergePlan.activeMerge}
+                                onClick={startNextMerge}
+                              >
+                                {mergePlanBusy ? "Working..." : "Merge next"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!mergePlan.activeMerge}
+                                onClick={() => setMergePlan((prev) => (prev ? { ...prev, activeMerge: null } : prev))}
+                                title="Only use this if you handled the merge outside ADE and want to advance the plan."
+                              >
+                                Mark merge unblocked
+                              </Button>
+                            </div>
+
+                            {mergePlan.activeMerge ? (
+                              <div className="mt-2 text-[11px] text-amber-200/90">
+                                Merge is blocked on conflicts. Use the Active Merge/Rebase section above.
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="mt-3 rounded border border-dashed border-border bg-bg/30 p-3 text-xs text-muted-fg">
+                            Set up a merge plan to merge lanes sequentially.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="rounded border border-border bg-bg/30 p-3">
+                        <div className="text-xs font-semibold text-fg">Integration lane</div>
+                        <div className="mt-1 text-[11px] text-muted-fg">
+                          Create a fresh lane from a base (usually Primary), merge lanes into it, resolve conflicts once, then merge it back.
+                        </div>
+
+                        {previewLines("What ADE will do", [
+                          "Create a new child lane from the base lane's current HEAD.",
+                          "You then merge lanes into that integration lane using the merge plan workflow.",
+                          "This avoids editing Primary until you're ready."
+                        ])}
+
+                        <div className="mt-3 space-y-2">
+                          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className="text-muted-fg">Base</span>
+                            <select
+                              className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                              value={integrationBaseLaneId}
+                              onChange={(e) => setIntegrationBaseLaneId(e.target.value)}
+                            >
+                              {lanes.map((lane) => (
+                                <option key={lane.id} value={lane.id}>
+                                  {lane.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <input
+                              className="h-7 flex-1 rounded border border-border bg-bg px-2 text-[11px] text-fg"
+                              value={integrationName}
+                              onChange={(e) => setIntegrationName(e.target.value)}
+                              placeholder="Integration lane name"
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => void createIntegrationLane()}
+                              disabled={integrationBusy}
+                            >
+                              {integrationBusy ? "Creating..." : "Create"}
+                            </Button>
+                          </div>
+
+                          {integrationError ? (
+                            <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{integrationError}</div>
+                          ) : null}
+
+                          {integrationLaneId ? (
+                            <div className="rounded border border-emerald-800 bg-emerald-900/20 p-2 text-xs text-emerald-200">
+                              <div className="flex items-center gap-2">
+                                <CheckCircle2 className="h-4 w-4" />
+                                Integration lane created.
+                              </div>
+                              <div className="mt-1 text-[11px] text-emerald-200/80">Target lane is now set to that integration lane.</div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="rounded border border-border bg-bg/30 p-3 lg:col-span-2">
+                        <div className="text-xs font-semibold text-fg">Pre-align lanes</div>
+                        <div className="mt-1 text-[11px] text-muted-fg">When parents advance, restack children early to reduce conflicts.</div>
+                        {restackSuggestions.length === 0 ? (
+                          <div className="mt-2 rounded border border-dashed border-border bg-bg/30 p-3 text-xs text-muted-fg">
+                            No restack suggestions right now.
+                          </div>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            {restackSuggestions.slice(0, 8).map((s) => {
+                              const lane = lanes.find((l) => l.id === s.laneId);
+                              const parent = lanes.find((l) => l.id === s.parentLaneId);
+                              return (
+                                <div key={s.laneId} className="rounded border border-border bg-bg/40 p-2 text-xs">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-fg font-semibold">{lane?.name ?? s.laneId}</div>
+                                      <div className="mt-0.5 text-[11px] text-muted-fg">
+                                        behind <span className="text-fg">{s.behindCount}</span> · parent {parent?.name ?? s.parentLaneId}
+                                        {s.hasPr ? <span className="ml-2 rounded border border-border px-1.5 py-0.5 text-[10px]">PR</span> : null}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runRestack(s.laneId)}>
+                                        Restack
+                                      </Button>
+                                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void deferRestackSuggestion(s.laneId, 60)}>
+                                        Defer 1h
+                                      </Button>
+                                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void dismissRestackSuggestion(s.laneId)}>
+                                        Dismiss
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
-            <div className="space-y-3">
-              <ConflictSummary lane={selectedLane} status={selectedStatus} overlaps={overlaps} />
-              <MergeSimulationPanel
-                lanes={sortedLanes}
-                initialLaneAId={selectedLaneId}
-                initialLaneBId={selectedPair && selectedPair.laneAId !== selectedPair.laneBId ? selectedPair.laneBId : null}
-              />
+            <div className="rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+              Select a lane to inspect conflicts.
             </div>
           )}
         </main>
 
         <aside className="min-h-0 overflow-auto bg-card/10 p-3">
           <div className="rounded border border-border bg-card/50 p-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Resolution Proposals</div>
-            <div className="mt-2 flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!selectedLaneId || proposalBusy}
-                onClick={() => void requestProposal()}
-              >
-                {proposalBusy ? "Working..." : "Generate Proposal"}
-              </Button>
-            </div>
-            {proposalError ? (
-              <div className="mt-2 rounded border border-red-700 bg-red-900/30 px-2 py-1 text-xs text-red-200">
-                {proposalError}
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">AI Conflict Assistant</div>
+                <div className="mt-1 text-xs text-muted-fg">
+                  {aiEnabled ? (
+                    <span>
+                      provider: <span className="text-fg">{providerMode}</span>
+                    </span>
+                  ) : (
+                    <span>Enable Hosted or BYOK to generate proposals.</span>
+                  )}
+                </div>
               </div>
-            ) : null}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[11px]"
+                  disabled={!selectedLaneId}
+                  onClick={() => {
+                    setProposalPreview(null);
+                    setPrepareError(null);
+                    setSendError(null);
+                  }}
+                  title="Clear preview"
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
 
             {!selectedLaneId ? (
-              <div className="mt-2 text-xs text-muted-fg">Select a lane to view hosted proposals.</div>
-            ) : proposals.length === 0 ? (
-              <div className="mt-2 text-xs text-muted-fg">No proposals for this lane yet.</div>
+              <div className="mt-3 rounded border border-dashed border-border bg-bg/30 p-3 text-xs text-muted-fg">
+                Select a lane.
+              </div>
             ) : (
-              <div className="mt-2 space-y-2">
-                {proposals.map((proposal) => (
-                  <div key={proposal.id} className="rounded border border-border bg-card/40 p-2">
-                    <div className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="text-fg">{proposal.source}</span>
-                      <span className="text-muted-fg">
-                        {proposal.confidence != null
-                          ? `confidence ${Math.round(proposal.confidence * 100)}%`
-                          : "confidence n/a"}
-                      </span>
+              <div className="mt-3 space-y-3">
+                {previewLines("What ADE will do", [
+                  "Refresh deterministic packs (lane pack + conflict pack).",
+                  "Build a bounded context (up to 6 files, diff excerpts, and conflict-pack excerpt).",
+                  "Only after you click Send: submit that context to Hosted/BYOK for a diff proposal."
+                ])}
+
+                <div className="rounded border border-border bg-bg/30 p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-muted-fg">Peer context</div>
+                    <select
+                      className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                      value={proposalPeerLaneId ?? ""}
+                      onChange={(e) => setProposalPeerLaneId(e.target.value ? e.target.value : null)}
+                      title="Pick which peer/base to include in diff context"
+                    >
+                      <option value="">(use base / stack parent)</option>
+                      {suggestedPeerEntries
+                        .filter((e) => e.peerId)
+                        .slice(0, 18)
+                        .map((entry) => (
+                          <option key={entry.peerId!} value={entry.peerId!}>
+                            {entry.peerName} ({entry.count} files)
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={!aiEnabled || prepareBusy}
+                    onClick={() => void runPrepareProposal()}
+                  >
+                    {prepareBusy ? "Preparing..." : "Prepare preview"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!proposalPreview || sendBusy}
+                    onClick={() => void runSendProposal()}
+                    title={proposalPreview?.existingProposalId ? "This exact context already has a proposal; clicking will reuse it." : "Send to AI"}
+                  >
+                    {sendBusy ? "Sending..." : proposalPreview?.existingProposalId ? "Reuse proposal" : "Send to AI"}
+                  </Button>
+                </div>
+
+                {prepareError ? (
+                  <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{prepareError}</div>
+                ) : null}
+                {sendError ? (
+                  <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{sendError}</div>
+                ) : null}
+
+                {proposalPreview ? (
+                  <div className="rounded border border-border bg-bg/30 p-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-fg font-semibold">Preview</div>
+                      <div className="text-[11px] text-muted-fg">context {formatShortSha(proposalPreview.contextDigest)}</div>
                     </div>
-                    <div className="mt-1 text-[11px] text-muted-fg">status: {proposal.status}</div>
-                    {proposal.explanation.trim().length ? (
-                      <div className="mt-1 text-xs text-fg whitespace-pre-wrap">
-                        {proposal.explanation.slice(0, 300)}
-                        {proposal.explanation.length > 300 ? "..." : ""}
+                    <div className="mt-1 text-[11px] text-muted-fg">
+                      files: {proposalPreview.stats.fileCount} · approx chars: {proposalPreview.stats.approxChars.toLocaleString()}
+                      {proposalPreview.activeConflict.inProgress ? (
+                        <>
+                          {" "}· active {proposalPreview.activeConflict.kind}
+                        </>
+                      ) : null}
+                    </div>
+                    {proposalPreview.warnings.length ? (
+                      <div className="mt-2 rounded border border-amber-700/60 bg-amber-900/20 px-2 py-1 text-[11px] text-amber-200">
+                        {proposalPreview.warnings.slice(0, 3).join(" ")}
                       </div>
                     ) : null}
-                    {proposal.diffPatch.trim().length ? (
-                      <pre className="mt-1 max-h-28 overflow-auto rounded border border-border bg-bg/50 p-1 text-[10px] text-fg">
-                        {proposal.diffPatch.slice(0, 1200)}
-                      </pre>
+
+                    {proposalPreview.conflictPackExcerpt ? (
+                      <div className="mt-2">
+                        <div className="text-[11px] font-semibold text-fg">Conflict pack excerpt</div>
+                        <pre className="mt-1 max-h-40 overflow-auto rounded border border-border bg-bg/50 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                          {proposalPreview.conflictPackExcerpt}
+                        </pre>
+                      </div>
                     ) : null}
-                    <div className="mt-2 flex items-center gap-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={proposalBusy || proposal.status !== "pending"}
-                        onClick={() => void applyProposal(proposal.id)}
-                      >
-                        Apply
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={proposalBusy || proposal.status !== "applied"}
-                        onClick={() => void undoProposal(proposal.id)}
-                      >
-                        Undo
-                      </Button>
-                    </div>
+
+                    {proposalPreview.files.length ? (
+                      <div className="mt-2">
+                        <div className="text-[11px] font-semibold text-fg">Included files</div>
+                        <div className="mt-1 space-y-2">
+                          {proposalPreview.files.map((f) => (
+                            <details key={f.path} className="rounded border border-border bg-bg/40 p-2">
+                              <summary className="cursor-pointer text-[11px] text-fg">
+                                {f.path} <span className="text-muted-fg">({f.includeReason})</span>
+                              </summary>
+                              {f.markerPreview ? (
+                                <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                  {f.markerPreview}
+                                </pre>
+                              ) : null}
+                              {f.laneDiff ? (
+                                <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                  {f.laneDiff}
+                                </pre>
+                              ) : null}
+                              {f.peerDiff ? (
+                                <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                  {f.peerDiff}
+                                </pre>
+                              ) : null}
+                            </details>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
-                ))}
+                ) : null}
+
+                <div className="rounded border border-border bg-bg/30 p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-fg font-semibold">Proposals</div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={proposalBusy || !selectedLaneId}
+                      onClick={() => selectedLaneId && void loadProposals(selectedLaneId)}
+                    >
+                      Refresh
+                    </Button>
+                  </div>
+
+                  {proposalError ? (
+                    <div className="mt-2 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{proposalError}</div>
+                  ) : null}
+
+                  {proposals.length === 0 ? (
+                    <div className="mt-2 text-xs text-muted-fg">No proposals yet.</div>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {proposals.map((proposal) => (
+                        <div key={proposal.id} className="rounded border border-border bg-card/40 p-2">
+                          <div className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="text-fg">{proposal.source}</span>
+                            <span className="text-muted-fg">
+                              {proposal.confidence != null ? `confidence ${Math.round(proposal.confidence * 100)}%` : "confidence n/a"}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-fg">status: {proposal.status}</div>
+
+                          {proposal.explanation.trim().length ? (
+                            <div className="mt-1 whitespace-pre-wrap text-xs text-fg">
+                              {proposal.explanation.slice(0, 380)}
+                              {proposal.explanation.length > 380 ? "..." : ""}
+                            </div>
+                          ) : null}
+
+                          <div className="mt-2 rounded border border-border bg-bg/40 p-2">
+                            <div className="mb-1 text-[11px] font-semibold text-fg">Apply options</div>
+                            <div className="flex flex-wrap gap-2 text-[11px] text-muted-fg">
+                              {(["unstaged", "staged", "commit"] as const)
+                                .filter((mode) => !(gitConflict?.inProgress && mode === "commit"))
+                                .map((mode) => (
+                                  <label key={mode} className="inline-flex items-center gap-1">
+                                    <input type="radio" checked={applyMode === mode} onChange={() => setApplyMode(mode)} />
+                                    <span>{mode}</span>
+                                  </label>
+                                ))}
+                            </div>
+                            {applyMode === "commit" && !(gitConflict?.inProgress ?? false) ? (
+                              <input
+                                className="mt-2 h-7 w-full rounded border border-border bg-bg px-2 text-[11px] text-fg"
+                                value={commitMessage}
+                                onChange={(e) => setCommitMessage(e.target.value)}
+                                placeholder="Commit message"
+                              />
+                            ) : null}
+                            {gitConflict?.inProgress && applyMode === "commit" ? (
+                              <div className="mt-2 text-[11px] text-muted-fg">
+                                Commit apply is disabled during an active merge/rebase. Use staged/unstaged, then Continue.
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={proposalBusy || proposal.status !== "pending"}
+                              onClick={() => void applyProposal(proposal.id, false)}
+                            >
+                              Apply
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={proposalBusy || proposal.status !== "pending" || !(gitConflict?.inProgress ?? false)}
+                              onClick={() => void applyProposal(proposal.id, true)}
+                              title="Apply and then attempt to continue merge/rebase if possible"
+                            >
+                              Apply + Continue
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={proposalBusy || proposal.status !== "applied"}
+                              onClick={() => void undoProposal(proposal.id)}
+                            >
+                              Undo
+                            </Button>
+                          </div>
+
+                          {proposal.diffPatch.trim().length ? (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-[11px] text-muted-fg">diff patch</summary>
+                              <pre className="mt-1 max-h-40 overflow-auto rounded border border-border bg-bg/50 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                {proposal.diffPatch.slice(0, 2000)}
+                                {proposal.diffPatch.length > 2000 ? "\n...(truncated)...\n" : ""}
+                              </pre>
+                            </details>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {proposalError ? (
+                    <div className="mt-2 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{proposalError}</div>
+                  ) : null}
+                </div>
               </div>
             )}
           </div>
+
+          <Dialog.Root open={abortOpen} onOpenChange={(open) => { setAbortOpen(open); setAbortError(null); }}>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <Dialog.Title className="text-sm font-semibold text-fg">Abort merge/rebase</Dialog.Title>
+                  <Dialog.Close asChild>
+                    <Button variant="ghost" size="sm" disabled={abortBusy}>
+                      Close
+                    </Button>
+                  </Dialog.Close>
+                </div>
+
+                <div className="rounded border border-red-800 bg-red-900/25 p-2 text-xs text-red-200">
+                  Aborting discards the in-progress merge/rebase state for the selected lane.
+                </div>
+
+                {previewLines("What ADE will do", [
+                  gitConflict?.kind === "rebase" ? "Run: git rebase --abort" : "Run: git merge --abort",
+                  "Leave your branch HEAD unchanged, but drop the in-progress operation."
+                ])}
+
+                <div className="mt-3 rounded border border-border bg-bg/40 p-2 text-xs">
+                  <div className="text-muted-fg">Type <span className="text-fg font-semibold">ABORT</span> to confirm.</div>
+                  <input
+                    className="mt-2 h-8 w-full rounded border border-border bg-bg px-2 text-xs text-fg"
+                    value={abortConfirm}
+                    onChange={(e) => setAbortConfirm(e.target.value)}
+                    placeholder="ABORT"
+                  />
+                </div>
+
+                {abortError ? (
+                  <div className="mt-3 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{abortError}</div>
+                ) : null}
+
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={abortBusy}
+                    onClick={() => {
+                      setAbortOpen(false);
+                      setAbortConfirm("");
+                      setAbortError(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-red-700/60 text-red-200 hover:bg-red-900/20"
+                    disabled={abortBusy}
+                    onClick={() => void runAbort()}
+                  >
+                    {abortBusy ? "Aborting..." : "Abort"}
+                  </Button>
+                </div>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
+
+          <Dialog.Root open={mergeConfirmOpen} onOpenChange={(open) => { setMergeConfirmOpen(open); }}>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <Dialog.Title className="text-sm font-semibold text-fg">Confirm merge</Dialog.Title>
+                  <Dialog.Close asChild>
+                    <Button variant="ghost" size="sm" disabled={mergePlanBusy}>
+                      Close
+                    </Button>
+                  </Dialog.Close>
+                </div>
+
+                {pendingMerge ? (
+                  (() => {
+                    const byId = lanesById(lanes);
+                    const target = byId.get(pendingMerge.targetLaneId);
+                    const source = byId.get(pendingMerge.sourceLaneId);
+                    const bullets = [
+                      `Target lane: ${target?.name ?? pendingMerge.targetLaneId}`,
+                      `Run: git fetch --prune`,
+                      `Run: git merge --no-edit ${source?.branchRef ?? pendingMerge.sourceLaneId}`,
+                      "If conflicts occur, ADE will keep the merge in progress and surface conflicted files."
+                    ];
+                    return (
+                      <div className="space-y-3">
+                        {previewLines("What ADE will do", bullets)}
+                        <div className="flex items-center justify-end gap-2">
+                          <Button size="sm" variant="outline" disabled={mergePlanBusy} onClick={() => setMergeConfirmOpen(false)}>
+                            Cancel
+                          </Button>
+                          <Button size="sm" variant="primary" disabled={mergePlanBusy} onClick={() => void runPendingMerge()}>
+                            {mergePlanBusy ? "Merging..." : "Run merge"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="text-xs text-muted-fg">No pending merge.</div>
+                )}
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
         </aside>
       </div>
     </div>

@@ -22,6 +22,7 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   ConflictProposal,
+  ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
   CreateLaneArgs,
@@ -134,7 +135,9 @@ import type {
   RenameLaneArgs,
   RestackArgs,
   RestackResult,
+  RestackSuggestion,
   RiskMatrixEntry,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
@@ -153,6 +156,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
+import type { createRestackSuggestionService } from "../lanes/restackSuggestionService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createDiffService } from "../diffs/diffService";
@@ -191,6 +195,7 @@ export type AppContext = {
   onboardingService: ReturnType<typeof createOnboardingService>;
   ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
+  restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -627,6 +632,24 @@ export function registerIpc({
     return await ctx.laneService.restack(arg);
   });
 
+  ipcMain.handle(IPC.lanesListRestackSuggestions, async (): Promise<RestackSuggestion[]> => {
+    const ctx = getCtx();
+    if (!ctx.restackSuggestionService) return [];
+    return await ctx.restackSuggestionService.listSuggestions();
+  });
+
+  ipcMain.handle(IPC.lanesDismissRestackSuggestion, async (_event, arg: { laneId: string }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.restackSuggestionService) return;
+    await ctx.restackSuggestionService.dismiss({ laneId: arg.laneId });
+  });
+
+  ipcMain.handle(IPC.lanesDeferRestackSuggestion, async (_event, arg: { laneId: string; minutes: number }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.restackSuggestionService) return;
+    await ctx.restackSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
+  });
+
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
     const worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
@@ -912,6 +935,11 @@ export function registerIpc({
   ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
     const ctx = getCtx();
     return await ctx.conflictService.listProposals({ laneId: arg.laneId });
+  });
+
+  ipcMain.handle(IPC.conflictsPrepareProposal, async (_event, arg: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.prepareProposal(arg);
   });
 
   ipcMain.handle(IPC.conflictsRequestProposal, async (_event, arg: RequestConflictProposalArgs): Promise<ConflictProposal> => {

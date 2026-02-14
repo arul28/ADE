@@ -27,6 +27,7 @@ import type {
   BatchAssessmentResult,
   ConflictStatus,
   ConflictProposal,
+  ConflictProposalPreview,
   GraphFilterState,
   GraphLayoutPreset,
   GraphLayoutSnapshot,
@@ -138,6 +139,8 @@ type ConflictPanelState = {
   result: MergeSimulationResult | null;
   error: string | null;
   applyLaneId: string;
+  preview: ConflictProposalPreview | null;
+  preparing: boolean;
   proposal: ConflictProposal | null;
   proposing: boolean;
   applyMode: "unstaged" | "staged" | "commit";
@@ -1600,6 +1603,8 @@ function GraphInner() {
         result: null,
         error: null,
         applyLaneId,
+        preview: null,
+        preparing: false,
         proposal: null,
         proposing: false,
         applyMode: "unstaged",
@@ -3507,11 +3512,16 @@ function GraphInner() {
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-muted-fg">Apply to:</span>
-              <select
-                className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
-                value={conflictPanel.applyLaneId}
-                onChange={(e) => setConflictPanel((prev) => (prev ? { ...prev, applyLaneId: e.target.value } : prev))}
-              >
+	              <select
+	                className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+	                value={conflictPanel.applyLaneId}
+	                onChange={(e) =>
+	                  setConflictPanel((prev) =>
+	                    prev
+	                      ? { ...prev, applyLaneId: e.target.value, preview: null, proposal: null, error: null }
+	                      : prev
+	                  )}
+	              >
                 <option value={conflictPanel.laneAId}>{laneById.get(conflictPanel.laneAId)?.name ?? conflictPanel.laneAId}</option>
                 <option value={conflictPanel.laneBId}>{laneById.get(conflictPanel.laneBId)?.name ?? conflictPanel.laneBId}</option>
               </select>
@@ -3524,14 +3534,29 @@ function GraphInner() {
                 size="sm"
                 variant="primary"
                 className="h-7 px-2 text-[11px]"
-                disabled={conflictPanel.proposing}
+                disabled={conflictPanel.preparing || conflictPanel.proposing}
                 onClick={() => {
                   const panel = conflictPanel;
                   const laneId = panel.applyLaneId;
                   const peerLaneId = laneId === panel.laneAId ? panel.laneBId : panel.laneAId;
+
+                  if (!panel.preview) {
+                    setConflictPanel((prev) => (prev ? { ...prev, preparing: true, error: null, preview: null, proposal: null } : prev));
+                    window.ade.conflicts
+                      .prepareProposal({ laneId, peerLaneId })
+                      .then((preview) => {
+                        setConflictPanel((prev) => (prev ? { ...prev, preparing: false, preview } : prev));
+                      })
+                      .catch((error) => {
+                        const message = error instanceof Error ? error.message : String(error);
+                        setConflictPanel((prev) => (prev ? { ...prev, preparing: false, error: message } : prev));
+                      });
+                    return;
+                  }
+
                   setConflictPanel((prev) => (prev ? { ...prev, proposing: true, error: null } : prev));
                   window.ade.conflicts
-                    .requestProposal({ laneId, peerLaneId })
+                    .requestProposal({ laneId, peerLaneId, contextDigest: panel.preview.contextDigest })
                     .then((proposal) => {
                       setConflictPanel((prev) => (prev ? { ...prev, proposing: false, proposal } : prev));
                     })
@@ -3541,10 +3566,66 @@ function GraphInner() {
                     });
                 }}
               >
-                {conflictPanel.proposing ? "Resolving…" : "Resolve with AI"}
+                {conflictPanel.preparing
+                  ? "Preparing…"
+                  : conflictPanel.proposing
+                    ? "Resolving…"
+                    : conflictPanel.preview
+                      ? "Send to AI"
+                      : "Prepare AI"}
               </Button>
             </div>
           </div>
+
+          {conflictPanel.preview ? (
+            <div className="mb-2 rounded border border-border bg-bg/40 p-2 text-[11px] text-muted-fg">
+              <div className="mb-1 font-semibold text-fg">AI preview</div>
+              <div>
+                files: <span className="text-fg">{conflictPanel.preview.stats.fileCount}</span> · approx chars:{" "}
+                <span className="text-fg">{conflictPanel.preview.stats.approxChars.toLocaleString()}</span>
+              </div>
+              {conflictPanel.preview.warnings.length ? (
+                <div className="mt-1 text-amber-200/90">
+                  {conflictPanel.preview.warnings.slice(0, 2).join(" ")}
+                </div>
+              ) : null}
+              {conflictPanel.preview.conflictPackExcerpt ? (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-[11px] text-muted-fg">conflict pack excerpt</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                    {conflictPanel.preview.conflictPackExcerpt}
+                  </pre>
+                </details>
+              ) : null}
+              {conflictPanel.preview.files.length ? (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-[11px] text-muted-fg">included files</summary>
+                  <div className="mt-1 space-y-2">
+                    {conflictPanel.preview.files.slice(0, 6).map((f) => (
+                      <details key={f.path} className="rounded border border-border bg-bg/60 p-2">
+                        <summary className="cursor-pointer text-[11px] text-fg">{f.path}</summary>
+                        {f.markerPreview ? (
+                          <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/70 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                            {f.markerPreview}
+                          </pre>
+                        ) : null}
+                        {f.laneDiff ? (
+                          <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/70 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                            {f.laneDiff}
+                          </pre>
+                        ) : null}
+                        {f.peerDiff ? (
+                          <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/70 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                            {f.peerDiff}
+                          </pre>
+                        ) : null}
+                      </details>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          ) : null}
 
           {conflictPanel.proposal ? (
             <div className="space-y-2">

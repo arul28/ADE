@@ -225,9 +225,43 @@ export type ConflictProposal = {
   updatedAt: string;
 };
 
-export type RequestConflictProposalArgs = {
+export type ConflictProposalProvider = "hosted" | "byok";
+
+export type ConflictProposalPreviewFile = {
+  path: string;
+  includeReason: "conflicted" | "overlap";
+  markerPreview: string | null;
+  laneDiff: string;
+  peerDiff: string | null;
+};
+
+export type ConflictProposalPreviewStats = {
+  approxChars: number;
+  conflictPackChars: number;
+  fileCount: number;
+};
+
+export type ConflictProposalPreview = {
+  laneId: string;
+  peerLaneId: string | null;
+  provider: ConflictProposalProvider;
+  preparedAt: string;
+  contextDigest: string;
+  activeConflict: GitConflictState;
+  conflictPackExcerpt: string | null;
+  files: ConflictProposalPreviewFile[];
+  stats: ConflictProposalPreviewStats;
+  warnings: string[];
+  existingProposalId: string | null;
+};
+
+export type PrepareConflictProposalArgs = {
   laneId: string;
   peerLaneId?: string | null;
+};
+
+export type RequestConflictProposalArgs = PrepareConflictProposalArgs & {
+  contextDigest: string;
 };
 
 export type ApplyConflictProposalArgs = {
@@ -659,6 +693,23 @@ export type RestackResult = {
   restackedLanes: string[];
   failedLaneId: string | null;
   error: string | null;
+};
+
+export type RestackSuggestion = {
+  laneId: string;
+  parentLaneId: string;
+  parentHeadSha: string;
+  behindCount: number;
+  lastSuggestedAt: string;
+  deferredUntil: string | null;
+  dismissedAt: string | null;
+  hasPr: boolean;
+};
+
+export type RestackSuggestionsEventPayload = {
+  type: "restack-suggestions-updated";
+  computedAt: string;
+  suggestions: RestackSuggestion[];
 };
 
 export type OpenLaneFolderArgs = {

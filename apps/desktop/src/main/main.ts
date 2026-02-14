@@ -34,6 +34,7 @@ import { createOnboardingService } from "./services/onboarding/onboardingService
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createCiService } from "./services/ci/ciService";
+import { createRestackSuggestionService } from "./services/lanes/restackSuggestionService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -144,6 +145,7 @@ app.whenReady().then(async () => {
     const operationService = createOperationService({ db, projectId });
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null = null;
+    let restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -154,6 +156,7 @@ app.whenReady().then(async () => {
       onHeadChanged: ({ laneId, reason, preHeadSha, postHeadSha }) => {
         jobEngine?.onHeadChanged({ laneId, reason });
         automationService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
+        void restackSuggestionService?.onParentHeadChanged({ laneId, reason, preHeadSha, postHeadSha }).catch(() => { });
       }
 	    });
 	    await laneService.ensurePrimaryLane();
@@ -201,6 +204,25 @@ app.whenReady().then(async () => {
       projectConfigService
     });
 
+    restackSuggestionService = createRestackSuggestionService({
+      db,
+      logger,
+      projectId,
+      laneService,
+      onEvent: (event) => broadcast(IPC.lanesRestackSuggestionsEvent, event)
+    });
+    // Prime suggestions once on init so the UI can show them without waiting for a head change.
+    void restackSuggestionService
+      .listSuggestions()
+      .then((suggestions) =>
+        broadcast(IPC.lanesRestackSuggestionsEvent, {
+          type: "restack-suggestions-updated",
+          computedAt: new Date().toISOString(),
+          suggestions
+        })
+      )
+      .catch(() => { });
+
     const hostedAgentService = createHostedAgentService({
       logger,
       projectId,
@@ -234,6 +256,7 @@ app.whenReady().then(async () => {
       projectRoot,
       laneService,
       projectConfigService,
+      packService,
       operationService,
       hostedAgentService,
       byokLlmService,
@@ -305,6 +328,7 @@ app.whenReady().then(async () => {
         jobEngine.onHeadChanged({ laneId, reason });
         // Commit-style trigger for automation rules (run-tests, sync-to-mirror, etc.).
         automationService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
+        void restackSuggestionService?.onParentHeadChanged({ laneId, reason, preHeadSha, postHeadSha }).catch(() => { });
       }
     });
 
@@ -369,6 +393,7 @@ app.whenReady().then(async () => {
       agentToolsService,
       onboardingService,
       laneService,
+      restackSuggestionService,
       sessionService,
       ptyService,
       diffService,

@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { runGit, runGitOrThrow } from "./git";
+import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
   GitCherryPickArgs,
@@ -68,31 +68,6 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
   if (res.exitCode !== 0) return null;
   const dir = res.stdout.trim();
   return dir.length ? dir : null;
-}
-
-function detectConflictKind(gitDir: string): GitConflictState["kind"] {
-  try {
-    if (fs.existsSync(path.join(gitDir, "rebase-apply")) || fs.existsSync(path.join(gitDir, "rebase-merge"))) {
-      return "rebase";
-    }
-    if (fs.existsSync(path.join(gitDir, "MERGE_HEAD"))) {
-      return "merge";
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
-function parseNameOnly(stdout: string): string[] {
-  return Array.from(
-    new Set(
-      stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
 }
 
 export function createGitOperationsService({
@@ -214,12 +189,36 @@ export function createGitOperationsService({
 
     await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
 
+    const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
+      const gitDir = await getAbsoluteGitDir(lane.worktreePath);
+      if (!gitDir) return false;
+      const kind = detectConflictKind(gitDir);
+      if (kind !== expected) return false;
+      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      if (unmergedRes.exitCode !== 0) return false;
+      return parseNameOnly(unmergedRes.stdout).length > 0;
+    };
+
     if (mode === "rebase") {
-      await runGitOrThrow(["rebase", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-      return;
+      const res = await runGit(["rebase", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+      if (res.exitCode === 0) return;
+      if (await treatConflictAsSuccess("rebase")) {
+        logger.info("git.sync_rebase_conflict", { laneRef: lane.branchRef, baseRef });
+        return;
+      }
+      throw new Error((res.stderr || res.stdout).trim() || "Failed to rebase");
     }
 
-    await runGitOrThrow(["merge", "--no-edit", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    const res = await runGit(["merge", "--no-edit", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    if (res.exitCode === 0) return;
+    if (await treatConflictAsSuccess("merge")) {
+      logger.info("git.sync_merge_conflict", { laneRef: lane.branchRef, baseRef });
+      return;
+    }
+    throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
 
   return {

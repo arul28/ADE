@@ -7,6 +7,7 @@ import type {
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
   ConflictProposal,
+  ConflictProposalPreview,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -139,8 +140,11 @@ import type {
   ReparentLaneResult,
   RestackArgs,
   RestackResult,
+  RestackSuggestion,
+  RestackSuggestionsEventPayload,
   RiskMatrixEntry,
   RunTestSuiteArgs,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   RunConflictPredictionArgs,
   SessionDeltaSummary,
@@ -225,6 +229,10 @@ declare global {
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
         restack: (args: RestackArgs) => Promise<RestackResult>;
+        listRestackSuggestions: () => Promise<RestackSuggestion[]>;
+        dismissRestackSuggestion: (args: { laneId: string }) => Promise<void>;
+        deferRestackSuggestion: (args: { laneId: string; minutes: number }) => Promise<void>;
+        onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
@@ -294,6 +302,7 @@ declare global {
         runPrediction: (args?: RunConflictPredictionArgs) => Promise<BatchAssessmentResult>;
         getBatchAssessment: () => Promise<BatchAssessmentResult>;
         listProposals: (laneId: string) => Promise<ConflictProposal[]>;
+        prepareProposal: (args: PrepareConflictProposalArgs) => Promise<ConflictProposalPreview>;
         requestProposal: (args: RequestConflictProposalArgs) => Promise<ConflictProposal>;
         applyProposal: (args: ApplyConflictProposalArgs) => Promise<ConflictProposal>;
         undoProposal: (args: UndoConflictProposalArgs) => Promise<ConflictProposal>;

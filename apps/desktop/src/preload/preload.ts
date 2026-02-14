@@ -21,6 +21,7 @@ import type {
   AutomationSimulateResult,
   AutomationsEventPayload,
   ConflictProposal,
+  ConflictProposalPreview,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -137,6 +138,7 @@ import type {
   PtyExitEvent,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   UndoConflictProposalArgs,
   ReadTranscriptTailArgs,
@@ -145,6 +147,8 @@ import type {
   ReparentLaneResult,
   RestackArgs,
   RestackResult,
+  RestackSuggestion,
+  RestackSuggestionsEventPayload,
   UpdateLaneAppearanceArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
@@ -242,6 +246,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
     getChildren: async (laneId: string): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
     restack: async (args: RestackArgs): Promise<RestackResult> => ipcRenderer.invoke(IPC.lanesRestack, args),
+    listRestackSuggestions: async (): Promise<RestackSuggestion[]> => ipcRenderer.invoke(IPC.lanesListRestackSuggestions),
+    dismissRestackSuggestion: async (args: { laneId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDismissRestackSuggestion, args),
+    deferRestackSuggestion: async (args: { laneId: string; minutes: number }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDeferRestackSuggestion, args),
+    onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RestackSuggestionsEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.lanesRestackSuggestionsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesRestackSuggestionsEvent, listener);
+    },
     openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
   },
   sessions: {
@@ -345,6 +359,8 @@ contextBridge.exposeInMainWorld("ade", {
     getBatchAssessment: async (): Promise<BatchAssessmentResult> => ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
     listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
       ipcRenderer.invoke(IPC.conflictsListProposals, { laneId }),
+    prepareProposal: async (args: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> =>
+      ipcRenderer.invoke(IPC.conflictsPrepareProposal, args),
     requestProposal: async (args: RequestConflictProposalArgs): Promise<ConflictProposal> =>
       ipcRenderer.invoke(IPC.conflictsRequestProposal, args),
     applyProposal: async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> =>
