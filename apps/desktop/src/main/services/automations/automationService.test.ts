@@ -195,7 +195,7 @@ describe("automationService integration", () => {
     expect(String(mapped[0]?.output ?? "")).toContain("hello");
   });
 
-  it("blocks sync-to-mirror without calling hosted services", async () => {
+  it("skips sync-to-mirror when hosted mode isn't enabled", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -238,12 +238,13 @@ describe("automationService integration", () => {
     });
 
     const run = await service.triggerManually({ id: "mirror" });
-    expect(run.status).toBe("failed");
+    expect(run.status).toBe("succeeded");
 
-    const actionRows = raw.exec("select status, error_message from automation_action_results");
+    const actionRows = raw.exec("select status, error_message, output from automation_action_results");
     const mapped = mapExecRows(actionRows);
-    expect(String(mapped[0]?.status)).toBe("failed");
-    expect(String(mapped[0]?.error_message ?? "")).toContain("not supported");
+    expect(String(mapped[0]?.status)).toBe("skipped");
+    expect(String(mapped[0]?.error_message ?? "")).toBe("");
+    expect(String(mapped[0]?.output ?? "")).toContain("Hosted mode is not enabled");
   });
 
   it("blocks execution when shared config trust is required", async () => {

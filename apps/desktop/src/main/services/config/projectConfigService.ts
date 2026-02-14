@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
+import cron from "node-cron";
 import type {
   AutomationAction,
   AutomationActionType,
@@ -14,6 +15,7 @@ import type {
   ConfigProcessReadiness,
   ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
+  EnvironmentMapping,
   EffectiveProjectConfig,
   LaneOverlayMatch,
   LaneOverlayOverrides,
@@ -186,7 +188,7 @@ function coerceProcessDef(value: unknown): ConfigProcessDefinition | null {
   if (cwd != null) out.cwd = cwd;
   if (env != null) out.env = env;
   if (autostart != null) out.autostart = autostart;
-  if (restart === "never" || restart === "on_crash") out.restart = restart;
+  if (restart === "never" || restart === "on_crash" || restart === "on-failure" || restart === "always") out.restart = restart;
   if (gracefulShutdownMs != null) out.gracefulShutdownMs = gracefulShutdownMs;
   if (dependsOn != null) out.dependsOn = dependsOn;
   if (readiness != null) out.readiness = readiness;
@@ -233,6 +235,17 @@ function coerceTestSuite(value: unknown): ConfigTestSuiteDefinition | null {
     );
   }
 
+  return out;
+}
+
+function coerceEnvironmentMapping(value: unknown): EnvironmentMapping | null {
+  if (!isRecord(value)) return null;
+  const branch = asString(value.branch)?.trim() ?? "";
+  const env = asString(value.env)?.trim() ?? "";
+  const color = asString(value.color)?.trim();
+  if (!branch || !env) return null;
+  const out: EnvironmentMapping = { branch, env };
+  if (color) out.color = color;
   return out;
 }
 
@@ -298,6 +311,9 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
   const automations = Array.isArray(value.automations)
     ? value.automations.map(coerceAutomationRule).filter((x): x is ConfigAutomationRule => x != null)
     : [];
+  const environments = Array.isArray(value.environments)
+    ? value.environments.map(coerceEnvironmentMapping).filter((x): x is EnvironmentMapping => x != null)
+    : [];
 
   const github =
     isRecord(value.github) && (asNumber(value.github.prPollingIntervalSeconds) != null)
@@ -315,6 +331,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     testSuites,
     laneOverlayPolicies,
     automations,
+    ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
     ...(isRecord(value.providers) ? { providers: value.providers } : {})
   };
@@ -350,6 +367,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     testSuites: config.testSuites ?? [],
     laneOverlayPolicies: config.laneOverlayPolicies ?? [],
     automations: config.automations ?? [],
+    ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
     ...(config.providers ? { providers: config.providers } : {})
   };
@@ -523,6 +541,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       }
     : undefined;
 
+  const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
+
   const modeRaw = typeof mergedProviders?.mode === "string" ? mergedProviders.mode : undefined;
   const providerMode: ProviderMode =
     modeRaw === "hosted" || modeRaw === "byok" || modeRaw === "cli" || modeRaw === "guest" ? modeRaw : "guest";
@@ -534,6 +554,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     testSuites,
     laneOverlayPolicies,
     automations,
+    ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {})
@@ -614,6 +635,8 @@ function validateEffectiveConfig(
   validateDuplicateIds(local.testSuites ?? [], "testSuites", issues, "local");
   validateDuplicateIds(shared.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "shared");
   validateDuplicateIds(local.laneOverlayPolicies ?? [], "laneOverlayPolicies", issues, "local");
+  validateDuplicateIds(shared.automations ?? [], "automations", issues, "shared");
+  validateDuplicateIds(local.automations ?? [], "automations", issues, "local");
 
   const prPoll = effective.github?.prPollingIntervalSeconds;
   if (prPoll != null) {
@@ -621,6 +644,20 @@ function validateEffectiveConfig(
       issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be > 0" });
     } else if (prPoll < 5 || prPoll > 300) {
       issues.push({ path: "effective.github.prPollingIntervalSeconds", message: "prPollingIntervalSeconds must be between 5 and 300" });
+    }
+  }
+
+  if (effective.environments?.length) {
+    for (const [idx, mapping] of effective.environments.entries()) {
+      const p = `effective.environments[${idx}]`;
+      if (!mapping.branch.trim()) issues.push({ path: `${p}.branch`, message: "Environment mapping branch is required" });
+      if (!mapping.env.trim()) issues.push({ path: `${p}.env`, message: "Environment mapping env is required" });
+      if (mapping.color != null && mapping.color.trim().length) {
+        const color = mapping.color.trim();
+        if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
+          issues.push({ path: `${p}.color`, message: "Environment color must be a hex string like #22c55e" });
+        }
+      }
     }
   }
 
@@ -756,6 +793,85 @@ function validateEffectiveConfig(
     for (const suiteId of policy.overrides.testSuiteIds ?? []) {
       if (!suiteIds.has(suiteId)) {
         issues.push({ path: `${p}.overrides.testSuiteIds`, message: `Unknown test suite id '${suiteId}'` });
+      }
+    }
+  }
+
+  const automationIds = new Set<string>();
+  for (const [idx, rule] of effective.automations.entries()) {
+    const p = `effective.automations[${idx}]`;
+
+    if (!rule.id) {
+      issues.push({ path: `${p}.id`, message: "Automation id is required" });
+      continue;
+    }
+    if (automationIds.has(rule.id)) {
+      issues.push({ path: `${p}.id`, message: `Duplicate automation id '${rule.id}'` });
+    } else {
+      automationIds.add(rule.id);
+    }
+
+    if (!rule.name) issues.push({ path: `${p}.name`, message: "Automation name is required" });
+
+    // Disabled rules are allowed to be incomplete (e.g. local toggles that refer to missing shared rules).
+    if (!rule.enabled) continue;
+
+    const triggerType = rule.trigger?.type;
+    if (triggerType !== "session-end" && triggerType !== "commit" && triggerType !== "schedule" && triggerType !== "manual") {
+      issues.push({ path: `${p}.trigger.type`, message: "Invalid trigger type" });
+    }
+
+    if (triggerType === "schedule") {
+      const expr = (rule.trigger?.cron ?? "").trim();
+      if (!expr) {
+        issues.push({ path: `${p}.trigger.cron`, message: "Schedule trigger requires cron" });
+      } else if (!cron.validate(expr)) {
+        issues.push({ path: `${p}.trigger.cron`, message: `Invalid cron expression '${expr}'` });
+      }
+    }
+
+    if (!rule.actions.length) {
+      issues.push({ path: `${p}.actions`, message: "Enabled automation must have at least one action" });
+      continue;
+    }
+
+    for (let actionIdx = 0; actionIdx < rule.actions.length; actionIdx += 1) {
+      const action = rule.actions[actionIdx]!;
+      const ap = `${p}.actions[${actionIdx}]`;
+      const type = action.type as AutomationActionType;
+
+      if (
+        type !== "update-packs" &&
+        type !== "predict-conflicts" &&
+        type !== "sync-to-mirror" &&
+        type !== "run-tests" &&
+        type !== "run-command"
+      ) {
+        issues.push({ path: `${ap}.type`, message: `Unknown action type '${String((action as any).type)}'` });
+        continue;
+      }
+
+      if (type === "run-tests") {
+        const suiteId = (action.suiteId ?? "").trim();
+        if (!suiteId) {
+          issues.push({ path: `${ap}.suiteId`, message: "run-tests requires suiteId" });
+        } else if (!suiteIds.has(suiteId)) {
+          issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
+        }
+      }
+
+      if (type === "run-command") {
+        const command = (action.command ?? "").trim();
+        if (!command) {
+          issues.push({ path: `${ap}.command`, message: "run-command requires command" });
+        }
+      }
+
+      if (action.timeoutMs != null && (!Number.isFinite(action.timeoutMs) || action.timeoutMs <= 0)) {
+        issues.push({ path: `${ap}.timeoutMs`, message: "timeoutMs must be > 0 when provided" });
+      }
+      if (action.retry != null && (!Number.isFinite(action.retry) || action.retry < 0)) {
+        issues.push({ path: `${ap}.retry`, message: "retry must be >= 0 when provided" });
       }
     }
   }

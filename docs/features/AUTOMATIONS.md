@@ -38,7 +38,7 @@ the core session-end pipeline (session end, checkpoint creation, pack refresh).
 Automations generalize this into a user-configurable system where any supported
 trigger can invoke any supported action, with conditional execution and chaining.
 
-The automation service is planned for **Phase 8** (Automations + Onboarding + Packs V2).
+The automation service is implemented in **Phase 8** (Automations + Onboarding + Packs V2).
 
 ---
 
@@ -170,22 +170,30 @@ functionality is always maintained.
 | Service | Status | Role |
 |---------|--------|------|
 | `jobEngine` | Exists | Core pipeline, job queuing, deduplication, coalescing |
-| `automationService` | Planned | Parses rules from config, registers trigger listeners, evaluates conditions, dispatches action chains |
+| `automationService` | Exists | Parses rules from config, registers trigger listeners, evaluates conditions, dispatches action chains |
 | `projectConfigService` | Exists | Provides automation definitions from YAML |
 | `sessionService` | Exists | Fires `session-end` events |
-| `gitOperationsService` | Exists | Will fire `commit` events |
+| `gitOperationsService` | Exists | Emits head-change events when ADE performs git operations |
 | `packService` | Exists | Implements `update-packs` action |
-| `ptyService` | Exists | Implements `run-command` action |
+| `conflictService` | Exists | Implements `predict-conflicts` action |
+| `hostedAgentService` | Exists | Implements `sync-to-mirror` action |
+| `testService` | Exists | Implements `run-tests` action |
+| `ptyService` | Exists | Provides `session-end` events via terminal session lifecycle |
 
 ### IPC Channels
 
 | Channel | Status | Payload |
 |---------|--------|---------|
-| `ade.automations.list()` | Planned | Returns `AutomationRule[]` with enabled state and last run info |
-| `ade.automations.toggle(args)` | Planned | Enable/disable by ID: `{ id: string, enabled: boolean }` |
-| `ade.automations.triggerManually(id)` | Planned | Fires automation immediately, returns async |
-| `ade.automations.getHistory(id)` | Planned | Returns `AutomationRun[]` ordered by most recent |
-| `ade.automations.getRunDetail(runId)` | Planned | Returns detailed run with per-action status |
+| `ade.automations.list()` | Exists | Returns `AutomationRule[]` with enabled state and last run info |
+| `ade.automations.toggle(args)` | Exists | Enable/disable by ID: `{ id: string, enabled: boolean }` |
+| `ade.automations.triggerManually(id)` | Exists | Fires automation immediately, returns async |
+| `ade.automations.getHistory(id)` | Exists | Returns `AutomationRun[]` ordered by most recent |
+| `ade.automations.getRunDetail(runId)` | Exists | Returns detailed run with per-action status |
+| `ade.automations.parseNaturalLanguage(args)` | Exists | Planner-powered rule draft from intent text |
+| `ade.automations.validateDraft(args)` | Exists | Validates + normalizes draft, returns required confirmations |
+| `ade.automations.saveDraft(args)` | Exists | Persists a validated rule into config |
+| `ade.automations.simulate(args)` | Exists | Human-readable preview of actions/triggers |
+| `ade.automations.event` | Exists | Push updates for run/history changes |
 
 ### Component Architecture
 
@@ -203,8 +211,8 @@ AutomationsPage (route: /automations or embedded in ProjectHome)
 
 **Startup**: Main process loads config. `automationService` reads the `automations`
 array and registers trigger listeners: session-end subscribes to session events,
-commit subscribes to git file watcher, schedule creates cron timers, manual needs
-no listener.
+commit fires from head-change detection (ADE git operations + lane head watcher),
+schedule creates cron timers, manual needs no listener.
 
 **Trigger Firing**: Event occurs. Service evaluates matching enabled rules. For each
 match, creates an `AutomationRun` record (status: running). Actions execute
@@ -326,28 +334,28 @@ interface AutomationRun {
 | AUTO-001 | Core pipeline | Job engine handles session end, checkpoint, pack refresh | DONE |
 | AUTO-002 | Job deduplication | Prevents duplicate jobs, coalesces rapid-fire triggers | DONE |
 
-### Planned
+### Implemented (Phase 8)
 
 | ID | Task | Description | Status |
 |----|------|-------------|--------|
-| AUTO-003 | Automation rule schema | Define and validate `automations` section in config | TODO — **Phase 8** |
-| AUTO-004 | Automation service | Parse rules, register trigger listeners | TODO — **Phase 8** |
-| AUTO-005 | Session-end trigger | Subscribe to session events, dispatch rules | TODO — **Phase 8** |
-| AUTO-006 | Commit trigger | Watch `.git/refs/heads/`, dispatch rules | TODO — **Phase 8** |
-| AUTO-007 | Schedule trigger | Cron-based timer using `node-cron` | TODO — **Phase 8** |
-| AUTO-008 | Update-packs action | Wire to pack service | TODO — **Phase 8** |
-| AUTO-009 | Predict-conflicts action | Wire to conflict service (can use existing conflict service from Phase 5) | TODO — **Phase 8** |
-| AUTO-010 | Sync-to-mirror action | Wire to hosted agent service | TODO — **Phase 8** (depends on **Phase 6** Cloud Infrastructure) |
-| AUTO-011 | Run-tests action | Execute test suite by ID | TODO — **Phase 8** |
-| AUTO-012 | Run-command action | Execute shell command via PTY service | TODO — **Phase 8** |
-| AUTO-013 | Action chaining | Sequential execution with failure handling | TODO — **Phase 8** |
-| AUTO-014 | Conditional execution | Evaluate conditions, skip when false | TODO — **Phase 8** |
-| AUTO-015 | Automation management UI | List view with status and toggles | TODO — **Phase 8** |
-| AUTO-016 | Enable/disable toggle | IPC + UI control, persisted to config | TODO — **Phase 8** |
-| AUTO-017 | Manual trigger button | "Run Now" for immediate execution | TODO — **Phase 8** |
-| AUTO-018 | Execution history display | Recent runs with expandable details | TODO — **Phase 8** |
-| AUTO-019 | Automation run logging | Write run/action records to SQLite | TODO — **Phase 8** |
-| AUTO-020 | Error handling and retry | Configurable retry, backoff, notifications | TODO — **Phase 8** |
+| AUTO-003 | Automation rule schema | Define and validate `automations` section in config | DONE |
+| AUTO-004 | Automation service | Parse rules, register trigger listeners | DONE |
+| AUTO-005 | Session-end trigger | Subscribe to session events, dispatch rules | DONE |
+| AUTO-006 | Commit trigger | Poll lane HEAD SHAs, dispatch rules | DONE |
+| AUTO-007 | Schedule trigger | Cron-based timer using `node-cron` | DONE |
+| AUTO-008 | Update-packs action | Wire to pack service | DONE |
+| AUTO-009 | Predict-conflicts action | Wire to conflict service (can use existing conflict service from Phase 5) | DONE |
+| AUTO-010 | Sync-to-mirror action | Wire to hosted agent service | DONE |
+| AUTO-011 | Run-tests action | Execute test suite by ID | DONE |
+| AUTO-012 | Run-command action | Execute shell command via `child_process` (non-interactive) | DONE |
+| AUTO-013 | Action chaining | Sequential execution with failure handling | DONE |
+| AUTO-014 | Conditional execution | Evaluate conditions, skip when false | DONE |
+| AUTO-015 | Automation management UI | List view with status and toggles | DONE |
+| AUTO-016 | Enable/disable toggle | IPC + UI control, persisted to config | DONE |
+| AUTO-017 | Manual trigger button | "Run Now" for immediate execution | DONE |
+| AUTO-018 | Execution history display | Recent runs with expandable details | DONE |
+| AUTO-019 | Automation run logging | Write run/action records to SQLite | DONE |
+| AUTO-020 | Error handling and retry | Configurable retry and backoff with history surfaced in UI | DONE |
 
 ### Dependency Notes
 
@@ -365,4 +373,4 @@ interface AutomationRun {
 
 ---
 
-*This document describes the Automations feature for ADE, planned for Phase 8. The core job engine pipeline (AUTO-001, AUTO-002) is already implemented. User-configurable automations will be built in Phase 8.*
+*This document describes the Automations feature for ADE. The core job engine pipeline (AUTO-001, AUTO-002) is implemented, and Phase 8 adds user-configurable automation rules, triggers, actions, and UI management.*

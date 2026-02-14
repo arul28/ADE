@@ -73,7 +73,7 @@ describe("automationPlannerService.validateDraft", () => {
     expect(withConfirm.ok).toBe(true);
   });
 
-  it("blocks sync-to-mirror when enabled, allows when disabled", () => {
+  it("requires explicit confirmation for sync-to-mirror when enabled", () => {
     const planner = createPlannerForTests({ suites: [] });
 
     const enabledDraft: AutomationRuleDraft = {
@@ -83,6 +83,7 @@ describe("automationPlannerService.validateDraft", () => {
       actions: [{ type: "sync-to-mirror" }]
     };
     expect(planner.validateDraft({ draft: enabledDraft, confirmations: [] }).ok).toBe(false);
+    expect(planner.validateDraft({ draft: enabledDraft, confirmations: ["confirm.sync-to-mirror"] }).ok).toBe(true);
 
     const disabledDraft: AutomationRuleDraft = {
       name: "Mirror",
@@ -107,4 +108,3 @@ describe("automationPlannerService.validateDraft", () => {
     expect(res.issues.some((i) => i.path === "trigger.cron")).toBe(true);
   });
 });
-

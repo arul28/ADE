@@ -28,6 +28,7 @@ import type {
   ConflictStatus,
   ConflictProposal,
   ConflictProposalPreview,
+  EnvironmentMapping,
   GraphFilterState,
   GraphLayoutPreset,
   GraphLayoutSnapshot,
@@ -62,6 +63,7 @@ type GraphNodeData = {
   activityBucket: "min" | "low" | "medium" | "high";
   viewMode: GraphViewMode;
   lastActivityAt: string | null;
+  environment: { env: string; color: string | null } | null;
   highlight: boolean;
   restackFailed: boolean;
   restackPulse: boolean;
@@ -348,10 +350,26 @@ function buildTreeDepth(lanes: LaneSummary[]): Map<string, number> {
   return cache;
 }
 
+function branchNameFromRef(ref: string): string {
+  const trimmed = (ref ?? "").trim();
+  if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
+  return trimmed;
+}
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function globToRegExp(glob: string): RegExp {
+  const parts = glob.split("*").map(escapeRegex);
+  return new RegExp(`^${parts.join(".*")}$`);
+}
+
 function computeAutoLayout(
   lanes: LaneSummary[],
   viewMode: GraphViewMode,
-  activityScoreByLaneId: Record<string, number>
+  activityScoreByLaneId: Record<string, number>,
+  environmentByLaneId: Record<string, { env: string; color: string | null }>
 ): Record<string, { x: number; y: number }> {
   const positions: Record<string, { x: number; y: number }> = {};
   if (lanes.length === 0) return positions;
@@ -403,12 +421,24 @@ function computeAutoLayout(
   const primary = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0]!;
   positions[primary.id] = { x: 420, y: 240 };
   const rest = lanes.filter((lane) => lane.id !== primary.id);
-  const radius = Math.max(180, rest.length * 22);
-  rest.forEach((lane, index) => {
-    const angle = (index / Math.max(1, rest.length)) * Math.PI * 2;
+  const core = rest.filter((lane) => Boolean(environmentByLaneId[lane.id]));
+  const others = rest.filter((lane) => !environmentByLaneId[lane.id]);
+
+  const innerRadius = Math.max(160, core.length * 26);
+  core.forEach((lane, index) => {
+    const angle = (index / Math.max(1, core.length)) * Math.PI * 2;
     positions[lane.id] = {
-      x: 420 + Math.cos(angle) * radius,
-      y: 240 + Math.sin(angle) * radius
+      x: 420 + Math.cos(angle) * innerRadius,
+      y: 240 + Math.sin(angle) * innerRadius
+    };
+  });
+
+  const outerRadius = Math.max(260, others.length * 26);
+  others.forEach((lane, index) => {
+    const angle = (index / Math.max(1, others.length)) * Math.PI * 2;
+    positions[lane.id] = {
+      x: 420 + Math.cos(angle) * outerRadius,
+      y: 240 + Math.sin(angle) * outerRadius
     };
   });
   return positions;
@@ -465,7 +495,7 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
       style={{
         width: dimensions.width,
         minHeight: dimensions.height,
-        borderColor: lane.color ?? undefined
+        borderColor: lane.color ?? data.environment?.color ?? undefined
       }}
     >
       <div className="flex items-center gap-1">
@@ -477,6 +507,19 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         <Chip className="px-1 py-0 text-[10px]">{lane.status.dirty ? "dirty" : "clean"}</Chip>
         <Chip className="px-1 py-0 text-[10px]">{lane.status.ahead}↑/{lane.status.behind}↓</Chip>
         <Chip className={cn("px-1 py-0 text-[10px]", statusColor)}>{data.status}</Chip>
+        {data.environment ? (
+          <span
+            className="rounded border px-1 py-0 text-[10px] uppercase tracking-wide"
+            style={{
+              borderColor: data.environment.color ?? undefined,
+              color: data.environment.color ?? "var(--color-muted-fg)",
+              backgroundColor: data.environment.color ? `${data.environment.color}22` : undefined
+            }}
+            title={`Environment: ${data.environment.env}`}
+          >
+            {data.environment.env.slice(0, 10)}
+          </span>
+        ) : null}
         {data.mergeInProgress ? <Chip className="px-1 py-0 text-[10px] text-accent">merging</Chip> : null}
         {data.activeSessions > 0 ? <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" title="Active sessions" /> : null}
       </div>
@@ -598,8 +641,18 @@ function GraphInner() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrSummary[]>([]);
   const [loadingPrs, setLoadingPrs] = React.useState(true);
+
+  const refreshEnvironmentMappings = React.useCallback(async () => {
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      setEnvironmentMappings(snapshot.effective.environments ?? []);
+    } catch {
+      setEnvironmentMappings([]);
+    }
+  }, []);
 
   const refreshPrs = React.useCallback(async () => {
     const next = await window.ade.prs.refresh();
@@ -686,6 +739,10 @@ function GraphInner() {
   const [textPrompt, setTextPrompt] = React.useState<GraphTextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    void refreshEnvironmentMappings();
+  }, [project?.id, refreshEnvironmentMappings]);
+
   const persistTimerRef = React.useRef<number | null>(null);
   const riskRefreshTimerRef = React.useRef<number | null>(null);
   const dragOriginRef = React.useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -703,6 +760,24 @@ function GraphInner() {
 
   const activeSnapshot = React.useMemo(() => preset.byViewMode[viewMode], [preset, viewMode]);
   const filters = activeSnapshot.filters;
+
+  const environmentByLaneId = React.useMemo(() => {
+    const compiled = environmentMappings
+      .map((mapping) => ({
+        ...mapping,
+        branchRegex: globToRegExp(mapping.branch)
+      }))
+      .filter((mapping) => mapping.branch.trim().length && mapping.env.trim().length);
+
+    const out: Record<string, { env: string; color: string | null }> = {};
+    for (const lane of lanes) {
+      const branch = branchNameFromRef(lane.branchRef);
+      const match = compiled.find((mapping) => mapping.branchRegex.test(branch));
+      if (!match) continue;
+      out[lane.id] = { env: match.env, color: match.color ?? null };
+    }
+    return out;
+  }, [environmentMappings, lanes]);
 
   const requestTextInput = React.useCallback(
     (args: {
@@ -1141,7 +1216,7 @@ function GraphInner() {
   React.useEffect(() => {
     if (!loadedGraphState) return;
     if (nodeDragActiveRef.current) return;
-    const autoPositions = computeAutoLayout(lanes, viewMode, activityScoreByLaneId);
+    const autoPositions = computeAutoLayout(lanes, viewMode, activityScoreByLaneId, environmentByLaneId);
     const savedPositions = activeSnapshot.nodePositions;
     const positions = Object.keys(savedPositions).length > 0 ? { ...autoPositions, ...savedPositions } : autoPositions;
 
@@ -1171,6 +1246,7 @@ function GraphInner() {
           activityBucket: activityBucketByLaneId[lane.id] ?? "medium",
           viewMode,
           lastActivityAt: lastActivityByLaneId[lane.id] ?? null,
+          environment: environmentByLaneId[lane.id] ?? null,
           highlight: Boolean(hoveredNodeId) && connectedToHover,
           restackFailed: restackFailedLaneId === lane.id,
           restackPulse: restackFailedLaneId === lane.id && restackFailedPulse,
@@ -1300,6 +1376,7 @@ function GraphInner() {
     viewMode,
     hoveredEdgeId,
     activityScoreByLaneId,
+    environmentByLaneId,
     mergeDisappearingAtByLaneId,
     mergeInProgressByLaneId
   ]);
@@ -1986,6 +2063,17 @@ function GraphInner() {
     return Array.from(map.entries()).slice(0, 8);
   }, [lanes]);
 
+  const environmentsForLegend = React.useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const mapping of environmentMappings) {
+      const env = mapping.env?.trim();
+      if (!env) continue;
+      if (map.has(env)) continue;
+      map.set(env, mapping.color ?? null);
+    }
+    return Array.from(map.entries()).slice(0, 10);
+  }, [environmentMappings]);
+
   const availableTags = React.useMemo(() => {
     const tags = new Set<string>();
     for (const lane of lanes) {
@@ -2602,7 +2690,24 @@ function GraphInner() {
           ) : null}
           <Panel position="top-right">
             <div className="rounded border border-border bg-card/90 p-2 text-[11px]">
-              <div className="mb-1 font-semibold text-fg">Environment Legend</div>
+              <div className="mb-1 font-semibold text-fg">Environment legend</div>
+              {environmentsForLegend.length === 0 ? (
+                <div className="text-muted-fg">No environment mappings configured.</div>
+              ) : (
+                <div className="space-y-1">
+                  {environmentsForLegend.map(([env, color]) => (
+                    <div key={env} className="flex items-center gap-1.5">
+                      <span
+                        className="h-2.5 w-2.5 rounded-full border border-border"
+                        style={{ backgroundColor: color ?? "transparent", borderColor: color ?? "var(--color-border)" }}
+                      />
+                      <span className="truncate text-muted-fg">{env}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="my-2 h-px bg-border/60" />
+              <div className="mb-1 font-semibold text-fg">Lane colors</div>
               {lanesForLegend.length === 0 ? (
                 <div className="text-muted-fg">No custom node colors yet.</div>
               ) : (

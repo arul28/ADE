@@ -549,12 +549,17 @@ export type HostedSignInArgs = {
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
+export type TerminalToolType = "shell" | "claude" | "codex" | "cursor" | "aider" | "continue" | "other";
+
 export type TerminalSessionSummary = {
   id: string;
   laneId: string;
   laneName: string;
   ptyId: string | null;
   tracked: boolean;
+  pinned: boolean;
+  goal: string | null;
+  toolType: TerminalToolType | null;
   title: string;
   status: TerminalSessionStatus;
   startedAt: string;
@@ -600,6 +605,32 @@ export type ListSessionsArgs = {
   laneId?: string;
   status?: TerminalSessionStatus;
   limit?: number;
+};
+
+export type UpdateSessionMetaArgs = {
+  sessionId: string;
+  pinned?: boolean;
+  goal?: string | null;
+  toolType?: TerminalToolType | null;
+};
+
+export type TranscriptSearchMatch = {
+  lineNumber: number;
+  line: string;
+};
+
+export type SearchTranscriptArgs = {
+  sessionId: string;
+  query: string;
+  limit?: number;
+};
+
+export type SearchTranscriptResult = {
+  sessionId: string;
+  query: string;
+  matches: TranscriptSearchMatch[];
+  totalMatches: number;
+  truncated: boolean;
 };
 
 export type ReadTranscriptTailArgs = {
@@ -915,7 +946,8 @@ export type GraphPersistedState = {
   activePreset: string;
 };
 
-export type ProcessRestartPolicy = "never" | "on_crash";
+// Backward compatible with earlier configs that used `on_crash`.
+export type ProcessRestartPolicy = "never" | "on-failure" | "always" | "on_crash";
 export type StackStartOrder = "parallel" | "dependency";
 export type ProcessReadinessType = "none" | "port" | "logRegex";
 export type ProcessRuntimeStatus = "stopped" | "starting" | "running" | "degraded" | "stopping" | "exited" | "crashed";
@@ -1066,6 +1098,15 @@ export type ConfigAutomationRule = {
   enabled?: boolean;
 };
 
+export type EnvironmentMapping = {
+  // Branch pattern (supports simple glob "*" matching, e.g. "release/*").
+  branch: string;
+  // Environment label, e.g. "production", "staging".
+  env: string;
+  // Optional hex color used for graph badges/borders.
+  color?: string;
+};
+
 export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
@@ -1073,6 +1114,7 @@ export type ProjectConfigFile = {
   testSuites?: ConfigTestSuiteDefinition[];
   laneOverlayPolicies?: ConfigLaneOverlayPolicy[];
   automations?: ConfigAutomationRule[];
+  environments?: EnvironmentMapping[];
   github?: {
     prPollingIntervalSeconds?: number;
   };
@@ -1091,6 +1133,7 @@ export type EffectiveProjectConfig = {
   testSuites: TestSuiteDefinition[];
   laneOverlayPolicies: LaneOverlayPolicy[];
   automations: AutomationRule[];
+  environments?: EnvironmentMapping[];
   github?: {
     prPollingIntervalSeconds?: number;
   };

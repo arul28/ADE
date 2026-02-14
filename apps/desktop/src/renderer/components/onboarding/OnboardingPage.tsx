@@ -2,6 +2,8 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertCircle, CheckCircle2, GitBranch, PackagePlus, Sparkles, Wand2 } from "lucide-react";
 import type {
+  ConfigAutomationRule,
+  ConfigStackButtonDefinition,
   LaneSummary,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
@@ -29,6 +31,10 @@ type DraftRow = {
   cwd: string;
   commandLine: string;
 };
+
+type StackDraftRow = ConfigStackButtonDefinition & { include: boolean };
+
+type AutomationDraftRow = ConfigAutomationRule & { include: boolean };
 
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -188,6 +194,8 @@ export function OnboardingPage() {
 
   const [processDraft, setProcessDraft] = React.useState<DraftRow[]>([]);
   const [testDraft, setTestDraft] = React.useState<DraftRow[]>([]);
+  const [stackDraft, setStackDraft] = React.useState<StackDraftRow[]>([]);
+  const [automationDraft, setAutomationDraft] = React.useState<AutomationDraftRow[]>([]);
 
   const [branchesBusy, setBranchesBusy] = React.useState(false);
   const [branchesError, setBranchesError] = React.useState<string | null>(null);
@@ -273,6 +281,25 @@ export function OnboardingPage() {
           commandLine: commandArrayToLine(t.command ?? [])
         }))
       );
+      setStackDraft(
+        (cfg.stackButtons ?? []).map((s) => ({
+          include: true,
+          id: s.id,
+          name: s.name ?? s.id,
+          processIds: s.processIds ?? [],
+          startOrder: s.startOrder ?? "parallel"
+        }))
+      );
+      setAutomationDraft(
+        (cfg.automations ?? []).map((r) => ({
+          include: true,
+          id: r.id,
+          name: r.name ?? r.id,
+          enabled: r.enabled ?? true,
+          trigger: r.trigger ?? { type: "manual" },
+          actions: r.actions ?? []
+        }))
+      );
     } catch (err) {
       setDefaultsError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -313,17 +340,42 @@ export function OnboardingPage() {
         }))
         .filter((t) => t.id.length > 0);
 
+      const enabledStacks = stackDraft
+        .filter((s) => s.include)
+        .map((s) => ({
+          id: (s.id ?? "").trim(),
+          name: ((s.name ?? s.id) ?? "").trim(),
+          processIds: (s.processIds ?? []).map((id) => id.trim()).filter(Boolean),
+          startOrder: (s.startOrder === "dependency" ? "dependency" : "parallel") as "parallel" | "dependency"
+        }))
+        .filter((s) => s.id.length > 0);
+
+      const enabledAutomations = automationDraft
+        .filter((r) => r.include)
+        .map((r) => ({
+          id: (r.id ?? "").trim(),
+          name: ((r.name ?? r.id) ?? "").trim(),
+          enabled: Boolean(r.enabled),
+          trigger: r.trigger,
+          actions: r.actions
+        }))
+        .filter((r) => r.id.length > 0);
+
       const nextShared: ProjectConfigFile =
         applyMode === "replace"
           ? {
               ...shared,
               processes: uniqueById(enabledProcesses),
-              testSuites: uniqueById(enabledTests)
+              testSuites: uniqueById(enabledTests),
+              stackButtons: uniqueById(enabledStacks),
+              automations: uniqueById(enabledAutomations)
             }
           : {
               ...shared,
               processes: uniqueById([...(shared.processes ?? []), ...enabledProcesses]),
-              testSuites: uniqueById([...(shared.testSuites ?? []), ...enabledTests])
+              testSuites: uniqueById([...(shared.testSuites ?? []), ...enabledTests]),
+              stackButtons: uniqueById([...(shared.stackButtons ?? []), ...enabledStacks]),
+              automations: uniqueById([...(shared.automations ?? []), ...enabledAutomations])
             };
 
       await window.ade.projectConfig.save({
@@ -444,10 +496,14 @@ export function OnboardingPage() {
     return {
       existingProcesses: shared?.processes?.length ?? 0,
       existingTests: shared?.testSuites?.length ?? 0,
+      existingStacks: shared?.stackButtons?.length ?? 0,
+      existingAutomations: shared?.automations?.length ?? 0,
       draftProcesses: processDraft.filter((p) => p.enabled).length,
-      draftTests: testDraft.filter((t) => t.enabled).length
+      draftTests: testDraft.filter((t) => t.enabled).length,
+      draftStacks: stackDraft.filter((s) => s.include).length,
+      draftAutomations: automationDraft.filter((r) => r.include).length
     };
-  }, [configSnapshot, processDraft, testDraft]);
+  }, [configSnapshot, processDraft, testDraft, stackDraft, automationDraft]);
 
   return (
     <div className="h-full min-h-0 overflow-auto bg-bg text-fg">
@@ -564,7 +620,7 @@ export function OnboardingPage() {
 
                   {previewLines("What ADE will do next", [
                     "Scan your repository for common project markers (package.json, Makefile, CI configs).",
-                    "Generate a draft ADE config (processes + test suites) and let you edit it before saving.",
+                    "Generate a draft ADE config (processes, test suites, stacks, automations) and let you edit it before saving.",
                     "Optionally import existing branches as lanes (adds git worktrees under .ade/worktrees).",
                     "Generate initial packs for quick context + conflict prediction."
                   ])}
@@ -615,7 +671,9 @@ export function OnboardingPage() {
                       <div className="rounded border border-border bg-card/40 p-3 text-xs">
                         <div className="font-semibold text-fg">Suggested config</div>
                         <div className="mt-2 text-muted-fg">
-                          processes: {defaults.suggestedConfig.processes?.length ?? 0} · test suites: {defaults.suggestedConfig.testSuites?.length ?? 0}
+                          processes: {defaults.suggestedConfig.processes?.length ?? 0} · test suites:{" "}
+                          {defaults.suggestedConfig.testSuites?.length ?? 0} · stacks: {defaults.suggestedConfig.stackButtons?.length ?? 0} · automations:{" "}
+                          {defaults.suggestedConfig.automations?.length ?? 0}
                         </div>
                         <div className="mt-2 space-y-1 text-muted-fg">
                           {(defaults.suggestedConfig.testSuites ?? []).slice(0, 6).map((suite) => (
@@ -637,7 +695,7 @@ export function OnboardingPage() {
               {step === "review-config" ? (
                 <div className="space-y-3">
                   {previewLines("What ADE will do", [
-                    "Write your selected processes + test suites into .ade/ade.yaml (shared project config).",
+                    "Write your selected processes, test suites, stack buttons, and automations into .ade/ade.yaml (shared project config).",
                     "Validate config before saving. No commands are executed."
                   ])}
 
@@ -646,9 +704,11 @@ export function OnboardingPage() {
                       <div className="min-w-0">
                         <div className="font-semibold text-fg">Config target</div>
                         <div className="mt-1 text-muted-fg">
-                          Existing: {configStats.existingProcesses} processes · {configStats.existingTests} test suites
+                          Existing: {configStats.existingProcesses} processes · {configStats.existingTests} test suites ·{" "}
+                          {configStats.existingStacks} stacks · {configStats.existingAutomations} automations
                           <br />
-                          Draft: {configStats.draftProcesses} processes · {configStats.draftTests} test suites
+                          Draft: {configStats.draftProcesses} processes · {configStats.draftTests} test suites ·{" "}
+                          {configStats.draftStacks} stacks · {configStats.draftAutomations} automations
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -756,16 +816,16 @@ export function OnboardingPage() {
                           ))}
                         </div>
                       </div>
-                      <div className="rounded border border-border bg-card/40 p-3">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Test suites</div>
-                        <div className="mt-2 space-y-2">
-                          {testDraft.length === 0 ? (
+	                      <div className="rounded border border-border bg-card/40 p-3">
+	                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Test suites</div>
+	                        <div className="mt-2 space-y-2">
+	                          {testDraft.length === 0 ? (
                             <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
                               No suggested test suites.
                             </div>
                           ) : null}
-                          {testDraft.map((row, idx) => (
-                            <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+	                          {testDraft.map((row, idx) => (
+	                            <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
                               <div className="flex items-center justify-between gap-2">
                                 <label className="flex items-center gap-2 text-xs">
                                   <input
@@ -813,14 +873,157 @@ export function OnboardingPage() {
                                   placeholder="cwd"
                                 />
                               </div>
+	                            </div>
+	                          ))}
+	                        </div>
+	                      </div>
+
+                      <div className="rounded border border-border bg-card/40 p-3">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Stack buttons</div>
+                        <div className="mt-2 space-y-2">
+                          {stackDraft.length === 0 ? (
+                            <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
+                              No suggested stack buttons.
+                            </div>
+                          ) : null}
+                          {stackDraft.map((row, idx) => (
+                            <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="flex items-center gap-2 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(row.include)}
+                                    onChange={(e) =>
+                                      setStackDraft((prev) => prev.map((s, i) => (i === idx ? { ...s, include: e.target.checked } : s)))
+                                    }
+                                  />
+                                  <span className="font-semibold text-fg">{row.id}</span>
+                                </label>
+                                <select
+                                  className="h-7 rounded border border-border bg-bg px-2 text-[11px] text-muted-fg"
+                                  value={row.startOrder ?? "parallel"}
+                                  onChange={(e) =>
+                                    setStackDraft((prev) =>
+                                      prev.map((s, i) =>
+                                        i === idx
+                                          ? { ...s, startOrder: e.target.value === "dependency" ? "dependency" : "parallel" }
+                                          : s
+                                      )
+                                    )
+                                  }
+                                >
+                                  <option value="parallel">parallel</option>
+                                  <option value="dependency">dependency</option>
+                                </select>
+                              </div>
+                              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                <input
+                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                  value={row.name ?? ""}
+                                  onChange={(e) =>
+                                    setStackDraft((prev) =>
+                                      prev.map((s, i) => (i === idx ? { ...s, name: e.target.value } : s))
+                                    )
+                                  }
+                                  placeholder="name"
+                                />
+                                <input
+                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                                  value={(row.processIds ?? []).join(", ")}
+                                  onChange={(e) =>
+                                    setStackDraft((prev) =>
+                                      prev.map((s, i) =>
+                                        i === idx
+                                          ? {
+                                              ...s,
+                                              processIds: e.target.value
+                                                .split(",")
+                                                .map((v) => v.trim())
+                                                .filter(Boolean)
+                                            }
+                                          : s
+                                      )
+                                    )
+                                  }
+                                  placeholder="process ids (comma-separated)"
+                                />
+                              </div>
                             </div>
                           ))}
                         </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              ) : null}
+
+                      <div className="rounded border border-border bg-card/40 p-3">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Automations</div>
+                        <div className="mt-2 space-y-2">
+                          {automationDraft.length === 0 ? (
+                            <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
+                              No suggested automations.
+                            </div>
+                          ) : null}
+                          {automationDraft.map((row, idx) => {
+                            const triggerType = row.trigger?.type ?? "manual";
+                            const triggerSuffix =
+                              triggerType === "schedule" && row.trigger?.cron ? ` (${row.trigger.cron})` : triggerType === "commit" && row.trigger?.branch ? ` (${row.trigger.branch})` : "";
+                            const actionTypes = (row.actions ?? []).map((a) => (a as any)?.type).filter(Boolean).join(", ");
+                            return (
+                              <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <label className="flex items-center gap-2 text-xs">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(row.include)}
+                                      onChange={(e) =>
+                                        setAutomationDraft((prev) =>
+                                          prev.map((r, i) => (i === idx ? { ...r, include: e.target.checked } : r))
+                                        )
+                                      }
+                                    />
+                                    <span className="font-semibold text-fg">{row.id}</span>
+                                  </label>
+                                  <div className="flex items-center gap-2">
+                                    <Chip>
+                                      {triggerType}
+                                      {triggerSuffix}
+                                    </Chip>
+                                    <label className="flex items-center gap-2 text-xs text-muted-fg">
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(row.enabled)}
+                                        onChange={(e) =>
+                                          setAutomationDraft((prev) =>
+                                            prev.map((r, i) => (i === idx ? { ...r, enabled: e.target.checked } : r))
+                                          )
+                                        }
+                                      />
+                                      enabled
+                                    </label>
+                                  </div>
+                                </div>
+                                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                  <input
+                                    className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                    value={row.name ?? ""}
+                                    onChange={(e) =>
+                                      setAutomationDraft((prev) =>
+                                        prev.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r))
+                                      )
+                                    }
+                                    placeholder="name"
+                                  />
+                                  <div className="flex items-center rounded border border-border bg-card/60 px-2 text-[11px] text-muted-fg font-mono">
+                                    {actionTypes || "(no actions)"}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+	                    </div>
+	                  )}
+	                </div>
+	              ) : null}
 
               {step === "detect-branches" ? (
                 <div className="space-y-3">

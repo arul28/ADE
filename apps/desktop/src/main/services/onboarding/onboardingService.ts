@@ -181,11 +181,10 @@ function buildSuggestedConfig(args: {
   out.automations = [
     {
       id: "session-end-local",
-      name: "Session end: refresh packs + conflicts",
+      name: "Session end: predict conflicts",
       enabled: true,
       trigger: { type: "session-end" },
       actions: [
-        { type: "update-packs" },
         { type: "predict-conflicts" }
       ]
     },

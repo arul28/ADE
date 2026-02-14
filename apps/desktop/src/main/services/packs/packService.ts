@@ -361,6 +361,31 @@ export function createPackService({
           fs.rmSync(path.join(conflictsDir, entry.name), { force: true });
         }
       }
+
+      // V2 conflict packs are stored as markdown files under `conflicts/v2/`.
+      const v2Dir = path.join(conflictsDir, "v2");
+      if (fs.existsSync(v2Dir)) {
+        for (const entry of fs.readdirSync(v2Dir, { withFileTypes: true })) {
+          if (!entry.isFile()) continue;
+          if (!entry.name.endsWith(".md")) continue;
+          const file = entry.name;
+          const laneId = file.split("__")[0]?.trim() ?? "";
+          if (!laneId) continue;
+
+          const lane = laneById.get(laneId);
+          const absPath = path.join(v2Dir, file);
+          if (!lane) {
+            fs.rmSync(absPath, { force: true });
+            continue;
+          }
+          if (!lane.archivedAt) continue;
+          const ts = Date.parse(lane.archivedAt);
+          const archivedAtMs = Number.isFinite(ts) ? ts : now;
+          if (!keepByCount.has(laneId) || archivedAtMs < keepBeforeMs) {
+            fs.rmSync(absPath, { force: true });
+          }
+        }
+      }
     }
   };
 

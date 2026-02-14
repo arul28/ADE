@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, Archive, ExternalLink, GitBranch, Layers3, Pencil, TerminalSquare, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, ExternalLink, GitBranch, GitMerge, Layers3, Pencil, TerminalSquare, Trash2 } from "lucide-react";
 import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
+import { MergeSimulationPanel } from "../conflicts/MergeSimulationPanel";
 
 function conflictDotClass(status: ConflictStatus["status"] | null | undefined): string {
   if (status === "conflict-active") return "bg-red-600";
@@ -47,10 +48,12 @@ export function LaneRow({
   const navigate = useNavigate();
   const focusSession = useAppStore((s) => s.focusSession);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const lanes = useAppStore((s) => s.lanes);
 
   const [renameOpen, setRenameOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [simulateOpen, setSimulateOpen] = useState(false);
 
   const [draftName, setDraftName] = useState(lane.name);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -157,6 +160,34 @@ export function LaneRow({
         </div>
 
         <div className={cn("flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100", selected && "opacity-100")}>
+          <Dialog.Root open={simulateOpen} onOpenChange={setSimulateOpen}>
+            <Dialog.Trigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0 hover:text-accent"
+                title="Simulate merge"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <GitMerge className="h-3.5 w-3.5" />
+              </Button>
+            </Dialog.Trigger>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+              <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(860px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <Dialog.Title className="text-lg font-serif font-bold">Merge Simulation</Dialog.Title>
+                  <Dialog.Close asChild>
+                    <Button variant="ghost" size="sm">
+                      Esc
+                    </Button>
+                  </Dialog.Close>
+                </div>
+                <MergeSimulationPanel lanes={lanes} initialLaneAId={lane.id} initialLaneBId={""} />
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
+
           <Button
             variant="ghost"
             size="sm"

@@ -597,9 +597,9 @@ These tasks are planned for **Phase 8**.
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-012 | Checkpoint creation at session boundaries | TODO — **Phase 8** |
-| PACK-013 | Checkpoint storage and indexing (SQLite + filesystem) | TODO — **Phase 8** |
-| PACK-014 | Pack event logging (append-only event log) | TODO — **Phase 8** |
+| PACK-012 | Checkpoint creation at session boundaries | DONE — Phase 8 |
+| PACK-013 | Checkpoint storage and indexing (SQLite + filesystem) | DONE — Phase 8 |
+| PACK-014 | Pack event logging (append-only event log) | DONE — Phase 8 |
 
 ### Versioning System
 
@@ -607,9 +607,9 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-015 | Pack version snapshots (immutable rendered files) | TODO — **Phase 8** |
-| PACK-016 | Pack head pointers (mutable, atomic updates) | TODO — **Phase 8** |
-| PACK-022 | Pack diff (compare two versions side by side) | TODO — **Phase 8** |
+| PACK-015 | Pack version snapshots (immutable rendered files) | DONE — Phase 8 |
+| PACK-016 | Pack head pointers (mutable, atomic updates) | DONE — Phase 8 |
+| PACK-022 | Pack diff (compare two versions side by side) | DONE — Phase 8 |
 
 ### Additional Pack Types
 
@@ -617,15 +617,15 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | TODO — **Phase 8** |
-| PACK-018 | Conflict pack type (resolution context bundle) | TODO — **Phase 8** |
-| PACK-019 | Plan pack type (versioned planning documents) | TODO — **Phase 8** |
+| PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | DONE — Phase 8 |
+| PACK-018 | Conflict pack type (resolution context bundle) | DONE — Phase 8 |
+| PACK-019 | Plan pack type (versioned planning documents) | DONE — Phase 8 |
 
 ### Narrative & Intelligence
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-020 | Narrative editing (user override of auto-generated content) | TODO — **Phase 8** |
+| PACK-020 | Narrative editing (user override of auto-generated content) | DONE — Phase 8 |
 | PACK-021 | LLM-powered narrative generation (hosted agent integration) | DONE — Phase 6 (`hostedAgentService.requestLaneNarrative()`, cloud `NarrativeGeneration` job worker) |
 
 ### Operations & Management
@@ -633,7 +633,7 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 | ID | Task | Status |
 |----|------|--------|
 | PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | DONE — Phase 6 (`hostedAgentService.syncPacks()`, uploaded via mirror sync pipeline) |
-| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | TODO — **moved to Phase 7** (not yet implemented) |
+| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | DONE — Phase 7 (implemented in pack service) |
 | PACK-025 | Pack privacy controls (redaction rules for sensitive content) | DONE — Phase 6 (`redactSecrets()` in desktop + cloud, exclude patterns for `.env`/creds/keys) |
 | PACK-026 | Pack export (standalone markdown file with all context) | TODO — **Phase 9** (Advanced Features) |
 
@@ -648,4 +648,4 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 
 ### Current State
 
-> **Note**: The pack service currently generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for all local workflows. LLM-powered narratives will be introduced when the LLM gateway is available in Phase 6, and integrated into the pack pipeline in Phase 8.
+> **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a Hosted or BYOK provider is configured and available, narrative updates can be applied and are recorded as pack events and immutable version snapshots.

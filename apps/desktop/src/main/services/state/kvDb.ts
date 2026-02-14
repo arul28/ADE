@@ -189,6 +189,9 @@ function migrate(db: Database) {
       lane_id text not null,
       pty_id text,
       tracked integer not null default 1,
+      goal text,
+      tool_type text,
+      pinned integer not null default 0,
       title text not null,
       started_at text not null,
       ended_at text,
@@ -202,6 +205,9 @@ function migrate(db: Database) {
     )
   `);
   addColumnIfMissing(db, "terminal_sessions", "tracked integer not null default 1", "tracked");
+  addColumnIfMissing(db, "terminal_sessions", "goal text", "goal");
+  addColumnIfMissing(db, "terminal_sessions", "tool_type text", "tool_type");
+  addColumnIfMissing(db, "terminal_sessions", "pinned integer not null default 0", "pinned");
   createIndexIfColumnsExist(
     db,
     "create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)",

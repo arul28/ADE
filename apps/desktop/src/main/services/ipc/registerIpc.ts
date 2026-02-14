@@ -189,6 +189,7 @@ export type AppContext = {
   project: ProjectInfo;
   projectId: string;
   adeDir: string;
+  disposeHeadWatcher: () => void;
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;

@@ -16,6 +16,7 @@ import { createProcessService } from "./services/processes/processService";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
+import { runGit } from "./services/git/git";
 import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createHostedAgentService } from "./services/hosted/hostedAgentService";
@@ -143,9 +144,43 @@ app.whenReady().then(async () => {
     const { projectId } = upsertProjectRow({ db, repoRoot: projectRoot, displayName: project.displayName, baseRef });
 
     const operationService = createOperationService({ db, projectId });
+
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null = null;
     let restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null = null;
+
+    const lastHeadByLaneId = new Map<string, string>();
+
+    const handleHeadChanged = (args: {
+      laneId: string;
+      reason: string;
+      preHeadSha: string | null;
+      postHeadSha: string | null;
+    }) => {
+      const laneId = args.laneId;
+      const postHeadSha = (args.postHeadSha ?? "").trim();
+      if (!laneId || !postHeadSha) return;
+
+      const prev = lastHeadByLaneId.get(laneId) ?? (args.preHeadSha ?? null);
+      if (prev === postHeadSha) {
+        lastHeadByLaneId.set(laneId, postHeadSha);
+        return;
+      }
+
+      lastHeadByLaneId.set(laneId, postHeadSha);
+
+      jobEngine?.onHeadChanged({ laneId, reason: args.reason });
+      automationService?.onHeadChanged({
+        laneId,
+        reason: args.reason,
+        preHeadSha: prev,
+        postHeadSha
+      });
+      void restackSuggestionService
+        ?.onParentHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
+        .catch(() => {});
+    };
+
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -153,19 +188,16 @@ app.whenReady().then(async () => {
       defaultBaseRef: baseRef,
       worktreesDir: adePaths.worktreesDir,
       operationService,
-      onHeadChanged: ({ laneId, reason, preHeadSha, postHeadSha }) => {
-        jobEngine?.onHeadChanged({ laneId, reason });
-        automationService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
-        void restackSuggestionService?.onParentHeadChanged({ laneId, reason, preHeadSha, postHeadSha }).catch(() => { });
-      }
-	    });
-	    await laneService.ensurePrimaryLane();
-	    const sessionService = createSessionService({ db });
-	    const reconciledSessions = sessionService.reconcileStaleRunningSessions({ status: "disposed" });
-	    if (reconciledSessions > 0) {
-	      logger.warn("sessions.reconciled_stale_running", { count: reconciledSessions });
-	    }
-	    const diffService = createDiffService({ laneService });
+      onHeadChanged: handleHeadChanged
+    });
+    await laneService.ensurePrimaryLane();
+
+    const sessionService = createSessionService({ db });
+    const reconciledSessions = sessionService.reconcileStaleRunningSessions({ status: "disposed" });
+    if (reconciledSessions > 0) {
+      logger.warn("sessions.reconciled_stale_running", { count: reconciledSessions });
+    }
+    const diffService = createDiffService({ laneService });
     const projectConfigService = createProjectConfigService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -324,12 +356,7 @@ app.whenReady().then(async () => {
       onWorktreeChanged: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },
-      onHeadChanged: ({ laneId, reason, preHeadSha, postHeadSha }) => {
-        jobEngine.onHeadChanged({ laneId, reason });
-        // Commit-style trigger for automation rules (run-tests, sync-to-mirror, etc.).
-        automationService?.onHeadChanged({ laneId, reason, preHeadSha, postHeadSha });
-        void restackSuggestionService?.onParentHeadChanged({ laneId, reason, preHeadSha, postHeadSha }).catch(() => { });
-      }
+      onHeadChanged: handleHeadChanged
     });
 
     const processService = createProcessService({
@@ -374,6 +401,73 @@ app.whenReady().then(async () => {
       automationService
     });
 
+    // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
+    // then routes them through the same onHeadChanged pipeline (packs, automations, restack suggestions).
+    let headWatcherTimer: NodeJS.Timeout | null = null;
+    let headWatcherRunning = false;
+
+    const pollHeads = async () => {
+      if (headWatcherRunning) return;
+      headWatcherRunning = true;
+      try {
+        const rows = db.all<{ id: string; worktree_path: string }>(
+          `
+            select id, worktree_path
+            from lanes
+            where project_id = ?
+              and status != 'archived'
+          `,
+          [projectId]
+        );
+
+        const active = new Set<string>();
+        for (const row of rows) {
+          const laneId = String(row.id ?? "").trim();
+          const worktreePath = String(row.worktree_path ?? "");
+          if (!laneId || !worktreePath) continue;
+          active.add(laneId);
+
+          const head = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
+          if (head.exitCode !== 0) continue;
+          const sha = head.stdout.trim();
+          if (!sha) continue;
+
+          const prev = lastHeadByLaneId.get(laneId);
+          if (!prev) {
+            lastHeadByLaneId.set(laneId, sha);
+            continue;
+          }
+          if (prev !== sha) {
+            handleHeadChanged({ laneId, reason: "head_watcher", preHeadSha: prev, postHeadSha: sha });
+          }
+        }
+
+        for (const laneId of Array.from(lastHeadByLaneId.keys())) {
+          if (!active.has(laneId)) lastHeadByLaneId.delete(laneId);
+        }
+      } catch (err) {
+        logger.warn("git.head_watcher_failed", { err: err instanceof Error ? err.message : String(err) });
+      } finally {
+        headWatcherRunning = false;
+      }
+    };
+
+    const startHeadWatcher = () => {
+      if (headWatcherTimer) return;
+      void pollHeads();
+      headWatcherTimer = setInterval(() => {
+        void pollHeads();
+      }, 5_000);
+    };
+
+    const disposeHeadWatcher = () => {
+      if (!headWatcherTimer) return;
+      clearInterval(headWatcherTimer);
+      headWatcherTimer = null;
+    };
+
+    startHeadWatcher();
+
     const state = upsertRecentProject(readGlobalState(globalStatePath), project);
     writeGlobalState(globalStatePath, state);
 
@@ -388,6 +482,7 @@ app.whenReady().then(async () => {
       project,
       projectId,
       adeDir: adePaths.adeDir,
+      disposeHeadWatcher,
       keybindingsService,
       terminalProfilesService,
       agentToolsService,
@@ -418,6 +513,11 @@ app.whenReady().then(async () => {
   };
 
   const closeContext = () => {
+    try {
+      ctxRef.disposeHeadWatcher();
+    } catch {
+      // ignore
+    }
     try {
       ctxRef.prPollingService.dispose();
     } catch {

@@ -750,7 +750,7 @@ CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted
 - ONBOARD-015: API key management — DONE
 - TERM-028: Transcript upload opt-in (hosted mirror) — DONE
 
-**Deferred to Phase 7**: PACK-024 (pack retention and cleanup policy) — not implemented; moved to Phase 7.
+**Deferred to Phase 7**: PACK-024 (pack retention and cleanup policy) — implemented (pack service cleanup for archived lanes/conflict packs).
 
 **Services Implemented**:
 - `hostedAgentService` (desktop): Clerk OAuth PKCE sign-in, mirror sync (blobs/manifests/packs/transcripts), job submission/polling, conflict proposal orchestration, narrative generation orchestration, auth token management via OS secure storage
@@ -1022,7 +1022,7 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 
 ### Phase 8: Automations + Onboarding + Packs V2
 
-**Status**: NOT STARTED
+**Status**: IN PROGRESS (core implemented: automations, onboarding wizard, packs v2; remaining onboarding seeding/import items tracked in feature docs)
 
 **Goal**: Add user-configurable automation workflows, a guided onboarding experience with intelligent project detection, and evolve the pack system to support versioning, checkpoints, and new pack types.
 
