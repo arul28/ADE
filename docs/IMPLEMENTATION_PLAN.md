@@ -1092,6 +1092,16 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 
 **Exit Criteria**: Automation rules can be defined in YAML and managed in the UI. Triggers fire and actions execute with history tracking. First-run wizard detects project type and suggests defaults. Initial packs are generated from codebase scan. CI/CD workflows are importable. Checkpoints are created automatically. Pack versions are immutable with content hashes. New pack types work. Users can edit narratives and diff pack versions.
 
+#### Phase 8 Stabilization (2026-02-14)
+
+Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-to-end:
+
+- Hosted jobs: fixed worker startup/env alignment issues and DynamoDB update expression reserved keyword handling in the job worker; verified queued → processing → completed with artifact creation.
+- Packs: lane pack markdown reworked into a handoff-oriented structure (what changed / why / validation / key files / errors / sessions / next steps / narrative). Pack events now include hosted job IDs + status for clearer UI feedback.
+- Terminals: added ANSI stripping for previews/error excerpts and deterministic one-line session summaries persisted on sessions for list views.
+- Lanes: terminals panel defaults to running sessions; ended sessions collapsed behind toggles with summary-first display.
+- UI feedback: Pack Viewer and app-level banners surface hosted job failure context and warn when the hosted provider is in `mock` mode.
+
 ---
 
 ### Phase 9: Advanced Features + Polish + Runtime Isolation

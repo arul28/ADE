@@ -482,13 +482,17 @@ export type HostedJobSubmissionResult = {
 export type HostedJobStatusResult = {
   jobId: string;
   status: "queued" | "processing" | "completed" | "failed";
+  type?: HostedJobType;
+  laneId?: string;
   artifactId?: string;
+  submittedAt?: string;
   completedAt?: string;
   error?: {
     code: string;
     message: string;
     details?: Record<string, unknown>;
   };
+  metrics?: Record<string, unknown> | null;
 };
 
 export type HostedArtifactResult = {
@@ -569,6 +573,7 @@ export type TerminalSessionSummary = {
   headShaStart: string | null;
   headShaEnd: string | null;
   lastOutputPreview: string | null;
+  summary: string | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

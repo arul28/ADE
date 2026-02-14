@@ -68,11 +68,16 @@ A **session** is a tracked terminal lifecycle from creation to exit. When a PTY 
 - **State**: Running or ended, exit code.
 - **Git context**: HEAD SHA at session start and end (enabling delta computation).
 - **Transcript path**: Location of the captured output file.
-- **Preview**: Last few lines of output (for display in session lists without reading the full transcript).
+- **Preview**: Last few lines of output (ANSI-stripped) for display in lists without reading the full transcript.
+- **Summary**: A deterministic one-line summary generated when the session ends (also ANSI-stripped). Example: `Ran npm test (PASS, 31 tests, 1.2s)` or `Ran npm install (FAIL, exit code 1, EACCES permission denied)`.
 
 ### Transcript
 
-A **transcript** is the raw terminal output saved to disk at `.ade/transcripts/<session-id>.log`. Every byte written by the PTY to stdout is appended to this file. Transcripts include ANSI escape codes (preserving color and formatting information).
+A **transcript** is the raw terminal output saved to disk at `.ade/transcripts/<session-id>.log`. Every byte written by the PTY to stdout is appended to this file. Transcripts are stored raw (including ANSI escape codes for color/cursor control).
+
+User-facing excerpts derived from transcripts (previews, failure lines, summaries) are **sanitized** before display:
+- ANSI escape sequences are stripped.
+- Carriage-return line rewrites and backspaces are normalized so the output reads like plain text.
 
 Transcripts serve multiple purposes:
 - **Audit trail**: Review what commands were run and what output was produced.
@@ -91,7 +96,7 @@ Delta computation works by comparing the git state at session start (captured HE
 | `insertions` | Total lines added across all changed files |
 | `deletions` | Total lines removed across all changed files |
 | `touched_files` | List of specific file paths that changed |
-| `failure_lines` | Lines from the transcript matching common failure patterns (stack traces, error keywords) |
+| `failure_lines` | ANSI-stripped, de-duplicated lines from the transcript matching common failure patterns (stack traces, error keywords) |
 
 ### Checkpoint
 
@@ -304,7 +309,7 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 
 3. **Exit**: When the PTY process exits (user types `exit`, process terminates, or is killed), the `ade.pty.exit` event fires. The session record is updated with `status: 'ended'`, `ended_at`, `exit_code`, and `head_sha_end`.
 
-4. **Delta Computation**: The session service computes the delta by running `git diff --stat` between `head_sha_start` and the current working tree state. It also scans the transcript for lines matching failure patterns (configurable regex). The delta is stored in the `session_deltas` table.
+4. **Delta Computation**: The session service computes the delta by running `git diff --stat` between `head_sha_start` and the current working tree state. It also scans the transcript for lines matching failure patterns (configurable regex). In parallel it generates a deterministic one-line `summary` (ANSI-stripped) and stores it on the session record. The delta is stored in the `session_deltas` table.
 
 5. **Trigger**: The job engine is notified that a session has ended. It enqueues a pack refresh job for the lane, ensuring that pack data stays current with the latest changes.
 
@@ -364,6 +369,7 @@ interface TerminalSessionSummary {
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
+  summary: string | null;
   lastOutputPreview: string | null;
 }
 
@@ -445,6 +451,7 @@ Delta computation runs asynchronously after a session ends. The algorithm:
 5. Scan the transcript file for lines matching configurable failure patterns:
    - Common patterns: `Error:`, `FAIL`, `TypeError`, `panic`, `Exception`, stack trace indicators.
    - The failure pattern list is configurable in `.ade/ade.yaml`.
+   - Captured failure lines are ANSI-stripped, normalized (carriage returns/backspaces), and de-duplicated before storage.
 6. Store the computed delta in the `session_deltas` table.
 
 ---
@@ -466,6 +473,7 @@ terminal_sessions (
   transcript_path     TEXT NOT NULL,          -- Path to transcript file
   head_sha_start      TEXT,                   -- Git HEAD SHA when session started
   head_sha_end        TEXT,                   -- Git HEAD SHA when session ended
+  summary             TEXT,                   -- Deterministic one-line summary (ANSI-stripped). Null while running.
   last_output_preview TEXT,                   -- Last few lines of output (for list display)
   FOREIGN KEY (lane_id) REFERENCES lanes(id)
 )

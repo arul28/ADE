@@ -1019,39 +1019,139 @@ export function registerIpc({
       if (!ctx.hostedAgentService.getStatus().enabled) {
         throw new Error("Hosted AI is selected but not ready. Go to Settings → Provider, grant consent, apply bootstrap, and sign in.");
       }
-      const narrative = await ctx.hostedAgentService.requestLaneNarrative({
-        laneId: arg.laneId,
-        packBody: lanePack.body
-      });
-      return ctx.packService.applyHostedNarrative({
-        laneId: arg.laneId,
-        narrative: narrative.narrative,
-        metadata: {
-          jobId: narrative.jobId,
-          artifactId: narrative.artifactId,
-          provider: narrative.provider,
-          model: narrative.model,
-          inputTokens: narrative.inputTokens,
-          outputTokens: narrative.outputTokens,
-          latencyMs: narrative.latencyMs
+      const submittedAt = new Date().toISOString();
+      let jobId: string | null = null;
+      let lastStatus: "queued" | "processing" | "completed" | "failed" | null = null;
+
+      try {
+        const narrative = await ctx.hostedAgentService.requestLaneNarrative({
+          laneId: arg.laneId,
+          packBody: lanePack.body,
+          onJobSubmitted: (submission) => {
+            jobId = submission.jobId;
+            lastStatus = submission.status;
+            try {
+              ctx.packService.recordEvent({
+                packKey: lanePack.packKey,
+                eventType: "narrative_requested",
+                payload: {
+                  laneId: arg.laneId,
+                  providerMode,
+                  jobId: submission.jobId,
+                  status: submission.status,
+                  submittedAt,
+                  trigger: "manual_ai",
+                  sessionId: null,
+                  deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+                  contentHash: lanePack.contentHash
+                }
+              });
+            } catch {
+              // ignore pack event failures
+            }
+          },
+          onJobStatus: (status) => {
+            lastStatus = status.status;
+          }
+        });
+
+        return ctx.packService.applyHostedNarrative({
+          laneId: arg.laneId,
+          narrative: narrative.narrative,
+          metadata: {
+            jobId: narrative.jobId,
+            artifactId: narrative.artifactId,
+            provider: narrative.provider,
+            model: narrative.model,
+            inputTokens: narrative.inputTokens,
+            outputTokens: narrative.outputTokens,
+            latencyMs: narrative.latencyMs,
+            trigger: "manual_ai",
+            sessionId: null
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        try {
+          ctx.packService.recordEvent({
+            packKey: lanePack.packKey,
+            eventType: "narrative_failed",
+            payload: {
+              laneId: arg.laneId,
+              providerMode,
+              ...(jobId ? { jobId } : {}),
+              ...(lastStatus ? { status: lastStatus } : {}),
+              submittedAt,
+              trigger: "manual_ai",
+              sessionId: null,
+              error: message
+            }
+          });
+        } catch {
+          // ignore pack event failures
         }
-      });
+        throw error;
+      }
     }
 
     if (providerMode === "byok") {
-      const narrative = await ctx.byokLlmService.generateLaneNarrative({
-        laneId: arg.laneId,
-        packBody: lanePack.body
-      });
-      return ctx.packService.applyHostedNarrative({
-        laneId: arg.laneId,
-        narrative: narrative.narrative,
-        metadata: {
-          source: "byok",
-          provider: narrative.provider,
-          model: narrative.model
+      const submittedAt = new Date().toISOString();
+      try {
+        ctx.packService.recordEvent({
+          packKey: lanePack.packKey,
+          eventType: "narrative_requested",
+          payload: {
+            laneId: arg.laneId,
+            providerMode,
+            status: "processing",
+            submittedAt,
+            trigger: "manual_ai",
+            sessionId: null,
+            deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+            contentHash: lanePack.contentHash
+          }
+        });
+      } catch {
+        // ignore pack event failures
+      }
+
+      try {
+        const narrative = await ctx.byokLlmService.generateLaneNarrative({
+          laneId: arg.laneId,
+          packBody: lanePack.body
+        });
+        return ctx.packService.applyHostedNarrative({
+          laneId: arg.laneId,
+          narrative: narrative.narrative,
+          metadata: {
+            source: "byok",
+            provider: narrative.provider,
+            model: narrative.model,
+            trigger: "manual_ai",
+            sessionId: null
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        try {
+          ctx.packService.recordEvent({
+            packKey: lanePack.packKey,
+            eventType: "narrative_failed",
+            payload: {
+              laneId: arg.laneId,
+              providerMode,
+              status: "failed",
+              submittedAt,
+              trigger: "manual_ai",
+              sessionId: null,
+              error: message
+            }
+          });
+        } catch {
+          // ignore pack event failures
         }
-      });
+        throw error;
+      }
     }
 
     throw new Error("AI narrative generation requires Hosted or BYOK provider mode.");

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Grid, LayoutList, Plus, RefreshCw, Settings, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Grid, LayoutList, Plus, RefreshCw, Settings, Trash2, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import type { TerminalLaunchProfile, TerminalProfilesSnapshot, TerminalSessionSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -11,6 +11,7 @@ import { cn } from "../ui/cn";
 import { TerminalView } from "../terminals/TerminalView";
 import { SessionDeltaCard } from "../terminals/SessionDeltaCard";
 import { TilingLayout } from "./TilingLayout";
+import { useNavigate } from "react-router-dom";
 
 const tabTrigger =
   "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-muted/60";
@@ -23,6 +24,17 @@ function statusDot(status: string) {
   if (status === "failed") return "bg-red-700";
   if (status === "disposed") return "bg-muted-fg";
   return "bg-border";
+}
+
+function sessionTabLabel(session: TerminalSessionSummary): string {
+  const base = ((session.goal ?? "").trim() || session.title).trim() || "session";
+  if (session.status === "running" && session.ptyId) return base;
+
+  const tool = session.toolType ?? "shell";
+  const outcome = session.exitCode != null ? `exit ${session.exitCode}` : session.status;
+  const summary = (session.summary ?? "").trim();
+  if (summary) return `${tool} · ${outcome} · ${summary}`.slice(0, 180);
+  return `${tool} · ${outcome} · ${base}`.slice(0, 180);
 }
 
 function readLaunchTracked(): boolean {
@@ -99,6 +111,7 @@ function TranscriptTail({ sessionId }: { sessionId: string }) {
 }
 
 export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string | null } = {}) {
+  const navigate = useNavigate();
   const globalLaneId = useAppStore((s) => s.selectedLaneId);
   const laneId = overrideLaneId ?? globalLaneId;
   const globalFocusedSessionId = useAppStore((s) => s.focusedSessionId);
@@ -111,6 +124,8 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
+  const [showEndedSessions, setShowEndedSessions] = useState(false);
+  const [showTranscriptTail, setShowTranscriptTail] = useState(false);
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(new Set());
   const [localFocusedSessionId, setLocalFocusedSessionId] = useState<string | null>(null);
   const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfilesSnapshot | null>(null);
@@ -143,9 +158,11 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
       setSessions(rows);
       laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
       if (rows.length > 0) {
-        const currentExists = focusedSessionId && rows.some((s) => s.id === focusedSessionId);
+        const runningOnly = rows.filter((s) => s.status === "running" && Boolean(s.ptyId));
+        const visible = viewMode === "tabs" && !showEndedSessions && runningOnly.length ? runningOnly : rows;
+        const currentExists = focusedSessionId && visible.some((s) => s.id === focusedSessionId);
         if (!currentExists && viewMode === "tabs") {
-          focusSession(rows[0].id);
+          focusSession(visible[0]!.id);
         }
       } else {
         focusSession(null);
@@ -153,7 +170,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     } finally {
       setLoading(false);
     }
-  }, [laneId, focusedSessionId, viewMode, focusSession]);
+  }, [laneId, focusedSessionId, viewMode, showEndedSessions, focusSession]);
 
   useEffect(() => {
     setSessions([]);
@@ -241,7 +258,21 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     );
   }
 
-  const current = sessions.find((s) => s.id === focusedSessionId) ?? sessions[0] ?? null;
+  const runningSessions = useMemo(
+    () => sessions.filter((s) => s.status === "running" && Boolean(s.ptyId)),
+    [sessions]
+  );
+  const endedSessions = useMemo(
+    () => sessions.filter((s) => !(s.status === "running" && Boolean(s.ptyId))),
+    [sessions]
+  );
+  const tabSessions = useMemo(() => {
+    if (viewMode !== "tabs") return sessions;
+    if (!showEndedSessions && runningSessions.length) return runningSessions;
+    return sessions;
+  }, [sessions, viewMode, showEndedSessions, runningSessions]);
+
+  const current = tabSessions.find((s) => s.id === focusedSessionId) ?? tabSessions[0] ?? null;
 
   const orderedProfiles = useMemo(() => {
     const profiles = terminalProfiles?.profiles ?? [];
@@ -263,6 +294,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
 
   useEffect(() => {
     setGoalDraft(current?.goal ?? "");
+    setShowTranscriptTail(false);
   }, [current?.id]);
 
   const saveGoal = useCallback(async () => {
@@ -369,7 +401,22 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           </div>
           <div className="h-4 w-px bg-border" />
           <div className="truncate text-xs font-semibold">{laneName ?? laneId}</div>
-          <Chip className="text-[10px]">{sessions.length} sessions</Chip>
+          <Chip className="text-[10px]">{runningSessions.length} running</Chip>
+          {endedSessions.length ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded border border-border bg-card/40 px-2 py-1 text-[10px] text-muted-fg hover:text-fg"
+              onClick={() => setShowEndedSessions((prev) => !prev)}
+              title={showEndedSessions ? "Hide ended sessions" : "Show ended sessions"}
+            >
+              {showEndedSessions || runningSessions.length === 0 ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              {endedSessions.length} ended
+            </button>
+          ) : null}
           {!launchTracked ? <Chip className="text-[10px]">no context</Chip> : null}
         </div>
         <div className="flex items-center gap-2">
@@ -389,6 +436,18 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 </Button>
               ))}
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title="Open in Terminals tab"
+            onClick={() => {
+              navigate(`/terminals?laneId=${encodeURIComponent(laneId)}&status=running`);
+            }}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Terminals
+          </Button>
           <Button variant="ghost" size="sm" title="Refresh sessions" onClick={() => refresh().catch(() => {})}>
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           </Button>
@@ -409,10 +468,10 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           className="flex min-h-0 flex-1 flex-col"
         >
           <Tabs.List className="flex flex-wrap gap-1 rounded-lg border border-border bg-card/60 p-1">
-            {sessions.map((s) => (
+            {tabSessions.map((s) => (
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>
                 <span className={cn("h-2 w-2 rounded-full", statusDot(s.status))} />
-                <span className="max-w-[180px] truncate">{(s.goal ?? "").trim().length ? s.goal : s.title}</span>
+                <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
                 {!s.tracked ? <span className="rounded border border-border px-1 text-[10px] text-muted-fg">no ctx</span> : null}
                 {s.status === "running" && s.ptyId ? (
                   <button
@@ -485,9 +544,29 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   </div>
                   <div className="mt-3 space-y-2">
                     <SessionDeltaCard sessionId={current.id} />
-                    <pre className="whitespace-pre-wrap rounded-lg border border-border bg-card/70 p-2 text-[11px] leading-relaxed">
-                      {current.id ? <TranscriptTail sessionId={current.id} /> : <span className="text-muted-fg">No transcript.</span>}
-                    </pre>
+                    {current.summary ? (
+                      <div className="rounded border border-border bg-card/70 px-2 py-1 text-[11px] text-muted-fg">
+                        {current.summary}
+                      </div>
+                    ) : null}
+                    {current.tracked ? (
+                      <div className="rounded border border-border bg-card/50 p-2 text-[11px] text-muted-fg">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-fg hover:bg-muted/60 hover:text-fg"
+                          onClick={() => setShowTranscriptTail((prev) => !prev)}
+                          title={showTranscriptTail ? "Hide transcript tail" : "Show transcript tail"}
+                        >
+                          {showTranscriptTail ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                          Transcript tail
+                        </button>
+                        {showTranscriptTail ? (
+                          <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-card/70 p-2 text-[11px] leading-relaxed text-fg">
+                            {current.id ? <TranscriptTail sessionId={current.id} /> : <span className="text-muted-fg">No transcript.</span>}
+                          </pre>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               )

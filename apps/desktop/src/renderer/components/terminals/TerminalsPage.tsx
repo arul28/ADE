@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { RefreshCw, Square } from "lucide-react";
 import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
@@ -10,6 +10,7 @@ import { PaneHeader } from "../ui/PaneHeader";
 
 export function TerminalsPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
@@ -35,6 +36,24 @@ export function TerminalsPage() {
   useEffect(() => {
     refresh().catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
+    if (laneParam && lanes.some((l) => l.id === laneParam)) {
+      setFilterLaneId(laneParam);
+    }
+
+    const statusParam = (searchParams.get("status") ?? "").trim();
+    if (
+      statusParam === "running" ||
+      statusParam === "completed" ||
+      statusParam === "failed" ||
+      statusParam === "disposed" ||
+      statusParam === "all"
+    ) {
+      setFilterStatus(statusParam);
+    }
+  }, [searchParams, lanes]);
 
   useEffect(() => {
     const unsubExit = window.ade.pty.onExit(() => {
@@ -72,7 +91,8 @@ export function TerminalsPage() {
         (s.goal ?? s.title).toLowerCase().includes(needle) ||
         s.laneName.toLowerCase().includes(needle) ||
         (s.toolType ?? "").toLowerCase().includes(needle) ||
-        (s.lastOutputPreview ?? "").toLowerCase().includes(needle)
+        (s.lastOutputPreview ?? "").toLowerCase().includes(needle) ||
+        (s.summary ?? "").toLowerCase().includes(needle)
       );
     });
   }, [sessions, filterLaneId, filterStatus, q]);
@@ -210,6 +230,11 @@ export function TerminalsPage() {
                     {s.lastOutputPreview ? (
                       <div className="mt-2 truncate rounded border border-border bg-card/60 px-2 py-1 text-xs text-muted-fg">
                         {s.lastOutputPreview}
+                      </div>
+                    ) : null}
+                    {s.summary && s.status !== "running" ? (
+                      <div className="mt-2 truncate rounded border border-border bg-card/60 px-2 py-1 text-xs text-muted-fg">
+                        {s.summary}
                       </div>
                     ) : null}
                   </div>

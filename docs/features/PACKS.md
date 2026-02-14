@@ -232,6 +232,59 @@ failures. Key changes focused on the auth module with new login and
 session handling logic.
 ```
 
+**Lane Pack structure** (review-focused handoff document):
+
+```markdown
+# Lane: feature-auth
+> Branch: `feature/auth` | Base: `main` | HEAD: `abc12345` | clean · ahead 2 · behind 0
+
+## What Changed
+- Modified authentication middleware (src/auth/).
+- Added rate limiting to API routes (src/api/routes/).
+
+## Why
+<!-- ADE_INTENT_START -->
+Intent not set — click to add.
+<!-- ADE_INTENT_END -->
+
+Inferred from commits:
+- Add rate limiting to API routes
+- Fix flaky auth tests
+
+## Validation
+- Tests: PASS (2 suites, 31 tests, 1.2s) · command: `npm test`
+- Lint: NOT RUN
+
+## Key Files (10 files touched)
+| File | Change |
+|------|--------|
+| `src/auth/middleware.ts` | +45/-12 |
+
+## Errors & Issues
+No errors detected.
+
+## Sessions (4 total, 1 running)
+| When | Tool | Goal | Result | Delta |
+|------|------|------|--------|-------|
+| 14:32 | shell | "run tests" | exit 0 | +45/-12 |
+
+## Open Questions / Next Steps
+- 2 tests failing in auth suite — investigate before merge
+<!-- ADE_TODOS_START -->
+- (add notes/todos here)
+<!-- ADE_TODOS_END -->
+
+## Narrative
+AI narrative not yet generated.
+
+---
+*Updated: 2026-02-14T12:00:00Z | Trigger: session_end | Provider: hosted | [View history →](ade://packs/versions/lane:... )*
+```
+
+Notes:
+- The `ADE_INTENT_START/END` and `ADE_TODOS_START/END` markers are preserved so users can edit intent/todos without ADE losing the section on refresh.
+- Any transcript-derived lines (errors, session output previews) are ANSI-stripped and de-duplicated before inclusion.
+
 ### Update Pipeline
 
 Pack updates follow an automated pipeline triggered by session lifecycle events:
@@ -240,7 +293,7 @@ Pack updates follow an automated pipeline triggered by session lifecycle events:
 Session End
   │
   ▼
-Checkpoint Created (future)
+Checkpoint Created
   │
   ▼
 Lane Pack Refreshed
@@ -254,11 +307,11 @@ Project Pack Refreshed (if stale)
   │  - Updates project-level overview
   │
   ▼
-Conflict Prediction Triggered (future)
+Conflict Prediction Triggered
   │  - Uses updated pack data for context
   │
   ▼
-Hosted Mirror Synced (if enabled, future)
+Hosted Mirror Synced (if enabled)
     - Pack content pushed to cloud for hosted agent access
 ```
 

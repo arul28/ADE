@@ -1167,7 +1167,11 @@ export function createHostedAgentService({
     return inFlight;
   };
 
-  const pollJob = async (jobId: string, timeoutMs = 120_000): Promise<HostedJobStatusResult> => {
+  const pollJob = async (
+    jobId: string,
+    timeoutMs = 120_000,
+    onStatus?: (status: HostedJobStatusResult) => void
+  ): Promise<HostedJobStatusResult> => {
     const started = Date.now();
     const effectiveTimeout = Math.max(POLL_TIMEOUT_FLOOR_MS, timeoutMs);
     let delayMs = POLL_INITIAL_DELAY_MS;
@@ -1196,6 +1200,11 @@ export function createHostedAgentService({
       if (normalizedStatus !== lastStatus) {
         lastStatus = normalizedStatus;
         statusStreakStart = Date.now();
+        try {
+          onStatus?.(status);
+        } catch {
+          // ignore callback failures
+        }
       }
 
       if (!["queued", "processing", "completed", "failed"].includes(normalizedStatus)) {
@@ -1702,7 +1711,12 @@ export function createHostedAgentService({
       });
     },
 
-    async requestLaneNarrative(args: { laneId: string; packBody: string }): Promise<{
+    async requestLaneNarrative(args: {
+      laneId: string;
+      packBody: string;
+      onJobSubmitted?: (submission: HostedJobSubmissionResult) => void;
+      onJobStatus?: (status: HostedJobStatusResult) => void;
+    }): Promise<{
       jobId: string;
       artifactId: string;
       narrative: string;
@@ -1729,7 +1743,13 @@ export function createHostedAgentService({
             }
           });
 
-          const status = await pollJob(submission.jobId, 120_000);
+          try {
+            args.onJobSubmitted?.(submission);
+          } catch {
+            // ignore callback failures
+          }
+
+          const status = await pollJob(submission.jobId, 120_000, args.onJobStatus);
           if (status.status !== "completed" || !status.artifactId) {
             const message = status.error?.message ?? `Narrative job ${status.jobId} did not complete successfully.`;
             throw new Error(message);

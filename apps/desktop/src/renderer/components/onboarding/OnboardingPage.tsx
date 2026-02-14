@@ -181,6 +181,7 @@ export function OnboardingPage() {
 
   const [step, setStep] = React.useState<StepId>("welcome");
   const [statusCompletedAt, setStatusCompletedAt] = React.useState<string | null>(null);
+  const [skipBusy, setSkipBusy] = React.useState(false);
 
   const [defaultsBusy, setDefaultsBusy] = React.useState(false);
   const [defaultsError, setDefaultsError] = React.useState<string | null>(null);
@@ -244,6 +245,7 @@ export function OnboardingPage() {
 
   const stepIndex = steps.indexOf(step);
   const canGoBack = stepIndex > 0;
+  const showStepsSidebar = step !== "welcome";
 
   const goNext = () => {
     const next = steps[stepIndex + 1];
@@ -254,6 +256,17 @@ export function OnboardingPage() {
     const prev = steps[stepIndex - 1];
     if (prev) setStep(prev);
   };
+
+  const skipOnboarding = React.useCallback(async () => {
+    setSkipBusy(true);
+    try {
+      const next = await window.ade.onboarding.complete();
+      setStatusCompletedAt(next.completedAt);
+      navigate("/lanes", { replace: true });
+    } finally {
+      setSkipBusy(false);
+    }
+  }, [navigate]);
 
   const runDetectDefaults = async () => {
     setDefaultsBusy(true);
@@ -523,9 +536,16 @@ export function OnboardingPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              <Chip>
-                Step {Math.max(1, stepIndex + 1)}/{steps.length}
-              </Chip>
+              {showStepsSidebar ? (
+                <Chip>
+                  Step {Math.max(1, stepIndex + 1)}/{steps.length}
+                </Chip>
+              ) : null}
+              {!statusCompletedAt ? (
+                <Button size="sm" variant="outline" disabled={skipBusy} onClick={() => void skipOnboarding()}>
+                  {skipBusy ? "Skipping…" : "Skip for now"}
+                </Button>
+              ) : null}
               {statusCompletedAt ? (
                 <Button size="sm" variant="outline" onClick={() => navigate("/project", { replace: true })}>
                   Go to Run
@@ -534,8 +554,9 @@ export function OnboardingPage() {
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 lg:grid-cols-[260px_1fr]">
-            <aside className="rounded-lg border border-border bg-bg/40 p-2">
+          <div className={cn("mt-4 grid gap-3", showStepsSidebar ? "lg:grid-cols-[260px_1fr]" : "lg:grid-cols-1")}>
+            {showStepsSidebar ? (
+              <aside className="rounded-lg border border-border bg-bg/40 p-2">
               <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">Steps</div>
               <div className="mt-1 space-y-1">
                 {steps.map((id, idx) => {
@@ -573,7 +594,8 @@ export function OnboardingPage() {
                   );
                 })}
               </div>
-            </aside>
+              </aside>
+            ) : null}
 
             <main className="min-w-0 space-y-3">
               <div className="rounded-lg border border-border bg-card/40 p-3">
@@ -589,41 +611,50 @@ export function OnboardingPage() {
                         <Sparkles className="h-5 w-5 text-accent" />
                       </div>
                       <div className="min-w-0">
-                        <div className="text-sm font-semibold">What ADE helps with</div>
+                        <div className="text-sm font-semibold">Start quickly</div>
                         <div className="mt-1 text-xs text-muted-fg">
-                          ADE tracks your work in lanes, generates packs as structured context, and helps you stay ahead of merge conflicts.
-                          This onboarding is designed to be safe: you will see previews before any repo-impacting step.
+                          Onboarding is optional. You can jump straight into Lanes and come back later to auto-detect commands, import branches as lanes, and generate initial packs.
                         </div>
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <div className="rounded border border-border bg-bg/40 p-3 text-xs">
-                            <div className="flex items-center gap-2 font-semibold text-fg">
-                              <GitBranch className="h-4 w-4 text-muted-fg" />
-                              Lanes + worktrees
-                            </div>
-                            <div className="mt-1 text-muted-fg">
-                              Keep multiple branches checked out side-by-side without clobbering your working tree.
-                            </div>
-                          </div>
-                          <div className="rounded border border-border bg-bg/40 p-3 text-xs">
-                            <div className="flex items-center gap-2 font-semibold text-fg">
-                              <PackagePlus className="h-4 w-4 text-muted-fg" />
-                              Packs + conflict radar
-                            </div>
-                            <div className="mt-1 text-muted-fg">
-                              Packs capture deterministic context; conflict radar predicts overlaps so you can fix issues early.
-                            </div>
-                          </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Button size="sm" disabled={skipBusy} onClick={() => void skipOnboarding()}>
+                            {skipBusy ? "Skipping…" : "Skip and start working"}
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => goNext()}>
+                            Guided setup
+                          </Button>
                         </div>
+                        <div className="mt-3 text-[11px] text-muted-fg">You can re-open this wizard anytime via `#/onboarding`.</div>
                       </div>
                     </div>
                   </div>
 
-                  {previewLines("What ADE will do next", [
-                    "Scan your repository for common project markers (package.json, Makefile, CI configs).",
-                    "Generate a draft ADE config (processes, test suites, stacks, automations) and let you edit it before saving.",
-                    "Optionally import existing branches as lanes (adds git worktrees under .ade/worktrees).",
-                    "Generate initial packs for quick context + conflict prediction."
-                  ])}
+                  <details className="rounded border border-border bg-card/40 p-4">
+                    <summary className="cursor-pointer text-xs font-semibold text-fg">What guided onboarding does</summary>
+                    <div className="mt-3 space-y-2">
+                      {previewLines("High-level steps", [
+                        "Detect defaults from common repo markers (no commands are executed).",
+                        "Draft and review `.ade/ade.yaml` before saving.",
+                        "Optionally import existing branches as lanes (creates worktrees under `.ade/worktrees`).",
+                        "Generate initial packs for quick context + conflict prediction."
+                      ])}
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="rounded border border-border bg-bg/40 p-3 text-xs">
+                          <div className="flex items-center gap-2 font-semibold text-fg">
+                            <GitBranch className="h-4 w-4 text-muted-fg" />
+                            Lanes + worktrees
+                          </div>
+                          <div className="mt-1 text-muted-fg">Keep multiple branches checked out side-by-side without clobbering your working tree.</div>
+                        </div>
+                        <div className="rounded border border-border bg-bg/40 p-3 text-xs">
+                          <div className="flex items-center gap-2 font-semibold text-fg">
+                            <PackagePlus className="h-4 w-4 text-muted-fg" />
+                            Packs + conflict radar
+                          </div>
+                          <div className="mt-1 text-muted-fg">Packs capture deterministic context; conflict radar predicts overlaps so you can fix issues early.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
                 </div>
               ) : null}
 

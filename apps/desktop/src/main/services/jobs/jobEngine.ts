@@ -73,26 +73,37 @@ export function createJobEngine({
 
         // If AI is configured, refresh the narrative in the background after deterministic refresh.
         // This keeps packs useful without requiring users to click a separate "AI summary" button.
-        void (async () => {
+          void (async () => {
           const providerMode = projectConfigService?.get().effective.providerMode ?? "guest";
           if (providerMode === "guest") return;
 
-          try {
-            packService.recordEvent({
-              packKey: lanePack.packKey,
-              eventType: "narrative_requested",
-              payload: {
-                laneId: payload.laneId,
-                providerMode,
-                trigger: payload.reason,
-                sessionId: payload.sessionId ?? null,
-                deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
-                contentHash: lanePack.contentHash
-              }
-            });
-          } catch {
-            // ignore event creation failures
-          }
+          const submittedAt = new Date().toISOString();
+          let jobId: string | null = null;
+          let lastStatus: "queued" | "processing" | "completed" | "failed" | null = null;
+
+          const recordRequested = (submission: { jobId: string; status: "queued" | "processing" | "completed" | "failed" }) => {
+            jobId = submission.jobId;
+            lastStatus = submission.status;
+            try {
+              packService.recordEvent({
+                packKey: lanePack.packKey,
+                eventType: "narrative_requested",
+                payload: {
+                  laneId: payload.laneId,
+                  providerMode,
+                  jobId: submission.jobId,
+                  status: submission.status,
+                  submittedAt,
+                  trigger: payload.reason,
+                  sessionId: payload.sessionId ?? null,
+                  deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+                  contentHash: lanePack.contentHash
+                }
+              });
+            } catch {
+              // ignore event creation failures
+            }
+          };
 
           try {
             if (providerMode === "hosted") {
@@ -101,7 +112,11 @@ export function createJobEngine({
               }
               const narrative = await hostedAgentService.requestLaneNarrative({
                 laneId: payload.laneId,
-                packBody: lanePack.body
+                packBody: lanePack.body,
+                onJobSubmitted: recordRequested,
+                onJobStatus: (status) => {
+                  lastStatus = status.status;
+                }
               });
               packService.applyHostedNarrative({
                 laneId: payload.laneId,
@@ -124,6 +139,24 @@ export function createJobEngine({
             if (providerMode === "byok") {
               if (!byokLlmService) {
                 throw new Error("BYOK provider is selected but BYOK LLM service is unavailable.");
+              }
+              try {
+                packService.recordEvent({
+                  packKey: lanePack.packKey,
+                  eventType: "narrative_requested",
+                  payload: {
+                    laneId: payload.laneId,
+                    providerMode,
+                    status: "processing",
+                    submittedAt,
+                    trigger: payload.reason,
+                    sessionId: payload.sessionId ?? null,
+                    deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+                    contentHash: lanePack.contentHash
+                  }
+                });
+              } catch {
+                // ignore event creation failures
               }
               const narrative = await byokLlmService.generateLaneNarrative({
                 laneId: payload.laneId,
@@ -155,6 +188,9 @@ export function createJobEngine({
                 payload: {
                   laneId: payload.laneId,
                   providerMode,
+                  ...(jobId ? { jobId } : {}),
+                  ...(lastStatus ? { status: lastStatus } : {}),
+                  submittedAt,
                   trigger: payload.reason,
                   sessionId: payload.sessionId ?? null,
                   error: message

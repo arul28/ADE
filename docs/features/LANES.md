@@ -139,6 +139,11 @@ The center pane is the main working area, displaying detailed information and co
 - **Conflicts**: Conflict detection and resolution (future)
 - **PR**: Pull request status and actions (future)
 
+**Terminals sub-tab (signal-first)**:
+- Default view prioritizes **running** sessions. Ended/closed sessions are collapsed behind a toggle.
+- Ended sessions show a one-line deterministic summary (for review) and only reveal transcript tails when explicitly expanded.
+- A lightweight "Open in Terminals tab" action jumps to the global Terminals view with the lane filter pre-applied.
+
 **Diff / Git Operations Panel** (default sub-tab):
 
 The diff panel is the primary interaction surface for git operations within a lane.

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { RefreshCw, Sparkles } from "lucide-react";
-import type { HostedStatus, PackEvent, PackSummary, PackVersionSummary } from "../../../shared/types";
+import type { HostedBootstrapConfig, HostedJobStatusResult, HostedStatus, PackEvent, PackSummary, PackVersionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -13,6 +13,21 @@ type PackScope = "lane" | "project";
 
 const scopeTrigger =
   "inline-flex items-center justify-center rounded px-2.5 py-1 text-xs font-semibold transition-colors";
+
+type AiJobState = {
+  jobId: string;
+  status: HostedJobStatusResult["status"];
+  statusSinceMs: number;
+  submittedAt: string | null;
+  artifactId: string | null;
+  error: string | null;
+};
+
+function shortId(id: string): string {
+  const trimmed = (id ?? "").trim();
+  if (!trimmed) return "";
+  return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
+}
 
 function PackBody({ pack }: { pack: PackSummary | null }) {
   if (!pack) return <div className="text-xs text-muted-fg">Loading…</div>;
@@ -31,6 +46,8 @@ function formatPackEvent(ev: PackEvent): { title: string; detail: string; tone: 
   const trigger = typeof payload.trigger === "string" ? payload.trigger : typeof payload.reason === "string" ? payload.reason : null;
   const providerMode = typeof payload.providerMode === "string" ? payload.providerMode : null;
   const error = typeof payload.error === "string" ? payload.error : null;
+  const jobId = typeof payload.jobId === "string" ? (payload.jobId as string) : null;
+  const jobStatus = typeof payload.status === "string" ? (payload.status as string) : null;
 
   if (ev.eventType === "refresh_triggered") {
     return { title: "Pack refreshed", detail: trigger ? `trigger: ${trigger}` : "deterministic refresh", tone: "good" };
@@ -38,7 +55,7 @@ function formatPackEvent(ev: PackEvent): { title: string; detail: string; tone: 
   if (ev.eventType === "narrative_requested") {
     return {
       title: "AI update requested",
-      detail: `${providerMode ? `provider: ${providerMode}` : "provider: ?" }${trigger ? ` · trigger: ${trigger}` : ""}`,
+      detail: `${providerMode ? `provider: ${providerMode}` : "provider: ?"}${jobId ? ` · job ${shortId(jobId)}` : ""}${jobStatus ? ` · ${jobStatus}` : ""}${trigger ? ` · trigger: ${trigger}` : ""}`,
       tone: "neutral"
     };
   }
@@ -57,7 +74,8 @@ function formatPackEvent(ev: PackEvent): { title: string; detail: string; tone: 
     return { title: "AI details updated", detail: suffix, tone: "good" };
   }
   if (ev.eventType === "narrative_failed") {
-    return { title: "AI update failed", detail: error ?? "unknown error", tone: "bad" };
+    const suffix = `${jobId ? `job ${shortId(jobId)} · ` : ""}${error ?? "unknown error"}`;
+    return { title: "AI update failed", detail: suffix, tone: "bad" };
   }
   if (ev.eventType === "version_created") {
     const vn = payload.versionNumber;
@@ -69,12 +87,31 @@ function formatPackEvent(ev: PackEvent): { title: string; detail: string; tone: 
   return { title: ev.eventType, detail: "", tone: "neutral" };
 }
 
-function hostedReadiness(status: HostedStatus | null, error: string | null): { tone: "neutral" | "warn" | "bad"; message: string } | null {
+function hostedReadiness(
+  status: HostedStatus | null,
+  error: string | null,
+  job: AiJobState | null
+): { tone: "neutral" | "warn" | "bad"; message: string } | null {
   if (error) return { tone: "bad", message: `Hosted error: ${error}` };
   if (!status) return { tone: "neutral", message: "Hosted: checking status…" };
   if (!status.consentGiven) return { tone: "warn", message: "Hosted: consent not granted (Settings → Provider)." };
   if (!status.apiConfigured) return { tone: "warn", message: "Hosted: missing API config (apply bootstrap in Settings)." };
   if (!status.auth.signedIn) return { tone: "warn", message: "Hosted: not signed in (Settings → Provider)." };
+  if (job?.jobId) {
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - job.statusSinceMs) / 1000));
+    if ((job.status === "queued" || job.status === "processing") && elapsedSec >= 10) {
+      return {
+        tone: elapsedSec >= 60 ? "bad" : "warn",
+        message: `Last AI job ${shortId(job.jobId)} is ${job.status} for ${elapsedSec}s. If stuck: check worker Lambda logs, SQS DLQ depth, and LLM secret.`
+      };
+    }
+    if (job.status === "failed") {
+      return {
+        tone: "bad",
+        message: `Last AI job ${shortId(job.jobId)} failed${job.error ? `: ${job.error}` : ""}`
+      };
+    }
+  }
   return null;
 }
 
@@ -94,6 +131,9 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
 
   const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
   const [hostedError, setHostedError] = useState<string | null>(null);
+  const [hostedBootstrap, setHostedBootstrap] = useState<HostedBootstrapConfig | null>(null);
+
+  const [aiJob, setAiJob] = useState<AiJobState | null>(null);
 
   const [versionsDialogOpen, setVersionsDialogOpen] = useState(false);
   const [versionsLoading, setVersionsLoading] = useState(false);
@@ -238,6 +278,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     setError(null);
     setAiError(null);
     setAiQueued(false);
+    setAiJob(null);
     if (laneId) fetchLanePack().catch((err) => setError(err instanceof Error ? err.message : String(err)));
     fetchProjectPack().catch(() => setProjectPack(null));
   }, [laneId]);
@@ -246,6 +287,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     let cancelled = false;
     setHostedStatus(null);
     setHostedError(null);
+    setHostedBootstrap(null);
     if (providerMode !== "hosted") return;
     window.ade.hosted
       .getStatus()
@@ -256,6 +298,16 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       .catch((err) => {
         if (cancelled) return;
         setHostedError(err instanceof Error ? err.message : String(err));
+      });
+    window.ade.hosted
+      .getBootstrapConfig()
+      .then((config) => {
+        if (cancelled) return;
+        setHostedBootstrap(config);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setHostedBootstrap(null);
       });
     return () => {
       cancelled = true;
@@ -268,15 +320,62 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       if (lanePackKey && ev.packKey === lanePackKey) {
         if (ev.eventType === "narrative_requested") {
           setAiQueued(true);
+          const jobId = typeof ev.payload?.jobId === "string" ? (ev.payload.jobId as string) : null;
+          const statusRaw = typeof ev.payload?.status === "string" ? (ev.payload.status as string) : "queued";
+          const status =
+            statusRaw === "queued" || statusRaw === "processing" || statusRaw === "completed" || statusRaw === "failed"
+              ? statusRaw
+              : "queued";
+          if (jobId) {
+            setAiJob({
+              jobId,
+              status,
+              statusSinceMs: Date.now(),
+              submittedAt: typeof ev.payload?.submittedAt === "string" ? (ev.payload.submittedAt as string) : null,
+              artifactId: null,
+              error: null
+            });
+          }
         }
         if (ev.eventType === "narrative_failed") {
           setAiQueued(false);
           const msg = typeof ev.payload?.error === "string" ? (ev.payload.error as string) : "AI update failed.";
           setAiError(msg);
+          const jobId = typeof ev.payload?.jobId === "string" ? (ev.payload.jobId as string) : null;
+          if (jobId) {
+            setAiJob((prev) =>
+              prev?.jobId === jobId
+                ? { ...prev, status: "failed", statusSinceMs: Date.now(), error: msg }
+                : {
+                    jobId,
+                    status: "failed",
+                    statusSinceMs: Date.now(),
+                    submittedAt: typeof ev.payload?.submittedAt === "string" ? (ev.payload.submittedAt as string) : null,
+                    artifactId: null,
+                    error: msg
+                  }
+            );
+          }
         }
         if (ev.eventType === "narrative_update") {
           setAiQueued(false);
           setAiError(null);
+          const jobId = typeof ev.payload?.jobId === "string" ? (ev.payload.jobId as string) : null;
+          const artifactId = typeof ev.payload?.artifactId === "string" ? (ev.payload.artifactId as string) : null;
+          if (jobId) {
+            setAiJob((prev) =>
+              prev?.jobId === jobId
+                ? { ...prev, status: "completed", statusSinceMs: Date.now(), artifactId, error: null }
+                : {
+                    jobId,
+                    status: "completed",
+                    statusSinceMs: Date.now(),
+                    submittedAt: typeof ev.payload?.submittedAt === "string" ? (ev.payload.submittedAt as string) : null,
+                    artifactId,
+                    error: null
+                  }
+            );
+          }
         }
         if (ev.eventType === "refresh_triggered" || ev.eventType === "narrative_update" || ev.eventType === "narrative_failed") {
           scheduleLaneFetch();
@@ -301,8 +400,26 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       return { tone: "warn" as const, message: "AI details are disabled in Guest Mode. Set up Hosted or BYOK in Settings." };
     }
     if (providerMode === "hosted") {
-      const ready = hostedReadiness(hostedStatus, hostedError);
+      const ready = hostedReadiness(hostedStatus, hostedError, aiJob);
       if (ready) return ready;
+      if (aiBusy && !aiJob) {
+        return { tone: "neutral" as const, message: "Submitting job…" };
+      }
+      if (aiJob?.jobId) {
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000));
+        if (aiJob.status === "queued") {
+          return { tone: "neutral" as const, message: `Job ${shortId(aiJob.jobId)} queued for ${elapsedSec}s…` };
+        }
+        if (aiJob.status === "processing") {
+          return { tone: "neutral" as const, message: `Job ${shortId(aiJob.jobId)} processing for ${elapsedSec}s…` };
+        }
+        if (aiJob.status === "completed") {
+          return { tone: "good" as const, message: `Job ${shortId(aiJob.jobId)} complete.` };
+        }
+        if (aiJob.status === "failed") {
+          return { tone: "bad" as const, message: `Job ${shortId(aiJob.jobId)} failed${aiJob.error ? `: ${aiJob.error}` : ""}` };
+        }
+      }
       if (aiQueued) {
         return { tone: "neutral" as const, message: "AI update queued… (this will update automatically after pack refresh)." };
       }
@@ -315,7 +432,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       return { tone: "neutral" as const, message: "BYOK enabled. AI details update automatically after pack refresh (if configured). Use the button to re-run on demand." };
     }
     return null;
-  }, [scope, providerMode, hostedStatus, hostedError, aiQueued]);
+  }, [scope, providerMode, hostedStatus, hostedError, aiQueued, aiJob, aiBusy]);
 
   const aiMetaHint = useMemo(() => {
     if (scope !== "lane") return null;
@@ -339,6 +456,53 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     }
     return { tone: "neutral" as const, message: "AI details: generated (provider details not available)." };
   }, [activePack, activeMeta, providerMode, scope]);
+
+  useEffect(() => {
+    if (providerMode !== "hosted") return;
+    if (!aiJob?.jobId) return;
+    if (aiJob.status === "completed" || aiJob.status === "failed") return;
+
+    let cancelled = false;
+    let delayMs = 700;
+    let timer: number | null = null;
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const status = await window.ade.hosted.getJob(aiJob.jobId);
+        if (cancelled) return;
+        setAiJob((prev) => {
+          if (!prev || prev.jobId !== aiJob.jobId) return prev;
+          const nextStatus = status.status;
+          const statusChanged = nextStatus !== prev.status;
+          return {
+            ...prev,
+            status: nextStatus,
+            statusSinceMs: statusChanged ? Date.now() : prev.statusSinceMs,
+            submittedAt: status.submittedAt ?? prev.submittedAt,
+            artifactId: status.artifactId ?? prev.artifactId,
+            error: status.error?.message ?? prev.error
+          };
+        });
+
+        if (status.status === "completed" || status.status === "failed") {
+          return;
+        }
+      } catch {
+        // Keep polling; hosted failures are surfaced via aiError + status cards.
+      }
+
+      delayMs = Math.min(4000, Math.max(700, Math.floor(delayMs * 1.8)));
+      timer = window.setTimeout(() => void tick(), delayMs);
+    };
+
+    void tick();
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [providerMode, aiJob?.jobId, aiJob?.status]);
 
   if (!laneId && scope === "lane") {
     return <EmptyState title="No lane selected" description="Select a lane to view its pack." />;
@@ -381,7 +545,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
               size="sm"
               disabled={aiBusy || aiQueued || providerMode === "guest"}
               title={providerMode === "guest" ? "Enable Hosted/BYOK to use AI details" : "Update pack details with AI"}
-              onClick={() => updateWithAi().catch(() => {})}
+              onClick={() => void updateWithAi()}
             >
               <Sparkles className={cn("h-4 w-4", (aiBusy || aiQueued) && "animate-pulse")} />
               {aiBusy || aiQueued ? "Updating…" : "Update pack details with AI"}
@@ -430,7 +594,60 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
         </div>
       ) : null}
 
-      {aiError ? <div className="rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{aiError}</div> : null}
+      {providerMode === "hosted" && scope === "lane" ? (
+        <div className="rounded border border-border bg-card/40 p-2 text-xs">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">Hosted Health</div>
+          <div className="grid grid-cols-1 gap-1 text-[11px] text-muted-fg">
+            <div>Consent granted: {hostedStatus?.consentGiven ? "yes" : "no"}</div>
+            <div>Bootstrap file: {hostedBootstrap ? `yes (${hostedBootstrap.stage})` : "no"}</div>
+            <div>Bootstrap applied: {hostedStatus?.apiConfigured ? "yes" : "no"}</div>
+            <div>
+              Signed in:{" "}
+              {hostedStatus?.auth.signedIn ? `yes${hostedStatus.auth.email ? ` (${hostedStatus.auth.email})` : ""}` : "no"}
+            </div>
+            <div>Remote project ID: {hostedStatus?.remoteProjectId ?? "not configured"}</div>
+            <div>
+              Last job:{" "}
+              {aiJob
+                ? `${shortId(aiJob.jobId)} · ${aiJob.status}${aiJob.status === "queued" || aiJob.status === "processing"
+                    ? ` · ${Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000))}s`
+                    : ""}`
+                : "none"}
+            </div>
+          </div>
+          {aiJob && (aiJob.status === "queued" || aiJob.status === "processing") ? (
+            <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+              Job {shortId(aiJob.jobId)} has been {aiJob.status} for{" "}
+              {Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000))}s. Expected: &lt; 10s queued. Check: worker Lambda
+              logs, SQS DLQ depth, LLM secret.
+            </div>
+          ) : null}
+          {aiJob && aiJob.status === "failed" ? (
+            <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-[11px] text-red-300">
+              Job {shortId(aiJob.jobId)} failed{aiJob.error ? `: ${aiJob.error}` : "."}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {aiError ? (
+        <div className="rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">
+          <div>{aiError}</div>
+          {aiJob?.jobId ? (
+            <div className="mt-1 text-[11px] text-red-200">
+              job {shortId(aiJob.jobId)} · status {aiJob.status}
+              {aiJob.status === "queued" || aiJob.status === "processing"
+                ? ` · ${Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000))}s`
+                : ""}
+            </div>
+          ) : null}
+          {aiJob?.status === "queued" ? (
+            <div className="mt-1 text-[11px] text-red-200">
+              If this stays queued: check worker Lambda logs, SQS DLQ, and hosted LLM secret (Gemini key/provider).
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {error ? <div className="rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div> : null}
 
       <PackBody pack={activePack} />

@@ -90,10 +90,13 @@ async function updateJob(args: {
         projectId: args.projectId,
         jobId: args.jobId
       },
-      UpdateExpression: "set #status = :status, updatedAt = :updatedAt, completedAt = :completedAt, artifactId = :artifactId, #error = :error, metrics = :metrics",
+      // DynamoDB reserves certain attribute names; alias anything that might collide.
+      UpdateExpression:
+        "set #status = :status, updatedAt = :updatedAt, completedAt = :completedAt, artifactId = :artifactId, #error = :error, #metrics = :metrics",
       ExpressionAttributeNames: {
         "#status": "status",
-        "#error": "error"
+        "#error": "error",
+        "#metrics": "metrics"
       },
       ExpressionAttributeValues: {
         ":status": args.status,

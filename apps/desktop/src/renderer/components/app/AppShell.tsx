@@ -5,13 +5,29 @@ import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { HostedStatus, PrEventPayload } from "../../../shared/types";
+import type { HostedStatus, PackEvent, PrEventPayload } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
 type PrToast = {
   id: string;
   event: Extract<PrEventPayload, { type: "pr-notification" }>;
 };
+
+type AiBannerState = {
+  laneId: string | null;
+  jobId: string | null;
+  status: string | null;
+  error: string;
+  createdAt: string;
+};
+
+const ONBOARDING_DISMISSED_KEY = "ade:onboarding:dismissed:v1";
+
+function shortId(id: string): string {
+  const trimmed = (id ?? "").trim();
+  if (!trimmed) return "";
+  return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -30,6 +46,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const toastTimersRef = useRef<Map<string, number>>(new Map());
   const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
   const [hostedStatusError, setHostedStatusError] = useState<string | null>(null);
+  const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
+  const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
+  const [aiRetrying, setAiRetrying] = useState(false);
+  const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     window.ade.app
@@ -38,14 +66,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .then(() => Promise.all([refreshLanes(), refreshProviderMode(), refreshKeybindings().catch(() => {})]))
       .then(async () => {
         const status = await window.ade.onboarding.getStatus().catch(() => null);
-        if (!status || status.completedAt) return;
-        if (location.pathname === "/onboarding") return;
-        navigate("/onboarding", { replace: true });
+        setOnboardingIncomplete(Boolean(status && !status.completedAt));
       })
       .catch(() => {
         // Leave project unset; UI will show placeholders.
       });
   }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, navigate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade.onboarding
+      .getStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setOnboardingIncomplete(Boolean(status && !status.completedAt));
+      })
+      .catch(() => {
+        // ignore
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +106,54 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       });
     return () => {
       cancelled = true;
+    };
+  }, [providerMode]);
+
+  useEffect(() => {
+    setAiFailure(null);
+    setAiMockProvider(null);
+    if (providerMode !== "hosted") return;
+
+    const unsub = window.ade.packs.onEvent((ev: PackEvent) => {
+      if (ev.eventType === "narrative_failed") {
+        const payload = ev.payload ?? {};
+        const laneIdRaw = typeof payload.laneId === "string" ? (payload.laneId as string) : ev.packKey.startsWith("lane:") ? ev.packKey.slice("lane:".length) : null;
+        const jobId = typeof payload.jobId === "string" ? (payload.jobId as string) : null;
+        const status = typeof payload.status === "string" ? (payload.status as string) : null;
+        const error = typeof payload.error === "string" ? (payload.error as string) : "AI update failed.";
+        setAiFailure({
+          laneId: laneIdRaw,
+          jobId,
+          status,
+          error,
+          createdAt: ev.createdAt
+        });
+      }
+
+      if (ev.eventType === "narrative_update") {
+        const payload = ev.payload ?? {};
+        const provider = typeof payload.provider === "string" ? (payload.provider as string) : null;
+        if (provider === "mock") {
+          setAiMockProvider({ createdAt: ev.createdAt });
+        } else if (provider) {
+          setAiMockProvider(null);
+        }
+
+        const jobId = typeof payload.jobId === "string" ? (payload.jobId as string) : null;
+        setAiFailure((prev) => {
+          if (!prev) return prev;
+          if (jobId && prev.jobId && prev.jobId === jobId) return null;
+          return prev;
+        });
+      }
+    });
+
+    return () => {
+      try {
+        unsub();
+      } catch {
+        // ignore
+      }
     };
   }, [providerMode]);
 
@@ -149,6 +239,116 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link to="/settings" className="underline">Fix in Settings</Link>
           </div>
         ) : null
+      ) : null}
+
+      {providerMode === "hosted" && aiMockProvider ? (
+        <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+          LLM provider is "mock" — AI will return placeholder content. <Link to="/settings" className="underline">Open Settings</Link>
+        </div>
+      ) : null}
+
+      {providerMode === "hosted" && aiFailure ? (
+        <div className="shrink-0 border-b border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-900">
+          <span className="font-semibold">Last AI job failed:</span>{" "}
+          {aiFailure.jobId ? `job ${shortId(aiFailure.jobId)} · ` : ""}
+          {aiFailure.error}
+          <span className="ml-2 inline-flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={aiRetrying || !aiFailure.laneId}
+              onClick={() => {
+                const laneId = aiFailure.laneId;
+                if (!laneId) return;
+                setAiRetrying(true);
+                void window.ade.packs
+                  .generateNarrative(laneId)
+                  .catch((err) => {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    setAiFailure((prev) => (prev ? { ...prev, error: msg } : prev));
+                  })
+                  .finally(() => setAiRetrying(false));
+              }}
+              title="Retry AI narrative generation"
+            >
+              {aiRetrying ? "Retrying…" : "Retry"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={!aiFailure.laneId}
+              onClick={() => {
+                const laneId = aiFailure.laneId;
+                if (!laneId) return;
+                selectLane(laneId);
+                setLaneInspectorTab(laneId, "packs");
+                window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&inspectorTab=packs`;
+              }}
+              title="Open lane packs"
+            >
+              Details
+            </Button>
+            <button
+              type="button"
+              className="text-red-900/70 hover:text-red-900"
+              onClick={() => setAiFailure(null)}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </span>
+        </div>
+      ) : null}
+
+      {onboardingIncomplete && !onboardingDismissed && location.pathname !== "/onboarding" ? (
+        <div className="shrink-0 border-b border-border bg-card/60 px-3 py-2 text-xs text-fg">
+          <span className="font-semibold">Onboarding is incomplete.</span>{" "}
+          You can keep working and set it up later, or run the wizard to detect defaults, lanes, and initial packs.
+          <span className="ml-2 inline-flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => navigate("/onboarding")}
+              title="Open onboarding wizard"
+            >
+              Open wizard
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={onboardingBusy}
+              onClick={() => {
+                setOnboardingBusy(true);
+                void window.ade.onboarding
+                  .complete()
+                  .then(() => setOnboardingIncomplete(false))
+                  .finally(() => setOnboardingBusy(false));
+              }}
+              title="Skip onboarding for now"
+            >
+              {onboardingBusy ? "Skipping…" : "Skip for now"}
+            </Button>
+            <button
+              type="button"
+              className="text-muted-fg hover:text-fg"
+              onClick={() => {
+                setOnboardingDismissed(true);
+                try {
+                  window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
+                } catch {
+                  // ignore
+                }
+              }}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </span>
+        </div>
       ) : null}
 
       <div className="flex-1 flex min-h-0">

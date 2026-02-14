@@ -7,6 +7,7 @@ import type {
   TerminalToolType,
   UpdateSessionMetaArgs
 } from "../../../shared/types";
+import { stripAnsi } from "../../utils/ansiStrip";
 
 export function createSessionService({ db }: { db: AdeDb }) {
   const normalizeToolType = (raw: unknown): TerminalToolType | null => {
@@ -51,6 +52,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       headShaStart: string | null;
       headShaEnd: string | null;
       lastOutputPreview: string | null;
+      summary: string | null;
     }>(
       `
         select
@@ -70,7 +72,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
           s.transcript_path as transcriptPath,
           s.head_sha_start as headShaStart,
           s.head_sha_end as headShaEnd,
-          s.last_output_preview as lastOutputPreview
+          s.last_output_preview as lastOutputPreview,
+          s.summary as summary
         from terminal_sessions s
         join lanes l on l.id = s.lane_id
         ${whereSql}
@@ -85,7 +88,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       tracked: row.tracked === 1,
       pinned: row.pinned === 1,
       goal: row.goal ?? null,
-      toolType: normalizeToolType(row.toolType)
+      toolType: normalizeToolType(row.toolType),
+      summary: row.summary ?? null
     })) as TerminalSessionSummary[];
   };
 
@@ -133,7 +137,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
             s.transcript_path as transcriptPath,
             s.head_sha_start as headShaStart,
             s.head_sha_end as headShaEnd,
-            s.last_output_preview as lastOutputPreview
+            s.last_output_preview as lastOutputPreview,
+            s.summary as summary
           from terminal_sessions s
           join lanes l on l.id = s.lane_id
           where s.id = ?
@@ -204,8 +209,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null)
+            head_sha_start, head_sha_end, status, last_output_preview, summary
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null)
         `,
         [sessionId, laneId, ptyId, tracked ? 1 : 0, title, startedAt, transcriptPath]
       );
@@ -221,6 +226,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     setLastOutputPreview(sessionId: string, preview: string): void {
       db.run("update terminal_sessions set last_output_preview = ? where id = ?", [preview, sessionId]);
+    },
+
+    setSummary(sessionId: string, summary: string | null): void {
+      db.run("update terminal_sessions set summary = ? where id = ?", [summary, sessionId]);
     },
 
     end({
@@ -252,7 +261,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         try {
           const buf = Buffer.alloc(size - start);
           fs.readSync(fd, buf, 0, buf.length, start);
-          return buf.toString("utf8");
+          return stripAnsi(buf.toString("utf8"));
         } finally {
           fs.closeSync(fd);
         }

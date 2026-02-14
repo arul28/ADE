@@ -9,6 +9,8 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
 import type { Checkpoint, LaneSummary, PackEvent, PackSummary, PackType, PackVersion, PackVersionSummary, SessionDeltaSummary, TestRunStatus } from "../../../shared/types";
+import { stripAnsi } from "../../utils/ansiStrip";
+import { renderLanePackMarkdown } from "./lanePackTemplate";
 
 type LaneSessionRow = {
   id: string;
@@ -769,18 +771,25 @@ export function createPackService({
     const parentLane = lane.parentLaneId ? lanes.find((candidate) => candidate.id === lane.parentLaneId) ?? null : null;
 
     const existingBody = readFileIfExists(getLanePackPath(laneId));
-    const userIntent = extractSection(existingBody, USER_INTENT_START, USER_INTENT_END, "Describe lane intent and acceptance criteria here.");
-    const userTodos = extractSection(existingBody, USER_TODOS_START, USER_TODOS_END, "- [ ] Add actionable todos for this lane\n- [ ] Note open risks before PR");
+    const userIntent = extractSection(existingBody, USER_INTENT_START, USER_INTENT_END, "Intent not set — click to add.");
+    const userTodos = extractSection(existingBody, USER_TODOS_START, USER_TODOS_END, "");
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    const latestTouchedFiles = latestDelta?.touchedFiles ?? [];
-    const touchedModules = [...new Set(latestTouchedFiles.map(moduleFromPath))].slice(0, 10);
+    const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+    const headSha = await getHeadSha(worktreePath);
+
+    const isoTime = (value: string | null | undefined) => {
+      const raw = typeof value === "string" ? value : "";
+      return raw.length >= 16 ? raw.slice(11, 16) : raw;
+    };
 
     const recentSessions = db.all<{
       id: string;
       title: string;
       goal: string | null;
       toolType: string | null;
+      summary: string | null;
+      status: string;
       tracked: number;
       startedAt: string;
       endedAt: string | null;
@@ -795,6 +804,8 @@ export function createPackService({
           s.title as title,
           s.goal as goal,
           s.tool_type as toolType,
+          s.summary as summary,
+          s.status as status,
           s.tracked as tracked,
           s.started_at as startedAt,
           s.ended_at as endedAt,
@@ -811,144 +822,275 @@ export function createPackService({
       [laneId]
     );
 
-    const testRows = db.all<{
-      id: string;
-      suite_key: string;
+    const sessionsTotal = Number(
+      db.get<{ count: number }>("select count(1) as count from terminal_sessions where lane_id = ?", [laneId])?.count ?? 0
+    );
+    const sessionsRunning = Number(
+      db.get<{ count: number }>(
+        "select count(1) as count from terminal_sessions where lane_id = ? and status = 'running' and pty_id is not null",
+        [laneId]
+      )?.count ?? 0
+    );
+
+    const latestTest = db.get<{
+      run_id: string;
+      suite_id: string;
+      suite_name: string | null;
+      command_json: string | null;
       status: TestRunStatus;
       duration_ms: number | null;
       ended_at: string | null;
     }>(
       `
-        select id, suite_key, status, duration_ms, ended_at
-        from test_runs
-        where project_id = ?
+        select
+          r.id as run_id,
+          r.suite_key as suite_id,
+          s.name as suite_name,
+          s.command_json as command_json,
+          r.status as status,
+          r.duration_ms as duration_ms,
+          r.ended_at as ended_at
+        from test_runs r
+        left join test_suites s on s.project_id = r.project_id and s.id = r.suite_key
+        where r.project_id = ?
+          and r.lane_id = ?
         order by started_at desc
-        limit 5
+        limit 1
       `,
-      [projectId]
+      [projectId, laneId]
     );
 
-    const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-    const headSha = await getHeadSha(worktreePath);
+    const validationLines: string[] = [];
+    if (latestTest) {
+      const suiteLabel = (latestTest.suite_name ?? latestTest.suite_id).trim();
+      validationLines.push(
+        `Tests: ${statusFromCode(latestTest.status)} (suite=${suiteLabel}, duration=${latestTest.duration_ms ?? 0}ms)`
+      );
+      if (latestTest.command_json) {
+        try {
+          const command = JSON.parse(latestTest.command_json) as unknown;
+          validationLines.push(`Tests command: ${formatCommand(command)}`);
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      validationLines.push("Tests: NOT RUN");
+    }
 
-    const lines: string[] = [];
-    lines.push(`# Lane Pack: ${lane.name}`);
-    lines.push("");
-    lines.push(`Deterministic updated: ${deterministicUpdatedAt}`);
-    lines.push(`Trigger: ${reason}`);
-    if (providerMode && providerMode !== "guest") lines.push(`AI provider mode: ${providerMode}`);
-    lines.push("");
+    const lintSession = recentSessions.find((s) => {
+      const haystack = `${s.summary ?? ""} ${(s.goal ?? "")} ${s.title}`.toLowerCase();
+      return haystack.includes("lint");
+    });
+    if (lintSession && lintSession.endedAt) {
+      const lintStatus =
+        lintSession.exitCode == null ? "ENDED" : lintSession.exitCode === 0 ? "PASS" : `FAIL (exit ${lintSession.exitCode})`;
+      validationLines.push(`Lint: ${lintStatus}`);
+    } else {
+      validationLines.push("Lint: NOT RUN");
+    }
 
-    lines.push("## Lane snapshot");
-    lines.push(`- Branch: ${lane.branchRef}`);
-    lines.push(`- Base: ${lane.baseRef}`);
-    if (parentLane) lines.push(`- Parent: ${parentLane.name}`);
-    else if (primaryLane && lane.laneType !== "primary") lines.push(`- Parent: ${primaryLane.name} (primary)`);
-    lines.push(`- HEAD: ${headSha ?? "unknown"}`);
-    lines.push(`- Working tree: ${lane.status.dirty ? "dirty" : "clean"} · ahead ${lane.status.ahead} · behind ${lane.status.behind}`);
-    lines.push("");
+    type FileDelta = { insertions: number | null; deletions: number | null };
+    const deltas = new Map<string, FileDelta>();
 
-    lines.push("## Intent");
-    lines.push(USER_INTENT_START);
-    lines.push(userIntent);
-    lines.push(USER_INTENT_END);
-    lines.push("");
+    const addDelta = (filePath: string, insRaw: string, delRaw: string) => {
+      const file = filePath.trim();
+      if (!file) return;
+      const ins = insRaw === "-" ? null : Number(insRaw);
+      const del = delRaw === "-" ? null : Number(delRaw);
+      const prev = deltas.get(file);
 
-    lines.push("## Recent work");
-    const latestSession = recentSessions[0] ?? null;
-    if (latestSession) {
-      const tool = humanToolLabel(latestSession.toolType);
-      const intent = (latestSession.goal ?? "").trim() || latestSession.title;
-      const trackedSuffix = latestSession.tracked === 1 ? "" : " (no context)";
-      const timing = `${latestSession.startedAt} → ${latestSession.endedAt ?? "running"}`;
-      const exit = latestSession.exitCode == null ? "" : ` · exit ${latestSession.exitCode}`;
+      const next: FileDelta = {
+        insertions: Number.isFinite(ins as number) ? (ins as number) : ins,
+        deletions: Number.isFinite(del as number) ? (del as number) : del
+      };
+
+      if (!prev) {
+        deltas.set(file, next);
+        return;
+      }
+
+      // Sum numeric changes; if either side is binary/unknown (null), preserve null.
+      deltas.set(file, {
+        insertions: prev.insertions == null || next.insertions == null ? null : prev.insertions + next.insertions,
+        deletions: prev.deletions == null || next.deletions == null ? null : prev.deletions + next.deletions
+      });
+    };
+
+    const addNumstat = (stdout: string) => {
+      for (const line of stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
+        const parts = line.split("\t");
+        if (parts.length < 3) continue;
+        const insRaw = parts[0] ?? "0";
+        const delRaw = parts[1] ?? "0";
+        const filePath = parts.slice(2).join("\t").trim();
+        addDelta(filePath, insRaw, delRaw);
+      }
+    };
+
+    const mergeBaseSha = await (async (): Promise<string | null> => {
+      const headRef = headSha ?? "HEAD";
+      const baseRef = lane.baseRef?.trim() || "HEAD";
+      const res = await runGit(["merge-base", headRef, baseRef], { cwd: projectRoot, timeoutMs: 12_000 });
+      if (res.exitCode !== 0) return null;
+      const sha = res.stdout.trim();
+      return sha.length ? sha : null;
+    })();
+
+    if (mergeBaseSha && (headSha ?? "HEAD") !== mergeBaseSha) {
+      const diff = await runGit(["diff", "--numstat", `${mergeBaseSha}..${headSha ?? "HEAD"}`], { cwd: projectRoot, timeoutMs: 20_000 });
+      if (diff.exitCode === 0) addNumstat(diff.stdout);
+    }
+
+    // Add unstaged + staged separately to avoid double-counting (git diff HEAD includes both).
+    const unstaged = await runGit(["diff", "--numstat"], { cwd: worktreePath, timeoutMs: 20_000 });
+    if (unstaged.exitCode === 0) addNumstat(unstaged.stdout);
+    const staged = await runGit(["diff", "--numstat", "--cached"], { cwd: worktreePath, timeoutMs: 20_000 });
+    if (staged.exitCode === 0) addNumstat(staged.stdout);
+
+    const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
+    if (statusRes.exitCode === 0) {
+      for (const rel of parsePorcelainPaths(statusRes.stdout)) {
+        if (!deltas.has(rel)) deltas.set(rel, { insertions: 0, deletions: 0 });
+      }
+    }
+
+    if (!deltas.size && latestDelta?.touchedFiles?.length) {
+      for (const rel of latestDelta.touchedFiles.slice(0, 120)) {
+        if (!deltas.has(rel)) deltas.set(rel, { insertions: 0, deletions: 0 });
+      }
+    }
+
+    const whatChangedLines = (() => {
+      const files = [...deltas.keys()];
+      if (!files.length) return [];
+      const byModule = new Map<string, string[]>();
+      for (const file of files) {
+        const module = moduleFromPath(file);
+        const list = byModule.get(module) ?? [];
+        list.push(file);
+        byModule.set(module, list);
+      }
+      const entries = [...byModule.entries()]
+        .map(([module, files]) => ({ module, files: files.sort(), count: files.length }))
+        .sort((a, b) => b.count - a.count || a.module.localeCompare(b.module));
+      return entries.slice(0, 12).map((entry) => {
+        const examples = entry.files.slice(0, 3).join(", ");
+        const suffix = entry.files.length > 3 ? `, +${entry.files.length - 3} more` : "";
+        return `${entry.module}: ${entry.count} files (${examples}${suffix})`;
+      });
+    })();
+
+    const inferredWhyLines = await (async (): Promise<string[]> => {
+      if (!mergeBaseSha) return [];
+      const res = await runGit(["log", "--oneline", `${mergeBaseSha}..${headSha ?? "HEAD"}`, "-n", "12"], {
+        cwd: projectRoot,
+        timeoutMs: 12_000
+      });
+      if (res.exitCode !== 0) return [];
+      return res.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    })();
+
+    const keyFiles = (() => {
+      const scored = [...deltas.entries()].map(([file, delta]) => {
+        const magnitude =
+          delta.insertions == null || delta.deletions == null ? Number.MAX_SAFE_INTEGER : delta.insertions + delta.deletions;
+        return { file, insertions: delta.insertions, deletions: delta.deletions, magnitude };
+      });
+      return scored
+        .sort((a, b) => b.magnitude - a.magnitude || a.file.localeCompare(b.file))
+        .slice(0, 10)
+        .map(({ magnitude: _magnitude, ...rest }) => rest);
+    })();
+
+    const errors = (() => {
+      const raw = latestDelta?.failureLines ?? [];
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const entry of raw) {
+        const clean = stripAnsi(entry).trim().replace(/\s+/g, " ");
+        if (!clean) continue;
+        const clipped = clean.length > 220 ? `${clean.slice(0, 219)}…` : clean;
+        if (seen.has(clipped)) continue;
+        seen.add(clipped);
+        out.push(clipped);
+      }
+      return out;
+    })();
+
+    const sessionsRows = recentSessions.slice(0, 5).map((session) => {
+      const tool = humanToolLabel(session.toolType);
+      const goal = (session.goal ?? "").trim() || session.title;
+      const result =
+        session.endedAt == null
+          ? "running"
+          : session.exitCode == null
+            ? "ended"
+            : session.exitCode === 0
+              ? "ok"
+              : `exit ${session.exitCode}`;
       const delta =
-        latestSession.filesChanged != null
-          ? ` · ${latestSession.filesChanged} files (+${latestSession.insertions ?? 0}/-${latestSession.deletions ?? 0})`
-          : "";
-      lines.push(`- Latest session: ${tool}${trackedSuffix}: ${intent}`);
-      lines.push(`  - Time: ${timing}${exit}${delta}`);
-    } else {
-      lines.push("- No sessions recorded yet.");
-    }
-    lines.push("");
+        session.filesChanged != null ? `+${session.insertions ?? 0}/-${session.deletions ?? 0}` : "";
+      return {
+        when: isoTime(session.startedAt),
+        tool,
+        goal: goal.length > 80 ? `${goal.slice(0, 79)}…` : goal,
+        result,
+        delta
+      };
+    });
 
-    lines.push("## Touched Modules");
-    if (touchedModules.length) {
-      for (const moduleName of touchedModules) {
-        lines.push(`- ${moduleName}`);
-      }
-    } else {
-      lines.push("- none yet");
-    }
-    lines.push("");
+    const nextSteps = (() => {
+      const items: string[] = [];
+      const intentSet = userIntent.trim().length && userIntent.trim() !== "Intent not set — click to add.";
+      if (!intentSet) items.push("Set lane intent (Why section).");
+      if (lane.status.dirty) items.push("Working tree is dirty; consider committing or stashing before switching lanes.");
+      if (lane.status.behind > 0) items.push(`Lane is behind base by ${lane.status.behind} commits; consider syncing/rebasing.`);
+      if (errors.length) items.push("Errors detected in the latest session output; review Errors & Issues.");
+      if (latestTest && latestTest.status === "failed") items.push("Latest test run failed; fix failures before merging.");
+      if (sessionsRunning > 0) items.push(`${sessionsRunning} terminal session(s) currently running.`);
 
-    if (latestDelta?.touchedFiles.length) {
-      lines.push("## Files touched (latest)");
-      for (const touched of latestDelta.touchedFiles.slice(0, 28)) {
-        lines.push(`- ${touched}`);
-      }
-      if (latestDelta.touchedFiles.length > 28) {
-        lines.push(`- … (${latestDelta.touchedFiles.length - 28} more)`);
-      }
-      lines.push("");
-    }
+      const latestFailedSession = recentSessions.find((s) => s.endedAt && (s.exitCode ?? 0) !== 0);
+      if (latestFailedSession?.summary) items.push(`Recent failure: ${latestFailedSession.summary}`);
 
-    if (latestDelta?.failureLines.length) {
-      lines.push("## Potential errors (latest)");
-      for (const failure of latestDelta.failureLines.slice(0, 8)) {
-        lines.push(`- ${failure}`);
-      }
-      lines.push("");
-    }
+      return items;
+    })();
 
-    lines.push("## Sessions (recent)");
-    const recentSessionItems = recentSessions.slice(0, 5);
-    if (recentSessionItems.length) {
-      for (const session of recentSessionItems) {
-        const tool = humanToolLabel(session.toolType);
-        const intent = (session.goal ?? "").trim() || session.title;
-        const outcome =
-          session.endedAt == null
-            ? "running"
-            : session.exitCode == null
-              ? "ended"
-              : session.exitCode === 0
-                ? "ok"
-                : `exit ${session.exitCode}`;
-        const delta =
-          session.filesChanged != null ? ` · ${session.filesChanged} files (+${session.insertions ?? 0}/-${session.deletions ?? 0})` : "";
-        lines.push(`- ${session.startedAt} · ${tool}: ${intent} · ${outcome}${delta}`);
-      }
-    } else {
-      lines.push("- none");
-    }
-    lines.push("");
+    const narrativePlaceholder =
+      providerMode === "guest"
+        ? "AI narrative is disabled in Guest Mode. Switch to Hosted or BYOK in Settings to generate."
+        : "AI narrative not yet generated. Click 'Update pack details with AI' to generate.";
 
-    lines.push("## Latest Tests");
-    if (testRows.length) {
-      for (const row of testRows) {
-        lines.push(`- ${row.suite_key}: ${statusFromCode(row.status)} (${row.duration_ms ?? 0}ms) at ${row.ended_at ?? "running"}`);
-      }
-    } else {
-      lines.push("- no test runs captured");
-    }
-    lines.push("");
+    const body = renderLanePackMarkdown({
+      packKey: `lane:${laneId}`,
+      laneName: lane.name,
+      branchRef: lane.branchRef,
+      baseRef: lane.baseRef,
+      headSha,
+      dirty: lane.status.dirty,
+      ahead: lane.status.ahead,
+      behind: lane.status.behind,
+      parentName: parentLane?.name ?? (primaryLane && lane.laneType !== "primary" ? `${primaryLane.name} (primary)` : null),
+      deterministicUpdatedAt,
+      trigger: reason,
+      providerMode,
+      whatChangedLines,
+      inferredWhyLines,
+      userIntentMarkers: { start: USER_INTENT_START, end: USER_INTENT_END },
+      userIntent,
+      validationLines,
+      keyFiles,
+      errors,
+      sessionsRows,
+      sessionsTotal: Number.isFinite(sessionsTotal) ? sessionsTotal : 0,
+      sessionsRunning: Number.isFinite(sessionsRunning) ? sessionsRunning : 0,
+      nextSteps,
+      userTodosMarkers: { start: USER_TODOS_START, end: USER_TODOS_END },
+      userTodos,
+      narrativePlaceholder
+    });
 
-    lines.push("## Decisions And Todos");
-    lines.push(USER_TODOS_START);
-    lines.push(userTodos);
-    lines.push(USER_TODOS_END);
-    lines.push("");
-    lines.push("## Narrative");
-    if (providerMode === "guest") {
-      lines.push("Template narrative mode active (Guest Mode). Deterministic sections are fully local.");
-    } else {
-      lines.push("Narrative sections are generated by the active AI provider (Hosted/BYOK) and merged into this pack.");
-    }
-    lines.push("");
-
-    return { body: `${lines.join("\n")}\n`, lastHeadSha: headSha };
+    return { body, lastHeadSha: headSha };
   };
 
   const buildProjectBootstrap = async (args: { lanes: LaneSummary[] }): Promise<string> => {
@@ -1567,12 +1709,21 @@ export function createPackService({
       }
 
       const transcript = sessionService.readTranscriptTail(session.transcript_path, 220_000);
-      const failureLines = transcript
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-        .filter((line) => /(error|failed|exception|fatal|traceback)/i.test(line))
-        .slice(-8);
+      const failureLines = (() => {
+        const out: string[] = [];
+        const seen = new Set<string>();
+        for (const rawLine of transcript.split("\n")) {
+          const line = stripAnsi(rawLine).trim();
+          if (!line) continue;
+          if (!/(error|failed|exception|fatal|traceback)/i.test(line)) continue;
+          // Collapse duplicates and near-duplicates (e.g. repeated prompts).
+          const key = line.replace(/\s+/g, " ");
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(key);
+        }
+        return out.slice(-8);
+      })();
 
       const touchedFiles = [...touched].sort();
       const computedAt = new Date().toISOString();
