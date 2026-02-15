@@ -1,21 +1,21 @@
-import { ArrowRight, GitBranch, GitPullRequest, History, Layers3, Play, Settings, Shield, Terminal, Workflow } from "lucide-react";
-import { Container } from "../../components/Container";
+import { motion, useScroll, useTransform } from "framer-motion";
+import { ArrowRight, Box, Check, ChevronRight, GitBranch, Layout, Play, Shield, Terminal, Zap } from "lucide-react";
+import { useRef } from "react";
 import { LinkButton } from "../../components/LinkButton";
 import { Page } from "../../components/Page";
-import { Reveal } from "../../components/Reveal";
+import { AppScreenshot } from "../../components/ui/AppScreenshot";
+import { CanvasDemo } from "../../components/ui/CanvasDemo";
+import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { ArchitectureDiagram } from "../../components/illustrations/ArchitectureDiagram";
+import { Badge } from "../../components/Badge";
+import { Card } from "../../components/Card";
+import { FeatureGallery, type FeatureGalleryItem } from "../../components/FeatureGallery";
+import { Section } from "../../components/Section";
+import { SectionHeading } from "../../components/SectionHeading";
 
-type Highlight = {
-  title: string;
-  eyebrow: string;
-  description: string;
-  bullets: string[];
-  imageSrc: string;
-};
-
-const HIGHLIGHTS: Highlight[] = [
+const HIGHLIGHTS: FeatureGalleryItem[] = [
   {
     eyebrow: "Run",
     title: "Your stack, one click at a time",
@@ -32,7 +32,7 @@ const HIGHLIGHTS: Highlight[] = [
     eyebrow: "Files",
     title: "Browse and edit without leaving the cockpit",
     description:
-      "A fast file explorer and editor for lane workspaces, with diffs and conflict-aware modes so you can fix and validate quickly.",
+      "A fast file explorer and editor for lane workspaces, with diffs and conflict-aware modes.",
     bullets: [
       "Workspace-scoped file trees with git status hints",
       "Monaco editor + quick open + cross-file search",
@@ -44,398 +44,241 @@ const HIGHLIGHTS: Highlight[] = [
     eyebrow: "Lanes",
     title: "Parallel work, first-class",
     description:
-      "Spin up worktree-backed lanes, stack them, restack them, and keep each execution surface visible and measurable.",
+      "Spin up worktree-backed lanes, stack them, restack them, and keep each execution surface visible.",
     bullets: [
       "Lane types: Primary, Worktree, Attached",
       "Stacks for layered branch workflows",
-      "High-density status: dirty/clean, ahead/behind, risk, last activity"
+      "High-density status: dirty/clean, ahead/behind, risk"
     ],
     imageSrc: "/images/features/lanes.svg"
   },
-  {
-    eyebrow: "Packs",
-    title: "Durable context you can trust",
-    description:
-      "Packs are ADE’s versioned context system. It captures checkpoints, touched files, and validation signals so you can hand off work without losing the thread.",
-    bullets: [
-      "Project, lane, feature, plan, and conflict packs",
-      "Immutable checkpoints at session and commit boundaries",
-      "Template narratives locally; LLM narratives optional"
-    ],
-    imageSrc: "/images/features/packs.svg"
-  },
-  {
-    eyebrow: "Conflict Radar",
-    title: "Predict conflicts before merge day",
-    description:
-      "ADE watches parallel lanes and surfaces integration risk early. When conflicts are likely, it bundles the evidence into a conflict pack and proposes resolution paths.",
-    bullets: [
-      "Risk scoring across overlapping file surfaces",
-      "Merge simulation + conflict diffs",
-      "Patch proposals shown as diffs for review"
-    ],
-    imageSrc: "/images/features/conflicts.svg"
-  },
-  {
-    eyebrow: "Terminals",
-    title: "Sessions with observability",
-    description:
-      "Every terminal session is a tracked execution unit: transcripts, deltas, start/end SHAs, and outcomes. Keep the raw logs and the summarized intent together.",
-    bullets: [
-      "PTY terminals + transcript capture",
-      "Session deltas (files changed, insertions/deletions)",
-      "Optional untracked sessions when you want silence"
-    ],
-    imageSrc: "/images/features/terminals.svg"
-  },
-  {
-    eyebrow: "Graph + GitHub",
-    title: "See the workspace as a system",
-    description:
-      "From stack topology to PR status to risk edges, the workspace graph gives you a visual model of parallel work. GitHub integration makes PRs part of the cockpit.",
-    bullets: [
-      "Workspace graph canvas (stack/risk/activity)",
-      "PR CRUD + polling + stacked PR workflows",
-      "Lane-to-PR linking and land flow support"
-    ],
-    imageSrc: "/images/features/graph.svg"
-  },
-  {
-    eyebrow: "Automations",
-    title: "Jobs and rules, not rituals",
-    description:
-      "ADE’s job engine refreshes lane state, packs, and risk signals. Automations let you turn events into actions with history and guardrails.",
-    bullets: [
-      "Event-driven job pipeline with coalescing",
-      "Trigger-action rules + execution history",
-      "Designed to be safe and inspectable"
-    ],
-    imageSrc: "/images/features/automations.svg"
-  }
 ];
 
 export function HomePage() {
-  useDocumentTitle("ADE — Mission control for agentic development");
+  useDocumentTitle("ADE — Agentic Development Environment");
+  const scrollRef = useRef(null);
+  const { scrollYProgress } = useScroll();
+  const scaleX = useTransform(scrollYProgress, [0, 1], [0, 1]);
 
   return (
-    <Page>
-      <section className="relative overflow-hidden py-16 sm:py-20">
-        <Container>
-          <div className="grid items-center gap-12 lg:grid-cols-2">
-            <div>
-              <Reveal>
-                <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-medium text-muted-fg">
-                  <span className="inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
-                  Agentic Development Environment
-                </div>
-              </Reveal>
-              <Reveal delay={0.05}>
-                <h1 className="mt-5 text-balance text-4xl font-semibold leading-tight tracking-tight text-fg sm:text-5xl">
-                  Mission control for agentic development.
-                </h1>
-              </Reveal>
-              <Reveal delay={0.1}>
-                <p className="mt-4 max-w-xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-                  ADE is a desktop cockpit that keeps parallel lanes, sessions, packs, and conflicts visible
-                  while you run multiple AI coding agents across branches.
-                </p>
-              </Reveal>
+    <Page className="overflow-x-hidden bg-background text-fg">
+      {/* Scroll Progress */}
+      <motion.div
+        className="fixed top-0 left-0 right-0 h-1 bg-accent origin-left z-50"
+        style={{ scaleX }}
+      />
 
-              <Reveal delay={0.14}>
-                <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <LinkButton to="/download" size="lg" variant="primary">
-                    Download ADE <ArrowRight className="h-4 w-4" />
-                  </LinkButton>
-                  <LinkButton to={LINKS.prd} size="lg" variant="secondary" target="_blank" rel="noreferrer">
-                    Read the PRD
-                  </LinkButton>
-                </div>
-              </Reveal>
+      {/* Background Ambience (Subtle) */}
+      <div className="fixed inset-0 pointer-events-none z-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-indigo-900/20 via-background to-background" />
+        <div className="absolute top-0 inset-x-0 h-px bg-white/5" />
+      </div>
 
-              <Reveal delay={0.18}>
-                <div className="mt-8 grid gap-3 rounded-xl border border-border bg-card/60 p-4 text-sm text-muted-fg">
-                  <div className="flex items-start gap-3">
-                    <Shield className="mt-0.5 h-4 w-4 text-fg/70" />
-                    <div>
-                      <div className="font-semibold text-fg">Local-first trust boundary</div>
-                      <div className="mt-0.5">
-                        The main process is the only component with file/process access; the UI talks over typed IPC.
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <Workflow className="mt-0.5 h-4 w-4 text-fg/70" />
-                    <div>
-                      <div className="font-semibold text-fg">Hosted agent is read-only</div>
-                      <div className="mt-0.5">
-                        When enabled, the cloud side mirrors content and returns narratives + patch proposals as diffs for review.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </Reveal>
+      <div className="relative z-10 flex flex-col gap-24 pb-32">
+        {/* --- HERO SECTION --- */}
+        <section className="relative px-6 pt-28 lg:pt-36 flex flex-col items-center text-center">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, ease: "easeOut" }}
+            className="max-w-4xl mx-auto"
+          >
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 backdrop-blur-md text-xs font-medium text-muted-fg mb-8">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-accent"></span>
+              </span>
+              v1.0 Public Beta
             </div>
 
-            <Reveal className="relative">
-              <div className="float-slow absolute -right-10 -top-10 hidden h-44 w-44 rounded-full bg-gradient-to-br from-[rgba(85,211,255,0.28)] to-[rgba(27,118,255,0.18)] blur-2xl lg:block" />
-              <div className="relative overflow-hidden rounded-[28px] border border-border bg-card/60 shadow-glass-md">
-                <div className="flex items-center gap-2 border-b border-border bg-card/70 px-4 py-3">
-                  <span className="h-3 w-3 rounded-full bg-[rgba(255,93,93,0.85)]" />
-                  <span className="h-3 w-3 rounded-full bg-[rgba(255,201,61,0.85)]" />
-                  <span className="h-3 w-3 rounded-full bg-[rgba(85,255,178,0.85)]" />
-                  <div className="ml-2 text-xs font-medium text-muted-fg">Lanes • Packs • Conflicts</div>
-                </div>
-                <img
-                  src="/images/features/lanes.svg"
-                  alt="Illustration of lanes and stacks in ADE"
-                  className="block w-full"
-                  loading="eager"
-                />
-              </div>
+            <h1 className="text-5xl sm:text-7xl font-bold tracking-tight text-white leading-[1.1] mb-8">
+              Mission control for <br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-br from-white via-white to-white/50">
+                agentic development
+              </span>.
+            </h1>
 
-              <div className="pointer-events-none absolute -bottom-6 left-6 hidden rounded-2xl border border-border bg-card/70 p-4 shadow-glass-md lg:block">
-                <div className="flex items-center gap-3">
-                  <GitBranch className="h-5 w-5 text-fg/70" />
-                  <div>
-                    <div className="text-sm font-semibold text-fg">Worktrees + stacks</div>
-                    <div className="text-xs text-muted-fg">Manage 3–10+ lanes without losing the plot.</div>
-                  </div>
-                </div>
-              </div>
-            </Reveal>
+            <p className="text-xl text-muted-fg leading-relaxed max-w-2xl mx-auto mb-10">
+              ADE orchestrates your AI agents, tracks context across branches, and resolves conflicts before they happen.
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-20">
+              <LinkButton to="/download" size="lg" className="rounded-full px-8 h-12 text-base shadow-[0_0_20px_rgba(59,130,246,0.3)] bg-accent hover:bg-accent/90 text-white border-0">
+                Download for macOS <ArrowRight className="ml-2 h-4 w-4" />
+              </LinkButton>
+              <LinkButton
+                to={LINKS.prd}
+                variant="secondary"
+                size="lg"
+                className="rounded-full px-8 h-12 text-base border-white/10 bg-white/5 hover:bg-white/10 text-white"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Read the docs
+              </LinkButton>
+            </div>
+          </motion.div>
+
+          {/* App Visual */}
+          <motion.div
+            initial={{ opacity: 0, y: 50, rotateX: 10 }}
+            animate={{ opacity: 1, y: 0, rotateX: 0 }}
+            transition={{ duration: 1, delay: 0.3, ease: "easeOut" }}
+            className="w-full max-w-6xl mx-auto perspective-[1200px]"
+          >
+            <AppScreenshot />
+          </motion.div>
+        </section>
+
+        {/* --- PROBLEM / SOLUTION --- */}
+        <section className="container mx-auto px-6 pt-20">
+          <div className="text-center max-w-2xl mx-auto mb-16">
+            <h2 className="text-3xl font-semibold mb-4 text-white">Stop wrestling with context.</h2>
+            <p className="text-muted-fg text-lg">Running multiple agents in parallel used to mean chaos. ADE brings order to the storm.</p>
           </div>
-        </Container>
-      </section>
 
-      <section id="product" className="scroll-mt-24 py-14">
-        <Container>
-          <Reveal>
-            <div className="grid gap-8 rounded-[26px] border border-border bg-card/60 p-8 shadow-glass-sm lg:grid-cols-2">
-              <div>
-                <div className="text-sm font-semibold text-fg">What ADE is</div>
-                <p className="mt-3 text-sm leading-relaxed text-muted-fg">
-                  A development operations cockpit for agentic coding workflows. ADE doesn’t replace your IDE and it
-                  doesn’t run agents. It observes, orchestrates, and makes parallel work legible.
-                </p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border border-border bg-card/70 p-4">
-                  <div className="text-xs font-semibold text-fg">Context fragmentation</div>
-                  <div className="mt-1 text-xs text-muted-fg">
-                    Packs and checkpoints keep a durable record of intent, deltas, and validation.
-                  </div>
+          <div className="grid md:grid-cols-3 gap-6">
+            {[
+              { icon: <GitBranch className="w-6 h-6 text-red-400" />, title: "Context Fragmentation", desc: "Forgetting what Agent A did while Agent B breaks the build." },
+              { icon: <Zap className="w-6 h-6 text-yellow-400" />, title: "Merge Conflicts", desc: "Discovering overlapping changes only when it's too late." },
+              { icon: <Terminal className="w-6 h-6 text-blue-400" />, title: "Lost Sessions", desc: "No record of intent or execution history across terminals." }
+            ].map((item, i) => (
+              <motion.div
+                key={i}
+                whileHover={{ y: -5 }}
+                className="p-8 rounded-2xl bg-card border border-white/10 hover:border-white/20 hover:bg-white/[0.08] transition-all group"
+              >
+                <div className="w-12 h-12 rounded-xl bg-white/5 flex items-center justify-center mb-6 border border-white/5 group-hover:border-white/10 group-hover:bg-white/10 transition-colors">
+                  {item.icon}
                 </div>
-                <div className="rounded-xl border border-border bg-card/70 p-4">
-                  <div className="text-xs font-semibold text-fg">Integration risk</div>
-                  <div className="mt-1 text-xs text-muted-fg">
-                    Conflict radar predicts overlaps across parallel lanes before merge time.
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border bg-card/70 p-4">
-                  <div className="text-xs font-semibold text-fg">Context switching</div>
-                  <div className="mt-1 text-xs text-muted-fg">
-                    One cockpit for lanes, terminals, diffs, tests, PRs, and history.
-                  </div>
-                </div>
-                <div className="rounded-xl border border-border bg-card/70 p-4">
-                  <div className="text-xs font-semibold text-fg">Observability</div>
-                  <div className="mt-1 text-xs text-muted-fg">
-                    Sessions are tracked units with transcripts, SHAs, and change deltas.
-                  </div>
-                </div>
-              </div>
+                <h3 className="text-xl font-medium text-white mb-3">{item.title}</h3>
+                <p className="text-muted-fg text-base leading-relaxed">{item.desc}</p>
+              </motion.div>
+            ))}
+          </div>
+        </section>
+
+        {/* --- INTERACTIVE DEMO --- */}
+        <section className="container mx-auto px-6 py-24 border-t border-white/5 mt-20">
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
+            <div className="order-2 lg:order-1 perspective-[1200px]">
+              <CanvasDemo />
             </div>
-          </Reveal>
-        </Container>
-      </section>
-
-      <section id="features" className="scroll-mt-24 py-14">
-        <Container>
-          <Reveal>
-            <div className="flex items-end justify-between gap-6">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Features</div>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg sm:text-4xl">
-                  Built around parallel work.
-                </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-fg">
-                  ADE’s surfaces map to how agentic teams actually work: lanes for parallel branches, packs for
-                  context durability, conflict prediction for integration safety, and GitHub-aware workflows.
-                </p>
+            <div className="order-1 lg:order-2">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-accent/20 bg-accent/10 text-xs font-medium text-accent mb-6">
+                <Zap className="w-3 h-3" />
+                Interactive Demo
               </div>
-              <div className="hidden sm:flex">
-                <LinkButton to="/download" variant="secondary">
-                  Get ADE <ArrowRight className="h-4 w-4" />
+              <h2 className="text-4xl sm:text-5xl font-bold mb-6 text-white tracking-tight">Merge without the CLI.</h2>
+              <p className="text-muted-fg text-xl mb-8 leading-relaxed">
+                ADE visualizes your workspace as a graph. Want to merge a feature branch?
+                Just drag it onto main. We'll run the dry-run, check for conflicts, and handle the git ops.
+              </p>
+              <ul className="space-y-5">
+                {[
+                  "Visual branching topology",
+                  "Drag-and-drop merges & rebases",
+                  "Instant conflict detection",
+                  "Undo with one click"
+                ].map((item, i) => (
+                  <li key={i} className="flex items-center gap-4 text-white/90 text-lg">
+                    <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center">
+                      <Check className="w-3.5 h-3.5 text-accent" />
+                    </div>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        {/* --- FEATURES GRID --- */}
+        <section className="container mx-auto px-6 py-20">
+          <div className="text-center mb-16">
+            <h2 className="text-4xl font-semibold text-white tracking-tight">Everything in one place.</h2>
+          </div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <Card className="col-span-1 lg:col-span-2 p-8 bg-card border-white/10 hover:border-accent/40 transition-colors overflow-hidden relative group">
+              <div className="relative z-10 max-w-md">
+                <Layout className="w-8 h-8 text-accent mb-4" />
+                <h3 className="text-2xl font-bold text-white mb-2">Lanes</h3>
+                <p className="text-muted-fg text-lg">Parallel work, perfected. Spin up isolated worktrees for every agent task.</p>
+              </div>
+              <div className="absolute right-0 top-10 w-96 h-full opacity-30 group-hover:opacity-60 transition-opacity">
+                {/* Abstract visual */}
+                <div className="w-full h-full bg-gradient-to-l from-accent/20 to-transparent transform skew-x-12" />
+              </div>
+            </Card>
+
+            <Card className="p-8 bg-card border-white/10 hover:border-purple-500/40 transition-colors group">
+              <Box className="w-8 h-8 text-purple-400 mb-4" />
+              <h3 className="text-xl font-bold text-white mb-2">Packs</h3>
+              <p className="text-muted-fg text-base">Durable context. Checkpoints and history that survives session restarts.</p>
+            </Card>
+
+            <Card className="p-8 bg-card border-white/10 hover:border-green-500/40 transition-colors group">
+              <Shield className="w-8 h-8 text-green-400 mb-4" />
+              <h3 className="text-xl font-bold text-white mb-2">Safety</h3>
+              <p className="text-muted-fg text-base">Local-first. Read-only cloud. Your code stays yours.</p>
+            </Card>
+
+            <Card className="col-span-1 lg:col-span-2 p-8 bg-card border-white/10 hover:border-orange-500/40 transition-colors">
+              <div className="flex flex-col md:flex-row gap-8 items-center">
+                <div className="flex-1">
+                  <Terminal className="w-8 h-8 text-orange-400 mb-4" />
+                  <h3 className="text-2xl font-bold text-white mb-2">Terminals</h3>
+                  <p className="text-muted-fg text-lg">Rich, tracked sessions with full transcript history.</p>
+                </div>
+                {/* Mini terminal vis */}
+                <div className="w-full md:w-64 h-32 bg-black/50 rounded-lg border border-white/10 p-3 font-mono text-xs text-muted-fg">
+                  <div className="text-white">$ git status</div>
+                  <div className="text-green-400">On branch main</div>
+                  <div>nothing to commit, working tree clean</div>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </section>
+
+        {/* --- DOWNLOAD CTA --- */}
+        <section className="container mx-auto px-6 py-24 mb-10">
+          <div className="relative rounded-[32px] overflow-hidden bg-card border border-white/10 p-16 text-center shadow-2xl">
+            <div className="absolute inset-0 bg-gradient-to-br from-accent/10 via-purple-500/5 to-transparent blur-3xl" />
+
+            <div className="relative z-10 max-w-3xl mx-auto">
+              <h2 className="text-4xl sm:text-5xl font-bold mb-8 text-white">Ready to regain control?</h2>
+              <p className="text-muted-fg text-xl mb-10">Join the developers who have stopped fighting their tools and started orchestrating them.</p>
+
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+                <LinkButton to="/download" size="lg" className="w-full sm:w-auto rounded-full text-base h-14 px-10 bg-white text-black hover:bg-white/90 border-0 shadow-lg font-semibold">
+                  Download for free
+                </LinkButton>
+                <LinkButton to={LINKS.github} variant="secondary" size="lg" className="w-full sm:w-auto rounded-full text-base h-14 px-10 border-white/10 bg-white/5 hover:bg-white/10 text-white">
+                  View on GitHub
                 </LinkButton>
               </div>
+              <p className="mt-8 text-sm text-muted-fg/60">Local-first. Privacy respected.</p>
             </div>
-          </Reveal>
-
-          <div className="mt-10 grid gap-6 md:grid-cols-2">
-            {[
-              { icon: <Play className="h-5 w-5" />, title: "Run", text: "Processes, tests, config, and agent tool discovery." },
-              { icon: <Layers3 className="h-5 w-5" />, title: "Lanes", text: "Worktrees, diffs, git operations, stacks." },
-              { icon: <Settings className="h-5 w-5" />, title: "Settings", text: "Onboarding, provider modes, profiles." },
-              { icon: <Terminal className="h-5 w-5" />, title: "Terminals", text: "Tracked sessions, transcripts, deltas." },
-              { icon: <GitPullRequest className="h-5 w-5" />, title: "PRs", text: "GitHub integration + stacked PR flows." },
-              { icon: <History className="h-5 w-5" />, title: "History", text: "Operations timeline + checkpoints." }
-            ].map((item, idx) => (
-              <Reveal key={item.title} delay={idx * 0.03}>
-                <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
-                  <div className="flex items-center gap-3">
-                    <div className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-card/80 text-fg">
-                      {item.icon}
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold text-fg">{item.title}</div>
-                      <div className="mt-1 text-sm text-muted-fg">{item.text}</div>
-                    </div>
-                  </div>
-                </div>
-              </Reveal>
-            ))}
           </div>
-        </Container>
-      </section>
+        </section>
 
-      <section className="py-14">
-        <Container className="space-y-14">
-          {HIGHLIGHTS.map((h, idx) => {
-            const reverse = idx % 2 === 1;
-            return (
-              <div
-                key={h.title}
-                className="grid items-center gap-10 lg:grid-cols-2"
-              >
-                <Reveal className={reverse ? "lg:order-2" : undefined}>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-semibold text-muted-fg">
-                    {h.eyebrow}
-                  </div>
-                  <h3 className="mt-4 text-2xl font-semibold tracking-tight text-fg sm:text-3xl">
-                    {h.title}
-                  </h3>
-                  <p className="mt-3 text-sm leading-relaxed text-muted-fg">{h.description}</p>
-                  <ul className="mt-5 space-y-2 text-sm text-muted-fg">
-                    {h.bullets.map((b) => (
-                      <li key={b} className="flex gap-3">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                        <span>{b}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </Reveal>
-
-                <Reveal delay={0.05} className={reverse ? "lg:order-1" : undefined}>
-                  <div className="overflow-hidden rounded-[28px] border border-border bg-card/60 shadow-glass-md">
-                    <img src={h.imageSrc} alt={`${h.eyebrow} illustration`} className="block w-full" loading="lazy" />
-                  </div>
-                </Reveal>
-              </div>
-            );
-          })}
-        </Container>
-      </section>
-
-      <section id="architecture" className="scroll-mt-24 py-14">
-        <Container>
-          <Reveal>
-            <div className="grid gap-10 rounded-[28px] border border-border bg-card/60 p-8 shadow-glass-sm lg:grid-cols-2 lg:items-center">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Architecture</div>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg">A strict trust boundary.</h2>
-                <p className="mt-3 text-sm leading-relaxed text-muted-fg">
-                  ADE keeps filesystem, Git, and process access in the Electron main process. The renderer UI stays
-                  untrusted and calls a narrow IPC surface via the preload bridge. Hosted features are designed as
-                  read-only: the cloud returns narratives and patch proposals for review.
-                </p>
-                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                  <LinkButton to={LINKS.docs} variant="secondary" target="_blank" rel="noreferrer">
-                    View architecture docs
-                  </LinkButton>
-                  <LinkButton to="/download" variant="primary">
-                    Download
-                  </LinkButton>
-                </div>
-              </div>
-              <div className="overflow-hidden rounded-[22px] border border-border bg-card/70 p-4">
-                <ArchitectureDiagram className="w-full" />
-              </div>
+        {/* --- FOOTER --- */}
+        <footer className="border-t border-white/5 py-12 bg-[#050505]">
+          <div className="container mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div className="flex items-center gap-2 text-sm text-muted-fg">
+              <span className="font-semibold text-white">ADE</span> © 2026
             </div>
-          </Reveal>
-        </Container>
-      </section>
-
-      <section id="faq" className="scroll-mt-24 py-14">
-        <Container>
-          <Reveal>
-            <h2 className="text-3xl font-semibold tracking-tight text-fg">FAQ</h2>
-            <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-fg">
-              A few answers to the questions people ask right before they try running multiple agents across multiple lanes.
-            </p>
-          </Reveal>
-
-          <div className="mt-8 grid gap-4">
-            {[
-              {
-                q: "Does ADE run AI agents?",
-                a: "No. ADE doesn’t replace your IDE and it doesn’t run agents. It orchestrates work surfaces, captures context, predicts conflicts, and keeps operations observable."
-              },
-              {
-                q: "Can I use ADE without cloud features?",
-                a: "Yes. Guest Mode supports local features (lanes, terminals, git operations, processes, tests). Hosted narratives and conflict proposals are optional."
-              },
-              {
-                q: "What does “read-only hosted agent” mean?",
-                a: "The hosted side never mutates your repo. It produces narratives and patch proposals which ADE shows as diffs for local review and application."
-              },
-              {
-                q: "Is ADE only for stacked PR workflows?",
-                a: "No. Stacks are a first-class workflow, but ADE is useful for any parallel branching strategy where integration risk and context loss are common."
-              }
-            ].map((item, idx) => (
-              <Reveal key={item.q} delay={idx * 0.03}>
-                <details className="group rounded-[18px] border border-border bg-card/60 p-5 shadow-glass-sm">
-                  <summary className="cursor-pointer list-none text-sm font-semibold text-fg">
-                    <span className="inline-flex items-center gap-2">
-                      <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                      {item.q}
-                    </span>
-                    <span className="ade-details-chevron float-right text-muted-fg transition-transform">›</span>
-                  </summary>
-                  <div className="mt-3 text-sm leading-relaxed text-muted-fg">{item.a}</div>
-                </details>
-              </Reveal>
-            ))}
+            <div className="flex items-center gap-8 text-sm text-muted-fg">
+              <a href={LINKS.prd} className="hover:text-white transition-colors">Documentation</a>
+              <a href={LINKS.github} className="hover:text-white transition-colors">GitHub</a>
+              <a href="/privacy" className="hover:text-white transition-colors">Privacy</a>
+              <a href="/terms" className="hover:text-white transition-colors">Terms</a>
+            </div>
           </div>
-        </Container>
-      </section>
-
-      <section className="py-16">
-        <Container>
-          <Reveal>
-            <div className="relative overflow-hidden rounded-[30px] border border-border bg-gradient-to-br from-[rgba(27,118,255,0.14)] to-[rgba(85,211,255,0.10)] p-10 shadow-glass-md">
-              <div className="absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[rgba(85,211,255,0.18)] blur-3xl" />
-              <div className="relative">
-                <div className="text-sm font-semibold text-fg">Ready to run parallel work without chaos?</div>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-fg sm:text-4xl">
-                  Download ADE and make lanes legible.
-                </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-fg">
-                  Start in Guest Mode, add hosted or BYOK provider support when you’re ready, and keep every session measurable.
-                </p>
-                <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-                  <LinkButton to="/download" size="lg" variant="primary">
-                    Download <ArrowRight className="h-4 w-4" />
-                  </LinkButton>
-                  <LinkButton to={LINKS.github} size="lg" variant="secondary" target="_blank" rel="noreferrer">
-                    View on GitHub
-                  </LinkButton>
-                </div>
-              </div>
-            </div>
-          </Reveal>
-        </Container>
-      </section>
+        </footer>
+      </div>
     </Page>
   );
 }

@@ -113,7 +113,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
         <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-sm" />
         <Dialog.Content
           className={cn(
-            "fixed left-1/2 top-[18%] w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-xl border border-border bg-card/90 p-3 shadow-2xl backdrop-blur",
+            "fixed left-1/2 top-[18%] w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-3 shadow-float backdrop-blur-xl",
             "focus:outline-none"
           )}
         >
@@ -126,7 +126,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             </Dialog.Close>
           </div>
 
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-card/70 px-2">
+          <div className="mt-3 flex items-center gap-2 rounded-xl bg-muted/40 px-3">
             <Search className="h-4 w-4 text-muted-fg" />
             <input
               value={q}
@@ -144,15 +144,15 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             <Kbd className="hidden sm:inline-flex">Enter</Kbd>
           </div>
 
-          <div className="mt-3 max-h-[45vh] overflow-auto rounded-lg border border-border">
+          <div className="mt-3 max-h-[45vh] overflow-auto rounded-xl bg-muted/20">
             {filtered.length === 0 ? (
               <div className="p-4 text-sm text-muted-fg">No matches.</div>
             ) : (
-              <ul className="divide-y divide-border">
+              <ul className="divide-y divide-border/15">
                 {filtered.map((cmd) => (
                   <li key={cmd.id}>
                     <button
-                      className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-sm hover:bg-muted/50"
+                      className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-sm hover:bg-muted/40 transition-colors"
                       onClick={() => {
                         Promise.resolve(cmd.run()).finally(() => {
                           onOpenChange(false);

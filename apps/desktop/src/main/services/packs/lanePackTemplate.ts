@@ -1,4 +1,7 @@
 import { stripAnsi } from "../../utils/ansiStrip";
+import { CONTEXT_CONTRACT_VERSION, CONTEXT_HEADER_SCHEMA_V1 } from "../../../shared/contextContract";
+import type { PackConflictStateV1, PackDependencyStateV1 } from "../../../shared/types";
+import type { PackGraphEnvelopeV1 } from "../../../shared/contextContract";
 
 function fmtChange(insertions: number | null, deletions: number | null): string {
   if (insertions == null || deletions == null) return "binary";
@@ -13,6 +16,8 @@ function mdCode(value: string): string {
 
 export function renderLanePackMarkdown(args: {
   packKey: string;
+  projectId: string | null;
+  laneId: string;
   laneName: string;
   branchRef: string;
   baseRef: string;
@@ -24,25 +29,61 @@ export function renderLanePackMarkdown(args: {
   deterministicUpdatedAt: string;
   trigger: string;
   providerMode: string;
+  graph?: PackGraphEnvelopeV1 | null;
+  dependencyState?: PackDependencyStateV1 | null;
+  conflictState?: PackConflictStateV1 | null;
   whatChangedLines: string[];
   inferredWhyLines: string[];
   userIntentMarkers: { start: string; end: string };
   userIntent: string;
+  taskSpecMarkers: { start: string; end: string };
+  taskSpec: string;
   validationLines: string[];
   keyFiles: Array<{ file: string; insertions: number | null; deletions: number | null }>;
   errors: string[];
   sessionsRows: Array<{ when: string; tool: string; goal: string; result: string; delta: string }>;
+  sessionHighlights?: Array<{ when: string; tool: string; summary: string }>;
   sessionsTotal: number;
   sessionsRunning: number;
   nextSteps: string[];
   userTodosMarkers: { start: string; end: string };
   userTodos: string;
-  narrativePlaceholder: string;
+  narrativeMarkers: { start: string; end: string };
+  narrative: string;
 }): string {
   const shortSha = args.headSha ? args.headSha.slice(0, 8) : "unknown";
   const cleanliness = args.dirty ? "dirty" : "clean";
 
   const lines: string[] = [];
+  lines.push("```json");
+  lines.push(
+    JSON.stringify(
+      {
+        schema: CONTEXT_HEADER_SCHEMA_V1,
+        contractVersion: CONTEXT_CONTRACT_VERSION,
+        projectId: args.projectId,
+        packKey: args.packKey,
+        packType: "lane",
+        laneId: args.laneId,
+        peerKey: null,
+        baseRef: args.baseRef,
+        headSha: args.headSha,
+        deterministicUpdatedAt: args.deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        versionId: null,
+        versionNumber: null,
+        contentHash: null,
+        providerMode: args.providerMode,
+        graph: args.graph ?? null,
+        dependencyState: args.dependencyState ?? null,
+        conflictState: args.conflictState ?? null
+      },
+      null,
+      2
+    )
+  );
+  lines.push("```");
+  lines.push("");
   lines.push(`# Lane: ${stripAnsi(args.laneName)}`);
   lines.push(`> Branch: ${mdCode(stripAnsi(args.branchRef))} | Base: ${mdCode(stripAnsi(args.baseRef))} | HEAD: ${mdCode(shortSha)} | ${cleanliness} · ahead ${args.ahead} · behind ${args.behind}`);
   if (args.parentName) lines.push(`> Parent: ${stripAnsi(args.parentName)}`);
@@ -65,6 +106,12 @@ export function renderLanePackMarkdown(args: {
     lines.push("Inferred from commits:");
     for (const entry of args.inferredWhyLines) lines.push(`- ${stripAnsi(entry)}`);
   }
+  lines.push("");
+
+  lines.push("## Task Spec");
+  lines.push(args.taskSpecMarkers.start);
+  lines.push(stripAnsi(args.taskSpec).trim().length ? stripAnsi(args.taskSpec).trim() : "- (add task spec here)");
+  lines.push(args.taskSpecMarkers.end);
   lines.push("");
 
   lines.push("## Validation");
@@ -109,6 +156,19 @@ export function renderLanePackMarkdown(args: {
   } else {
     lines.push("| - | - | - | - | - |");
   }
+  const highlights = Array.isArray(args.sessionHighlights) ? args.sessionHighlights : [];
+  if (highlights.length) {
+    lines.push("");
+    lines.push("Recent summaries:");
+    for (const h of highlights.slice(0, 3)) {
+      const when = stripAnsi(h.when).trim();
+      const tool = stripAnsi(h.tool).trim();
+      const summary = stripAnsi(h.summary).trim();
+      if (!summary) continue;
+      const clipped = summary.length > 240 ? `${summary.slice(0, 239)}…` : summary;
+      lines.push(`- ${when} ${tool}: ${clipped}`);
+    }
+  }
   lines.push("");
 
   lines.push("## Open Questions / Next Steps");
@@ -124,7 +184,9 @@ export function renderLanePackMarkdown(args: {
   lines.push("");
 
   lines.push("## Narrative");
-  lines.push(stripAnsi(args.narrativePlaceholder).trim().length ? stripAnsi(args.narrativePlaceholder).trim() : "AI narrative not yet generated.");
+  lines.push(args.narrativeMarkers.start);
+  lines.push(stripAnsi(args.narrative).trim().length ? stripAnsi(args.narrative).trim() : "AI narrative not yet generated.");
+  lines.push(args.narrativeMarkers.end);
   lines.push("");
 
   lines.push("---");

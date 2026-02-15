@@ -1,13 +1,18 @@
 @import "tailwindcss";
 
 @theme {
-  --radius-xl: 0px;
-  --radius-lg: 2px;
-  --radius-md: 1px;
-  --radius-sm: 0px;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
 
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --shadow-card: 0 2px 6px -1px rgb(0 0 0 / 0.08), 0 1px 3px -1px rgb(0 0 0 / 0.06);
+  --shadow-card-hover: 0 6px 12px -2px rgb(0 0 0 / 0.12), 0 3px 6px -3px rgb(0 0 0 / 0.08);
+  --shadow-float: 0 12px 28px -6px rgb(0 0 0 / 0.16), 0 8px 14px -6px rgb(0 0 0 / 0.1);
 }
 
 :root,
@@ -29,6 +34,19 @@
 
   --color-accent: #c22323;
   --color-accent-fg: #ffffff;
+
+  --color-surface-raised: #ffffff;
+  --color-surface-recessed: #f0eae0;
+  --color-surface-overlay: #fdfbf7;
+  --shadow-inset: inset 0 1px 3px 0 rgb(0 0 0 / 0.06);
+  --shadow-separator: inset 0 0 4px 0 rgb(0 0 0 / 0.08);
+  --shadow-panel: 0 1px 4px -1px rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --color-separator: #e8e0d4;
+  --color-separator-active: #c22323;
+  --border-separator: #d3cfc6;
+  --gradient-surface: linear-gradient(180deg, #fdfbf7, #f7f2e9);
+  --gradient-panel: linear-gradient(180deg, #fdfbf7 0%, #f9f4ec 100%);
+  --color-glow: rgba(194, 35, 35, 0.25);
 }
 
 [data-theme="bloomberg"] {
@@ -49,6 +67,23 @@
 
   --color-accent: #ff7a00;
   --color-accent-fg: #000000;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #1c150d;
+  --color-surface-recessed: #0e0a06;
+  --color-surface-overlay: #201810;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.4);
+  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.5);
+  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgb(0 0 0 / 0.3);
+  --color-separator: #1a1208;
+  --color-separator-active: #ff7a00;
+  --border-separator: #403121;
+  --gradient-surface: linear-gradient(180deg, #16110a, #0e0a06);
+  --gradient-panel: linear-gradient(180deg, #1c150d 0%, #16110a 100%);
+  --color-glow: rgba(255, 122, 0, 0.3);
 }
 
 [data-theme="github"] {
@@ -69,6 +104,23 @@
 
   --color-accent: #58a6ff;
   --color-accent-fg: #ffffff;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #161b22;
+  --color-surface-recessed: #090d13;
+  --color-surface-overlay: #1c2333;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.35);
+  --shadow-separator: inset 0 0 5px 0 rgb(0 0 0 / 0.4);
+  --shadow-panel: 0 1px 5px -1px rgba(13, 17, 23, 0.5), 0 1px 2px -1px rgba(88, 166, 255, 0.04);
+  --color-separator: #151c28;
+  --color-separator-active: #58a6ff;
+  --border-separator: #2f3b49;
+  --gradient-surface: linear-gradient(180deg, #111b2c, #0d1117);
+  --gradient-panel: linear-gradient(180deg, #161b22 0%, #111b2c 100%);
+  --color-glow: rgba(88, 166, 255, 0.2);
 }
 
 [data-theme="rainbow"] {
@@ -89,6 +141,23 @@
 
   --color-accent: #fb7185;
   --color-accent-fg: #ffffff;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #2a2f3f;
+  --color-surface-recessed: #16181e;
+  --color-surface-overlay: #2e3348;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.35);
+  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.45);
+  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.35), 0 1px 3px -1px rgb(0 0 0 / 0.25);
+  --color-separator: #232838;
+  --color-separator-active: #fb7185;
+  --border-separator: #3e4660;
+  --gradient-surface: linear-gradient(135deg, #252035, #222737);
+  --gradient-panel: linear-gradient(135deg, #2a2f3f 0%, #252035 100%);
+  --color-glow: rgba(251, 113, 133, 0.25);
 }
 
 [data-theme="sky"] {
@@ -109,6 +178,19 @@
 
   --color-accent: #2563eb;
   --color-accent-fg: #ffffff;
+
+  --color-surface-raised: #ffffff;
+  --color-surface-recessed: #e4eeff;
+  --color-surface-overlay: #f7faff;
+  --shadow-inset: inset 0 1px 3px 0 rgba(37, 99, 235, 0.06);
+  --shadow-separator: inset 0 0 4px 0 rgba(37, 99, 235, 0.08);
+  --shadow-panel: 0 1px 4px -1px rgba(30, 58, 138, 0.06), 0 1px 2px -1px rgba(37, 99, 235, 0.04);
+  --color-separator: #d6e8ff;
+  --color-separator-active: #2563eb;
+  --border-separator: #b7d5ff;
+  --gradient-surface: linear-gradient(180deg, #f7faff, #edf3ff);
+  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+  --color-glow: rgba(37, 99, 235, 0.2);
 }
 
 [data-theme="pats"] {
@@ -130,6 +212,23 @@
 
   --color-accent: #c60c30;
   --color-accent-fg: #ffffff;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #012a50;
+  --color-surface-recessed: #00132a;
+  --color-surface-overlay: #023060;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.4);
+  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.5);
+  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgba(198, 12, 48, 0.06);
+  --color-separator: #011e3e;
+  --color-separator-active: #c60c30;
+  --border-separator: rgba(198, 12, 48, 0.4);
+  --gradient-surface: linear-gradient(180deg, #012b53, #001a36);
+  --gradient-panel: linear-gradient(180deg, #012a50 0%, #001a36 100%);
+  --color-glow: rgba(198, 12, 48, 0.3);
 }
 
 /* 
@@ -144,66 +243,157 @@ body {
   margin: 0;
   color: var(--color-fg);
   background-color: var(--color-bg);
-  background-image: linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 86%, black 14%), var(--color-surface));
-  /* 
-   * Fonts:
-   * Body/UI: Monospace for density
-   * Headers: Serif for "Document" feel
-   */
-  font-family: var(--font-mono);
+  background-image: linear-gradient(180deg, var(--color-bg), color-mix(in srgb, var(--color-surface) 40%, var(--color-bg)));
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+  letter-spacing: -0.011em;
 }
 
-/* Headings use Serif */
 h1,
 h2,
 h3,
 h4,
 h5,
 h6 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
-/* Split Pane Separators - "Fold Lines" */
-[data-separator] {
-  background-color: transparent;
+/* Resize Gutter */
+.ade-gutter {
   position: relative;
-  transition: all 0.1s ease;
   z-index: 10;
+  background: var(--color-separator);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-[data-separator].vertical {
-  width: 1px;
+.ade-gutter.vertical {
+  width: 8px;
   cursor: col-resize;
-  background-color: var(--color-border);
+  border-left: 1px solid var(--border-separator);
+  border-right: 1px solid var(--border-separator);
+  box-shadow: var(--shadow-separator);
 }
 
-[data-separator].horizontal {
-  height: 1px;
+.ade-gutter.horizontal {
+  height: 8px;
   cursor: row-resize;
-  background-color: var(--color-border);
+  border-top: 1px solid var(--border-separator);
+  border-bottom: 1px solid var(--border-separator);
+  box-shadow: var(--shadow-separator);
 }
 
-/* Hover effect to make it easier to grab */
-[data-separator]::after {
+.ade-gutter::after {
   content: "";
   position: absolute;
-  inset: -4px;
-  /* Hit area */
+  inset: -3px;
   background-color: transparent;
 }
 
-[data-separator]:hover,
-[data-separator][data-dragging] {
-  background-color: var(--color-accent);
+.ade-gutter .ade-gutter-handle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }
 
-/* Scrollbars - Minimal */
+.ade-gutter .ade-gutter-pill {
+  border-radius: 999px;
+  background: var(--border-separator);
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-gutter.vertical .ade-gutter-pill {
+  width: 4px;
+  height: 28px;
+}
+
+.ade-gutter.horizontal .ade-gutter-pill {
+  width: 28px;
+  height: 4px;
+}
+
+.ade-gutter:hover .ade-gutter-pill {
+  opacity: 1;
+  background: var(--color-separator-active);
+}
+
+.ade-gutter[data-resize-handle-active] .ade-gutter-pill,
+.ade-gutter.dragging .ade-gutter-pill {
+  opacity: 1;
+  background: var(--color-separator-active);
+  box-shadow: 0 0 8px 2px var(--color-glow);
+}
+
+.ade-gutter:hover {
+  background: color-mix(in srgb, var(--color-separator-active) 12%, var(--color-separator));
+}
+
+.ade-gutter[data-resize-handle-active],
+.ade-gutter.dragging {
+  background: color-mix(in srgb, var(--color-separator-active) 18%, var(--color-separator));
+}
+
+/* Panel Header */
+.ade-panel-header {
+  background: var(--gradient-surface);
+  border-bottom: 1px solid var(--border-separator);
+}
+
+/* Per-Theme Unique Effects */
+
+/* E-Paper: paper fiber texture in recessed areas */
+[data-theme="e-paper"] .ade-surface-recessed,
+:root .ade-surface-recessed {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.01) 2px,
+    rgba(0, 0, 0, 0.01) 4px
+  );
+}
+
+/* Bloomberg: scan-line texture in content wells; amber glow on separators */
+[data-theme="bloomberg"] .ade-surface-recessed {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 1px,
+    rgba(255, 200, 122, 0.02) 1px,
+    rgba(255, 200, 122, 0.02) 2px
+  );
+}
+
+/* Rainbow: diagonal gradients; glow on gutter hover */
+[data-theme="rainbow"] .ade-gutter:hover .ade-gutter-pill {
+  background: linear-gradient(180deg, #fb7185, #c084fc);
+  box-shadow: 0 0 10px 2px rgba(192, 132, 252, 0.3);
+}
+
+[data-theme="rainbow"] .ade-panel-header {
+  backdrop-filter: blur(12px);
+}
+
+/* Pats: red glow on active separators; metallic border highlight */
+[data-theme="pats"] .ade-gutter[data-resize-handle-active] .ade-gutter-pill,
+[data-theme="pats"] .ade-gutter.dragging .ade-gutter-pill {
+  box-shadow: 0 0 12px 3px rgba(198, 12, 48, 0.4);
+}
+
+[data-theme="pats"] .ade-gutter {
+  border-color: rgba(207, 224, 243, 0.08);
+}
+
+/* Scrollbars */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -211,14 +401,14 @@ h6 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: var(--color-border);
-  border: 3px solid var(--color-bg);
-  /* Creates padding effect */
+  background-color: color-mix(in srgb, var(--color-border) 30%, transparent);
+  border: 2px solid transparent;
+  background-clip: content-box;
   border-radius: 99px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-muted-fg);
+  background-color: color-mix(in srgb, var(--color-muted-fg) 45%, transparent);
 }
 
 .ade-conflict-ours-line {

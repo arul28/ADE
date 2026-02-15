@@ -113,11 +113,17 @@ import type {
   ListSessionsArgs,
   ListTestRunsArgs,
   OperationRecord,
+  PackExport,
   PackEvent,
+  PackHeadVersion,
   PackSummary,
   PackVersion,
   PackVersionSummary,
   Checkpoint,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GetConflictExportArgs,
+  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -315,6 +321,9 @@ declare global {
         getFeaturePack: (featureKey: string) => Promise<PackSummary>;
         getConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
         getPlanPack: (laneId: string) => Promise<PackSummary>;
+        getProjectExport: (args: GetProjectExportArgs) => Promise<PackExport>;
+        getLaneExport: (args: GetLaneExportArgs) => Promise<PackExport>;
+        getConflictExport: (args: GetConflictExportArgs) => Promise<PackExport>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
         refreshProjectPack: (args?: { laneId?: string | null }) => Promise<PackSummary>;
         refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
@@ -327,7 +336,9 @@ declare global {
         diffVersions: (args: { fromId: string; toId: string }) => Promise<string>;
         updateNarrative: (args: { packKey: string; narrative: string }) => Promise<PackSummary>;
         listEvents: (args: { packKey: string; limit?: number }) => Promise<PackEvent[]>;
+        listEventsSince: (args: ListPackEventsSinceArgs) => Promise<PackEvent[]>;
         listCheckpoints: (args?: { laneId?: string; limit?: number }) => Promise<Checkpoint[]>;
+        getHeadVersion: (packKey: string) => Promise<PackHeadVersion>;
         onEvent: (cb: (ev: PackEvent) => void) => () => void;
       };
       github: {

@@ -36,6 +36,12 @@ git diff main --stat | tail -30
 git log main..HEAD --oneline
 ```
 
+Also sanity-check packs context (bounded, reviewable) before pushing:
+- `.ade/packs/project_pack.md`
+- Relevant lane context (when laneId is known):
+  - Prefer: `ade.packs.getLaneExport({ laneId, level: "standard" })`
+  - Otherwise: `.ade/packs/lanes/<laneId>/lane_pack.md`
+
 ### 1b. Categorize changes
 
 Separate changed files into:
@@ -59,20 +65,20 @@ Collect candidate docs from:
 
 | Code Path Pattern | Feature Doc |
 |---|---|
-| `src/main/services/lanes/`, `src/renderer/components/lanes/` | `docs/features/LANES.md` |
-| `src/main/services/pty/`, `src/main/services/sessions/`, `src/renderer/components/terminals/` | `docs/features/TERMINALS_AND_SESSIONS.md` |
-| `src/main/services/processes/`, `src/main/services/tests/`, `src/renderer/components/project/` | `docs/features/PROJECT_HOME.md` |
-| `src/main/services/files/`, `src/renderer/components/files/` | `docs/features/FILES_AND_EDITOR.md` |
-| `src/main/services/packs/`, `src/renderer/components/packs/` | `docs/features/PACKS.md` |
-| `src/main/services/diffs/`, `src/renderer/components/conflicts/` | `docs/features/CONFLICTS.md` |
-| `src/renderer/components/prs/` | `docs/features/PULL_REQUESTS.md` |
-| `src/main/services/history/`, `src/renderer/components/history/` | `docs/features/HISTORY.md` |
-| `src/renderer/components/app/` (settings) | `docs/features/ONBOARDING_AND_SETTINGS.md` |
-| `src/main/services/jobs/` | `docs/architecture/JOB_ENGINE.md` |
-| `src/main/services/git/` | `docs/architecture/GIT_ENGINE.md` |
-| `src/main/services/config/`, `src/main/services/state/` | `docs/architecture/CONFIGURATION.md` |
-| `src/main/services/ipc/`, `src/preload/` | `docs/architecture/DESKTOP_APP.md` |
-| `src/shared/types.ts`, `src/shared/ipc.ts` | `docs/architecture/DATA_MODEL.md` |
+| `apps/desktop/src/main/services/lanes/`, `apps/desktop/src/renderer/components/lanes/` | `docs/features/LANES.md` |
+| `apps/desktop/src/main/services/pty/`, `apps/desktop/src/main/services/sessions/`, `apps/desktop/src/renderer/components/terminals/` | `docs/features/TERMINALS_AND_SESSIONS.md` |
+| `apps/desktop/src/main/services/processes/`, `apps/desktop/src/main/services/tests/`, `apps/desktop/src/renderer/components/project/` | `docs/features/PROJECT_HOME.md` |
+| `apps/desktop/src/main/services/files/`, `apps/desktop/src/renderer/components/files/` | `docs/features/FILES_AND_EDITOR.md` |
+| `apps/desktop/src/main/services/packs/`, `apps/desktop/src/renderer/components/packs/` | `docs/features/PACKS.md` |
+| `apps/desktop/src/main/services/conflicts/`, `apps/desktop/src/renderer/components/conflicts/` | `docs/features/CONFLICTS.md` |
+| `apps/desktop/src/renderer/components/prs/` | `docs/features/PULL_REQUESTS.md` |
+| `apps/desktop/src/main/services/history/`, `apps/desktop/src/renderer/components/history/` | `docs/features/HISTORY.md` |
+| `apps/desktop/src/renderer/components/app/` (settings) | `docs/features/ONBOARDING_AND_SETTINGS.md` |
+| `apps/desktop/src/main/services/jobs/` | `docs/architecture/JOB_ENGINE.md` |
+| `apps/desktop/src/main/services/git/` | `docs/architecture/GIT_ENGINE.md` |
+| `apps/desktop/src/main/services/config/`, `apps/desktop/src/main/services/state/` | `docs/architecture/CONFIGURATION.md` |
+| `apps/desktop/src/main/services/ipc/`, `apps/desktop/src/preload/` | `docs/architecture/DESKTOP_APP.md` |
+| `apps/desktop/src/shared/types.ts`, `apps/desktop/src/shared/ipc.ts` | `docs/architecture/DATA_MODEL.md` |
 
 ### 2b. Validate task-tracking in each impacted doc
 

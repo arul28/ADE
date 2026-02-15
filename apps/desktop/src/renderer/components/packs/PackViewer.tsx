@@ -12,7 +12,7 @@ import { useNavigate } from "react-router-dom";
 type PackScope = "lane" | "project";
 
 const scopeTrigger =
-  "inline-flex items-center justify-center rounded px-2.5 py-1 text-xs font-semibold transition-colors";
+  "inline-flex items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors";
 
 type AiJobState = {
   jobId: string;
@@ -35,7 +35,7 @@ function PackBody({ pack }: { pack: PackSummary | null }) {
     return <div className="text-xs text-muted-fg">Pack file not created yet.</div>;
   }
   return (
-    <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded border border-border bg-card/70 p-3 text-[11px] leading-relaxed">
+    <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-3 text-[11px] leading-relaxed">
       {pack.body}
     </pre>
   );
@@ -100,9 +100,11 @@ function hostedReadiness(
   if (job?.jobId) {
     const elapsedSec = Math.max(0, Math.floor((Date.now() - job.statusSinceMs) / 1000));
     if ((job.status === "queued" || job.status === "processing") && elapsedSec >= 10) {
+      const apiBaseUrl = status.apiBaseUrl ?? "not configured";
+      const remoteProjectId = status.remoteProjectId ?? "not configured";
       return {
         tone: elapsedSec >= 60 ? "bad" : "warn",
-        message: `Last AI job ${shortId(job.jobId)} is ${job.status} for ${elapsedSec}s. If stuck: check worker Lambda logs, SQS DLQ depth, and LLM secret.`
+        message: `Last AI job ${shortId(job.jobId)} is ${job.status} for ${elapsedSec}s. If stuck: check your hosted worker/queue health and hosted LLM configuration (apiBaseUrl=${apiBaseUrl}, remoteProjectId=${remoteProjectId}).`
       };
     }
     if (job.status === "failed") {
@@ -512,7 +514,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div className="flex items-center rounded border border-border bg-card/50 p-0.5">
+          <div className="flex items-center rounded-lg bg-muted/30 p-0.5">
             <button
               type="button"
               className={cn(scopeTrigger, scope === "lane" ? "bg-muted text-fg shadow-sm" : "text-muted-fg hover:bg-muted/50 hover:text-fg")}
@@ -569,10 +571,10 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       {aiMetaHint ? (
         <div
           className={cn(
-            "rounded border p-2 text-xs",
+            "rounded-lg p-2 text-xs",
             aiMetaHint.tone === "warn"
-              ? "border-amber-500/50 bg-amber-500/10 text-amber-200"
-              : "border-border bg-card/40 text-muted-fg"
+              ? "bg-amber-500/10 text-amber-200"
+              : "bg-card/40 text-muted-fg"
           )}
         >
           {aiMetaHint.message}
@@ -582,12 +584,12 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       {aiHint ? (
         <div
           className={cn(
-            "rounded border p-2 text-xs",
+            "rounded-lg p-2 text-xs",
             aiHint.tone === "bad"
-              ? "border-red-900 bg-red-950/20 text-red-200"
+              ? "bg-red-500/10 text-red-200"
               : aiHint.tone === "warn"
-                ? "border-amber-500/50 bg-amber-500/10 text-amber-200"
-                : "border-border bg-card/40 text-muted-fg"
+                ? "bg-amber-500/10 text-amber-200"
+                : "bg-card/40 text-muted-fg"
           )}
         >
           {aiHint.message}
@@ -595,12 +597,13 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       ) : null}
 
       {providerMode === "hosted" && scope === "lane" ? (
-        <div className="rounded border border-border bg-card/40 p-2 text-xs">
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">Hosted Health</div>
+        <div className="rounded-lg shadow-card bg-card/40 p-2 text-xs">
+          <div className="mb-1 text-[13px] font-semibold text-fg/70">Hosted Health</div>
           <div className="grid grid-cols-1 gap-1 text-[11px] text-muted-fg">
             <div>Consent granted: {hostedStatus?.consentGiven ? "yes" : "no"}</div>
             <div>Bootstrap file: {hostedBootstrap ? `yes (${hostedBootstrap.stage})` : "no"}</div>
             <div>Bootstrap applied: {hostedStatus?.apiConfigured ? "yes" : "no"}</div>
+            <div>API base URL: {hostedStatus?.apiBaseUrl ?? "not configured"}</div>
             <div>
               Signed in:{" "}
               {hostedStatus?.auth.signedIn ? `yes${hostedStatus.auth.email ? ` (${hostedStatus.auth.email})` : ""}` : "no"}
@@ -616,14 +619,15 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
             </div>
           </div>
           {aiJob && (aiJob.status === "queued" || aiJob.status === "processing") ? (
-            <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+            <div className="mt-2 rounded-lg bg-amber-500/10 p-2 text-[11px] text-amber-200">
               Job {shortId(aiJob.jobId)} has been {aiJob.status} for{" "}
-              {Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000))}s. Expected: &lt; 10s queued. Check: worker Lambda
-              logs, SQS DLQ depth, LLM secret.
+              {Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000))}s. Expected: &lt; 10s queued. Check: hosted worker/queue
+              health and hosted LLM config (apiBaseUrl={hostedStatus?.apiBaseUrl ?? "not configured"}, remoteProjectId=
+              {hostedStatus?.remoteProjectId ?? "not configured"}).
             </div>
           ) : null}
           {aiJob && aiJob.status === "failed" ? (
-            <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-[11px] text-red-300">
+            <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-[11px] text-red-300">
               Job {shortId(aiJob.jobId)} failed{aiJob.error ? `: ${aiJob.error}` : "."}
             </div>
           ) : null}
@@ -631,7 +635,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       ) : null}
 
       {aiError ? (
-        <div className="rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">
+        <div className="rounded-lg bg-red-500/10 p-2 text-xs text-red-300">
           <div>{aiError}</div>
           {aiJob?.jobId ? (
             <div className="mt-1 text-[11px] text-red-200">
@@ -643,12 +647,13 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
           ) : null}
           {aiJob?.status === "queued" ? (
             <div className="mt-1 text-[11px] text-red-200">
-              If this stays queued: check worker Lambda logs, SQS DLQ, and hosted LLM secret (Gemini key/provider).
+              If this stays queued: check your hosted worker/queue health and hosted LLM configuration (apiBaseUrl={hostedStatus?.apiBaseUrl ?? "not configured"},
+              remoteProjectId={hostedStatus?.remoteProjectId ?? "not configured"}).
             </div>
           ) : null}
         </div>
       ) : null}
-      {error ? <div className="rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div> : null}
+      {error ? <div className="rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{error}</div> : null}
 
       <PackBody pack={activePack} />
       {activePack?.path ? <div className="truncate text-[11px] text-muted-fg">{activePack.path}</div> : null}
@@ -656,7 +661,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       <Dialog.Root open={versionsDialogOpen} onOpenChange={(open) => setVersionsDialogOpen(open)}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
             <div className="mb-3 flex items-center justify-between gap-2">
               <Dialog.Title className="text-sm font-semibold">Pack Versions</Dialog.Title>
               <Dialog.Close asChild>
@@ -666,16 +671,16 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
               </Dialog.Close>
             </div>
             {versionsLoading ? (
-              <div className="rounded border border-border bg-card/40 p-3 text-xs text-muted-fg">Loading versions…</div>
+              <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">Loading versions…</div>
             ) : (
               <div className="grid min-h-0 grid-cols-[320px_1fr] gap-3">
-                <div className="max-h-[65vh] overflow-auto rounded border border-border bg-card/30 p-2">
+                <div className="max-h-[65vh] overflow-auto rounded-lg bg-card/30 p-2">
                   {versions.length === 0 ? (
                     <div className="p-2 text-xs text-muted-fg">No versions recorded yet.</div>
                   ) : (
                     <div className="space-y-2">
                       {versions.map((v) => (
-                        <div key={v.id} className="rounded border border-border bg-bg/40 p-2 text-xs">
+                        <div key={v.id} className="rounded-lg bg-muted/20 p-2 text-xs">
                           <div className="flex items-center justify-between gap-2">
                             <div className="font-semibold text-fg">v{v.versionNumber}</div>
                             <div className="text-[11px] text-muted-fg">{new Date(v.createdAt).toLocaleString()}</div>
@@ -696,7 +701,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
                     </div>
                   )}
                 </div>
-                <div className="max-h-[65vh] overflow-auto rounded border border-border bg-card/30 p-3">
+                <div className="max-h-[65vh] overflow-auto rounded-lg bg-card/30 p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-xs text-muted-fg">Diff</div>
                     <Button
@@ -709,7 +714,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
                     </Button>
                   </div>
                   {diffText ? (
-                    <pre className="mt-2 max-h-[52vh] overflow-auto whitespace-pre-wrap rounded border border-border bg-bg/40 p-2 text-[11px] leading-relaxed text-fg">
+                    <pre className="mt-2 max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-[11px] leading-relaxed text-fg">
                       {diffText}
                     </pre>
                   ) : (
@@ -725,7 +730,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
       <Dialog.Root open={eventsDialogOpen} onOpenChange={(open) => setEventsDialogOpen(open)}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
             <div className="mb-3 flex items-center justify-between gap-2">
               <Dialog.Title className="text-sm font-semibold">Activity</Dialog.Title>
               <Dialog.Close asChild>
@@ -735,12 +740,12 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
               </Dialog.Close>
             </div>
             {eventsLoading ? (
-              <div className="rounded border border-border bg-card/40 p-3 text-xs text-muted-fg">Loading activity…</div>
+              <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">Loading activity…</div>
             ) : events.length === 0 ? (
-              <div className="rounded border border-border bg-card/40 p-3 text-xs text-muted-fg">No activity recorded yet.</div>
+              <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">No activity recorded yet.</div>
             ) : (
-              <div className="max-h-[70vh] overflow-auto rounded border border-border bg-card/30">
-                <div className="divide-y divide-border">
+              <div className="max-h-[70vh] overflow-auto rounded-lg bg-card/30">
+                <div className="divide-y divide-border/10">
                   {events.map((ev) => {
                     const formatted = formatPackEvent(ev);
                     const opId = typeof ev.payload?.operationId === "string" ? (ev.payload.operationId as string) : null;

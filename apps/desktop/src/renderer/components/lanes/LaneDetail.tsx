@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Check, ChevronDown, Columns, FolderOpen, GitMerge, GripVertical, Layers3, MoreHorizontal, RefreshCw, Save, Upload } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, Columns, FolderOpen, GitMerge, Layers3, MoreHorizontal, RefreshCw, Save, Upload } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { useDockLayout } from "../ui/DockLayoutState";
+import { ResizeGutter } from "../ui/ResizeGutter";
 import type {
   DiffChanges,
   FileDiff,
@@ -330,9 +331,9 @@ export function LaneDetail({
     if (selectedCommit) {
       return (
         <div className="h-full flex flex-col">
-          <div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-border bg-card/30">
+          <div className="flex items-center justify-between gap-2 px-3 py-1 bg-card/30">
             <div className="min-w-0 flex items-center gap-2 text-xs">
-              <span className="font-mono text-muted-fg">Commit</span>
+              <span className="text-muted-fg">Commit</span>
               <span className="text-muted-fg">/</span>
               <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
               <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
@@ -347,11 +348,11 @@ export function LaneDetail({
               orientation="horizontal"
               className="h-full min-h-0"
             >
-              <Panel id="lane-commit-files" minSize={15} defaultSize={26} className="min-w-0 bg-card/20">
+              <Panel id="lane-commit-files" minSize={15} defaultSize={26} className="min-w-0 bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
                 <div className="flex h-full min-h-0 flex-col">
-                  <div className="flex items-center justify-between border-b border-border bg-card/50 px-2 py-1.5">
+                  <div className="flex items-center justify-between bg-card/30 px-2 py-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Files</span>
+                      <span className="text-xs text-muted-fg/70">Files</span>
                       <Chip className="h-4 px-1 text-[10px]">{commitFiles.length}</Chip>
                     </div>
                   </div>
@@ -362,10 +363,10 @@ export function LaneDetail({
                           key={file}
                           type="button"
                           className={cn(
-                            "group flex w-full items-center justify-between gap-2 rounded border px-2 py-1 text-left text-xs transition-colors",
+                            "group flex w-full items-center justify-between gap-2 rounded-xl px-2 py-1 text-left text-xs transition-colors",
                             selectedCommitFilePath === file
-                              ? "border-accent/30 bg-accent/10 text-fg"
-                              : "border-transparent text-muted-fg hover:border-border hover:bg-muted/40 hover:text-fg"
+                              ? "bg-accent/10 text-fg shadow-card"
+                              : "text-muted-fg hover:bg-muted/30 hover:text-fg"
                           )}
                           onClick={() => setSelectedCommitFilePath(file)}
                           title={file}
@@ -381,11 +382,7 @@ export function LaneDetail({
                   </div>
                 </div>
               </Panel>
-              <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-                <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-                  <GripVertical className="h-3 w-3" />
-                </div>
-              </Separator>
+              <ResizeGutter orientation="vertical" />
               <Panel id="lane-commit-diff" minSize={30} defaultSize={74} className="min-w-0">
                 {!selectedCommitFilePath ? (
                   <div className="flex h-full items-center justify-center p-3">
@@ -417,9 +414,9 @@ export function LaneDetail({
 
     return (
       <div className="h-full flex flex-col">
-        <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-card/30">
+        <div className="flex items-center justify-between px-3 py-1 bg-card/30">
           <div className="flex items-center gap-2 text-xs">
-            <span className="font-mono text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
+            <span className="text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
             <span className="text-muted-fg">/</span>
             <span className="font-semibold">{diff.path}</span>
           </div>
@@ -467,7 +464,7 @@ export function LaneDetail({
   return (
     <div className="flex h-full flex-col">
       {/* === Header: two rows - lane info on left, toolbar wraps === */}
-      <div className="shrink-0 border-b border-border bg-card/30 px-3 py-1.5">
+      <div className="shrink-0 border-b border-border/15 bg-card/30 px-3 py-1.5">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           {/* Lane identity */}
           <span className={cn(
@@ -518,7 +515,7 @@ export function LaneDetail({
                 </Button>
               </div>
               {pullDropdownOpen ? (
-                <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded border border-border bg-bg shadow-xl py-1">
+                <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl bg-bg shadow-float py-1">
                   <button
                     type="button"
                     className={cn("flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left", syncMode === "merge" && "text-accent")}
@@ -541,7 +538,7 @@ export function LaneDetail({
                       <div className="text-[10px] text-muted-fg">Fetch + replay your commits on top of remote</div>
                     </div>
                   </button>
-                  <div className="border-t border-border my-1" />
+                  <div className="my-1 h-px bg-border/15" />
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left"
@@ -602,7 +599,7 @@ export function LaneDetail({
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </Button>
               {moreDropdownOpen ? (
-                <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded border border-border bg-bg shadow-xl py-1">
+                <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-xl bg-bg shadow-float py-1">
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left"
@@ -637,7 +634,7 @@ export function LaneDetail({
                       <div className="text-[10px] text-muted-fg">Restore previously stashed changes</div>
                     </div>
                   </button>
-                  <div className="border-t border-border my-1" />
+                  <div className="my-1 h-px bg-border/15" />
                   <button
                     type="button"
                     className={cn("flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted/50 text-left", recentCommits.length === 0 && "opacity-40 pointer-events-none")}
@@ -685,11 +682,11 @@ export function LaneDetail({
               ) : null}
             </div>
 
-            <div className="h-4 w-px bg-border" />
+            <div className="h-4 w-px bg-border/20" />
 
             {/* Inline commit input */}
             <input
-              className="h-7 min-w-[100px] max-w-[220px] flex-1 rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent transition-colors"
+              className="h-7 min-w-[100px] max-w-[220px] flex-1 rounded-xl bg-muted/30 shadow-card px-2 text-xs outline-none focus:ring-1 focus:ring-accent/30 transition-colors"
               placeholder="Commit message..."
               value={commitMessage}
               onChange={(e) => setCommitMessage(e.target.value)}
@@ -724,7 +721,7 @@ export function LaneDetail({
 
             {onSplit ? (
               <>
-                <div className="h-4 w-px bg-border" />
+                <div className="h-4 w-px bg-border/20" />
                 <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onSplit} title="Open side-by-side split view">
                   <Columns className="h-3.5 w-3.5" />
                 </Button>
@@ -772,9 +769,9 @@ export function LaneDetail({
                 }}
               >
                 <div className="flex flex-col h-full min-h-0">
-                  <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
+                  <div className="flex items-center justify-between px-2 py-1.5 bg-card/30">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Changed Files</span>
+                      <span className="text-xs text-muted-fg/70">Changed Files</span>
                       <Chip className="text-[10px] h-4 px-1">{unifiedFiles.length}</Chip>
                       {stagedCount > 0 ? (
                         <span className="text-[10px] text-muted-fg">({stagedCount} staged)</span>
@@ -798,8 +795,8 @@ export function LaneDetail({
                       <div
                         key={file.path}
                         className={cn(
-                          "group flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs border border-transparent",
-                          selectedPath === file.path ? "bg-accent/10 border-accent/20 text-fg" : "hover:bg-muted/50 text-muted-fg hover:text-fg"
+                          "group flex items-center gap-2 px-2 py-1 rounded-xl cursor-pointer text-xs",
+                          selectedPath === file.path ? "bg-accent/10 text-fg shadow-card" : "hover:bg-muted/30 text-muted-fg hover:text-fg"
                         )}
                         onClick={() => {
                           setSelectedCommit(null);
@@ -812,7 +809,7 @@ export function LaneDetail({
                         {/* Staging checkbox */}
                         <button
                           type="button"
-                          className="shrink-0 h-4 w-4 rounded border border-border flex items-center justify-center hover:border-accent"
+                          className="shrink-0 h-4 w-4 rounded-lg bg-muted/30 flex items-center justify-center hover:bg-accent/10"
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleStageFile(file.path, file.staged);
@@ -839,11 +836,7 @@ export function LaneDetail({
                 </div>
               </Panel>
 
-              <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-                <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-                  <GripVertical className="h-3 w-3" />
-                </div>
-              </Separator>
+              <ResizeGutter orientation="vertical" />
 
               {/* Commits timeline */}
               <Panel id="lane-detail-commits" minSize={20} defaultSize={45} className="min-w-0">
@@ -861,11 +854,7 @@ export function LaneDetail({
           </Panel>
 
           {/* Vertical resizable divider */}
-          <Separator className="relative h-2 shrink-0 cursor-row-resize border-y border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-            <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-              <GripVertical className="h-3 w-3 rotate-90" />
-            </div>
-          </Separator>
+          <ResizeGutter orientation="horizontal" />
 
           {/* Bottom panel: diff viewer */}
           <Panel id="lane-detail-bottom" minSize={20} defaultSize={62} className="min-h-0">
@@ -879,7 +868,7 @@ export function LaneDetail({
       {/* Text prompt modal (reused) */}
       {textPrompt ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(460px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
+          <div className="w-[min(460px,100%)] rounded-2xl bg-card/95 backdrop-blur-xl p-4 shadow-float">
             <div className="text-sm font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? <div className="mt-1 text-xs text-muted-fg">{textPrompt.message}</div> : null}
             <input
@@ -900,7 +889,7 @@ export function LaneDetail({
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="mt-3 h-9 w-full rounded border border-border bg-bg px-2 text-sm outline-none focus:border-accent"
+              className="mt-3 h-9 w-full rounded-xl bg-muted/30 shadow-card px-2 text-sm outline-none focus:ring-1 focus:ring-accent/30"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-400">{textPromptError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
@@ -917,7 +906,7 @@ export function LaneDetail({
 
       {/* Status bar */}
       {(notice || error || busyAction) && (
-        <div className={cn("flex items-center justify-between border-t border-border px-3 py-1 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
+        <div className={cn("flex items-center justify-between border-t border-border/15 px-3 py-1 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
           <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>
         </div>
       )}

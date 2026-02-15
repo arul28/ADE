@@ -872,8 +872,8 @@ export function ProjectHomePage() {
   }, [processItems, selectedProcessId, trustRequired, runWithRefresh, runtimeById, effectiveLaneId]);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+    <div className="flex h-full flex-col overflow-hidden rounded-2xl shadow-card bg-card/60 backdrop-blur">
+      <div className="flex items-center justify-between border-b border-border/15 px-4 py-3">
         <div>
           <div className="text-sm font-semibold">Run</div>
           <div className="text-xs text-muted-fg">Managed processes, lane-scoped stack controls, tests, and config</div>
@@ -922,7 +922,7 @@ export function ProjectHomePage() {
       <div className="min-h-0 flex-1 overflow-auto p-3">
         <div className="space-y-3">
           {error ? (
-            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
+            <div className="rounded-xl bg-red-500/10 border-none px-3 py-2 text-xs text-red-800">
               <div className="flex items-start gap-2">
                 <AlertCircle className="mt-0.5 h-4 w-4" />
                 <div className="min-w-0">{error}</div>
@@ -931,11 +931,11 @@ export function ProjectHomePage() {
           ) : null}
 
           {notice ? (
-            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{notice}</div>
+            <div className="rounded-xl bg-emerald-500/10 border-none px-3 py-2 text-xs text-emerald-800">{notice}</div>
           ) : null}
 
           {trustRequired ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <div className="rounded-xl bg-amber-500/10 border-none px-3 py-2 text-xs text-amber-900">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
                   <ShieldCheck className="mt-0.5 h-4 w-4" />
@@ -958,7 +958,7 @@ export function ProjectHomePage() {
             </div>
           ) : null}
 
-          <section className="rounded-md border border-border bg-card/70 p-3">
+          <section className="rounded-2xl shadow-card bg-card/60 p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold">Project header</div>
@@ -970,7 +970,7 @@ export function ProjectHomePage() {
                 <label className="flex items-center gap-2 text-xs text-muted-fg">
                   <span>Running in:</span>
                   <select
-                    className="h-7 rounded border border-border bg-card/80 px-2 text-xs"
+                    className="h-7 rounded-lg bg-muted/30 px-2 text-xs"
                     value={effectiveLaneId ?? ""}
                     onChange={(e) => selectRunLane(e.target.value || null)}
                   >
@@ -1010,7 +1010,7 @@ export function ProjectHomePage() {
               </Button>
 
               {stackStatuses.map(({ stack, status }) => (
-                <div key={stack.id} className="inline-flex items-center gap-1 rounded-md border border-border bg-card/80 px-2 py-1">
+                <div key={stack.id} className="inline-flex items-center gap-1 rounded-xl shadow-card bg-card/50 px-2 py-1">
                   <Chip className={cx("text-[11px]", stackTone(status))}>{status}</Chip>
                   <span className="text-xs font-semibold">{stack.name}</span>
                   <Button
@@ -1042,7 +1042,7 @@ export function ProjectHomePage() {
             </div>
           </section>
 
-          <section className="rounded-md border border-border bg-card/70 p-3">
+          <section className="rounded-2xl shadow-card bg-card/60 p-3">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-semibold">Quick add process</div>
@@ -1055,19 +1055,19 @@ export function ProjectHomePage() {
 
             <div className="grid gap-2 md:grid-cols-[160px_1fr_1fr_auto_auto]">
               <input
-                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                 placeholder="Name (optional)"
                 value={quickProcessName}
                 onChange={(e) => setQuickProcessName(e.target.value)}
               />
               <input
-                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                 placeholder="Working directory, e.g. apps/web"
                 value={quickProcessCwd}
                 onChange={(e) => setQuickProcessCwd(e.target.value)}
               />
               <input
-                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                 placeholder='Command, e.g. "pnpm dev"'
                 value={quickProcessCommand}
                 onChange={(e) => setQuickProcessCommand(e.target.value)}
@@ -1084,7 +1084,7 @@ export function ProjectHomePage() {
             </div>
           </section>
 
-          <section className="rounded-md border border-border bg-card/70 p-3">
+          <section className="rounded-2xl shadow-card bg-card/60 p-3">
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Managed processes</div>
@@ -1096,14 +1096,14 @@ export function ProjectHomePage() {
             <div className="grid gap-3 xl:grid-cols-[1.2fr_1fr]">
               <div className="space-y-2">
                 {processItems.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
+                  <div className="rounded-xl bg-muted/10 p-3 text-xs text-muted-fg">
                     No process definitions. Use "Quick add process" above or the config editor.
                   </div>
                 ) : null}
 
-                <div className="overflow-hidden rounded-md border border-border bg-card/50">
+                <div className="overflow-hidden rounded-xl bg-card/30">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-muted/50 font-medium text-muted-fg">
+                    <thead className="bg-muted/30 font-medium text-muted-fg">
                       <tr>
                         <th className="px-3 py-2">Name</th>
                         <th className="w-24 px-3 py-2">Status</th>
@@ -1114,7 +1114,7 @@ export function ProjectHomePage() {
                         <th className="w-32 px-3 py-2">Action</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-border">
+                    <tbody className="divide-y divide-border/30">
                       {processItems.map(({ definition, runtime: rowRuntime }) => {
                         const active = selectedProcessId === definition.id;
                         const isRunning = rowRuntime.status === "running" || rowRuntime.status === "starting" || rowRuntime.status === "degraded";
@@ -1202,7 +1202,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-md border border-border bg-card/80 p-3">
+              <div className="rounded-xl shadow-card bg-card/50 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <div className="text-sm font-semibold">Process logs</div>
@@ -1226,7 +1226,7 @@ export function ProjectHomePage() {
 
                 <div className="mt-2">
                   <input
-                    className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
+                    className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs outline-none placeholder:text-muted-fg"
                     placeholder="Search log lines"
                     value={processLogSearch}
                     onChange={(e) => setProcessLogSearch(e.target.value)}
@@ -1235,7 +1235,7 @@ export function ProjectHomePage() {
 
                 <pre
                   ref={processLogRef}
-                  className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
+                  className="mt-2 h-[330px] overflow-auto rounded-lg bg-muted/20 p-2 text-[11px] leading-5"
                 >
                   {visibleProcessLog || "(no output yet)"}
                 </pre>
@@ -1243,7 +1243,7 @@ export function ProjectHomePage() {
             </div>
           </section>
 
-          <section className="rounded-md border border-border bg-card/70 p-3">
+          <section className="rounded-2xl shadow-card bg-card/60 p-3">
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Test suites</div>
@@ -1255,7 +1255,7 @@ export function ProjectHomePage() {
             <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
               <div className="space-y-2">
                 {suites.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
+                  <div className="rounded-xl bg-muted/10 p-3 text-xs text-muted-fg">
                     No test suites defined. Add suites in the config editor below.
                   </div>
                 ) : null}
@@ -1264,7 +1264,7 @@ export function ProjectHomePage() {
                   const last = latestRunBySuite.get(suite.id);
                   const running = last?.status === "running";
                   return (
-                    <div key={suite.id} className="rounded-md border border-border bg-card/80 p-3">
+                    <div key={suite.id} className="rounded-xl shadow-card bg-card/50 p-3">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="text-sm font-semibold">{suite.name}</div>
@@ -1306,14 +1306,14 @@ export function ProjectHomePage() {
                   );
                 })}
 
-                <div className="rounded-md border border-border bg-card/80 p-2">
+                <div className="rounded-xl shadow-card bg-card/50 p-2">
                   <div className="mb-1 text-xs font-semibold text-muted-fg">Run history</div>
                   <div className="max-h-[180px] space-y-1 overflow-auto">
                     {runs.map((run) => (
                       <button
                         key={run.id}
                         className={cx(
-                          "flex w-full items-center justify-between rounded border border-border px-2 py-1 text-left text-xs",
+                          "flex w-full items-center justify-between rounded-lg px-2 py-1 text-left text-xs",
                           selectedRunId === run.id && "ring-1 ring-accent/40"
                         )}
                         onClick={() => setSelectedRunId(run.id)}
@@ -1326,7 +1326,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-md border border-border bg-card/80 p-3">
+              <div className="rounded-xl shadow-card bg-card/50 p-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-sm font-semibold">Suite logs</div>
@@ -1339,7 +1339,7 @@ export function ProjectHomePage() {
 
                 <div className="mt-2">
                   <input
-                    className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
+                    className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs outline-none placeholder:text-muted-fg"
                     placeholder="Search log lines"
                     value={testLogSearch}
                     onChange={(e) => setTestLogSearch(e.target.value)}
@@ -1348,7 +1348,7 @@ export function ProjectHomePage() {
 
                 <pre
                   ref={testLogRef}
-                  className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
+                  className="mt-2 h-[330px] overflow-auto rounded-lg bg-muted/20 p-2 text-[11px] leading-5"
                 >
                   {visibleTestLog || "(no output yet)"}
                 </pre>
@@ -1362,7 +1362,7 @@ export function ProjectHomePage() {
             }}
           />
 
-          <section ref={configEditorRef} className="rounded-md border border-border bg-card/70 p-3">
+          <section ref={configEditorRef} className="rounded-2xl shadow-card bg-card/60 p-3">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-semibold">Config editor</div>
@@ -1371,7 +1371,7 @@ export function ProjectHomePage() {
               <div className="flex items-center gap-2">
                 <label className="text-xs text-muted-fg">Editing</label>
                 <select
-                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                  className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                   value={configTarget}
                   onChange={(e) => setConfigTarget(e.target.value as "shared" | "local")}
                 >
@@ -1386,7 +1386,7 @@ export function ProjectHomePage() {
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-md border border-border p-2">
+              <div className="rounded-xl bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Processes</div>
                   <Button
@@ -1419,7 +1419,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {processRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `process ${idx + 1}`}</div>
                         <Button
@@ -1434,7 +1434,7 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) =>
@@ -1442,7 +1442,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) =>
@@ -1450,7 +1450,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="cwd (use this instead of cd ... &&)"
                           value={row.cwd}
                           onChange={(e) =>
@@ -1458,7 +1458,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='command, e.g. pnpm dev'
                           value={row.commandLine}
                           onChange={(e) =>
@@ -1466,7 +1466,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='env JSON, e.g. {"PORT":"3000"}'
                           value={row.envJson}
                           onChange={(e) =>
@@ -1474,7 +1474,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="dependsOn (comma-separated ids)"
                           value={row.dependsOnCsv}
                           onChange={(e) =>
@@ -1482,7 +1482,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           value={row.restart}
                           onChange={(e) =>
                             setProcessRows((prev) =>
@@ -1496,7 +1496,7 @@ export function ProjectHomePage() {
                           <option value="on_crash">restart: on_crash</option>
                         </select>
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="gracefulShutdownMs"
                           value={row.gracefulShutdownMs}
                           onChange={(e) =>
@@ -1506,7 +1506,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           value={row.readinessType}
                           onChange={(e) =>
                             setProcessRows((prev) =>
@@ -1522,7 +1522,7 @@ export function ProjectHomePage() {
                         </select>
                         {row.readinessType === "port" ? (
                           <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                             placeholder="readiness port"
                             value={row.readinessPort}
                             onChange={(e) =>
@@ -1534,7 +1534,7 @@ export function ProjectHomePage() {
                         ) : null}
                         {row.readinessType === "logRegex" ? (
                           <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                             placeholder="readiness pattern"
                             value={row.readinessPattern}
                             onChange={(e) =>
@@ -1544,7 +1544,7 @@ export function ProjectHomePage() {
                             }
                           />
                         ) : null}
-                        <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-xs">
+                        <label className="inline-flex h-8 items-center gap-2 rounded-xl bg-muted/20 px-2 text-xs">
                           <input
                             type="checkbox"
                             checked={row.autostart}
@@ -1554,10 +1554,10 @@ export function ProjectHomePage() {
                           />
                           autostart
                         </label>
-                        <details className="rounded-md border border-border bg-card px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
+                        <details className="rounded-xl bg-card/30 px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
                           <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
                           <input
-                            className="mt-2 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
+                            className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
                             placeholder='["npm","run","dev"]'
                             value={row.commandJson}
                             onChange={(e) =>
@@ -1571,7 +1571,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-md border border-border p-2">
+              <div className="rounded-xl bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Stack buttons</div>
                   <Button
@@ -1590,7 +1590,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {stackRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `stack ${idx + 1}`}</div>
                         <Button
@@ -1605,13 +1605,13 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) => setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) =>
@@ -1619,7 +1619,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="process ids (comma-separated)"
                           value={row.processIdsCsv}
                           onChange={(e) =>
@@ -1629,7 +1629,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           value={row.startOrder}
                           onChange={(e) =>
                             setStackRows((prev) =>
@@ -1648,7 +1648,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-md border border-border p-2">
+              <div className="rounded-xl bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Test suites</div>
                   <Button
@@ -1675,7 +1675,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {suiteRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `suite ${idx + 1}`}</div>
                         <Button
@@ -1690,25 +1690,25 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="cwd"
                           value={row.cwd}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='command JSON, e.g. ["npm","run","test:unit"]'
                           value={row.commandJson}
                           onChange={(e) =>
@@ -1716,13 +1716,13 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='env JSON, e.g. {"CI":"1"}'
                           value={row.envJson}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="timeoutMs (optional)"
                           value={row.timeoutMs}
                           onChange={(e) =>
@@ -1730,7 +1730,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs md:col-span-2 xl:col-span-3"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs md:col-span-2 xl:col-span-3"
                           placeholder="tags (comma-separated: unit, lint, integration, e2e, custom)"
                           value={row.tagsCsv}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, tagsCsv: e.target.value } : p)))}

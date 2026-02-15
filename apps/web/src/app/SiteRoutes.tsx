@@ -12,6 +12,7 @@ function useScrollRestoration() {
 
   useEffect(() => {
     const { hash } = location;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
 
     // Allow the new route to render first.
     requestAnimationFrame(() => {
@@ -19,7 +20,7 @@ function useScrollRestoration() {
         const id = decodeURIComponent(hash.replace(/^#/, ""));
         const el = document.getElementById(id);
         if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "start" });
+          el.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
           return;
         }
       }

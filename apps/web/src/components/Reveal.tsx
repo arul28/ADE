@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { cn } from "../lib/cn";
+import { revealTransition } from "../lib/motion";
 
 export function Reveal({
   children,
@@ -16,13 +17,12 @@ export function Reveal({
   return (
     <motion.div
       className={cn(className)}
-      initial={reduceMotion ? undefined : { opacity: 0, y: 16 }}
-      whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+      initial={reduceMotion ? undefined : { opacity: 0, y: 18, scale: 0.99 }}
+      whileInView={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
       viewport={{ once: true, amount: 0.25 }}
-      transition={{ duration: 0.65, delay, ease: [0.22, 1, 0.36, 1] }}
+      transition={revealTransition(delay)}
     >
       {children}
     </motion.div>
   );
 }
-

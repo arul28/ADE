@@ -8,9 +8,57 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
-import type { Checkpoint, LaneSummary, PackEvent, PackSummary, PackType, PackVersion, PackVersionSummary, SessionDeltaSummary, TestRunStatus } from "../../../shared/types";
+import type {
+  Checkpoint,
+  ConflictLineageV1,
+  ContextExportLevel,
+  ConflictRiskLevel,
+  ConflictStatusValue,
+  GetConflictExportArgs,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GitConflictState,
+  LaneExportManifestV1,
+  LaneLineageV1,
+  LaneSummary,
+  ListPackEventsSinceArgs,
+  PackConflictStateV1,
+  PackDeltaDigestArgs,
+  PackDeltaDigestV1,
+  PackDependencyStateV1,
+  PackEvent,
+  PackEventCategory,
+  PackEventEntityRef,
+  PackEventImportance,
+  PackExport,
+  PackHeadVersion,
+  PackMergeReadiness,
+  PackSummary,
+  PackType,
+  PackVersion,
+  PackVersionSummary,
+  ProjectExportManifestV1,
+  ProjectManifestLaneEntryV1,
+  SessionDeltaSummary,
+  TestRunStatus
+} from "../../../shared/types";
+import {
+  ADE_INTENT_END,
+  ADE_INTENT_START,
+  ADE_NARRATIVE_END,
+  ADE_NARRATIVE_START,
+  ADE_TASK_SPEC_END,
+  ADE_TASK_SPEC_START,
+  ADE_TODOS_END,
+  ADE_TODOS_START
+} from "../../../shared/contextContract";
 import { stripAnsi } from "../../utils/ansiStrip";
+import { deriveSessionSummaryFromText, inferTestOutcomeFromText } from "./transcriptInsights";
 import { renderLanePackMarkdown } from "./lanePackTemplate";
+import { computeSectionChanges, upsertSectionByHeading } from "./packSections";
+import type { SectionLocator } from "./packSections";
+import { buildConflictExport, buildLaneExport, buildProjectExport } from "./packExports";
+import type { PackGraphEnvelopeV1, PackRelation } from "../../../shared/contextContract";
 
 type LaneSessionRow = {
   id: string;
@@ -43,11 +91,6 @@ type ParsedNumStat = {
   deletions: number;
   files: Set<string>;
 };
-
-const USER_INTENT_START = "<!-- ADE_INTENT_START -->";
-const USER_INTENT_END = "<!-- ADE_INTENT_END -->";
-const USER_TODOS_START = "<!-- ADE_TODOS_START -->";
-const USER_TODOS_END = "<!-- ADE_TODOS_END -->";
 
 function safeJsonParseArray(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -229,16 +272,45 @@ function extractSection(existing: string, start: string, end: string, fallback: 
   return body.length ? body : fallback;
 }
 
-function replaceNarrativeSection(existing: string, narrative: string): string {
+function extractSectionByHeading(existing: string, heading: string): string | null {
+  const re = new RegExp(`^${heading.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*$`, "m");
+  const match = re.exec(existing);
+  if (!match?.index && match?.index !== 0) return null;
+
+  const headingStart = match.index;
+  const headingLineEnd = existing.indexOf("\n", headingStart);
+  const sectionStart = headingLineEnd >= 0 ? headingLineEnd + 1 : existing.length;
+
+  const nextHeading = (() => {
+    const r = /^##\s+/gm;
+    r.lastIndex = sectionStart;
+    const m = r.exec(existing);
+    return m ? m.index : -1;
+  })();
+  const nextHr = (() => {
+    const r = /^---\s*$/gm;
+    r.lastIndex = sectionStart;
+    const m = r.exec(existing);
+    return m ? m.index : -1;
+  })();
+
+  const candidates = [nextHeading, nextHr].filter((idx) => idx >= 0);
+  const sectionEnd = candidates.length ? Math.min(...candidates) : existing.length;
+
+  const body = existing.slice(sectionStart, sectionEnd).trim();
+  return body.length ? body : "";
+}
+
+function replaceNarrativeSection(existing: string, narrative: string): { updated: string; insertedMarkers: boolean } {
   const cleanNarrative = narrative.trim().length ? narrative.trim() : "Narrative generation returned empty content.";
-  const marker = "\n## Narrative\n";
-  const idx = existing.indexOf(marker);
-  if (idx < 0) {
-    const trimmed = existing.trimEnd();
-    return `${trimmed}\n\n## Narrative\n${cleanNarrative}\n`;
-  }
-  const before = existing.slice(0, idx + marker.length);
-  return `${before}${cleanNarrative}\n`;
+  const next = upsertSectionByHeading({
+    content: existing,
+    heading: "## Narrative",
+    startMarker: ADE_NARRATIVE_START,
+    endMarker: ADE_NARRATIVE_END,
+    body: cleanNarrative
+  });
+  return { updated: next.content, insertedMarkers: next.insertedMarkers };
 }
 
 function statusFromCode(status: TestRunStatus): string {
@@ -291,6 +363,26 @@ function uniqueSorted(values: Iterable<string>): string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }
 
+function normalizeConflictStatus(value: string): ConflictStatusValue | null {
+  const v = value.trim();
+  if (
+    v === "merge-ready" ||
+    v === "behind-base" ||
+    v === "conflict-predicted" ||
+    v === "conflict-active" ||
+    v === "unknown"
+  ) {
+    return v;
+  }
+  return null;
+}
+
+function normalizeRiskLevel(value: string): ConflictRiskLevel | null {
+  const v = value.trim();
+  if (v === "none" || v === "low" || v === "medium" || v === "high") return v;
+  return null;
+}
+
 export function createPackService({
   db,
   logger,
@@ -322,6 +414,10 @@ export function createPackService({
   const getPlanPackPath = (laneId: string) => path.join(packsDir, "plans", laneId, "plan_pack.md");
   const getConflictPackPath = (laneId: string, peer: string) =>
     path.join(packsDir, "conflicts", "v2", `${laneId}__${safeSegment(peer)}.md`);
+  const conflictsRootDir = path.join(packsDir, "conflicts");
+  const conflictPredictionsDir = path.join(conflictsRootDir, "predictions");
+  const getConflictPredictionPath = (laneId: string) => path.join(conflictPredictionsDir, `${laneId}.json`);
+  const getLegacyConflictPredictionPath = (laneId: string) => path.join(conflictsRootDir, `${laneId}.json`);
 
   const versionsDir = path.join(packsDir, "versions");
   const historyDir = path.join(path.dirname(packsDir), "history");
@@ -331,6 +427,229 @@ export function createPackService({
   const nowIso = () => new Date().toISOString();
 
   const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === "object" && !Array.isArray(value);
+
+  const asString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+  const buildGraphEnvelope = (relations: PackRelation[]): PackGraphEnvelopeV1 => ({
+    schema: "ade.packGraph.v1",
+    relations
+  });
+
+  const computeMergeReadiness = (args: {
+    requiredMerges: string[];
+    behindCount: number;
+    conflictStatus: ConflictStatusValue | null;
+  }): PackMergeReadiness => {
+    if (args.requiredMerges.length) return "blocked";
+    if (args.conflictStatus === "unknown" || args.conflictStatus == null) return "unknown";
+    if (args.conflictStatus === "conflict-active" || args.conflictStatus === "conflict-predicted") return "blocked";
+    if (args.behindCount > 0) return "needs_sync";
+    return "ready";
+  };
+
+  const importanceRank = (value: unknown): number => {
+    const v = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (v === "high") return 3;
+    if (v === "medium") return 2;
+    if (v === "low") return 1;
+    return 0;
+  };
+
+  const getDefaultSectionLocators = (packType: PackType): SectionLocator[] => {
+    if (packType === "lane") {
+      return [
+        { id: "task_spec", kind: "markers", startMarker: ADE_TASK_SPEC_START, endMarker: ADE_TASK_SPEC_END },
+        { id: "intent", kind: "markers", startMarker: ADE_INTENT_START, endMarker: ADE_INTENT_END },
+        { id: "todos", kind: "markers", startMarker: ADE_TODOS_START, endMarker: ADE_TODOS_END },
+        { id: "narrative", kind: "markers", startMarker: ADE_NARRATIVE_START, endMarker: ADE_NARRATIVE_END },
+        { id: "what_changed", kind: "heading", heading: "## What Changed" },
+        { id: "validation", kind: "heading", heading: "## Validation" },
+        { id: "errors", kind: "heading", heading: "## Errors & Issues" },
+        { id: "sessions", kind: "heading", heading: "## Sessions" }
+      ];
+    }
+    if (packType === "conflict") {
+      return [
+        { id: "overlap", kind: "heading", heading: "## Overlapping Files" },
+        { id: "conflicts", kind: "heading", heading: "## Conflicts (merge-tree)" },
+        { id: "lane_excerpt", kind: "heading", heading: "## Lane Pack (Excerpt)" }
+      ];
+    }
+    return [
+      { id: "bootstrap", kind: "heading", heading: "## Bootstrap context (codebase + docs)" },
+      { id: "lane_snapshot", kind: "heading", heading: "## Lane Snapshot" }
+    ];
+  };
+
+  const findBaselineVersionAtOrBefore = (args: { packKey: string; sinceIso: string }): { id: string; versionNumber: number; createdAt: string } | null => {
+    const row = db.get<{ id: string; version_number: number; created_at: string }>(
+      `
+        select id, version_number, created_at
+        from pack_versions
+        where project_id = ?
+          and pack_key = ?
+          and created_at <= ?
+        order by created_at desc
+        limit 1
+      `,
+      [projectId, args.packKey, args.sinceIso]
+    );
+    if (!row?.id) return null;
+    return { id: row.id, versionNumber: Number(row.version_number ?? 0), createdAt: row.created_at };
+  };
+
+  const classifyPackEvent = (args: {
+    packKey: string;
+    eventType: string;
+    createdAt: string;
+    payload: Record<string, unknown>;
+  }): {
+    importance: PackEventImportance;
+    importanceScore: number;
+    category: PackEventCategory;
+    entityIds: string[];
+    entityRefs: PackEventEntityRef[];
+    actionType: string;
+    rationale: string | null;
+  } => {
+    const eventType = args.eventType;
+    const payload = args.payload ?? {};
+
+    const entityIdsSet = new Set<string>();
+    const entityRefs: PackEventEntityRef[] = [];
+
+    const addEntity = (kind: string, idRaw: unknown) => {
+      const id = typeof idRaw === "string" ? idRaw.trim() : "";
+      if (!id) return;
+      entityIdsSet.add(id);
+      entityRefs.push({ kind, id });
+    };
+
+    if (args.packKey.startsWith("lane:")) addEntity("lane", args.packKey.slice("lane:".length));
+    if (args.packKey.startsWith("conflict:")) {
+      const parts = args.packKey.split(":");
+      if (parts.length >= 2) addEntity("lane", parts[1]);
+      if (parts.length >= 3) addEntity("peer", parts.slice(2).join(":"));
+    }
+
+    addEntity("lane", payload.laneId);
+    addEntity("lane", payload.peerLaneId);
+    addEntity("session", payload.sessionId);
+    addEntity("checkpoint", payload.checkpointId);
+    addEntity("version", payload.versionId);
+    addEntity("operation", payload.operationId);
+    addEntity("job", payload.jobId);
+    addEntity("artifact", payload.artifactId);
+    addEntity("proposal", payload.proposalId);
+
+    const category: PackEventCategory = (() => {
+      if (eventType.startsWith("narrative_")) return "narrative";
+      if (eventType === "checkpoint") return "session";
+      if (eventType.includes("conflict")) return "conflict";
+      if (eventType.includes("branch")) return "branch";
+      return "pack";
+    })();
+
+    const importance: PackEventImportance = (() => {
+      if (eventType === "narrative_update") return "high";
+      if (eventType === "narrative_failed") return "high";
+      if (eventType === "checkpoint") return "medium";
+      if (eventType === "refresh_triggered") return "medium";
+      if (eventType === "narrative_requested") return "medium";
+      return "low";
+    })();
+
+    const importanceScore = importance === "high" ? 0.9 : importance === "medium" ? 0.6 : 0.25;
+
+    const rationale = (() => {
+      const trigger = typeof payload.trigger === "string" ? payload.trigger.trim() : "";
+      if (trigger) return trigger;
+      const source = typeof payload.source === "string" ? payload.source.trim() : "";
+      if (source) return source;
+      return null;
+    })();
+
+    return {
+      importance,
+      importanceScore,
+      category,
+      entityIds: Array.from(entityIdsSet),
+      entityRefs,
+      actionType: eventType,
+      rationale
+    };
+  };
+
+  const ensureEventMeta = (event: PackEvent): PackEvent => {
+    const payload = (event.payload ?? {}) as Record<string, unknown>;
+    const hasMeta =
+      payload.importance != null ||
+      payload.importanceScore != null ||
+      payload.category != null ||
+      payload.entityIds != null ||
+      payload.entityRefs != null ||
+      payload.actionType != null ||
+      payload.rationale != null;
+    if (hasMeta) return event;
+
+    const meta = classifyPackEvent({
+      packKey: event.packKey,
+      eventType: event.eventType,
+      createdAt: event.createdAt,
+      payload
+    });
+
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        importance: meta.importance,
+        importanceScore: meta.importanceScore,
+        category: meta.category,
+        entityIds: meta.entityIds,
+        entityRefs: meta.entityRefs,
+        actionType: meta.actionType,
+        rationale: meta.rationale
+      }
+    };
+  };
+
+  const upsertEventMetaForInsert = (args: {
+    packKey: string;
+    eventType: string;
+    createdAt: string;
+    payload: Record<string, unknown>;
+  }): Record<string, unknown> => {
+    const payload = args.payload ?? {};
+    const out: Record<string, unknown> = { ...payload };
+    const meta = classifyPackEvent(args);
+
+    if (out.importance == null) out.importance = meta.importance;
+    if (out.importanceScore == null) out.importanceScore = meta.importanceScore;
+    if (out.category == null) out.category = meta.category;
+    if (out.entityIds == null) out.entityIds = meta.entityIds;
+    if (out.entityRefs == null) out.entityRefs = meta.entityRefs;
+    if (out.actionType == null) out.actionType = meta.actionType;
+    if (out.rationale == null) out.rationale = meta.rationale;
+
+    return out;
+  };
+
+  const readHostedGatewayMeta = (): { apiBaseUrl: string | null; remoteProjectId: string | null } => {
+    const snapshot = projectConfigService.get();
+    const localProviders = isRecord(snapshot.local.providers) ? snapshot.local.providers : {};
+    const effectiveProviders = isRecord(snapshot.effective.providers) ? snapshot.effective.providers : {};
+    const localHosted = isRecord(localProviders.hosted) ? localProviders.hosted : {};
+    const effectiveHosted = isRecord(effectiveProviders.hosted) ? effectiveProviders.hosted : {};
+    const hosted = { ...effectiveHosted, ...localHosted };
+
+    const apiBaseUrl = asString(hosted.apiBaseUrl).trim() || null;
+    const remoteProjectId = asString(hosted.remoteProjectId).trim() || null;
+    return { apiBaseUrl, remoteProjectId };
+  };
 
   const ensureDir = (dirPath: string) => {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -405,6 +724,28 @@ export function createPackService({
         }
       }
 
+      // Conflict prediction summaries (v1) live under `conflicts/predictions/*.json`.
+      const predictionsDir = path.join(conflictsDir, "predictions");
+      if (fs.existsSync(predictionsDir)) {
+        for (const entry of fs.readdirSync(predictionsDir, { withFileTypes: true })) {
+          if (!entry.isFile()) continue;
+          if (!entry.name.endsWith(".json")) continue;
+          const laneId = entry.name.slice(0, -".json".length);
+          const lane = laneById.get(laneId);
+          const absPath = path.join(predictionsDir, entry.name);
+          if (!lane) {
+            fs.rmSync(absPath, { force: true });
+            continue;
+          }
+          if (!lane.archivedAt) continue;
+          const ts = Date.parse(lane.archivedAt);
+          const archivedAtMs = Number.isFinite(ts) ? ts : now;
+          if (!keepByCount.has(laneId) || archivedAtMs < keepBeforeMs) {
+            fs.rmSync(absPath, { force: true });
+          }
+        }
+      }
+
       // V2 conflict packs are stored as markdown files under `conflicts/v2/`.
       const v2Dir = path.join(conflictsDir, "v2");
       if (fs.existsSync(v2Dir)) {
@@ -467,7 +808,12 @@ export function createPackService({
   const createPackEvent = (args: { packKey: string; eventType: string; payload?: Record<string, unknown> }): PackEvent => {
     const eventId = randomUUID();
     const createdAt = nowIso();
-    const payload = args.payload ?? {};
+    const payload = upsertEventMetaForInsert({
+      packKey: args.packKey,
+      eventType: args.eventType,
+      createdAt,
+      payload: args.payload ?? {}
+    });
 
     db.run(
       `
@@ -483,7 +829,7 @@ export function createPackService({
       [eventId, projectId, args.packKey, args.eventType, JSON.stringify(payload), createdAt]
     );
 
-    const event: PackEvent = { id: eventId, packKey: args.packKey, eventType: args.eventType, payload, createdAt };
+    const event: PackEvent = ensureEventMeta({ id: eventId, packKey: args.packKey, eventType: args.eventType, payload, createdAt });
 
     try {
       const monthKey = createdAt.slice(0, 7); // YYYY-MM
@@ -771,8 +1117,30 @@ export function createPackService({
     const parentLane = lane.parentLaneId ? lanes.find((candidate) => candidate.id === lane.parentLaneId) ?? null : null;
 
     const existingBody = readFileIfExists(getLanePackPath(laneId));
-    const userIntent = extractSection(existingBody, USER_INTENT_START, USER_INTENT_END, "Intent not set — click to add.");
-    const userTodos = extractSection(existingBody, USER_TODOS_START, USER_TODOS_END, "");
+    const userIntent = extractSection(existingBody, ADE_INTENT_START, ADE_INTENT_END, "Intent not set — click to add.");
+    const userTodos = extractSection(existingBody, ADE_TODOS_START, ADE_TODOS_END, "");
+
+    const taskSpecFallback = [
+      "Problem Statement:",
+      "- (what are we solving, and for whom?)",
+      "",
+      "Scope:",
+      "- (what is included?)",
+      "",
+      "Non-goals:",
+      "- (what is explicitly out of scope?)",
+      "",
+      "Acceptance Criteria:",
+      "- [ ] (add checkable acceptance criteria)",
+      "",
+      "Constraints / Conventions:",
+      "- (languages, frameworks, patterns, performance, security, etc.)",
+      "",
+      "Dependencies:",
+      `- Parent lane: ${parentLane ? parentLane.name : "(none)"}`,
+      "- Required merges: (list lanes/PRs that must land first)"
+    ].join("\n");
+    const taskSpec = extractSection(existingBody, ADE_TASK_SPEC_START, ADE_TASK_SPEC_END, taskSpecFallback);
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
     const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
@@ -789,6 +1157,8 @@ export function createPackService({
       goal: string | null;
       toolType: string | null;
       summary: string | null;
+      lastOutputPreview: string | null;
+      transcriptPath: string | null;
       status: string;
       tracked: number;
       startedAt: string;
@@ -805,6 +1175,8 @@ export function createPackService({
           s.goal as goal,
           s.tool_type as toolType,
           s.summary as summary,
+          s.last_output_preview as lastOutputPreview,
+          s.transcript_path as transcriptPath,
           s.status as status,
           s.tracked as tracked,
           s.started_at as startedAt,
@@ -831,6 +1203,17 @@ export function createPackService({
         [laneId]
       )?.count ?? 0
     );
+
+    const transcriptTailCache = new Map<string, string>();
+    const getTranscriptTail = (transcriptPath: string | null): string => {
+      const key = String(transcriptPath ?? "").trim();
+      if (!key) return "";
+      const cached = transcriptTailCache.get(key);
+      if (cached != null) return cached;
+      const tail = sessionService.readTranscriptTail(key, 140_000);
+      transcriptTailCache.set(key, tail);
+      return tail;
+    };
 
     const latestTest = db.get<{
       run_id: string;
@@ -875,7 +1258,14 @@ export function createPackService({
         }
       }
     } else {
-      validationLines.push("Tests: NOT RUN");
+      const latestEnded = recentSessions.find((s) => Boolean(s.endedAt));
+      const transcriptTail = latestEnded ? getTranscriptTail(latestEnded.transcriptPath) : "";
+      const inferred = inferTestOutcomeFromText(transcriptTail);
+      if (inferred) {
+        validationLines.push(`Tests: ${inferred.status === "pass" ? "PASS" : "FAIL"} (inferred from terminal output)`);
+      } else {
+        validationLines.push("Tests: NOT RUN");
+      }
     }
 
     const lintSession = recentSessions.find((s) => {
@@ -1010,6 +1400,8 @@ export function createPackService({
       for (const entry of raw) {
         const clean = stripAnsi(entry).trim().replace(/\s+/g, " ");
         if (!clean) continue;
+        // Filter to the current detection heuristic so stale session_deltas rows don't spam packs.
+        if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(clean)) continue;
         const clipped = clean.length > 220 ? `${clean.slice(0, 219)}…` : clean;
         if (seen.has(clipped)) continue;
         seen.add(clipped);
@@ -1040,6 +1432,31 @@ export function createPackService({
       };
     });
 
+    const sessionHighlights = (() => {
+      const clean = (raw: string) => stripAnsi(raw).replace(/\s+/g, " ").trim();
+      const pickSummary = (s: { summary: string | null; lastOutputPreview: string | null; transcriptPath: string | null }) => {
+        const fromSummary = clean(String(s.summary ?? "")).trim();
+        if (fromSummary) return fromSummary;
+        const fromPreview = clean(String(s.lastOutputPreview ?? ""));
+        if (fromPreview) return fromPreview;
+        const transcriptTail = getTranscriptTail(s.transcriptPath);
+        return clean(deriveSessionSummaryFromText(transcriptTail));
+      };
+
+      const out: Array<{ when: string; tool: string; summary: string }> = [];
+      for (const s of recentSessions) {
+        if (!s.endedAt) continue;
+        const summary = pickSummary(s);
+        if (!summary) continue;
+        out.push({
+          when: isoTime(s.startedAt),
+          tool: humanToolLabel(s.toolType),
+          summary
+        });
+      }
+      return out.slice(0, 3);
+    })();
+
     const nextSteps = (() => {
       const items: string[] = [];
       const intentSet = userIntent.trim().length && userIntent.trim() !== "Intent not set — click to add.";
@@ -1061,8 +1478,59 @@ export function createPackService({
         ? "AI narrative is disabled in Guest Mode. Switch to Hosted or BYOK in Settings to generate."
         : "AI narrative not yet generated. Click 'Update pack details with AI' to generate.";
 
+    const narrativeFromMarkers = extractSection(existingBody, ADE_NARRATIVE_START, ADE_NARRATIVE_END, "");
+    const legacyNarrative = narrativeFromMarkers.trim().length
+      ? narrativeFromMarkers
+      : extractSectionByHeading(existingBody, "## Narrative") ?? "";
+    const narrative = legacyNarrative.trim().length ? legacyNarrative.trim() : narrativePlaceholder;
+
+    const requiredMerges = parentLane ? [parentLane.id] : [];
+    const conflictState = deriveConflictStateForLane(laneId);
+    const dependencyState: PackDependencyStateV1 = {
+      requiredMerges,
+      blockedByLanes: requiredMerges,
+      mergeReadiness: computeMergeReadiness({
+        requiredMerges,
+        behindCount: lane.status.behind,
+        conflictStatus: (conflictState?.status ?? null) as ConflictStatusValue | null
+      })
+    };
+
+    const graph = buildGraphEnvelope(
+      [
+        {
+          relationType: "depends_on",
+          targetPackKey: "project",
+          targetPackType: "project",
+          rationale: "Lane context depends on project baseline."
+        },
+        ...(parentLane
+          ? ([
+              {
+                relationType: "blocked_by",
+                targetPackKey: `lane:${parentLane.id}`,
+                targetPackType: "lane",
+                targetLaneId: parentLane.id,
+                targetBranch: parentLane.branchRef,
+                rationale: "Lane is stacked on parent lane."
+              },
+              {
+                relationType: "merges_into",
+                targetPackKey: `lane:${parentLane.id}`,
+                targetPackType: "lane",
+                targetLaneId: parentLane.id,
+                targetBranch: parentLane.branchRef,
+                rationale: "Stacked lane merges into parent lane first."
+              }
+            ] satisfies PackRelation[])
+          : [])
+      ] satisfies PackRelation[]
+    );
+
     const body = renderLanePackMarkdown({
       packKey: `lane:${laneId}`,
+      projectId,
+      laneId,
       laneName: lane.name,
       branchRef: lane.branchRef,
       baseRef: lane.baseRef,
@@ -1074,20 +1542,27 @@ export function createPackService({
       deterministicUpdatedAt,
       trigger: reason,
       providerMode,
+      graph,
+      dependencyState,
+      conflictState,
       whatChangedLines,
       inferredWhyLines,
-      userIntentMarkers: { start: USER_INTENT_START, end: USER_INTENT_END },
+      userIntentMarkers: { start: ADE_INTENT_START, end: ADE_INTENT_END },
       userIntent,
+      taskSpecMarkers: { start: ADE_TASK_SPEC_START, end: ADE_TASK_SPEC_END },
+      taskSpec,
       validationLines,
       keyFiles,
       errors,
       sessionsRows,
+      sessionHighlights,
       sessionsTotal: Number.isFinite(sessionsTotal) ? sessionsTotal : 0,
       sessionsRunning: Number.isFinite(sessionsRunning) ? sessionsRunning : 0,
       nextSteps,
-      userTodosMarkers: { start: USER_TODOS_START, end: USER_TODOS_END },
+      userTodosMarkers: { start: ADE_TODOS_START, end: ADE_TODOS_END },
       userTodos,
-      narrativePlaceholder
+      narrativeMarkers: { start: ADE_NARRATIVE_START, end: ADE_NARRATIVE_END },
+      narrative
     });
 
     return { body, lastHeadSha: headSha };
@@ -1397,6 +1872,198 @@ export function createPackService({
     }
   };
 
+  type ConflictPredictionPackFile = {
+    laneId?: string;
+    status?: {
+      laneId?: string;
+      status?: string;
+      overlappingFileCount?: number;
+      peerConflictCount?: number;
+      lastPredictedAt?: string | null;
+    };
+    predictionAt?: string | null;
+    lastRecomputedAt?: string | null;
+    stalePolicy?: { ttlMs?: number };
+    overlaps?: Array<{
+      peerId?: string | null;
+      peerName?: string;
+      riskLevel?: string;
+      files?: Array<{ path?: string }>;
+    }>;
+    openConflictSummaries?: Array<{
+      peerId?: string | null;
+      peerLabel?: string;
+      riskLevel?: string;
+      fileCount?: number;
+      lastSeenAt?: string | null;
+      riskSignals?: string[];
+    }>;
+    matrix?: Array<{
+      laneAId?: string;
+      laneBId?: string;
+      riskLevel?: string;
+      overlapCount?: number;
+      hasConflict?: boolean;
+      computedAt?: string | null;
+      stale?: boolean;
+    }>;
+    generatedAt?: string;
+    truncated?: boolean;
+    strategy?: string;
+    pairwisePairsComputed?: number;
+    pairwisePairsTotal?: number;
+  };
+
+  const readConflictPredictionPack = (laneId: string): ConflictPredictionPackFile | null => {
+    const candidates = [getConflictPredictionPath(laneId), getLegacyConflictPredictionPath(laneId)];
+    for (const filePath of candidates) {
+      if (!fs.existsSync(filePath)) continue;
+      try {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const parsed = JSON.parse(raw) as unknown;
+        if (!isRecord(parsed)) continue;
+        return parsed as ConflictPredictionPackFile;
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  };
+
+  const readGitConflictState = async (laneId: string): Promise<GitConflictState | null> => {
+    const lane = laneService.getLaneBaseAndBranch(laneId);
+    const gitDirRes = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    const gitDir = gitDirRes.exitCode === 0 ? gitDirRes.stdout.trim() : "";
+    const hasRebase =
+      gitDir.length > 0 &&
+      (fs.existsSync(path.join(gitDir, "rebase-apply")) || fs.existsSync(path.join(gitDir, "rebase-merge")));
+    const hasMerge = gitDir.length > 0 && fs.existsSync(path.join(gitDir, "MERGE_HEAD"));
+    const kind: GitConflictState["kind"] = hasRebase ? "rebase" : hasMerge ? "merge" : null;
+
+    const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], { cwd: lane.worktreePath, timeoutMs: 10_000 });
+    const conflictedFiles =
+      unmergedRes.exitCode === 0 ? parseDiffNameOnly(unmergedRes.stdout).sort((a, b) => a.localeCompare(b)) : [];
+
+    const inProgress = kind != null;
+    return {
+      laneId,
+      kind,
+      inProgress,
+      conflictedFiles,
+      canContinue: inProgress && conflictedFiles.length === 0,
+      canAbort: inProgress
+    };
+  };
+
+  const deriveConflictStateForLane = (laneId: string): PackConflictStateV1 | null => {
+    const pack = readConflictPredictionPack(laneId);
+    if (!pack || !isRecord(pack.status)) return null;
+    const status = pack.status as NonNullable<ConflictPredictionPackFile["status"]>;
+    const statusValue = normalizeConflictStatus(asString(status.status).trim()) ?? "unknown";
+    const overlappingFileCount = Number(status.overlappingFileCount ?? 0);
+    const peerConflictCount = Number(status.peerConflictCount ?? 0);
+    const lastPredictedAt = asString(status.lastPredictedAt).trim() || null;
+    const strategy = asString(pack.strategy).trim() || null;
+    const pairwisePairsComputed = Number.isFinite(Number(pack.pairwisePairsComputed)) ? Number(pack.pairwisePairsComputed) : null;
+    const pairwisePairsTotal = Number.isFinite(Number(pack.pairwisePairsTotal)) ? Number(pack.pairwisePairsTotal) : null;
+    const lastRecomputedAt = asString(pack.lastRecomputedAt).trim() || asString(pack.generatedAt).trim() || null;
+
+    return {
+      status: statusValue,
+      lastPredictedAt,
+      overlappingFileCount: Number.isFinite(overlappingFileCount) ? overlappingFileCount : 0,
+      peerConflictCount: Number.isFinite(peerConflictCount) ? peerConflictCount : 0,
+      unresolvedPairCount: Number.isFinite(peerConflictCount) ? peerConflictCount : 0,
+      truncated: Boolean(pack.truncated),
+      strategy,
+      pairwisePairsComputed,
+      pairwisePairsTotal,
+      lastRecomputedAt
+    };
+  };
+
+  const computeLaneLineage = (args: { laneId: string; lanesById: Map<string, LaneSummary> }): LaneLineageV1 => {
+    const lane = args.lanesById.get(args.laneId) ?? null;
+    const stackDepth = Number(lane?.stackDepth ?? 0);
+    const parentLaneId = lane?.parentLaneId ?? null;
+    let baseLaneId: string | null = lane?.id ?? args.laneId;
+    let cursor = lane;
+    const visited = new Set<string>();
+    while (cursor?.parentLaneId && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      const parent = args.lanesById.get(cursor.parentLaneId) ?? null;
+      if (!parent) break;
+      baseLaneId = parent.id;
+      cursor = parent;
+    }
+    return {
+      laneId: args.laneId,
+      parentLaneId,
+      baseLaneId,
+      stackDepth: Number.isFinite(stackDepth) ? stackDepth : 0
+    };
+  };
+
+  const buildLaneConflictRiskSummaryLines = (laneId: string): string[] => {
+    const pack = readConflictPredictionPack(laneId);
+    if (!pack || !isRecord(pack.status)) return [];
+
+    const status = pack.status as NonNullable<ConflictPredictionPackFile["status"]>;
+    const statusValue = asString(status.status).trim() || "unknown";
+    const overlappingFileCount = Number(status.overlappingFileCount ?? 0);
+    const peerConflictCount = Number(status.peerConflictCount ?? 0);
+    const lastPredictedAt = asString(status.lastPredictedAt).trim() || null;
+
+    const lines: string[] = [];
+    lines.push(`- Conflict status: \`${statusValue}\``);
+    lines.push(`- Overlapping files: ${Number.isFinite(overlappingFileCount) ? overlappingFileCount : 0}`);
+    lines.push(`- Peer conflicts: ${Number.isFinite(peerConflictCount) ? peerConflictCount : 0}`);
+    if (lastPredictedAt) lines.push(`- Last predicted: ${lastPredictedAt}`);
+    if (asString(pack.generatedAt).trim()) lines.push(`- Generated: ${asString(pack.generatedAt).trim()}`);
+
+    const overlaps = Array.isArray(pack.overlaps) ? pack.overlaps : [];
+    const riskScore = (riskLevel: string): number => {
+      const normalized = riskLevel.trim().toLowerCase();
+      if (normalized === "high") return 3;
+      if (normalized === "medium") return 2;
+      if (normalized === "low") return 1;
+      if (normalized === "none") return 0;
+      return 0;
+    };
+
+    const peers = overlaps
+      .filter((ov) => ov && ov.peerId != null)
+      .map((ov) => {
+        const peerName = asString(ov.peerName).trim() || "Unknown lane";
+        const riskLevel = asString(ov.riskLevel).trim() || "unknown";
+        const fileCount = Array.isArray(ov.files) ? ov.files.length : 0;
+        return { peerName, riskLevel, fileCount, score: riskScore(riskLevel) };
+      })
+      .filter((ov) => ov.score > 0 || ov.fileCount > 0)
+      .sort((a, b) => b.score - a.score || b.fileCount - a.fileCount || a.peerName.localeCompare(b.peerName))
+      .slice(0, 5);
+
+    if (peers.length) {
+      lines.push("- Top risky peers:");
+      for (const peer of peers) {
+        lines.push(`  - ${peer.peerName}: \`${peer.riskLevel}\` (${peer.fileCount} files)`);
+      }
+    }
+
+    if (pack.truncated) {
+      const strategy = asString(pack.strategy).trim() || "partial";
+      const computed = Number(pack.pairwisePairsComputed ?? NaN);
+      const total = Number(pack.pairwisePairsTotal ?? NaN);
+      if (Number.isFinite(computed) && Number.isFinite(total) && total > 0) {
+        lines.push(`- Pairwise coverage: ${computed}/${total} pairs (strategy=\`${strategy}\`)`);
+      } else {
+        lines.push(`- Pairwise coverage: partial (strategy=\`${strategy}\`)`);
+      }
+    }
+
+    return lines;
+  };
+
   const buildFeaturePackBody = async (args: {
     featureKey: string;
     reason: string;
@@ -1429,8 +2096,8 @@ export function createPackService({
 
     for (const lane of matching.sort((a, b) => a.stackDepth - b.stackDepth || a.name.localeCompare(b.name))) {
       const lanePackBody = readFileIfExists(getLanePackPath(lane.id));
-      const intent = extractSection(lanePackBody, USER_INTENT_START, USER_INTENT_END, "");
-      const todos = extractSection(lanePackBody, USER_TODOS_START, USER_TODOS_END, "");
+      const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
+      const todos = extractSection(lanePackBody, ADE_TODOS_START, ADE_TODOS_END, "");
 
       lines.push(`## Lane: ${lane.name}`);
       lines.push(`- Lane ID: ${lane.id}`);
@@ -1715,15 +2382,15 @@ export function createPackService({
         for (const rawLine of transcript.split("\n")) {
           const line = stripAnsi(rawLine).trim();
           if (!line) continue;
-          if (!/(error|failed|exception|fatal|traceback)/i.test(line)) continue;
+          if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(line)) continue;
           // Collapse duplicates and near-duplicates (e.g. repeated prompts).
           const key = line.replace(/\s+/g, " ");
           if (seen.has(key)) continue;
           seen.add(key);
           out.push(key);
         }
-        return out.slice(-8);
-      })();
+      return out.slice(-8);
+    })();
 
       const touchedFiles = [...touched].sort();
       const computedAt = new Date().toISOString();
@@ -2198,7 +2865,7 @@ export function createPackService({
       if (!row?.pack_path) throw new Error(`Pack not found: ${packKey}`);
 
       const existing = readFileIfExists(row.pack_path);
-      const updatedBody = replaceNarrativeSection(existing, args.narrative);
+      const { updated: updatedBody, insertedMarkers } = replaceNarrativeSection(existing, args.narrative);
       ensureDirFor(row.pack_path);
       fs.writeFileSync(row.pack_path, updatedBody, "utf8");
 
@@ -2207,7 +2874,8 @@ export function createPackService({
         packKey,
         eventType: "narrative_update",
         payload: {
-          source: args.source ?? "user"
+          source: args.source ?? "user",
+          insertedMarkers
         }
       });
 
@@ -2344,19 +3012,249 @@ export function createPackService({
         `,
         [projectId, packKey, limit]
       );
-      return rows.map((row) => ({
-        id: row.id,
-        packKey: row.pack_key,
-        eventType: row.event_type,
-        payload: (() => {
-          try {
-            return row.payload_json ? (JSON.parse(row.payload_json) as Record<string, unknown>) : {};
-          } catch {
-            return {};
-          }
-        })(),
-        createdAt: row.created_at
-      }));
+      return rows.map((row) =>
+        ensureEventMeta({
+          id: row.id,
+          packKey: row.pack_key,
+          eventType: row.event_type,
+          payload: (() => {
+            try {
+              return row.payload_json ? (JSON.parse(row.payload_json) as Record<string, unknown>) : {};
+            } catch {
+              return {};
+            }
+          })(),
+          createdAt: row.created_at
+        })
+      );
+    },
+
+    listEventsSince(args: ListPackEventsSinceArgs): PackEvent[] {
+      const packKey = args.packKey.trim();
+      if (!packKey) throw new Error("packKey is required");
+      const sinceIso = args.sinceIso.trim();
+      if (!sinceIso) throw new Error("sinceIso is required");
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 200;
+
+      const rows = db.all<{
+        id: string;
+        pack_key: string;
+        event_type: string;
+        payload_json: string | null;
+        created_at: string;
+      }>(
+        `
+          select id, pack_key, event_type, payload_json, created_at
+          from pack_events
+          where project_id = ?
+            and pack_key = ?
+            and created_at > ?
+          order by created_at asc
+          limit ?
+        `,
+        [projectId, packKey, sinceIso, limit]
+      );
+
+      return rows.map((row) =>
+        ensureEventMeta({
+          id: row.id,
+          packKey: row.pack_key,
+          eventType: row.event_type,
+          payload: (() => {
+            try {
+              return row.payload_json ? (JSON.parse(row.payload_json) as Record<string, unknown>) : {};
+            } catch {
+              return {};
+            }
+          })(),
+          createdAt: row.created_at
+        })
+      );
+    },
+
+    getHeadVersion(args: { packKey: string }): PackHeadVersion {
+      const packKey = args.packKey.trim();
+      if (!packKey) throw new Error("packKey is required");
+      const packType = getPackIndexRow(packKey)?.pack_type ?? (packKey.startsWith("lane:") ? "lane" : "project");
+      const row = db.get<{
+        id: string;
+        version_number: number;
+        content_hash: string;
+        updated_at: string;
+      }>(
+        `
+          select v.id as id,
+                 v.version_number as version_number,
+                 v.content_hash as content_hash,
+                 h.updated_at as updated_at
+          from pack_heads h
+          join pack_versions v on v.id = h.current_version_id and v.project_id = h.project_id
+          where h.project_id = ?
+            and h.pack_key = ?
+          limit 1
+        `,
+        [projectId, packKey]
+      );
+
+      return {
+        packKey,
+        packType,
+        versionId: row?.id ?? null,
+        versionNumber: row ? Number(row.version_number ?? 0) : null,
+        contentHash: row?.content_hash != null ? String(row.content_hash) : null,
+        updatedAt: row?.updated_at ?? null
+      };
+    },
+
+    async getDeltaDigest(args: PackDeltaDigestArgs): Promise<PackDeltaDigestV1> {
+      const packKey = (args.packKey ?? "").trim();
+      if (!packKey) throw new Error("packKey is required");
+
+      const minimum = args.minimumImportance ?? "medium";
+      const limit = typeof args.limit === "number" ? Math.max(10, Math.min(500, Math.floor(args.limit))) : 200;
+
+      const sinceVersionId = typeof args.sinceVersionId === "string" ? args.sinceVersionId.trim() : "";
+      const sinceTimestamp = typeof args.sinceTimestamp === "string" ? args.sinceTimestamp.trim() : "";
+      if (!sinceVersionId && !sinceTimestamp) {
+        throw new Error("sinceVersionId or sinceTimestamp is required");
+      }
+
+      let baselineVersion: PackVersion | null = null;
+      let baselineCreatedAt: string | null = null;
+      let baselineVersionId: string | null = null;
+      let baselineVersionNumber: number | null = null;
+      let sinceIso = sinceTimestamp;
+
+      if (sinceVersionId) {
+        const v = this.getVersion(sinceVersionId);
+        baselineVersion = v;
+        baselineCreatedAt = v.createdAt;
+        baselineVersionId = v.id;
+        baselineVersionNumber = v.versionNumber;
+        sinceIso = v.createdAt;
+      } else {
+        const parsed = Date.parse(sinceTimestamp);
+        if (!Number.isFinite(parsed)) throw new Error("Invalid sinceTimestamp");
+        const baseline = findBaselineVersionAtOrBefore({ packKey, sinceIso: sinceTimestamp });
+        if (baseline?.id) {
+          const v = this.getVersion(baseline.id);
+          baselineVersion = v;
+          baselineCreatedAt = v.createdAt;
+          baselineVersionId = v.id;
+          baselineVersionNumber = v.versionNumber;
+          sinceIso = v.createdAt;
+        }
+      }
+
+      const newVersion = this.getHeadVersion({ packKey });
+      const packType: PackType = newVersion.packType;
+      const afterBody = newVersion.versionId ? this.getVersion(newVersion.versionId).body : "";
+      const beforeBody = baselineVersion?.body ?? null;
+
+      const changedSections = computeSectionChanges({
+        before: beforeBody,
+        after: afterBody,
+        locators: getDefaultSectionLocators(packType)
+      });
+
+      const eventsRaw = this.listEventsSince({ packKey, sinceIso, limit });
+      const highImpactEvents = eventsRaw.filter((event) => {
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        return importanceRank(payload.importance) >= importanceRank(minimum);
+      });
+
+      const conflictState = (() => {
+        if (!packKey.startsWith("lane:")) return null;
+        const laneId = packKey.slice("lane:".length);
+        return deriveConflictStateForLane(laneId);
+      })();
+
+      const blockers: Array<{ kind: string; summary: string; entityIds?: string[] }> = [];
+      if (packKey.startsWith("lane:")) {
+        const laneId = packKey.slice("lane:".length);
+        const row = db.get<{ parent_lane_id: string | null }>(
+          "select parent_lane_id from lanes where id = ? and project_id = ? limit 1",
+          [laneId, projectId]
+        );
+        const parentLaneId = row?.parent_lane_id ?? null;
+        if (parentLaneId) {
+          blockers.push({
+            kind: "merge",
+            summary: `Blocked by parent lane ${parentLaneId} (stacked lane).`,
+            entityIds: [laneId, parentLaneId]
+          });
+        }
+      }
+      if (conflictState?.status === "conflict-active" || conflictState?.status === "conflict-predicted") {
+        blockers.push({
+          kind: "conflict",
+          summary: `Conflicts: ${conflictState.status} (peerConflicts=${conflictState.peerConflictCount ?? 0}).`,
+          entityIds: []
+        });
+      }
+      if (conflictState?.truncated) {
+        blockers.push({
+          kind: "conflict",
+          summary: `Conflict coverage is partial (strategy=${conflictState.strategy ?? "partial"}; pairs=${conflictState.pairwisePairsComputed ?? 0}/${conflictState.pairwisePairsTotal ?? 0}).`,
+          entityIds: []
+        });
+      }
+
+      const decisionReasons: string[] = [];
+      let recommendedExportLevel: ContextExportLevel = "lite";
+      if (changedSections.some((c) => c.sectionId === "narrative")) {
+        recommendedExportLevel = "deep";
+        decisionReasons.push("Narrative changed; deep export includes narrative content.");
+      } else if (blockers.length || (conflictState?.status && conflictState.status !== "merge-ready")) {
+        recommendedExportLevel = "standard";
+        decisionReasons.push("Blockers/conflicts present; standard export recommended.");
+      } else if (changedSections.length) {
+        recommendedExportLevel = "standard";
+        decisionReasons.push("Multiple sections changed; standard export recommended.");
+      } else {
+        decisionReasons.push("No material section changes detected; lite is sufficient.");
+      }
+
+      const handoffSummary = (() => {
+        const parts: string[] = [];
+        const baseLabel =
+          baselineVersionNumber != null && newVersion.versionNumber != null
+            ? `v${baselineVersionNumber} -> v${newVersion.versionNumber}`
+            : `since ${sinceIso}`;
+        parts.push(`${packKey} delta (${baseLabel}).`);
+        if (changedSections.length) parts.push(`Changed: ${changedSections.map((c) => c.sectionId).join(", ")}.`);
+        if (blockers.length) parts.push(`Blockers: ${blockers.map((b) => b.summary).join(" ")}`);
+        if (highImpactEvents.length) {
+          const top = highImpactEvents
+            .slice(-6)
+            .map((e) => `${e.eventType}${(e.payload as any)?.rationale ? ` (${String((e.payload as any).rationale)})` : ""}`);
+          parts.push(`Events: ${top.join("; ")}.`);
+        }
+        if (conflictState?.lastPredictedAt) parts.push(`Conflicts last predicted at: ${conflictState.lastPredictedAt}.`);
+        return parts.join(" ");
+      })();
+
+      return {
+        packKey,
+        packType,
+        since: {
+          sinceVersionId: sinceVersionId || null,
+          sinceTimestamp: sinceTimestamp || sinceIso,
+          baselineVersionId,
+          baselineVersionNumber,
+          baselineCreatedAt
+        },
+        newVersion,
+        changedSections,
+        highImpactEvents,
+        blockers,
+        conflicts: conflictState,
+        decisionState: {
+          recommendedExportLevel,
+          reasons: decisionReasons
+        },
+        handoffSummary
+      };
     },
 
     listCheckpoints(args: { laneId?: string; limit?: number } = {}): Checkpoint[] {
@@ -2411,6 +3309,421 @@ export function createPackService({
       }));
     },
 
+    async getLaneExport(args: GetLaneExportArgs): Promise<PackExport> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const level = args.level;
+      if (level !== "lite" && level !== "standard" && level !== "deep") {
+        throw new Error(`Invalid export level: ${String(level)}`);
+      }
+
+      const lanes = await laneService.list({ includeArchived: true });
+      const lane = lanes.find((entry) => entry.id === laneId);
+      if (!lane) throw new Error(`Lane not found: ${laneId}`);
+
+      const pack = this.getLanePack(laneId);
+      if (!pack.exists || !pack.body.trim().length) {
+        throw new Error("Lane pack is empty. Refresh deterministic packs first.");
+      }
+
+      const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+      const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+      const conflictRiskSummaryLines = buildLaneConflictRiskSummaryLines(laneId);
+
+      const conflictState = deriveConflictStateForLane(laneId);
+      const lanesById = new Map(lanes.map((l) => [l.id, l] as const));
+      const lineage = computeLaneLineage({ laneId, lanesById });
+
+      const requiredMerges = lane.parentLaneId ? [lane.parentLaneId] : [];
+      const dependencyState: PackDependencyStateV1 = {
+        requiredMerges,
+        blockedByLanes: requiredMerges,
+        mergeReadiness: computeMergeReadiness({
+          requiredMerges,
+          behindCount: lane.status.behind,
+          conflictStatus: (conflictState?.status ?? null) as ConflictStatusValue | null
+        })
+      };
+
+      const packRefreshAt = pack.deterministicUpdatedAt ?? null;
+      const packRefreshAgeMs = (() => {
+        if (!packRefreshAt) return null;
+        const ts = Date.parse(packRefreshAt);
+        if (!Number.isFinite(ts)) return null;
+        return Math.max(0, Date.now() - ts);
+      })();
+
+      const predictionPack = readConflictPredictionPack(laneId);
+      const lastConflictRefreshAt =
+        asString(predictionPack?.lastRecomputedAt).trim() || asString(predictionPack?.generatedAt).trim() || null;
+      const lastConflictRefreshAgeMs = (() => {
+        if (!lastConflictRefreshAt) return null;
+        const ts = Date.parse(lastConflictRefreshAt);
+        if (!Number.isFinite(ts)) return null;
+        return Math.max(0, Date.now() - ts);
+      })();
+
+      const activeConflictPackKeys = (() => {
+        const out: string[] = [];
+        if (predictionPack?.status) out.push(`conflict:${laneId}:${lane.baseRef}`);
+        const overlaps = Array.isArray(predictionPack?.overlaps) ? predictionPack!.overlaps! : [];
+        const score = (v: ConflictRiskLevel) => (v === "high" ? 3 : v === "medium" ? 2 : v === "low" ? 1 : 0);
+        const peers = overlaps
+          .filter((ov) => ov && ov.peerId != null)
+          .map((ov) => ({
+            peerId: asString(ov.peerId).trim(),
+            riskLevel: normalizeRiskLevel(asString(ov.riskLevel)) ?? "none",
+            fileCount: Array.isArray(ov.files) ? ov.files.length : 0
+          }))
+          .filter((ov) => ov.peerId.length)
+          .sort((a, b) => score(b.riskLevel) - score(a.riskLevel) || b.fileCount - a.fileCount || a.peerId.localeCompare(b.peerId))
+          .slice(0, 6);
+        for (const peer of peers) out.push(`conflict:${laneId}:${peer.peerId}`);
+        return uniqueSorted(out);
+      })();
+
+      const manifest: LaneExportManifestV1 = {
+        schema: "ade.manifest.lane.v1",
+        projectId,
+        laneId,
+        laneName: lane.name,
+        laneType: lane.laneType,
+        worktreePath: lane.worktreePath,
+        branchRef: lane.branchRef,
+        baseRef: lane.baseRef,
+        lineage,
+        mergeConstraints: {
+          requiredMerges,
+          blockedByLanes: requiredMerges,
+          mergeReadiness: dependencyState.mergeReadiness ?? "unknown"
+        },
+        branchState: {
+          baseRef: lane.baseRef,
+          headRef: lane.branchRef,
+          headSha: pack.lastHeadSha ?? null,
+          lastPackRefreshAt: packRefreshAt,
+          isEditProtected: lane.isEditProtected,
+          packStale: packRefreshAgeMs != null ? packRefreshAgeMs > 10 * 60_000 : null,
+          ...(packRefreshAgeMs != null && packRefreshAgeMs > 10 * 60_000 ? { packStaleReason: `lastPackRefreshAgeMs=${packRefreshAgeMs}` } : {})
+        },
+        conflicts: {
+          activeConflictPackKeys,
+          unresolvedPairCount: conflictState?.unresolvedPairCount ?? 0,
+          lastConflictRefreshAt,
+          lastConflictRefreshAgeMs,
+          ...(predictionPack?.truncated != null ? { truncated: Boolean(predictionPack.truncated) } : {}),
+          ...(asString(predictionPack?.strategy).trim() ? { strategy: asString(predictionPack?.strategy).trim() } : {}),
+          ...(Number.isFinite(Number(predictionPack?.pairwisePairsComputed)) ? { pairwisePairsComputed: Number(predictionPack?.pairwisePairsComputed) } : {}),
+          ...(Number.isFinite(Number(predictionPack?.pairwisePairsTotal)) ? { pairwisePairsTotal: Number(predictionPack?.pairwisePairsTotal) } : {})
+        }
+      };
+
+      const graph = buildGraphEnvelope(
+        [
+          {
+            relationType: "depends_on",
+            targetPackKey: "project",
+            targetPackType: "project",
+            rationale: "Lane export depends on project context."
+          },
+          ...(lane.parentLaneId
+            ? ([
+                {
+                  relationType: "blocked_by",
+                  targetPackKey: `lane:${lane.parentLaneId}`,
+                  targetPackType: "lane",
+                  targetLaneId: lane.parentLaneId,
+                  rationale: "Stacked lane depends on parent lane landing first."
+                },
+                {
+                  relationType: "merges_into",
+                  targetPackKey: `lane:${lane.parentLaneId}`,
+                  targetPackType: "lane",
+                  targetLaneId: lane.parentLaneId,
+                  rationale: "Stacked lane merges into parent lane first."
+                }
+              ] satisfies PackRelation[])
+            : ([
+                {
+                  relationType: "merges_into",
+                  targetPackKey: `lane:${lineage.baseLaneId ?? laneId}`,
+                  targetPackType: "lane",
+                  targetLaneId: lineage.baseLaneId ?? laneId,
+                  rationale: "Lane merges into base lane."
+                }
+              ] satisfies PackRelation[]))
+        ] satisfies PackRelation[]
+      );
+
+      return buildLaneExport({
+        level,
+        projectId,
+        laneId,
+        laneName: lane.name,
+        branchRef: lane.branchRef,
+        baseRef: lane.baseRef,
+        headSha: pack.lastHeadSha ?? null,
+        pack,
+        providerMode,
+        apiBaseUrl,
+        remoteProjectId,
+        graph,
+        manifest,
+        dependencyState,
+        conflictState,
+        markers: {
+          taskSpecStart: ADE_TASK_SPEC_START,
+          taskSpecEnd: ADE_TASK_SPEC_END,
+          intentStart: ADE_INTENT_START,
+          intentEnd: ADE_INTENT_END,
+          todosStart: ADE_TODOS_START,
+          todosEnd: ADE_TODOS_END,
+          narrativeStart: ADE_NARRATIVE_START,
+          narrativeEnd: ADE_NARRATIVE_END
+        },
+        conflictRiskSummaryLines
+      });
+    },
+
+    async getProjectExport(args: GetProjectExportArgs): Promise<PackExport> {
+      const level = args.level;
+      if (level !== "lite" && level !== "standard" && level !== "deep") {
+        throw new Error(`Invalid export level: ${String(level)}`);
+      }
+      const pack = this.getProjectPack();
+      const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+      const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+
+      const lanes = await laneService.list({ includeArchived: false });
+      const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+      const lanesTotal = lanes.length;
+      const maxIncluded = level === "lite" ? 10 : level === "standard" ? 25 : 80;
+      const included = [...lanes]
+        .filter((lane) => !lane.archivedAt)
+        .sort((a, b) => a.stackDepth - b.stackDepth || a.name.localeCompare(b.name))
+        .slice(0, maxIncluded);
+
+      const laneEntries: ProjectManifestLaneEntryV1[] = included.map((lane) => {
+        const lineage = computeLaneLineage({ laneId: lane.id, lanesById });
+        const requiredMerges = lane.parentLaneId ? [lane.parentLaneId] : [];
+        const conflictState = deriveConflictStateForLane(lane.id);
+        const mergeReadiness = computeMergeReadiness({
+          requiredMerges,
+          behindCount: lane.status.behind,
+          conflictStatus: (conflictState?.status ?? null) as ConflictStatusValue | null
+        });
+
+        const packRow = getPackIndexRow(`lane:${lane.id}`);
+        const packRefreshAt = packRow?.deterministic_updated_at ?? null;
+        const packRefreshAgeMs = (() => {
+          if (!packRefreshAt) return null;
+          const ts = Date.parse(packRefreshAt);
+          if (!Number.isFinite(ts)) return null;
+          return Math.max(0, Date.now() - ts);
+        })();
+
+        return {
+          laneId: lane.id,
+          laneName: lane.name,
+          laneType: lane.laneType,
+          branchRef: lane.branchRef,
+          baseRef: lane.baseRef,
+          worktreePath: lane.worktreePath,
+          isEditProtected: Boolean(lane.isEditProtected),
+          status: lane.status,
+          lineage,
+          mergeConstraints: {
+            requiredMerges,
+            blockedByLanes: requiredMerges,
+            mergeReadiness
+          },
+          branchState: {
+            baseRef: lane.baseRef,
+            headRef: lane.branchRef,
+            headSha: null,
+            lastPackRefreshAt: packRefreshAt,
+            isEditProtected: lane.isEditProtected,
+            packStale: packRefreshAgeMs != null ? packRefreshAgeMs > 10 * 60_000 : null,
+            ...(packRefreshAgeMs != null && packRefreshAgeMs > 10 * 60_000 ? { packStaleReason: `lastPackRefreshAgeMs=${packRefreshAgeMs}` } : {})
+          },
+          conflictState
+        };
+      });
+
+      const manifest: ProjectExportManifestV1 = {
+        schema: "ade.manifest.project.v1",
+        projectId,
+        generatedAt: new Date().toISOString(),
+        lanesTotal,
+        lanesIncluded: included.length,
+        lanesOmitted: Math.max(0, lanesTotal - included.length),
+        lanes: laneEntries
+      };
+
+      const graph = buildGraphEnvelope(
+        laneEntries.map((lane) => ({
+          relationType: "parent_of",
+          targetPackKey: `lane:${lane.laneId}`,
+          targetPackType: "lane",
+          targetLaneId: lane.laneId,
+          targetBranch: lane.branchRef,
+          rationale: "Project contains lane context."
+        })) satisfies PackRelation[]
+      );
+
+      return buildProjectExport({ level, projectId, pack, providerMode, apiBaseUrl, remoteProjectId, graph, manifest });
+    },
+
+    async getConflictExport(args: GetConflictExportArgs): Promise<PackExport> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const peerLaneId = args.peerLaneId?.trim() || null;
+      const level = args.level;
+      if (level !== "lite" && level !== "standard" && level !== "deep") {
+        throw new Error(`Invalid export level: ${String(level)}`);
+      }
+
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const peerKey = peerLaneId ?? lane.baseRef;
+      const packKey = `conflict:${laneId}:${peerKey}`;
+      const peerLabel = peerLaneId ? `lane:${peerLaneId}` : `base:${lane.baseRef}`;
+
+      const pack = this.getConflictPack({ laneId, peerLaneId });
+      const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+      const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+
+      const predictionPack = readConflictPredictionPack(laneId);
+      const matrix = Array.isArray(predictionPack?.matrix) ? predictionPack!.matrix! : [];
+      const entry =
+        peerLaneId == null
+          ? (matrix.find((m) => asString(m.laneAId).trim() === laneId && asString(m.laneBId).trim() === laneId) ?? null)
+          : (matrix.find((m) => {
+              const a = asString(m.laneAId).trim();
+              const b = asString(m.laneBId).trim();
+              return (a === laneId && b === peerLaneId) || (a === peerLaneId && b === laneId);
+            }) ?? null);
+
+      const ttlMs = Number((predictionPack as any)?.stalePolicy?.ttlMs ?? NaN);
+      const staleTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 5 * 60_000;
+      const nowMs = Date.now();
+
+      const openConflictSummaries = (() => {
+        const raw = Array.isArray(predictionPack?.openConflictSummaries) ? predictionPack!.openConflictSummaries! : null;
+        if (raw) {
+          return raw
+            .map((s) => {
+              const riskLevel = normalizeRiskLevel(asString(s.riskLevel)) ?? "none";
+              const lastSeenAt = asString(s.lastSeenAt).trim() || null;
+              const lastSeenAgeMs = (() => {
+                if (!lastSeenAt) return null;
+                const ts = Date.parse(lastSeenAt);
+                if (!Number.isFinite(ts)) return null;
+                return Math.max(0, nowMs - ts);
+              })();
+              return {
+                peerId: s.peerId ?? null,
+                peerLabel: asString(s.peerLabel).trim() || "unknown",
+                riskLevel,
+                fileCount: Number.isFinite(Number(s.fileCount)) ? Number(s.fileCount) : 0,
+                lastSeenAt,
+                lastSeenAgeMs,
+                riskSignals: Array.isArray(s.riskSignals) ? (s.riskSignals as string[]).map((v) => String(v)) : []
+              };
+            })
+            .slice(0, 12);
+        }
+
+        const overlaps = Array.isArray(predictionPack?.overlaps) ? predictionPack!.overlaps! : [];
+        const summaries: ConflictLineageV1["openConflictSummaries"] = [];
+        for (const ov of overlaps) {
+          const peerId = (ov.peerId ?? null) as string | null;
+          const peerLabel = peerId ? `lane:${peerId}` : `base:${lane.baseRef}`;
+          const riskLevel = normalizeRiskLevel(asString(ov.riskLevel)) ?? "none";
+          const fileCount = Array.isArray(ov.files) ? ov.files.length : 0;
+          const signals: string[] = [];
+          if (riskLevel === "high") signals.push("high_risk");
+          if (fileCount > 0) signals.push("overlap_files");
+          if (predictionPack?.truncated) signals.push("partial_coverage");
+          summaries.push({
+            peerId,
+            peerLabel,
+            riskLevel,
+            fileCount,
+            lastSeenAt: null,
+            lastSeenAgeMs: null,
+            riskSignals: signals
+          });
+        }
+        return summaries.slice(0, 12);
+      })();
+
+      const lineage: ConflictLineageV1 = {
+        schema: "ade.conflictLineage.v1",
+        laneId,
+        peerKey,
+        predictionAt:
+          asString((entry as any)?.computedAt).trim() ||
+          asString((predictionPack as any)?.predictionAt).trim() ||
+          asString((predictionPack as any)?.status?.lastPredictedAt).trim() ||
+          null,
+        lastRecomputedAt:
+          asString((predictionPack as any)?.lastRecomputedAt).trim() || asString((predictionPack as any)?.generatedAt).trim() || null,
+        truncated: predictionPack?.truncated != null ? Boolean(predictionPack.truncated) : null,
+        strategy: asString(predictionPack?.strategy).trim() || null,
+        pairwisePairsComputed: Number.isFinite(Number(predictionPack?.pairwisePairsComputed)) ? Number(predictionPack?.pairwisePairsComputed) : null,
+        pairwisePairsTotal: Number.isFinite(Number(predictionPack?.pairwisePairsTotal)) ? Number(predictionPack?.pairwisePairsTotal) : null,
+        stalePolicy: { ttlMs: staleTtlMs },
+        openConflictSummaries,
+        unresolvedResolutionState: await readGitConflictState(laneId).catch(() => null)
+      };
+
+      const graph = buildGraphEnvelope(
+        [
+          {
+            relationType: "depends_on",
+            targetPackKey: `lane:${laneId}`,
+            targetPackType: "lane",
+            targetLaneId: laneId,
+            targetBranch: lane.branchRef,
+            targetHeadCommit: pack.lastHeadSha ?? null,
+            rationale: "Conflict export depends on lane pack."
+          },
+          ...(peerLaneId
+            ? ([
+                {
+                  relationType: "depends_on",
+                  targetPackKey: `lane:${peerLaneId}`,
+                  targetPackType: "lane",
+                  targetLaneId: peerLaneId,
+                  rationale: "Conflict export depends on peer lane pack."
+                }
+              ] satisfies PackRelation[])
+            : ([
+                {
+                  relationType: "shares_base",
+                  targetPackKey: "project",
+                  targetPackType: "project",
+                  rationale: "Base conflicts are computed against project base ref."
+                }
+              ] satisfies PackRelation[]))
+        ] satisfies PackRelation[]
+      );
+
+      return buildConflictExport({
+        level,
+        projectId,
+        packKey,
+        laneId,
+        peerLabel,
+        pack,
+        providerMode,
+        apiBaseUrl,
+        remoteProjectId,
+        graph,
+        lineage
+      });
+    },
+
     applyHostedNarrative(args: {
       laneId: string;
       narrative: string;
@@ -2423,7 +3736,7 @@ export function createPackService({
         throw new Error(`Lane pack not found for lane ${args.laneId}`);
       }
 
-      const updatedBody = replaceNarrativeSection(existing, args.narrative);
+      const { updated: updatedBody, insertedMarkers } = replaceNarrativeSection(existing, args.narrative);
       ensureDirFor(lanePackPath);
       fs.writeFileSync(lanePackPath, updatedBody, "utf8");
 
@@ -2448,6 +3761,7 @@ export function createPackService({
         payload: {
           laneId: args.laneId,
           source: "hosted",
+          insertedMarkers,
           ...(args.metadata ?? {})
         }
       });

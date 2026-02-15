@@ -50,21 +50,21 @@ export function TopBar({
   }, [project?.rootPath]);
 
   return (
-    <header className="flex h-[44px] items-center gap-3 border-b border-border bg-bg px-3">
+    <header className="flex h-[48px] items-center gap-3 ade-panel-header px-4">
       {/* Branding */}
-      <div className="text-sm font-bold tracking-tight shrink-0">ADE</div>
+      <div className="text-sm font-bold tracking-tight shrink-0 text-fg/90">ADE</div>
 
-      <div className="h-5 w-px bg-border shrink-0" />
+      <div className="h-3.5 w-px bg-border/15 shrink-0" />
 
       {/* Project tabs */}
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         {recentProjects.length === 0 && !project ? (
           <button
             type="button"
-            className="flex items-center gap-1.5 rounded border border-dashed border-border px-2 py-1 text-xs text-muted-fg hover:border-accent hover:text-fg transition-colors"
+            className="flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs text-muted-fg hover:bg-muted/40 hover:text-fg transition-all"
             onClick={handleOpenNew}
           >
-            <Folder className="h-3 w-3" />
+            <Folder className="h-3.5 w-3.5" />
             Open a project
           </button>
         ) : (
@@ -76,10 +76,10 @@ export function TopBar({
                 <div
                   key={rp.rootPath}
                   className={cn(
-                    "group inline-flex max-w-[200px] shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs transition-colors",
+                    "group inline-flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-all",
                     isCurrent
-                      ? "border-accent bg-accent/15 text-fg"
-                      : "border-border bg-card/70 text-muted-fg hover:border-muted-fg hover:text-fg cursor-pointer"
+                      ? "bg-accent/10 text-fg shadow-card"
+                      : "text-muted-fg hover:bg-muted/40 hover:text-fg cursor-pointer"
                   )}
                   onClick={() => handleSwitchProject(rp.rootPath)}
                   title={rp.rootPath}
@@ -88,7 +88,7 @@ export function TopBar({
                   <span className="truncate">{rp.displayName}</span>
                   {canClose ? (
                     <span
-                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-muted/70"
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-md opacity-0 group-hover:opacity-100 hover:bg-muted/70 transition-opacity"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleRemoveTab(rp.rootPath);
@@ -107,16 +107,16 @@ export function TopBar({
         {/* Add project tab */}
         <button
           type="button"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-dashed border-border text-muted-fg hover:border-accent hover:text-fg transition-colors"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-muted-fg/50 hover:bg-muted/30 hover:text-fg transition-all"
           onClick={handleOpenNew}
           title="Open another project"
         >
-          <Plus className="h-3 w-3" />
+          <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
 
       {/* Command palette */}
-      <Button variant="ghost" size="sm" className="shrink-0" onClick={onOpenCommandPalette} title="Command palette">
+      <Button variant="ghost" size="sm" className="shrink-0 rounded-lg" onClick={onOpenCommandPalette} title="Command palette">
         <Search className="h-3.5 w-3.5" />
         <span className="hidden sm:inline text-xs">Commands</span>
         <span className="hidden md:inline text-[10px] text-muted-fg">{commandHint}</span>

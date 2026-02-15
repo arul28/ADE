@@ -76,9 +76,15 @@ list of conflicting files, or a full diff of the merged state.
 ### Resolution Proposal
 
 An LLM-generated suggested fix for a predicted or active conflict. The hosted
-agent receives a Conflict Pack containing both sides of the conflict, the common
-base state, and overlapping file contents, then produces a resolution diff with
-a confidence score.
+agent (or BYOK provider) receives **bounded context exports** (not raw pack dumps)
+and produces a resolution diff with a confidence score.
+
+Context inputs (default):
+- `LaneExportLite` for the lane
+- `LaneExportLite` for the peer lane (when peer conflicts are being resolved)
+- `ConflictExportStandard` for the specific conflict pack
+
+All outbound AI payloads must be token-budgeted and redacted.
 
 ### Conflict Pack
 
@@ -89,6 +95,20 @@ A context bundle assembled for conflict resolution. Contains:
 - Full list of overlapping files
 - Commit history for the overlapping regions
 - Lane pack summaries for both sides (developer intent context)
+
+Storage:
+- Conflict pack v2 markdown: `.ade/packs/conflicts/v2/<laneId>__<peerKey>.md`
+- Conflict prediction summaries (deterministic): `.ade/packs/conflicts/predictions/<laneId>.json`
+- AI consumption should use exports (`ConflictExport*`, `LaneExport*`), not raw files.
+
+Prediction summary packs are versioned by schema evolution (unknown fields are ignored). Newer payloads may include:
+
+- `predictionAt`, `lastRecomputedAt`
+- `stalePolicy.ttlMs`
+- coverage metadata: `strategy`, `truncated`, `pairwisePairsComputed`, `pairwisePairsTotal`
+- `openConflictSummaries` (peer label, risk, last seen, risk signals)
+
+Conflict exports may additionally include a `## Conflict Lineage` JSON section (schema `ade.conflictLineage.v1`) to surface prediction provenance and unresolved resolution state.
 
 ---
 
@@ -204,8 +224,9 @@ The typical workflow for managing conflicts in ADE:
    including conflict markers for conflicting files.
 
 5. **Resolution**: For active or predicted conflicts, the developer can request
-   a resolution proposal from the hosted agent. The agent receives a Conflict
-   Pack with full context and produces a resolution diff.
+   a resolution proposal from the hosted agent (or BYOK). The provider receives
+   bounded exports (`LaneExportLite` + `ConflictExportStandard`) and produces a
+   resolution diff.
 
 6. **Apply**: The developer previews the proposal diff, optionally edits it,
    and applies it. The application is recorded as an operation in the history
@@ -227,12 +248,15 @@ The typical workflow for managing conflicts in ADE:
 | `gitService` | Exists | Provides `git merge-tree` execution, temp index operations, diff computation |
 | `jobEngine` | Exists | Triggers periodic conflict prediction jobs, manages job queue and deduplication |
 | `operationService` | Exists | Records resolution applications as operations for history/undo |
-| `packService` | Exists | Generates Conflict Packs for hosted agent consumption |
+| `packService` | Exists | Generates conflict packs and bounded exports (`LaneExport*`, `ConflictExport*`) used for AI proposal jobs |
 
-**Hosted agent integration** (planned):
+**Hosted / BYOK integration** (implemented):
 
 - Job type: `ProposeConflictResolution`
-- Input: Conflict Pack (both sides, base, overlapping files, lane context)
+- Input: bounded exports (token-budgeted):
+  - `LaneExportLite` (lane)
+  - `LaneExportLite` (peer lane, optional)
+  - `ConflictExportStandard`
 - Output: Resolution diff with confidence score and explanation
 - Runs asynchronously; result stored as a `conflict_proposal` record
 
@@ -247,6 +271,17 @@ The typical workflow for managing conflicts in ADE:
 | `ade.conflicts.getProposals` | `(laneId: string) => ConflictProposal[]` | Get resolution proposals for a lane's conflicts |
 | `ade.conflicts.applyProposal` | `(args: { proposalId: string; laneId: string }) => GitActionResult` | Apply a resolution proposal and record the operation |
 
+### Conflict Exports (For AI / Orchestrators)
+
+Conflicts are sent to AI providers via **bounded pack exports**, not raw pack dumps.
+
+- `ade.packs.getLaneExport({ laneId, level: "lite" | "standard" | "deep" })`
+- `ade.packs.getConflictExport({ laneId, peerLaneId?, level: "lite" | "standard" | "deep" })`
+
+Recommended defaults:
+- proposals: `LaneExportLite` + `ConflictExportStandard`
+- narrative / broader lane updates: `LaneExportStandard`
+
 ### Conflict Prediction Engine
 
 The prediction engine operates in two modes:
@@ -255,15 +290,22 @@ The prediction engine operates in two modes:
 
 ```
 Job Engine tick →
-  For each active lane:
+  For each active lane (always):
     1. Run git merge-tree <base> <lane-HEAD>
-    2. Parse result for conflicts
+    2. Parse result for conflicts + overlap
     3. Store prediction record
     4. Update lane conflict status
-  For each pair of active lanes (optional, configurable):
-    1. Run git merge-tree <lane-A-HEAD> <lane-B-HEAD>
-    2. Store pairwise prediction
-    3. Update risk matrix
+
+  For lane-vs-lane (scaled for large workspaces):
+    1. Compute a cheap overlap heuristic (touched files since base)
+    2. Prefilter to likely-conflicting pairs (top peers per lane)
+    3. Run git merge-tree only for those high-likelihood pairs
+    4. Persist partial-coverage metadata:
+       - `truncated: true`
+       - `strategy: "prefilter-overlap"`
+       - `pairwisePairsComputed` / `pairwisePairsTotal`
+
+  Full pairwise matrices are available on-demand (e.g. per-lane predictions or small selected sets).
 ```
 
 **Realtime mode** (triggered on changes):
@@ -376,7 +418,7 @@ interface ConflictProposal {
 
 ## Implementation Tracking
 
-Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `codex/ade-phase-4-5` branch, commit `65b7a6b`). Resolution proposals are deferred to Phase 6.
+Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5–6).
 
 ### What's Built
 
@@ -385,7 +427,7 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 | `conflictService.ts` | 1064 lines — full conflict prediction engine, pairwise risk computation, merge simulation, batch assessment |
 | Conflict UI (6 components) | `ConflictsPage.tsx`, `ConflictFileDiff.tsx`, `RiskMatrix.tsx`, `RiskTooltip.tsx`, `extensionToLanguage.ts`, lane-level conflict badges |
 | Job engine integration | Periodic prediction jobs via `processService`, configurable intervals |
-| Database schema | `conflict_predictions` table with SHA tracking and expiry; `conflict_proposals` table ready for Phase 6 |
+| Database schema | `conflict_predictions` + `conflict_proposals` tables with SHA tracking, expiry, and proposal lifecycle |
 | Git merge-tree integration | Dry-merge via `git merge-tree` for zero-side-effect conflict detection |
 | Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
@@ -439,7 +481,7 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | TODO — **moved to Phase 7** (requires Phase 4 stacks + Phase 6 PRs) |
+| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | DONE — Phase 7 (ConflictsPage restack suggestions + merge-plan workflows with stack-aware ordering) |
 | CONF-023 | Batch conflict assessment (all-lanes report) | DONE (batch conflict assessment implemented) |
 | CONF-024 | Conflict notification/alerts (in-app and system) | TODO — **moved to Phase 9** |
 
@@ -452,5 +494,4 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 **Phase 6 (Hosted Agent) completed**: CONF-017 through CONF-021 (LLM-powered resolution proposals) are fully implemented. The desktop hosted agent service submits `ProposeConflictResolution` jobs to the cloud, polls for results, and presents proposals in the Conflicts tab with diff preview, confidence scoring, apply (with operation record), and undo capabilities.
 
 **Remaining tasks** are scheduled as follows:
-- **Phase 7 (Workspace Graph)**: CONF-022 (stack-aware conflict resolution)
 - **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)

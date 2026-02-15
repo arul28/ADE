@@ -334,51 +334,43 @@ Risk data lives in memory. All lane data comes from the existing lane service.
 
 ## Implementation Tracking
 
-All tasks for the Workspace Graph feature are listed below. This feature has no
-completed tasks; it is entirely in the planning stage.
+Workspace Graph is **implemented** (Phase 7). The checklist below is retained for reference; all items are complete.
 
 | ID | Task | Description | Status |
 |----|------|-------------|--------|
-| GRAPH-001 | React Flow canvas setup | Install `@xyflow/react`, create `WorkspaceGraphPage` route, render empty canvas | TODO |
-| GRAPH-002 | Primary lane node component | Custom React Flow node for primary lane with distinct styling | TODO |
-| GRAPH-003 | Worktree lane node component | Custom React Flow node for worktree lanes with standard styling | TODO |
-| GRAPH-004 | Attached lane node component | Custom React Flow node for attached/external worktrees with dashed border | TODO |
-| GRAPH-005 | Node status badges | Render dirty, ahead/behind, and conflict badges on each node | TODO |
-| GRAPH-006 | Active session indicator | Pulsing dot or border glow on nodes with running terminal sessions | TODO |
-| GRAPH-007 | Topology edges | Solid edges from primary node to each worktree node | TODO |
-| GRAPH-008 | Stack edges | Arrow edges from parent to child lane with thicker stroke | TODO |
-| GRAPH-009 | Risk overlay edges | Dashed edges between lanes with change overlap, colored by risk | TODO |
-| GRAPH-010 | Edge state coloring | Apply green/blue/red/gray coloring based on risk matrix data | TODO |
-| GRAPH-011 | Pan and zoom controls | Zoom buttons, fit-to-view button, scroll-wheel zoom | TODO |
-| GRAPH-012 | Auto-layout algorithm | Compute initial node positions based on lane relationships | TODO |
-| GRAPH-013 | Manual node repositioning | Enable node dragging with position persistence on drop | TODO |
-| GRAPH-014 | Layout persistence | Save/restore node positions via kvDb across app restarts | TODO |
-| GRAPH-015 | Click node navigation | Click a node to navigate to lane detail view or show inline panel | TODO |
-| GRAPH-016 | Click edge merge simulation | Click an edge to open the merge simulation overlay panel | TODO |
-| GRAPH-017 | Merge simulation result display | Show prediction badge, conflicting files list, diff preview | TODO |
-| GRAPH-018 | Node context menu | Right-click menu with Open, Archive, Delete, Create Child actions | TODO |
-| GRAPH-019 | Minimap | React Flow minimap in bottom-right corner with viewport indicator | TODO |
-| GRAPH-020 | Multi-select | Shift+click and drag-box selection for multiple nodes | TODO |
-| GRAPH-021 | Zoom-to-fit button | Single click to fit all nodes within the current viewport | TODO |
-| GRAPH-022 | Theme-aware styling | Node and edge colors adapt to dark (Bloomberg) and light (Paper) themes | TODO |
-| GRAPH-023 | Environment mapping configuration (branch-to-env in ade.yaml) | TODO |
-| GRAPH-024 | Environment badge rendering on nodes | TODO |
-| GRAPH-025 | Environment-aware auto-layout (env branches centered, features radiate) | TODO |
-| GRAPH-026 | PR edge overlays (PR icon badge, state color, check status dot) | TODO |
-| GRAPH-027 | PR + risk edge coexistence (both visible simultaneously on same lane pair) | TODO |
-| GRAPH-028 | Environment legend (color key panel in canvas corner) | TODO |
+| GRAPH-001 | React Flow canvas setup | Install `@xyflow/react`, create `WorkspaceGraphPage` route, render empty canvas | DONE |
+| GRAPH-002 | Primary lane node component | Custom React Flow node for primary lane with distinct styling | DONE |
+| GRAPH-003 | Worktree lane node component | Custom React Flow node for worktree lanes with standard styling | DONE |
+| GRAPH-004 | Attached lane node component | Custom React Flow node for attached/external worktrees with dashed border | DONE |
+| GRAPH-005 | Node status badges | Render dirty, ahead/behind, and conflict badges on each node | DONE |
+| GRAPH-006 | Active session indicator | Pulsing dot or border glow on nodes with running terminal sessions | DONE |
+| GRAPH-007 | Topology edges | Solid edges from primary node to each worktree node | DONE |
+| GRAPH-008 | Stack edges | Arrow edges from parent to child lane with thicker stroke | DONE |
+| GRAPH-009 | Risk overlay edges | Dashed edges between lanes with change overlap, colored by risk | DONE |
+| GRAPH-010 | Edge state coloring | Apply green/blue/red/gray coloring based on risk matrix data | DONE |
+| GRAPH-011 | Pan and zoom controls | Zoom buttons, fit-to-view button, scroll-wheel zoom | DONE |
+| GRAPH-012 | Auto-layout algorithm | Compute initial node positions based on lane relationships | DONE |
+| GRAPH-013 | Manual node repositioning | Enable node dragging with position persistence on drop | DONE |
+| GRAPH-014 | Layout persistence | Save/restore node positions via kvDb across app restarts | DONE |
+| GRAPH-015 | Click node navigation | Click a node to navigate to lane detail view or show inline panel | DONE |
+| GRAPH-016 | Click edge merge simulation | Click an edge to open the merge simulation overlay panel | DONE |
+| GRAPH-017 | Merge simulation result display | Show prediction badge, conflicting files list, diff preview | DONE |
+| GRAPH-018 | Node context menu | Right-click menu with Open, Archive, Delete, Create Child actions | DONE |
+| GRAPH-019 | Minimap | React Flow minimap in bottom-right corner with viewport indicator | DONE |
+| GRAPH-020 | Multi-select | Shift+click and drag-box selection for multiple nodes | DONE |
+| GRAPH-021 | Zoom-to-fit button | Single click to fit all nodes within the current viewport | DONE |
+| GRAPH-022 | Theme-aware styling | Node and edge colors adapt to dark (Bloomberg) and light (Paper) themes | DONE |
+| GRAPH-023 | Environment mapping configuration (branch-to-env in ade.yaml) | DONE |
+| GRAPH-024 | Environment badge rendering on nodes | DONE |
+| GRAPH-025 | Environment-aware auto-layout (env branches centered, features radiate) | DONE |
+| GRAPH-026 | PR edge overlays (PR icon badge, state color, check status dot) | DONE |
+| GRAPH-027 | PR + risk edge coexistence (both visible simultaneously on same lane pair) | DONE |
+| GRAPH-028 | Environment legend (color key panel in canvas corner) | DONE |
 
 ### Dependency Notes
 
-- GRAPH-001 is a prerequisite for all other tasks.
-- GRAPH-002 through GRAPH-004 can be developed in parallel once GRAPH-001 is complete.
-- GRAPH-007 through GRAPH-010 depend on node components (GRAPH-002 to GRAPH-004).
-- GRAPH-016 and GRAPH-017 depend on `conflictService` (already implemented in Phase 5).
-- GRAPH-014 depends on the existing `kvDb` service (already implemented).
-- GRAPH-022 should be addressed last, after all functional tasks are complete.
-- GRAPH-023 through GRAPH-025 depend on the configuration service (Phase 2).
-- GRAPH-026 and GRAPH-027 (PR edge overlays) depend on the GitHub integration being built first. Both PR integration and Workspace Graph are in Phase 7, but the PR service (`githubService`, `prService`) must be functional before PR overlays can render on the graph.
+- Historical note: the dependencies listed in this section are all satisfied in the current implementation.
 
 ---
 
-*This document describes the Workspace Graph feature for ADE, planned for Phase 7 (GitHub Integration + Workspace Graph). Service-layer prerequisites (conflict service, kvDb layout persistence, reparent/appearance IPC, and supporting types) are already implemented from Phase 4/5. See `docs/PHASE_4_5_UPDATES.md` Part 3 for the extended scope including view modes (WG18), reparent drag-and-drop (WG14-15), batch operations (WG16), collapsible sub-graphs (WG17), custom appearance (WG19), graph filtering (WG20), layout presets (WG21), loading states (WG23), and conflict animations (WG25). PR edge overlays (GRAPH-026, GRAPH-027) depend on the GitHub integration also being delivered in Phase 7.*
+*Workspace Graph is delivered as part of Phase 7 (GitHub Integration + Workspace Graph).*

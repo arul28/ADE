@@ -12,6 +12,7 @@ module.exports = {
         "muted-fg": "hsl(var(--muted-fg))",
         border: "hsl(var(--border))",
         accent: "hsl(var(--accent))",
+        "accent-2": "hsl(var(--accent-2))",
         "accent-fg": "hsl(var(--accent-fg))"
       },
       borderRadius: {
@@ -31,4 +32,3 @@ module.exports = {
   },
   plugins: []
 };
-

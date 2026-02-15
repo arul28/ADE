@@ -44,36 +44,36 @@ Read these files in full before writing any code. They define the product intent
 ## 2. Architecture Quick Reference
 
 ### Process Model
-- **Main process** (`src/main/main.ts`, 616 lines): Electron window, PTY, git, SQLite, job engine, all services
-- **Renderer** (`src/renderer/`): React 18 + Zustand, zero Node access, all system calls via typed IPC
-- **Preload bridge** (`src/preload/preload.ts`, 520 lines): `window.ade.*` namespace, IPC allowlist
+- **Main process** (`apps/desktop/src/main/main.ts`): Electron window, PTY, git, SQLite, job engine, all services
+- **Renderer** (`apps/desktop/src/renderer/`): React 18 + Zustand, zero Node access, all system calls via typed IPC
+- **Preload bridge** (`apps/desktop/src/preload/preload.ts`): `window.ade.*` namespace, IPC allowlist
 
 ### Critical Service Files
 
 | Service | File | Size | Purpose |
 |---------|------|------|---------|
-| **hostedAgentService** | `src/main/services/hosted/hostedAgentService.ts` | ~1,814 lines | Clerk OAuth, mirror sync, job submission, LLM polling |
-| **packService** | `src/main/services/packs/packService.ts` | ~2,350 lines | Pack generation, versioning, narrative caching, checkpoints |
-| **jobEngine** | `src/main/services/jobs/jobEngine.ts` | ~167 lines | Event-driven async job scheduler with coalescing |
-| **sessionService** | `src/main/services/sessions/sessionService.ts` | Session tracking, transcript storage, delta computation |
-| **byokLlmService** | `src/main/services/byok/byokLlmService.ts` | ~400 lines | BYOK LLM provider (local API calls) |
-| **ptyService** | `src/main/services/pty/ptyService.ts` | ~10K | Terminal/PTY management via node-pty |
+| **hostedAgentService** | `apps/desktop/src/main/services/hosted/hostedAgentService.ts` | ~1,814 lines | Clerk OAuth, mirror sync, job submission, LLM polling |
+| **packService** | `apps/desktop/src/main/services/packs/packService.ts` | ~2,350 lines | Pack generation, versioning, narrative caching, checkpoints |
+| **jobEngine** | `apps/desktop/src/main/services/jobs/jobEngine.ts` | ~167 lines | Event-driven async job scheduler with coalescing |
+| **sessionService** | `apps/desktop/src/main/services/sessions/sessionService.ts` | Session tracking, transcript storage, delta computation |
+| **byokLlmService** | `apps/desktop/src/main/services/byok/byokLlmService.ts` | ~400 lines | BYOK LLM provider (local API calls) |
+| **ptyService** | `apps/desktop/src/main/services/pty/ptyService.ts` | ~10K | Terminal/PTY management via node-pty |
 
 ### Critical UI Component Files
 
 | Component | File | Key Patterns |
 |-----------|------|--------------|
-| **LanesPage** | `src/renderer/components/lanes/LanesPage.tsx` (1,507 lines) | Lane list, filtering, conflict indicators, restack suggestions |
-| **LaneDetail** | `src/renderer/components/lanes/LaneDetail.tsx` (926 lines) | Git operations, status bar at bottom |
-| **LaneInspector** | `src/renderer/components/lanes/LaneInspector.tsx` (233 lines) | 5 tabs: terminals, packs, stack, conflicts, pr |
-| **LaneTerminalsPanel** | `src/renderer/components/lanes/LaneTerminalsPanel.tsx` (634 lines) | Session list, status dots, tab/grid views, ended session cards |
-| **PackViewer** | `src/renderer/components/packs/PackViewer.tsx` (579 lines) | AI status hints, event activity, error display |
-| **SettingsPage** | `src/renderer/components/app/SettingsPage.tsx` (1,476 lines) | Provider config, auth status, bootstrap UI |
-| **AppShell** | `src/renderer/components/app/AppShell.tsx` (229 lines) | Top banner alerts (guest mode, hosted errors), PR toasts |
+| **LanesPage** | `apps/desktop/src/renderer/components/lanes/LanesPage.tsx` | Lane list, filtering, conflict indicators, restack suggestions |
+| **LaneDetail** | `apps/desktop/src/renderer/components/lanes/LaneDetail.tsx` | Git operations, status bar at bottom |
+| **LaneInspector** | `apps/desktop/src/renderer/components/lanes/LaneInspector.tsx` | 5 tabs: terminals, packs, stack, conflicts, pr |
+| **LaneTerminalsPanel** | `apps/desktop/src/renderer/components/lanes/LaneTerminalsPanel.tsx` | Session list, status dots, tab/grid views, ended session cards |
+| **PackViewer** | `apps/desktop/src/renderer/components/packs/PackViewer.tsx` | AI status hints, event activity, error display |
+| **SettingsPage** | `apps/desktop/src/renderer/components/app/SettingsPage.tsx` | Provider config, auth status, bootstrap UI |
+| **AppShell** | `apps/desktop/src/renderer/components/app/AppShell.tsx` | Top banner alerts (guest mode, hosted errors), PR toasts |
 
 ### Shared Types & IPC
-- **Types:** `src/shared/types.ts` (1,788 lines) — `LaneSummary`, `SessionDelta`, `PackType`, `ProviderMode`, `JobItem`, etc.
-- **IPC channels:** `src/shared/ipc.ts` — 100+ typed channels
+- **Types:** `apps/desktop/src/shared/types.ts` — `LaneSummary`, `SessionDelta`, `PackType`, `ProviderMode`, `JobItem`, etc.
+- **IPC channels:** `apps/desktop/src/shared/ipc.ts` — 100+ typed channels
 - **ProviderMode:** `"guest" | "hosted" | "byok" | "cli"`
 
 ### Cloud Infrastructure
@@ -119,7 +119,7 @@ if (Date.now() - statusStreakStart > POLL_STALL_TIMEOUT_MS) {  // 90 seconds
 1. User clicks AI button → `PackViewer.tsx` line ~385 calls `updateWithAi()`
 2. → IPC to `ade.packs.generateNarrative(laneId)`
 3. → `packService.generateNarrative()` checks providerMode
-4. → If `hosted`: calls `hostedAgentService.requestLaneNarrative({ laneId, packBody })`
+4. → If `hosted`: calls `hostedAgentService.requestLaneNarrative({ laneId, laneExport })` (bounded export, not raw pack body)
 5. → `submitJob()` (line ~1412): `POST /projects/{remoteProjectId}/jobs` with Clerk JWT
 6. → API handler `submitJob` (handlers.ts:360-424): writes to DynamoDB (`status: "queued"`), enqueues to SQS
 7. → SQS should trigger Lambda worker (`jobWorker.handler`)
@@ -153,9 +153,10 @@ if (Date.now() - statusStreakStart > POLL_STALL_TIMEOUT_MS) {  // 90 seconds
      - Consent granted: yes/no
      - Bootstrap applied: yes/no
      - Signed in: yes/no (with user email)
+     - API base URL: `apiBaseUrl`
      - Remote project ID: `{id}` or "not configured"
      - Last job status: queued/processing/completed/failed
-     - If stuck: "Job {jobId} has been queued for {N}s. Check: worker Lambda logs, SQS queue depth, LLM secret."
+     - If stuck: "Job {jobId} has been queued for {N}s. Check: hosted worker/queue health + hosted LLM config (apiBaseUrl + remoteProjectId)."
    - The existing `hostedReadiness()` function at `PackViewer.tsx:72-79` already does basic checks — **extend it** to include job-level diagnostics.
    - When `generateNarrative` fails, the error is caught and stored in `aiError` state (PackViewer.tsx line ~433). **Enhance** this to show the jobId, last known status, and actionable next steps.
 
@@ -171,13 +172,13 @@ if (Date.now() - statusStreakStart > POLL_STALL_TIMEOUT_MS) {  // 90 seconds
 
 **Symptom:** "Terminal summary" output contains raw control sequences, prompt noise, ANSI escapes — not human-readable summaries.
 
-**Root cause:** There is **NO ANSI stripping anywhere** in the codebase. Transcripts are captured raw from PTY (including all escape codes) and displayed as-is.
+**Root cause (historical):** PTY transcripts include ANSI escape sequences and prompt noise. ADE must strip ANSI and collapse noisy output before surfacing it to users or sending it to any LLM provider.
 
 **Specific code locations:**
 
 1. **Transcript capture:** `ptyService.ts` writes raw PTY output to `.ade/transcripts/{sessionId}.log` — this includes ALL ANSI escape codes (colors, cursor movement, line clearing, etc.)
 
-2. **Transcript reading:** `sessionService.readTranscriptTail(transcriptPath, maxBytes)` reads the last N bytes as raw UTF-8 — **no stripping**.
+2. **Transcript reading:** `sessionService.readTranscriptTail(transcriptPath, maxBytes)` reads the last N bytes and applies ANSI stripping before returning.
 
 3. **Failure line extraction:** `packService.computeSessionDelta()` extracts error lines via regex:
    ```typescript
@@ -194,17 +195,14 @@ if (Date.now() - statusStreakStart > POLL_STALL_TIMEOUT_MS) {  // 90 seconds
 
 5. **Pack body:** When pack markdown is generated by `packService.buildLanePackBody()`, the "Potential errors" section includes failure lines as-is.
 
-**What to fix:**
+**Status:** ANSI stripping is implemented via `apps/desktop/src/main/utils/ansiStrip.ts` and should be applied anywhere transcript-derived text is displayed or exported.
 
-1. **Create an ANSI stripping utility** (new file: `src/main/utils/ansiStrip.ts` or add to existing utils):
-   ```typescript
-   // Strip ANSI escape sequences: ESC[...m (SGR), ESC[...H (cursor), ESC[...J (erase), etc.
-   // Also strip: carriage returns, backspace sequences, OSC sequences (ESC]...\x07)
-   const ANSI_REGEX = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\(B|\r|\x08/g;
-   export function stripAnsi(text: string): string {
-     return text.replace(ANSI_REGEX, '');
-   }
-   ```
+**What to verify / harden:**
+
+1. Ensure transcript-derived data is ANSI-stripped before:
+   - UI display (terminal previews, failure lines)
+   - pack generation and exports
+   - Hosted/BYOK payloads
 
 2. **Apply stripping in these locations:**
    - `sessionService.readTranscriptTail()` — strip before returning
@@ -428,7 +426,7 @@ This is the critical path. Until hosted AI works, Bugs D and E cannot be fully v
 
 ```bash
 # From /Users/arul/ADE/apps/desktop/
-npm test                    # Vitest — 6 test files in src/main/services/
+npm test                    # Vitest — tests in apps/desktop/src/main/services/
 npm run typecheck           # tsc --noEmit
 npm run build               # tsup + vite build (optional but recommended)
 ```
@@ -436,12 +434,12 @@ npm run build               # tsup + vite build (optional but recommended)
 **Test framework:** Vitest 0.34.6, config at `vitest.config.ts` (env: node, include: `src/**/*.test.ts`, 20s timeout)
 
 **Existing test files:**
-- `src/main/services/automations/automationPlannerService.test.ts`
-- `src/main/services/automations/automationService.test.ts`
-- `src/main/services/ci/ciParsing.test.ts`
-- `src/main/services/ci/ciService.test.ts`
-- `src/main/services/git/gitConflictState.test.ts`
-- `src/main/services/onboarding/onboardingService.test.ts`
+- `apps/desktop/src/main/services/automations/automationPlannerService.test.ts`
+- `apps/desktop/src/main/services/automations/automationService.test.ts`
+- `apps/desktop/src/main/services/ci/ciParsing.test.ts`
+- `apps/desktop/src/main/services/ci/ciService.test.ts`
+- `apps/desktop/src/main/services/git/gitConflictState.test.ts`
+- `apps/desktop/src/main/services/onboarding/onboardingService.test.ts`
 
 **TypeScript config:** `tsconfig.json` — target ES2022, module ESNext, strict mode, JSX react-jsx
 

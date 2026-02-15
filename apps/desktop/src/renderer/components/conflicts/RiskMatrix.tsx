@@ -155,7 +155,7 @@ export function RiskMatrix({
   }, [loading, progress]);
 
   if (lanes.length === 0) {
-    return <div className="rounded border border-border bg-card/60 p-3 text-xs text-muted-fg">No lanes to compare.</div>;
+    return <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs text-muted-fg">No lanes to compare.</div>;
   }
 
   const startHover = (
@@ -206,20 +206,20 @@ export function RiskMatrix({
   }, [progress, entries.length]);
 
   return (
-    <div className="relative overflow-auto rounded border border-border bg-card/40">
+    <div className="relative overflow-auto rounded-xl shadow-card bg-card/30">
       {loading && progress ? (
-        <div className="sticky left-0 top-0 z-30 border-b border-border bg-bg/90 px-2 py-1 text-[11px] text-muted-fg">
+        <div className="sticky left-0 top-0 z-30 bg-bg/90 px-2 py-1 text-[11px] text-muted-fg">
           Computing {progress.completedPairs}/{progress.totalPairs} pairs…{etaLabel ? ` ${etaLabel}` : ""}
         </div>
       ) : null}
       <table className="w-full min-w-[580px] border-collapse text-xs">
         <thead>
           <tr>
-            <th className="sticky left-0 top-0 z-20 border-b border-r border-border bg-bg px-2 py-2 text-left text-muted-fg">
+            <th className="sticky left-0 top-0 z-20 bg-bg px-2 py-2 text-left text-muted-fg">
               Lane
             </th>
             {lanes.map((lane) => (
-              <th key={lane.id} className="border-b border-border bg-bg px-2 py-2 text-left text-muted-fg">
+              <th key={lane.id} className="bg-bg px-2 py-2 text-left text-muted-fg">
                 <span className="block max-w-[120px] truncate">{lane.name}</span>
               </th>
             ))}
@@ -228,7 +228,7 @@ export function RiskMatrix({
         <tbody>
           {lanes.map((rowLane, rowIndex) => (
             <tr key={rowLane.id}>
-              <td className="sticky left-0 z-10 border-r border-border bg-bg px-2 py-2 font-medium text-fg">
+              <td className="sticky left-0 z-10 bg-bg px-2 py-2 font-medium text-fg">
                 <span className="block max-w-[140px] truncate">{rowLane.name}</span>
               </td>
               {lanes.map((colLane, colIndex) => {
@@ -245,11 +245,11 @@ export function RiskMatrix({
                 const skeletonResolved = loading && !entry && progress ? skeletonIndex < completedCells : false;
 
                 return (
-                  <td key={colLane.id} className="border border-border/60 p-1">
+                  <td key={colLane.id} className="p-1">
                     <button
                       type="button"
                       className={cn(
-                        "relative flex h-12 w-full flex-col items-center justify-center rounded px-1 text-[10px] font-semibold transition-all duration-300",
+                        "relative flex h-12 w-full flex-col items-center justify-center rounded-lg px-1 text-[10px] font-semibold transition-all duration-300",
                         isLoadingCell
                           ? cn("ade-risk-skeleton text-muted-fg ring-1 ring-border/50", skeletonResolved && "opacity-60")
                           : cellClasses(riskLevel, isSelected, stale),

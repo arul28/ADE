@@ -141,7 +141,7 @@ export function TerminalsPage() {
   };
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
+    <div className="flex h-full flex-col overflow-hidden rounded-2xl shadow-panel bg-[--color-surface-raised]">
       <PaneHeader
         title="Terminals"
         meta={loading ? "Loading…" : `${filtered.length} sessions`}
@@ -164,12 +164,12 @@ export function TerminalsPage() {
         }
       />
 
-      <div className="border-b border-border p-3">
+      <div className="border-b border-border/15 p-3">
         <div className="grid grid-cols-1 gap-2 md:grid-cols-[240px_180px_1fr]">
           <label className="space-y-1">
             <div className="text-[11px] font-semibold text-muted-fg">Lane</div>
             <select
-              className="h-9 w-full rounded-lg border border-border bg-card/70 px-2 text-sm outline-none"
+              className="h-9 w-full rounded-lg bg-muted/30 px-2 text-sm outline-none"
               value={filterLaneId}
               onChange={(e) => setFilterLaneId(e.target.value)}
             >
@@ -185,7 +185,7 @@ export function TerminalsPage() {
           <label className="space-y-1">
             <div className="text-[11px] font-semibold text-muted-fg">Status</div>
             <select
-              className="h-9 w-full rounded-lg border border-border bg-card/70 px-2 text-sm outline-none"
+              className="h-9 w-full rounded-lg bg-muted/30 px-2 text-sm outline-none"
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value as any)}
             >
@@ -200,7 +200,7 @@ export function TerminalsPage() {
           <label className="space-y-1">
             <div className="text-[11px] font-semibold text-muted-fg">Search</div>
             <input
-              className="h-9 w-full rounded-lg border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
+              className="h-9 w-full rounded-lg bg-muted/30 px-3 text-sm outline-none placeholder:text-muted-fg"
               placeholder="title, lane, output preview…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -215,7 +215,7 @@ export function TerminalsPage() {
         ) : (
           <div className="space-y-2">
             {filtered.map((s) => (
-              <div key={s.id} className="rounded-lg border border-border bg-card/70 p-3">
+              <div key={s.id} className="rounded-xl shadow-panel bg-[--color-surface-raised] p-3 transition-shadow hover:shadow-card-hover">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">{(s.goal ?? s.title).trim()}</div>
@@ -228,12 +228,12 @@ export function TerminalsPage() {
                       <Chip className="text-[11px]">{new Date(s.startedAt).toLocaleString()}</Chip>
                     </div>
                     {s.lastOutputPreview ? (
-                      <div className="mt-2 truncate rounded border border-border bg-card/60 px-2 py-1 text-xs text-muted-fg">
+                      <div className="mt-2 truncate rounded-lg bg-muted/20 px-2 py-1 text-xs text-muted-fg">
                         {s.lastOutputPreview}
                       </div>
                     ) : null}
                     {s.summary && s.status !== "running" ? (
-                      <div className="mt-2 truncate rounded border border-border bg-card/60 px-2 py-1 text-xs text-muted-fg">
+                      <div className="mt-2 truncate rounded-lg bg-muted/20 px-2 py-1 text-xs text-muted-fg">
                         {s.summary}
                       </div>
                     ) : null}

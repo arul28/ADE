@@ -19,7 +19,7 @@ The repo you build is intentionally tiny, and intentionally conflict-prone.
 - Node.js 20+ (for `node --test`)
 - Git 2.28+ (for `git init -b main`)
 - Optional but recommended: GitHub + `gh` CLI (to exercise PRs + land flows against a real remote)
-- Optional but recommended: Hosted/BYOK provider configured (to show narrative packs + conflict proposals)
+- Optional: Hosted/BYOK provider configured (to enable **AI details** in packs and **AI conflict proposals**). Guest Mode still has deterministic packs, versions, events, and conflict prediction.
 
 ## The Demo Repo
 
@@ -70,11 +70,14 @@ gh repo create conflict-cafe --private --source=. --remote=origin --push
 1. In ADE, click the **+** in the top bar (Open another project).
 2. Select `/tmp/conflict-cafe`.
 3. If ADE sends you to **Onboarding**, complete it.
-4. Go to **Settings** and confirm you are not stuck in Guest Mode if you want AI-assisted packs/proposals.
+4. Go to **Settings**:
+   - Guest Mode is fine for this activity until the AI steps.
+   - Switch to Hosted/BYOK only when you want AI details/proposals.
 
 What to look for:
 - **TopBar** now shows project tabs; verify you can switch between projects.
 - **Settings**: provider mode + GitHub settings (polling interval, auth, etc.).
+- The Guest Mode banner should say **AI details disabled** (not “context disabled”).
 
 ## Step 3: Play Tab (Processes, Tests, CI Import, Agent Tools)
 
@@ -113,7 +116,7 @@ In **Lanes**:
 What to look for:
 - Each lane has its own worktree under `.ade/worktrees/...`
 - Lane status row updates (dirty, ahead/behind, conflict badge)
-- Packs sub-tab exists per lane
+- Inspector → Packs shows lane/project packs per lane
 
 Optional (stacks/restack showcase):
 - Instead of creating all lanes from `main`, create `lane-coupon` using **Create Child Lane** off `lane-tax`.
@@ -213,10 +216,30 @@ Optional (to show privacy controls):
 
 ## Step 8: Packs Tab (Watch Context Evolve)
 
-In each lane’s **Packs** sub-tab:
-1. Confirm the lane pack updated after session end (freshness indicator).
-2. Compare lane pack vs project pack side-by-side.
-3. If provider is configured (Hosted/BYOK), confirm the narrative section updates (or at least differs from deterministic).
+In each lane’s **Inspector → Packs** tab:
+1. Use the **Lane / Project** toggle and skim both packs.
+2. Click **Refresh** (deterministic) and confirm freshness timestamps update.
+3. Click **Activity**:
+   - Confirm you see `refresh_triggered`, `version_created`, and `checkpoint` events after session end.
+   - Use **View operation** on an event to jump into **History**.
+4. Click **Versions**:
+   - Pick two versions and **Run Diff** to see context evolve as work progresses.
+
+Context contract drill (shows marker-preserving context):
+1. In the Pack Viewer, copy the pack file path shown under the pack body (it ends in something like `.ade/packs/lanes/<laneId>/lane_pack.md`).
+2. Go to **Files** and open that pack markdown file.
+3. Edit only content between markers:
+   - `<!-- ADE_TASK_SPEC_START -->` / `<!-- ADE_TASK_SPEC_END -->`
+   - `<!-- ADE_INTENT_START -->` / `<!-- ADE_INTENT_END -->`
+   Add a real checklist for this lane’s work.
+4. Go back to **Inspector → Packs**, click **Refresh**, then:
+   - Confirm your Task Spec/Intent edits are preserved.
+   - Open **Versions** and diff before/after to see deterministic sections change while marker sections persist.
+
+AI details (Hosted/BYOK only):
+- Click **Update pack details with AI** and watch:
+  - the Hosted Health panel in the Pack Viewer for job status
+  - `narrative_requested` / `narrative_update` events in **Activity**
 
 ## Step 9: Conflicts Tab (Predict Before You Merge)
 
@@ -228,6 +251,7 @@ In **Conflicts**:
 What to look for:
 - conflict status badges on lane rows
 - overlap lists (should include `src/receipt.js` and `src/router.js`)
+- deterministic prediction artifacts on disk under `.ade/packs/conflicts/predictions/<laneId>.json` (use Files tab to inspect if you want)
 
 AI proposal flow (if Hosted/BYOK):
 1. Pick a lane, then select a peer lane in the proposal panel.

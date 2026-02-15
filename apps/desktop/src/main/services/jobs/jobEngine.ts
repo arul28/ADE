@@ -4,6 +4,7 @@ import type { createConflictService } from "../conflicts/conflictService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createByokLlmService } from "../byok/byokLlmService";
+import { redactSecrets } from "../../utils/redaction";
 
 type RefreshRequest = {
   laneId: string;
@@ -77,6 +78,9 @@ export function createJobEngine({
           const providerMode = projectConfigService?.get().effective.providerMode ?? "guest";
           if (providerMode === "guest") return;
 
+          const laneExport = await packService.getLaneExport({ laneId: payload.laneId, level: "standard" });
+          const packBody = redactSecrets(laneExport.content);
+
           const submittedAt = new Date().toISOString();
           let jobId: string | null = null;
           let lastStatus: "queued" | "processing" | "completed" | "failed" | null = null;
@@ -97,7 +101,10 @@ export function createJobEngine({
                   trigger: payload.reason,
                   sessionId: payload.sessionId ?? null,
                   deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
-                  contentHash: lanePack.contentHash
+                  contentHash: lanePack.contentHash,
+                  exportLevel: laneExport.level,
+                  exportApproxTokens: laneExport.approxTokens,
+                  exportMaxTokens: laneExport.maxTokens
                 }
               });
             } catch {
@@ -112,7 +119,7 @@ export function createJobEngine({
               }
               const narrative = await hostedAgentService.requestLaneNarrative({
                 laneId: payload.laneId,
-                packBody: lanePack.body,
+                packBody,
                 onJobSubmitted: recordRequested,
                 onJobStatus: (status) => {
                   lastStatus = status.status;
@@ -160,7 +167,7 @@ export function createJobEngine({
               }
               const narrative = await byokLlmService.generateLaneNarrative({
                 laneId: payload.laneId,
-                packBody: lanePack.body
+                packBody
               });
               packService.applyHostedNarrative({
                 laneId: payload.laneId,

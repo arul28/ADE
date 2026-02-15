@@ -42,9 +42,16 @@ Use changed paths to infer feature area and docs.
 
 ## Step 2: Load Baseline Context (Always)
 
-Read:
-- `docs/PRD.md`
-- `docs/IMPLEMENTATION_PLAN.md`
+Read packs first (bounded, reviewable), then docs as fallback.
+
+Read (in order):
+- `.ade/packs/project_pack.md` (project-wide context)
+- Relevant lane context (when laneId is known):
+  - Prefer bounded export via IPC: `ade.packs.getLaneExport({ laneId, level: "standard" })`
+  - Otherwise read: `.ade/packs/lanes/<laneId>/lane_pack.md`
+- `docs/architecture/CONTEXT_CONTRACT.md` (markers/exports/deltas contract)
+
+Only pull in `docs/PRD.md` / `docs/IMPLEMENTATION_PLAN.md` if packs are missing/empty or the user explicitly asks for roadmap context.
 
 ---
 
@@ -56,42 +63,42 @@ Use this mapping to load the right docs based on changed paths or arguments.
 
 | Path Pattern | Feature | Docs |
 |---|---|---|
-| `src/main/services/lanes/` | Lanes | `docs/features/LANES.md`, `docs/architecture/GIT_ENGINE.md` |
-| `src/main/services/git/` | Git Engine | `docs/architecture/GIT_ENGINE.md` |
-| `src/main/services/pty/`, `src/main/services/sessions/` | Terminals & Sessions | `docs/features/TERMINALS_AND_SESSIONS.md` |
-| `src/main/services/processes/`, `src/main/services/tests/` | Processes & Tests | `docs/features/PROJECT_HOME.md` |
-| `src/main/services/files/` | Files | `docs/features/FILES_AND_EDITOR.md` |
-| `src/main/services/packs/` | Packs | `docs/features/PACKS.md` |
-| `src/main/services/diffs/` | Diffs & Conflicts | `docs/features/CONFLICTS.md` |
-| `src/main/services/history/` | History | `docs/features/HISTORY.md` |
-| `src/main/services/jobs/` | Job Engine | `docs/architecture/JOB_ENGINE.md` |
-| `src/main/services/config/`, `src/main/services/state/` | Config & State | `docs/architecture/CONFIGURATION.md`, `docs/architecture/DATA_MODEL.md` |
-| `src/main/services/ipc/` | IPC | `docs/architecture/DESKTOP_APP.md` |
-| `src/main/services/logging/` | Logging | `docs/architecture/SYSTEM_OVERVIEW.md` |
-| `src/main/services/projects/` | Project Management | `docs/features/PROJECT_HOME.md` |
+| `apps/desktop/src/main/services/lanes/` | Lanes | `docs/features/LANES.md`, `docs/architecture/GIT_ENGINE.md` |
+| `apps/desktop/src/main/services/git/` | Git Engine | `docs/architecture/GIT_ENGINE.md` |
+| `apps/desktop/src/main/services/pty/`, `apps/desktop/src/main/services/sessions/` | Terminals & Sessions | `docs/features/TERMINALS_AND_SESSIONS.md` |
+| `apps/desktop/src/main/services/processes/`, `apps/desktop/src/main/services/tests/` | Processes & Tests | `docs/features/PROJECT_HOME.md` |
+| `apps/desktop/src/main/services/files/` | Files | `docs/features/FILES_AND_EDITOR.md` |
+| `apps/desktop/src/main/services/packs/` | Packs | `docs/features/PACKS.md` |
+| `apps/desktop/src/main/services/conflicts/` | Conflicts | `docs/features/CONFLICTS.md` |
+| `apps/desktop/src/main/services/history/` | History | `docs/features/HISTORY.md` |
+| `apps/desktop/src/main/services/jobs/` | Job Engine | `docs/architecture/JOB_ENGINE.md` |
+| `apps/desktop/src/main/services/config/`, `apps/desktop/src/main/services/state/` | Config & State | `docs/architecture/CONFIGURATION.md`, `docs/architecture/DATA_MODEL.md` |
+| `apps/desktop/src/main/services/ipc/` | IPC | `docs/architecture/DESKTOP_APP.md` |
+| `apps/desktop/src/main/services/logging/` | Logging | `docs/architecture/SYSTEM_OVERVIEW.md` |
+| `apps/desktop/src/main/services/projects/` | Project Management | `docs/features/PROJECT_HOME.md` |
 
 ### Renderer Components Mapping
 
 | Path Pattern | Feature | Docs |
 |---|---|---|
-| `src/renderer/components/lanes/` | Lanes UI | `docs/features/LANES.md` |
-| `src/renderer/components/terminals/` | Terminal UI | `docs/features/TERMINALS_AND_SESSIONS.md` |
-| `src/renderer/components/project/` | Project Home UI | `docs/features/PROJECT_HOME.md` |
-| `src/renderer/components/files/` | Files UI | `docs/features/FILES_AND_EDITOR.md` |
-| `src/renderer/components/packs/` | Packs UI | `docs/features/PACKS.md` |
-| `src/renderer/components/conflicts/` | Conflicts UI | `docs/features/CONFLICTS.md` |
-| `src/renderer/components/prs/` | Pull Requests UI | `docs/features/PULL_REQUESTS.md` |
-| `src/renderer/components/history/` | History UI | `docs/features/HISTORY.md` |
-| `src/renderer/components/app/` | App Shell & Navigation | `docs/architecture/DESKTOP_APP.md`, `docs/architecture/UI_FRAMEWORK.md` |
-| `src/renderer/state/` | State Management | `docs/architecture/DATA_MODEL.md` |
+| `apps/desktop/src/renderer/components/lanes/` | Lanes UI | `docs/features/LANES.md` |
+| `apps/desktop/src/renderer/components/terminals/` | Terminal UI | `docs/features/TERMINALS_AND_SESSIONS.md` |
+| `apps/desktop/src/renderer/components/project/` | Project Home UI | `docs/features/PROJECT_HOME.md` |
+| `apps/desktop/src/renderer/components/files/` | Files UI | `docs/features/FILES_AND_EDITOR.md` |
+| `apps/desktop/src/renderer/components/packs/` | Packs UI | `docs/features/PACKS.md` |
+| `apps/desktop/src/renderer/components/conflicts/` | Conflicts UI | `docs/features/CONFLICTS.md` |
+| `apps/desktop/src/renderer/components/prs/` | Pull Requests UI | `docs/features/PULL_REQUESTS.md` |
+| `apps/desktop/src/renderer/components/history/` | History UI | `docs/features/HISTORY.md` |
+| `apps/desktop/src/renderer/components/app/` | App Shell & Navigation | `docs/architecture/DESKTOP_APP.md`, `docs/architecture/UI_FRAMEWORK.md` |
+| `apps/desktop/src/renderer/state/` | State Management | `docs/architecture/DATA_MODEL.md` |
 
 ### Shared & Cross-Cutting Mapping
 
 | Path Pattern | Feature | Docs |
 |---|---|---|
-| `src/shared/types.ts` | Shared Types | `docs/architecture/DATA_MODEL.md` |
-| `src/shared/ipc.ts` | IPC Channels | `docs/architecture/DESKTOP_APP.md`, `docs/architecture/DATA_MODEL.md` |
-| `src/preload/` | Preload Bridge | `docs/architecture/DESKTOP_APP.md` |
+| `apps/desktop/src/shared/types.ts` | Shared Types | `docs/architecture/DATA_MODEL.md` |
+| `apps/desktop/src/shared/ipc.ts` | IPC Channels | `docs/architecture/DESKTOP_APP.md`, `docs/architecture/DATA_MODEL.md` |
+| `apps/desktop/src/preload/` | Preload Bridge | `docs/architecture/DESKTOP_APP.md` |
 
 ### Keyword-to-Feature Mapping (for argument-based lookups)
 

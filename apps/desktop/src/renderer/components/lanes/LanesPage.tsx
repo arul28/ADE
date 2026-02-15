@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { Group, Panel } from "react-resizable-panels";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowUpRight, GripHorizontal, GripVertical, Home, Layers3, Link2, Pin, Play, Plus, X } from "lucide-react";
+import { ArrowUpRight, Home, Layers3, Link2, Pin, Play, Plus, X } from "lucide-react";
 import { LaneDetail } from "./LaneDetail";
 import { LaneInspector } from "./LaneInspector";
 import { useAppStore } from "../../state/appStore";
@@ -12,6 +12,7 @@ import { Button } from "../ui/Button";
 import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary, RestackSuggestion } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { useDockLayout } from "../ui/DockLayoutState";
+import { ResizeGutter } from "../ui/ResizeGutter";
 
 function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lanes: T[]): T[] {
   return [...lanes].sort((a, b) => {
@@ -352,9 +353,9 @@ function StackGraph({
               key={`label:${lane.id}`}
               type="button"
               className={cn(
-                "absolute flex items-center gap-1.5 rounded px-1.5 text-[11px] transition-colors whitespace-nowrap",
+                "absolute flex items-center gap-1.5 rounded-lg px-1.5 text-[11px] transition-colors whitespace-nowrap",
                 isSelected
-                  ? "bg-accent/15 text-fg ring-1 ring-accent/50"
+                  ? "bg-accent/15 text-fg shadow-sm shadow-accent/20"
                   : "text-muted-fg hover:bg-muted/60 hover:text-fg"
               )}
               style={{
@@ -847,7 +848,7 @@ export function LanesPage() {
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
-      <div className="border-b border-border px-2 py-1.5">
+      <div className="border-b border-border/15 px-2 py-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-xs font-semibold text-muted-fg">Lanes</div>
           <div className="relative">
@@ -856,12 +857,12 @@ export function LanesPage() {
               value={laneFilter}
               onChange={(event) => setLaneFilter(event.target.value)}
               placeholder="Filter lanes (is:dirty is:pinned type:worktree)"
-              className="h-7 min-w-[280px] rounded border border-border bg-card/70 px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
+              className="h-7 min-w-[280px] rounded-xl bg-muted/30 shadow-card px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
             />
             {laneFilter.trim().length > 0 ? (
               <button
                 type="button"
-                className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-fg transition-colors hover:bg-muted/70 hover:text-fg"
+                className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-lg text-muted-fg transition-colors hover:bg-muted/70 hover:text-fg"
                 onClick={() => setLaneFilter("")}
                 title="Clear filter"
               >
@@ -914,7 +915,7 @@ export function LanesPage() {
             Manage lane
           </Button>
 
-          <div className="h-4 w-px bg-border" />
+          <div className="h-4 w-px bg-border/20" />
 
           <Button
             size="sm"
@@ -962,7 +963,7 @@ export function LanesPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1.5">
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-border/15 px-2 py-1.5">
         {filteredLanes.map((lane) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
@@ -978,13 +979,13 @@ export function LanesPage() {
               key={lane.id}
               type="button"
               className={cn(
-                "inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs transition-colors",
+                "inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-xs transition-colors",
                 isSelected
-                  ? "border-accent bg-accent/25 text-fg ring-1 ring-accent/60"
+                  ? "bg-accent/20 text-fg shadow-card"
                   : isVisible
-                    ? "border-accent/35 bg-accent/10 text-fg"
-                    : "border-border bg-card/70 text-muted-fg hover:border-muted-fg hover:text-fg",
-                isPrimary && "border-emerald-500/70 bg-emerald-500/15"
+                    ? "bg-accent/10 text-fg"
+                    : "bg-muted/30 text-muted-fg hover:bg-muted/50 hover:text-fg",
+                isPrimary && "bg-emerald-500/15"
               )}
               onClick={(event) => {
                 handleLaneSelect(lane.id, {
@@ -996,11 +997,11 @@ export function LanesPage() {
               {isPrimary ? <Home className="h-3.5 w-3.5 text-emerald-700" /> : <Pin className={cn("h-3.5 w-3.5", isPinned ? "text-amber-700" : "text-muted-fg/60")} />}
               <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
               <span className="truncate">{lane.name}</span>
-              {isPrimary ? <span className="rounded border border-emerald-400 px-1 text-[10px] text-emerald-700">HOME</span> : null}
-              {!isPrimary && isPinned ? <span className="rounded border border-amber-400 px-1 text-[10px] text-amber-800">PINNED</span> : null}
+              {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">HOME</span> : null}
+              {!isPrimary && isPinned ? <span className="rounded-lg bg-amber-500/15 px-1 text-[10px] text-amber-800">PINNED</span> : null}
               {restackSuggestion ? (
                 <span
-                  className="rounded border border-amber-400/70 bg-amber-500/10 px-1 text-[10px] text-amber-800"
+                  className="rounded-lg bg-amber-500/10 px-1 text-[10px] text-amber-800"
                   title={`Behind parent by ${restackSuggestion.behindCount} commit(s). Restack suggested.`}
                 >
                   RESTACK {restackSuggestion.behindCount}
@@ -1010,10 +1011,10 @@ export function LanesPage() {
                 <span
                   key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
                   className={cn(
-                    "rounded border px-1 text-[10px] uppercase",
+                    "rounded-lg px-1 text-[10px] uppercase",
                     chip.kind === "high-risk"
-                      ? "border-red-500/70 bg-red-900/30 text-red-200"
-                      : "border-amber-500/70 bg-amber-900/30 text-amber-200"
+                      ? "bg-red-500/10 text-red-200"
+                      : "bg-amber-500/10 text-amber-200"
                   )}
                   title={chip.peerId ? `${chipLabel(chip.kind)} with ${chip.peerId}` : chipLabel(chip.kind)}
                 >
@@ -1024,10 +1025,10 @@ export function LanesPage() {
               {!isPrimary ? (
                 <span
                   className={cn(
-                    "inline-flex h-4 w-4 items-center justify-center rounded border",
+                    "inline-flex h-4 w-4 items-center justify-center rounded-lg",
                     isPinned
-                      ? "border-amber-400 bg-amber-100 text-amber-800"
-                      : "border-border text-muted-fg hover:text-fg"
+                      ? "bg-amber-100 text-amber-800"
+                      : "text-muted-fg hover:text-fg"
                   )}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -1041,7 +1042,7 @@ export function LanesPage() {
 
               {closable ? (
                 <span
-                  className="inline-flex h-4 w-4 items-center justify-center rounded hover:bg-muted/60"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
                   onClick={(event) => {
                     event.stopPropagation();
                     removeSplitLane(lane.id);
@@ -1057,9 +1058,9 @@ export function LanesPage() {
       </div>
 
       {visibleRestackSuggestions.length > 0 ? (
-        <div className="border-b border-border bg-amber-500/5 px-2 py-2">
+        <div className="border-b border-border/15 bg-amber-500/5 px-2 py-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Restack suggested</div>
+            <div className="text-xs text-muted-fg/70">Restack suggested</div>
             <div className="text-[11px] text-muted-fg">{visibleRestackSuggestions.length} lane(s) behind parent</div>
           </div>
           <div className="mt-2 space-y-2">
@@ -1070,17 +1071,17 @@ export function LanesPage() {
               return (
                 <div
                   key={`restack:${s.laneId}`}
-                  className="flex flex-wrap items-start justify-between gap-2 rounded border border-border bg-card/60 p-2"
+                  className="flex flex-wrap items-start justify-between gap-2 rounded-xl shadow-card bg-card/40 p-2"
                 >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
                       {s.hasPr ? (
-                        <span className="rounded border border-sky-400/70 bg-sky-500/10 px-1 text-[10px] text-sky-700">
+                        <span className="rounded-lg bg-sky-500/10 px-1 text-[10px] text-sky-700">
                           PR
                         </span>
                       ) : null}
-                      <span className="font-mono text-[11px] text-muted-fg">{s.behindCount} behind</span>
+                      <span className="text-[11px] text-muted-fg">{s.behindCount} behind</span>
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-fg">
                       What ADE will do: rebase this lane (and its children) onto its parent to pick up new commits.
@@ -1128,7 +1129,7 @@ export function LanesPage() {
               </div>
             ) : null}
             {restackSuggestionError ? (
-              <div className="rounded border border-red-500/40 bg-red-900/20 p-2 text-[11px] text-red-200">
+              <div className="rounded-xl bg-red-500/10 p-2 text-[11px] text-red-200">
                 {restackSuggestionError}
               </div>
             ) : null}
@@ -1153,9 +1154,9 @@ export function LanesPage() {
             verticalLayout.saveLayout({ ...verticalLayout.layout, stackGraphSize: next });
           }}
         >
-          <div className="flex h-full flex-col bg-card/35">
+          <div className="flex h-full flex-col bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
             <div className="shrink-0 flex items-center justify-between px-2 py-1">
-              <div className="text-[10px] uppercase tracking-wider text-muted-fg">Stack</div>
+              <div className="text-xs text-muted-fg/70">Stack</div>
               <Button
                 variant="ghost"
                 size="sm"
@@ -1174,11 +1175,7 @@ export function LanesPage() {
             />
           </div>
         </Panel>
-        <Separator className="relative h-1.5 shrink-0 cursor-row-resize border-y border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-          <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-            <GripHorizontal className="h-3 w-3" />
-          </div>
-        </Separator>
+        <ResizeGutter orientation="horizontal" />
         <Panel id="lanes-main" minSize={50}>
           {visibleLaneIds.length === 0 ? (
             <div className="flex h-full items-center justify-center">
@@ -1214,11 +1211,7 @@ export function LanesPage() {
                         >
                           <LaneDetail overrideLaneId={laneId} isPrimary={lane?.laneType === "primary"} />
                         </Panel>
-                        <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-                          <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-                            <GripVertical className="h-3 w-3" />
-                          </div>
-                        </Separator>
+                        <ResizeGutter orientation="vertical" />
                         <Panel
                           id={`lane-inspector:${laneId}`}
                           minSize={22}
@@ -1236,11 +1229,7 @@ export function LanesPage() {
                     </Panel>
 
                     {index < visibleLaneIds.length - 1 ? (
-                      <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-                        <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-                          <GripVertical className="h-3 w-3" />
-                        </div>
-                      </Separator>
+                      <ResizeGutter orientation="vertical" />
                     ) : null}
                   </React.Fragment>
                 );
@@ -1253,7 +1242,7 @@ export function LanesPage() {
       <Dialog.Root open={manageOpen} onOpenChange={setManageOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-card p-4 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
             <div className="mb-4 flex items-center justify-between gap-3">
               <Dialog.Title className="text-lg font-semibold">Manage lane</Dialog.Title>
               <Dialog.Close asChild>
@@ -1267,13 +1256,13 @@ export function LanesPage() {
               <div className="text-sm text-muted-fg">Primary lane cannot be archived or deleted.</div>
             ) : (
               <div className="space-y-3">
-                <div className="rounded border border-border bg-bg/40 p-3 text-xs">
+                <div className="rounded-xl shadow-card bg-bg/40 p-3 text-xs">
                   <div><span className="text-muted-fg">Lane:</span> {managedLane.name}</div>
                   <div><span className="text-muted-fg">Branch:</span> {managedLane.branchRef}</div>
                   <div className="truncate"><span className="text-muted-fg">Worktree:</span> {managedLane.worktreePath}</div>
                 </div>
 
-                <div className="rounded border border-border bg-bg/40 p-3">
+                <div className="rounded-xl shadow-card bg-bg/40 p-3">
                   <div className="mb-2 text-xs font-semibold">Archive</div>
                   <div className="mb-2 text-xs text-muted-fg">Hide lane from ADE without deleting worktree or branches.</div>
                   <Button
@@ -1288,14 +1277,14 @@ export function LanesPage() {
                   </Button>
                 </div>
 
-                <div className="rounded border border-red-300 bg-red-50 p-3">
+                <div className="rounded-xl shadow-card bg-red-50 p-3">
                   <div className="mb-2 text-xs font-semibold text-red-900">Delete</div>
                   <div className="mb-2 text-xs text-red-800">
                     This removes the lane worktree from disk. Choose branch cleanup mode below.
                   </div>
 
                   <div className="mb-2 grid gap-2 md:grid-cols-3">
-                    <label className="inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
+                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
                       <input
                         type="radio"
                         name="lane-delete-mode"
@@ -1304,7 +1293,7 @@ export function LanesPage() {
                       />
                       Worktree only
                     </label>
-                    <label className="inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
+                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
                       <input
                         type="radio"
                         name="lane-delete-mode"
@@ -1313,7 +1302,7 @@ export function LanesPage() {
                       />
                       Worktree + local branch
                     </label>
-                    <label className="inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
+                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
                       <input
                         type="radio"
                         name="lane-delete-mode"
@@ -1330,13 +1319,13 @@ export function LanesPage() {
                       <input
                         value={deleteRemoteName}
                         onChange={(event) => setDeleteRemoteName(event.target.value)}
-                        className="h-8 w-full rounded border border-border bg-card px-2 text-xs outline-none"
+                        className="h-8 w-full rounded-xl bg-card/60 shadow-card px-2 text-xs outline-none"
                         placeholder="origin"
                       />
                     </div>
                   ) : null}
 
-                  <label className="mb-2 inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
+                  <label className="mb-2 inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
                     <input
                       type="checkbox"
                       checked={deleteForce}
@@ -1352,11 +1341,11 @@ export function LanesPage() {
                     <input
                       value={deleteConfirmText}
                       onChange={(event) => setDeleteConfirmText(event.target.value)}
-                      className="h-8 w-full rounded border border-border bg-card px-2 text-xs outline-none"
+                      className="h-8 w-full rounded-xl bg-card/60 shadow-card px-2 text-xs outline-none"
                     />
                   </div>
 
-                  {laneActionError ? <div className="mb-2 rounded border border-red-300 bg-red-100 px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
+                  {laneActionError ? <div className="mb-2 rounded-xl bg-red-100 shadow-card px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
 
                   <Button
                     size="sm"
@@ -1379,7 +1368,7 @@ export function LanesPage() {
       <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-3 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
               <Dialog.Close asChild>
@@ -1392,7 +1381,7 @@ export function LanesPage() {
                 value={createLaneName}
                 onChange={(e) => setCreateLaneName(e.target.value)}
                 placeholder="e.g. feature/auth-refresh"
-                className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
+                className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
                 autoFocus
               />
               <div className="space-y-1">
@@ -1400,7 +1389,7 @@ export function LanesPage() {
                 <select
                   value={createParentLaneId}
                   onChange={(event) => setCreateParentLaneId(event.target.value)}
-                  className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none"
+                  className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
                 >
                   <option value="">None (base: {baseRef ?? "main"})</option>
                   {lanes.map((lane) => (
@@ -1446,7 +1435,7 @@ export function LanesPage() {
       <Dialog.Root open={attachOpen} onOpenChange={setAttachOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-3 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Attach lane</Dialog.Title>
               <Dialog.Close asChild>
@@ -1460,7 +1449,7 @@ export function LanesPage() {
                   value={attachName}
                   onChange={(e) => setAttachName(e.target.value)}
                   placeholder="e.g. bugfix/from-other-worktree"
-                  className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
+                  className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
                   autoFocus
                 />
               </div>
@@ -1470,7 +1459,7 @@ export function LanesPage() {
                   value={attachPath}
                   onChange={(e) => setAttachPath(e.target.value)}
                   placeholder="/absolute/path/to/existing/worktree"
-                  className="h-10 w-full rounded border border-border bg-card/70 px-3 font-mono text-xs outline-none placeholder:text-muted-fg"
+                  className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 font-mono text-xs outline-none placeholder:text-muted-fg"
                 />
               </div>
             </div>

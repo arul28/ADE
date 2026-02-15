@@ -160,7 +160,7 @@ export function PRsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b border-border px-3 py-2">
+      <div className="flex items-center gap-3 border-b border-border/15 px-3 py-2">
         <div className="text-sm font-semibold text-fg">PRs</div>
         <div className="text-xs text-muted-fg">{prs.length} linked</div>
         <div className="ml-auto flex items-center gap-2">
@@ -173,7 +173,7 @@ export function PRsPage() {
           <select
             value={mergeMethod}
             onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
-            className="h-8 rounded border border-border bg-card/70 px-2 text-xs"
+            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
             title="Default merge method"
           >
             <option value="squash">squash</option>
@@ -191,7 +191,7 @@ export function PRsPage() {
 
       {landStackDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(720px,100%)] rounded border border-border bg-card p-4 shadow-2xl">
+          <div className="w-[min(720px,100%)] rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-fg">Land Stack</div>
               <Button size="sm" variant="ghost" onClick={() => setLandStackDialog(null)}>
@@ -206,12 +206,12 @@ export function PRsPage() {
               </Button>
             </div>
             {landStackDialog.error ? (
-              <div className="mt-3 rounded border border-red-800 bg-red-950/20 p-2 text-xs text-red-200">{landStackDialog.error}</div>
+              <div className="mt-3 rounded-lg bg-red-500/10 p-2 text-xs text-red-200">{landStackDialog.error}</div>
             ) : null}
             {landStackDialog.results ? (
-              <div className="mt-3 max-h-[50vh] overflow-auto rounded border border-border bg-bg/40">
-                <div className="border-b border-border px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Results</div>
-                <div className="divide-y divide-border">
+              <div className="mt-3 max-h-[50vh] overflow-auto rounded-lg bg-muted/20">
+                <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Results</div>
+                <div className="divide-y divide-border/10">
                   {landStackDialog.results.map((r, idx) => (
                     <div key={`${r.prNumber}:${idx}`} className="px-2 py-2 text-xs">
                       <div className="flex items-center justify-between gap-2">
@@ -236,8 +236,8 @@ export function PRsPage() {
             {stackedChains.map((chain) => {
               const rootPr = prByLaneId.get(chain.rootLaneId) ?? null;
               return (
-                <div key={chain.rootLaneId} className="rounded border border-border bg-card/50">
-                  <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+                <div key={chain.rootLaneId} className="rounded-xl shadow-card bg-card/60">
+                  <div className="flex items-center justify-between gap-2 px-3 py-2">
                     <div className="text-xs font-semibold text-fg">{chain.rootLaneName}</div>
                     <Button
                       size="sm"
@@ -257,7 +257,7 @@ export function PRsPage() {
                       Land stack
                     </Button>
                   </div>
-                  <div className="divide-y divide-border">
+                  <div className="divide-y divide-border/10">
                     {chain.items.map((item) => {
                       const pr = item.pr;
                       return (
@@ -296,14 +296,14 @@ export function PRsPage() {
             ) : null}
           </div>
         ) : (
-          <div className="rounded border border-border bg-card/50">
-            <div className="grid grid-cols-12 gap-2 border-b border-border px-3 py-2 text-[10px] uppercase tracking-wider text-muted-fg">
+          <div className="rounded-xl shadow-card bg-card/60">
+            <div className="grid grid-cols-12 gap-2 border-b border-border/15 px-3 py-2 text-[10px] uppercase tracking-wider text-muted-fg">
               <div className="col-span-2">PR</div>
               <div className="col-span-4">Title</div>
               <div className="col-span-2">Lane</div>
               <div className="col-span-4 text-right">Status</div>
             </div>
-            <div className="divide-y divide-border">
+            <div className="divide-y divide-border/10">
               {allPrsSorted.map((pr) => {
                 const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
                 return (

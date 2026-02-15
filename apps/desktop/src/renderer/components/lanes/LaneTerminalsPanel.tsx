@@ -474,22 +474,29 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
                 {!s.tracked ? <span className="rounded border border-border px-1 text-[10px] text-muted-fg">no ctx</span> : null}
                 {s.status === "running" && s.ptyId ? (
-                  <button
-                    type="button"
+                  <span
+                    role="button"
+                    tabIndex={0}
                     className={cn(
                       "ml-1 inline-flex h-4 w-4 items-center justify-center rounded hover:bg-muted/60",
-                      closingSessionIds.has(s.id) && "opacity-50"
+                      closingSessionIds.has(s.id) && "opacity-50 pointer-events-none"
                     )}
-                    disabled={closingSessionIds.has(s.id)}
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
                       closeSession(s);
                     }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        closeSession(s);
+                      }
+                    }}
                     title={closingSessionIds.has(s.id) ? "Closing…" : "Close / kill session"}
                   >
                     <X className="h-3 w-3" />
-                  </button>
+                  </span>
                 ) : null}
               </Tabs.Trigger>
             ))}

@@ -13,9 +13,9 @@ function formatDate(ts: string | null): string {
 }
 
 function safetyTone(safety: CiJobCandidate["safety"]): string {
-  if (safety === "local-safe") return "border-emerald-700/60 text-emerald-200 bg-emerald-900/15";
-  if (safety === "ci-only") return "border-red-700/60 text-red-200 bg-red-900/15";
-  return "border-border text-muted-fg bg-card/40";
+  if (safety === "local-safe") return "text-emerald-200 bg-emerald-900/15";
+  if (safety === "ci-only") return "text-red-200 bg-red-900/15";
+  return "text-muted-fg bg-card/40";
 }
 
 function inferKind(job: CiJobCandidate): "testSuite" | "process" {
@@ -113,7 +113,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
   };
 
   return (
-    <section className="rounded-md border border-border bg-card/70 p-3">
+    <section className="rounded-xl shadow-card bg-card/70 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold">CI import</div>
@@ -132,10 +132,10 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
       </div>
 
       {error ? (
-        <div className="mt-3 rounded border border-red-800 bg-red-900/25 px-3 py-2 text-xs text-red-200">{error}</div>
+        <div className="mt-3 rounded bg-red-900/25 px-3 py-2 text-xs text-red-200">{error}</div>
       ) : null}
       {notice ? (
-        <div className="mt-3 rounded border border-emerald-800 bg-emerald-900/20 px-3 py-2 text-xs text-emerald-200">{notice}</div>
+        <div className="mt-3 rounded bg-emerald-900/20 px-3 py-2 text-xs text-emerald-200">{notice}</div>
       ) : null}
 
       {scan ? (
@@ -152,10 +152,10 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
             ) : null}
           </div>
 
-          <div className="rounded border border-border bg-bg/40 p-2">
+          <div className="rounded bg-muted/15 p-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <input
-                className="h-8 w-[min(420px,100%)] rounded border border-border bg-bg px-2 text-xs outline-none placeholder:text-muted-fg"
+                className="h-8 w-[min(420px,100%)] rounded bg-muted/30 px-2 text-xs outline-none placeholder:text-muted-fg"
                 placeholder="Filter jobs (name, file, command)"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -163,7 +163,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
               <div className="flex items-center gap-2">
                 <label className="text-[11px] text-muted-fg">Mode</label>
                 <select
-                  className="h-8 rounded border border-border bg-bg px-2 text-xs"
+                  className="h-8 rounded bg-muted/30 px-2 text-xs"
                   value={mode}
                   onChange={(e) => setMode(e.target.value as CiImportMode)}
                 >
@@ -177,10 +177,10 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
             </div>
           </div>
 
-          <div className="overflow-auto rounded border border-border bg-bg/40">
+          <div className="overflow-auto rounded-xl shadow-card bg-card/30">
             <table className="w-full text-left text-xs">
               <thead className="sticky top-0 bg-bg/90 backdrop-blur">
-                <tr className="border-b border-border">
+                <tr className="border-b border-border/10">
                   <th className="px-3 py-2 font-semibold text-fg">Select</th>
                   <th className="px-3 py-2 font-semibold text-fg">Job</th>
                   <th className="px-3 py-2 font-semibold text-fg">Provider</th>
@@ -189,7 +189,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
                   <th className="px-3 py-2 font-semibold text-fg">Import as</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border">
+              <tbody className="divide-y divide-border/10">
                 {visibleJobs.map((job) => {
                   const checked = selectedIds.has(job.id);
                   const hasSuggested = Boolean(job.suggestedCommandLine && job.suggestedCommand?.length);
@@ -223,7 +223,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
                       </td>
                       <td className="px-3 py-2 align-top text-muted-fg">{job.provider}</td>
                       <td className="px-3 py-2 align-top">
-                        <span className={cn("inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px]", safetyTone(job.safety))}>
+                        <span className={cn("inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]", safetyTone(job.safety))}>
                           {job.safety === "ci-only" ? <ShieldAlert className="h-3.5 w-3.5" /> : <Wrench className="h-3.5 w-3.5" />}
                           {job.safety}
                         </span>
@@ -233,7 +233,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
                       </td>
                       <td className="px-3 py-2 align-top">
                         <select
-                          className="h-8 rounded border border-border bg-bg px-2 text-xs"
+                          className="h-8 rounded bg-muted/30 px-2 text-xs"
                           value={kindById.get(job.id) ?? inferKind(job)}
                           disabled={!checked}
                           onChange={(e) =>
@@ -256,7 +256,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
           </div>
         </div>
       ) : (
-        <div className="mt-3 rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+        <div className="mt-3 rounded-xl bg-muted/10 p-4 text-xs text-muted-fg">
           Run “Scan CI” to detect jobs from GitHub Actions, GitLab CI, CircleCI, or Jenkinsfile.
         </div>
       )}

@@ -260,15 +260,15 @@ export function ConflictFileDiff({
 
   if (!result || result.conflictingFiles.length === 0) {
     return (
-      <div className="rounded border border-border bg-card/60 p-3 text-xs text-muted-fg">
+      <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs text-muted-fg">
         No conflicting files to preview.
       </div>
     );
   }
 
   return (
-    <div className="grid min-h-[220px] grid-cols-[220px_1fr] overflow-hidden rounded border border-border bg-card/40">
-      <div className="overflow-auto border-r border-border">
+    <div className="grid min-h-[220px] grid-cols-[220px_1fr] overflow-hidden rounded-xl shadow-card bg-card/30">
+      <div className="overflow-auto bg-card/50">
         {result.conflictingFiles.map((file) => {
           const selected = file.path === current?.path;
           return (
@@ -276,7 +276,7 @@ export function ConflictFileDiff({
               key={file.path}
               type="button"
               onClick={() => onSelectPath(file.path)}
-              className={`block w-full truncate border-b border-border px-2 py-2 text-left text-xs ${
+              className={`block w-full truncate border-b border-border/10 px-2 py-2 text-left text-xs ${
                 selected ? "bg-accent/20 text-fg" : "text-muted-fg hover:bg-muted/60"
               }`}
               title={file.path}

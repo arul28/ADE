@@ -116,10 +116,16 @@ import type {
   MergeSimulationResult,
   OperationRecord,
   PackEvent,
+  PackExport,
+  PackHeadVersion,
   PackSummary,
   PackVersion,
   PackVersionSummary,
   Checkpoint,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GetConflictExportArgs,
+  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -383,6 +389,12 @@ contextBridge.exposeInMainWorld("ade", {
     getConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsGetConflictPack, args),
     getPlanPack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetPlanPack, { laneId }),
+    getProjectExport: async (args: GetProjectExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetProjectExport, args),
+    getLaneExport: async (args: GetLaneExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetLaneExport, args),
+    getConflictExport: async (args: GetConflictExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetConflictExport, args),
     refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
     refreshProjectPack: async (args: { laneId?: string | null } = {}): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsRefreshProjectPack, args),
@@ -405,8 +417,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.packsUpdateNarrative, args),
     listEvents: async (args: { packKey: string; limit?: number }): Promise<PackEvent[]> =>
       ipcRenderer.invoke(IPC.packsListEvents, args),
+    listEventsSince: async (args: ListPackEventsSinceArgs): Promise<PackEvent[]> =>
+      ipcRenderer.invoke(IPC.packsListEventsSince, args),
     listCheckpoints: async (args: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> =>
       ipcRenderer.invoke(IPC.packsListCheckpoints, args),
+    getHeadVersion: async (packKey: string): Promise<PackHeadVersion> =>
+      ipcRenderer.invoke(IPC.packsGetHeadVersion, { packKey }),
     onEvent: (cb: (ev: PackEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PackEvent) => cb(payload);
       ipcRenderer.on(IPC.packsEvent, listener);

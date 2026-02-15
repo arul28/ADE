@@ -18,7 +18,7 @@ const items = [
 
 export function TabNav() {
   return (
-    <nav className="flex flex-col gap-2 w-full items-center">
+    <nav className="flex flex-col gap-1.5 w-full items-center">
       {items.map((it) => (
         <NavLink
           key={it.to}
@@ -26,12 +26,12 @@ export function TabNav() {
           title={it.label}
           className={({ isActive }) =>
             cn(
-              "flex items-center justify-center w-10 h-10 rounded-md text-muted-fg transition-colors hover:text-fg hover:bg-muted",
-              isActive && "text-accent bg-transparent ring-1 ring-border shadow-sm"
+              "flex items-center justify-center w-10 h-10 rounded-xl text-muted-fg/60 transition-all duration-150 hover:text-fg hover:bg-muted/40",
+              isActive && "text-accent bg-accent/15 ring-1 ring-inset ring-accent/10"
             )
           }
         >
-          <it.icon className="h-5 w-5" />
+          <it.icon className="h-[18px] w-[18px]" />
         </NavLink>
       ))}
     </nav>

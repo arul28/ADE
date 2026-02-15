@@ -152,8 +152,8 @@ export function HistoryPage() {
 
   return (
     <div className="flex h-full min-h-0 gap-3">
-      <section className="flex min-h-0 w-[52%] flex-col rounded-lg border border-border bg-card/60">
-        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+      <section className="flex min-h-0 w-[52%] flex-col rounded-2xl shadow-panel bg-[--color-surface-raised]">
+        <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
           <div>
             <div className="text-sm font-semibold">History Timeline</div>
             <div className="text-xs text-muted-fg">{loading ? "Loading…" : `${filtered.length} events`}</div>
@@ -163,11 +163,11 @@ export function HistoryPage() {
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 gap-2 border-b border-border p-3 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 border-b border-border/15 p-3 md:grid-cols-3">
           <label className="space-y-1">
             <div className="text-[11px] text-muted-fg">Lane</div>
             <select
-              className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+              className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
               value={laneFilter}
               onChange={(event) => setLaneFilter(event.target.value)}
             >
@@ -182,7 +182,7 @@ export function HistoryPage() {
           <label className="space-y-1">
             <div className="text-[11px] text-muted-fg">Kind</div>
             <select
-              className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+              className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
               value={kindFilter}
               onChange={(event) => setKindFilter(event.target.value)}
             >
@@ -197,7 +197,7 @@ export function HistoryPage() {
           <label className="space-y-1">
             <div className="text-[11px] text-muted-fg">Status</div>
             <select
-              className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+              className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value as OperationRecord["status"] | "all")}
             >
@@ -218,10 +218,10 @@ export function HistoryPage() {
               {filtered.map((row) => (
                 <button
                   key={row.id}
-                  className={`w-full rounded border px-3 py-2 text-left transition-colors ${
+                  className={`w-full rounded-xl px-3 py-2 text-left transition-all ${
                     row.id === selected?.id
-                      ? "border-accent bg-accent/10"
-                      : "border-border bg-card/70 hover:bg-muted/40"
+                      ? "shadow-card-hover bg-card/80"
+                      : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70"
                   }`}
                   onClick={() => {
                     setSelectedOperationId(row.id);
@@ -246,8 +246,8 @@ export function HistoryPage() {
         </div>
       </section>
 
-      <section className="flex min-h-0 w-[48%] flex-col rounded-lg border border-border bg-card/60">
-        <div className="border-b border-border px-3 py-2">
+      <section className="flex min-h-0 w-[48%] flex-col rounded-2xl shadow-panel bg-[--color-surface-raised]">
+        <div className="border-b border-border/15 px-3 py-2">
           <div className="text-sm font-semibold">Event Detail</div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -255,38 +255,38 @@ export function HistoryPage() {
             <EmptyState title="No event selected" description="Select an operation from the timeline." />
           ) : (
             <div className="space-y-3 text-xs">
-              <div className="rounded border border-border bg-card/70 p-2">
+              <div className="rounded-xl bg-muted/20 p-2">
                 <div className="text-[11px] text-muted-fg">Summary</div>
                 <div className="mt-1 font-semibold">{described?.title ?? selected.kind}</div>
                 <div className="mt-1 text-[11px] text-muted-fg">{described?.detail ?? (selected.laneName ?? "project")}</div>
               </div>
 
               {metaError ? (
-                <div className="rounded border border-red-900 bg-red-950/20 p-2 text-[11px] text-red-200">
+                <div className="rounded-lg bg-red-500/10 p-2 text-[11px] text-red-200">
                   {metaError}
                 </div>
               ) : null}
 
               <div className="grid grid-cols-2 gap-2">
-                <div className="rounded border border-border bg-card/70 p-2">
+                <div className="rounded-xl bg-muted/20 p-2">
                   <div className="text-[11px] text-muted-fg">Kind</div>
                   <div className="mt-1 font-semibold">{selected.kind}</div>
                 </div>
-                <div className="rounded border border-border bg-card/70 p-2">
+                <div className="rounded-xl bg-muted/20 p-2">
                   <div className="text-[11px] text-muted-fg">Status</div>
                   <div className="mt-1 font-semibold">{selected.status}</div>
                 </div>
-                <div className="rounded border border-border bg-card/70 p-2">
+                <div className="rounded-xl bg-muted/20 p-2">
                   <div className="text-[11px] text-muted-fg">Started</div>
                   <div className="mt-1">{new Date(selected.startedAt).toLocaleString()}</div>
                 </div>
-                <div className="rounded border border-border bg-card/70 p-2">
+                <div className="rounded-xl bg-muted/20 p-2">
                   <div className="text-[11px] text-muted-fg">Ended</div>
                   <div className="mt-1">{selected.endedAt ? new Date(selected.endedAt).toLocaleString() : "running"}</div>
                 </div>
               </div>
 
-              <div className="rounded border border-border bg-card/70 p-2">
+              <div className="rounded-xl bg-muted/20 p-2">
                 <div className="text-[11px] text-muted-fg">Lane</div>
                 <div className="mt-1">{selected.laneName ?? "project"}</div>
                 {selected.laneId ? (
@@ -311,14 +311,14 @@ export function HistoryPage() {
                 ) : null}
               </div>
 
-              <div className="rounded border border-border bg-card/70 p-2">
+              <div className="rounded-xl bg-muted/20 p-2">
                 <div className="text-[11px] text-muted-fg">SHA Transition</div>
                 <div className="mt-1 break-all">{selected.preHeadSha ?? "(none)"}</div>
                 <div className="mt-1 text-muted-fg">to</div>
                 <div className="mt-1 break-all">{selected.postHeadSha ?? "(none)"}</div>
               </div>
 
-              <details className="rounded border border-border bg-card/70 p-2">
+              <details className="rounded-xl bg-muted/20 p-2">
                 <summary className="cursor-pointer text-[11px] text-muted-fg">Metadata (raw)</summary>
                 <pre className="mt-2 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed">
                   {metadata ? JSON.stringify(metadata, null, 2) : "(none)"}

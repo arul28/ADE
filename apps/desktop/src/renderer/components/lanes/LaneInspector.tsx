@@ -13,7 +13,7 @@ import { LanePrPanel } from "../prs/LanePrPanel";
 import type { LaneInspectorTab } from "../../state/appStore";
 
 const tabTrigger =
-  "px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:border-b-2 data-[state=active]:border-accent";
+  "px-2.5 py-1.5 text-xs font-semibold rounded-lg text-muted-fg transition-colors data-[state=active]:text-fg data-[state=active]:bg-accent/10";
 
 export function LaneInspector({
   overrideLaneId,
@@ -77,7 +77,7 @@ export function LaneInspector({
         }}
         className="flex h-full flex-col"
       >
-        <Tabs.List className="flex gap-2 border-b border-border px-2">
+        <Tabs.List className="flex gap-2 border-b border-border/10 px-2">
           <Tabs.Trigger className={cn(tabTrigger)} value="terminals">
             Terminals
           </Tabs.Trigger>
@@ -106,16 +106,16 @@ export function LaneInspector({
               <EmptyState title="No lane selected" />
             ) : (
               <div className="space-y-3 text-xs">
-                <div className="rounded border border-border bg-card/50 p-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Depth</div>
+                <div className="rounded-xl shadow-card bg-card/40 p-2">
+                  <div className="mb-1 text-xs text-muted-fg/70">Depth</div>
                   <div className="font-semibold text-fg">{lane.stackDepth}</div>
                 </div>
-                <div className="rounded border border-border bg-card/50 p-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Parent</div>
+                <div className="rounded-xl shadow-card bg-card/40 p-2">
+                  <div className="mb-1 text-xs text-muted-fg/70">Parent</div>
                   {parentLane ? (
                     <button
                       type="button"
-                      className="rounded border border-border bg-bg px-2 py-1 text-fg hover:border-accent"
+                      className="rounded-xl bg-bg shadow-card px-2 py-1 text-fg hover:shadow-card-hover"
                       onClick={() => selectLane(parentLane.id)}
                     >
                       {parentLane.name}
@@ -124,8 +124,8 @@ export function LaneInspector({
                     <div className="text-muted-fg">None (root lane)</div>
                   )}
                 </div>
-                <div className="rounded border border-border bg-card/50 p-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Children</div>
+                <div className="rounded-xl shadow-card bg-card/40 p-2">
+                  <div className="mb-1 text-xs text-muted-fg/70">Children</div>
                   {childLanes.length === 0 ? (
                     <div className="text-muted-fg">No child lanes</div>
                   ) : (
@@ -134,7 +134,7 @@ export function LaneInspector({
                         <button
                           key={child.id}
                           type="button"
-                          className="block w-full rounded border border-border bg-bg px-2 py-1 text-left text-fg hover:border-accent"
+                          className="block w-full rounded-xl bg-bg shadow-card px-2 py-1 text-left text-fg hover:shadow-card-hover"
                           onClick={() => selectLane(child.id)}
                         >
                           {child.name}
@@ -144,7 +144,7 @@ export function LaneInspector({
                   )}
                 </div>
                 {lane.parentLaneId ? (
-                  <div className="rounded border border-border bg-card/50 p-2">
+                  <div className="rounded-xl shadow-card bg-card/40 p-2">
                     <Button
                       size="sm"
                       variant="outline"
@@ -175,13 +175,13 @@ export function LaneInspector({
                     {restackError ? <div className="mt-2 text-[11px] text-red-400">{restackError}</div> : null}
                   </div>
                 ) : null}
-                <div className="rounded border border-border bg-card/50 p-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Reparent</div>
+                <div className="rounded-xl shadow-card bg-card/40 p-2">
+                  <div className="mb-1 text-xs text-muted-fg/70">Reparent</div>
                   <div className="flex items-center gap-2">
                     <select
                       value={reparentTargetId}
                       onChange={(event) => setReparentTargetId(event.target.value)}
-                      className="h-8 flex-1 rounded border border-border bg-bg px-2 text-xs"
+                      className="h-8 flex-1 rounded-xl bg-muted/30 shadow-card px-2 text-xs"
                     >
                       <option value="">Select new parent…</option>
                       {reparentOptions.map((entry) => (

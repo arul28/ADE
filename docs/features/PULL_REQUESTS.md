@@ -1,6 +1,6 @@
 # Pull Requests — GitHub Integration & Stacked PRs
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-14
 
 ---
 
@@ -396,57 +396,57 @@ interface StackChain {
 
 ## Implementation Tracking
 
-All tasks for this feature are **TODO** — implementation has not yet begun. Phase 6 (Cloud Infrastructure + Auth + LLM Gateway) must be completed first, as PR-001 (GitHub OAuth) relies on Clerk auth and PR-007 (description drafting) relies on the LLM gateway.
+Pull Requests are **implemented** as part of Phase 7 (GitHub Integration + Workspace Graph). The checklist below is retained for reference.
 
 ### Authentication & API
 
 | ID | Task | Status |
 |----|------|--------|
-| PR-001 | GitHub authentication (OS keychain token storage and retrieval) | TODO |
-| PR-002 | GitHub API integration service (`githubService`) | TODO |
+| PR-001 | GitHub authentication (OS keychain token storage and retrieval) | DONE |
+| PR-002 | GitHub API integration service (`githubService`) | DONE |
 
 ### PR CRUD
 
 | ID | Task | Status |
 |----|------|--------|
-| PR-003 | PR creation from lane (GitHub API call, local record) | TODO |
-| PR-004 | PR link to existing (by URL or number, fetch and store) | TODO |
-| PR-005 | PR status display (state badge, checks icon, review icon) | TODO |
-| PR-006 | PR status polling (periodic refresh from GitHub) | TODO |
-| PR-007 | Pack-generated PR description drafting | TODO |
-| PR-008 | PR description update (push to GitHub) | TODO |
+| PR-003 | PR creation from lane (GitHub API call, local record) | DONE |
+| PR-004 | PR link to existing (by URL or number, fetch and store) | DONE |
+| PR-005 | PR status display (state badge, checks icon, review icon) | DONE |
+| PR-006 | PR status polling (periodic refresh from GitHub) | DONE |
+| PR-007 | Pack-generated PR description drafting | DONE |
+| PR-008 | PR description update (push to GitHub) | DONE |
 
 ### Lane PR Panel
 
 | ID | Task | Status |
 |----|------|--------|
-| PR-009 | Lane PR panel component (sub-tab in Lane detail) | TODO |
-| PR-010 | PR creation form (title, body, base, draft, labels, reviewers) | TODO |
-| PR-011 | PR status view (checks, reviews, conflicts) | TODO |
-| PR-012 | "Open in GitHub" action (launch external browser) | TODO |
+| PR-009 | Lane PR panel component (sub-tab in Lane detail) | DONE |
+| PR-010 | PR creation form (title, body, base, draft, labels, reviewers) | DONE |
+| PR-011 | PR status view (checks, reviews, conflicts) | DONE |
+| PR-012 | "Open in GitHub" action (launch external browser) | DONE |
 
 ### PRs Tab
 
 | ID | Task | Status |
 |----|------|--------|
-| PR-010 | PRs tab page layout (stacked chains view, all PRs list) | TODO |
-| PR-011 | All PRs list with sortable columns and filters | TODO |
-| PR-013 | Stacked PR chain visualization (node graph) | TODO |
+| PR-010 | PRs tab page layout (stacked chains view, all PRs list) | DONE |
+| PR-011 | All PRs list with sortable columns and filters | DONE |
+| PR-013 | Stacked PR chain visualization (node graph) | DONE |
 
 ### Stacked PRs & Landing
 
 | ID | Task | Status |
 |----|------|--------|
-| PR-014 | Base retargeting for stacked PRs (update via GitHub API) | TODO |
-| PR-015 | Land single PR (merge, delete branch, archive lane) | TODO |
-| PR-016 | Land stack flow (ordered merge, retarget, cleanup) | TODO |
-| PR-017 | Land progress UI (step-by-step status display) | TODO |
+| PR-014 | Base retargeting for stacked PRs (update via GitHub API) | DONE |
+| PR-015 | Land single PR (merge, delete branch, archive lane) | DONE |
+| PR-016 | Land stack flow (ordered merge, retarget, cleanup) | DONE |
+| PR-017 | Land progress UI (step-by-step status display) | DONE |
 
 ### Advanced Features
 
 | ID | Task | Status |
 |----|------|--------|
-| PR-017 | PR checks integration (CI status detail view) | TODO |
-| PR-018 | PR review status integration (reviewer list, comments) | TODO |
-| PR-019 | PR notifications (check failures, review requests, merge ready) | TODO |
-| PR-020 | PR template support (load from `.github/PULL_REQUEST_TEMPLATE.md`) | TODO |
+| PR-017 | PR checks integration (CI status detail view) | DONE |
+| PR-018 | PR review status integration (reviewer list, comments) | DONE |
+| PR-019 | PR notifications (check failures, review requests, merge ready) | DONE |
+| PR-020 | PR template support (load from `.github/PULL_REQUEST_TEMPLATE.md`) | DONE |

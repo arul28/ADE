@@ -51,11 +51,11 @@ export function MergeSimulationPanel({
   };
 
   return (
-    <div className="space-y-2 rounded border border-border bg-card/40 p-3">
-      <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Merge Simulation</div>
+    <div className="space-y-2 rounded-xl shadow-card bg-card/30 p-3">
+      <div className="text-[13px] font-semibold text-fg/70">Merge Simulation</div>
       <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
         <select
-          className="h-8 rounded border border-border bg-bg px-2 text-xs"
+          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
           value={laneAId}
           onChange={(event) => setLaneAId(event.target.value)}
         >
@@ -66,7 +66,7 @@ export function MergeSimulationPanel({
           ))}
         </select>
         <select
-          className="h-8 rounded border border-border bg-bg px-2 text-xs"
+          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
           value={laneBId}
           onChange={(event) => setLaneBId(event.target.value)}
         >
@@ -84,11 +84,11 @@ export function MergeSimulationPanel({
         </Button>
       </div>
 
-      {error ? <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{error}</div> : null}
+      {error ? <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{error}</div> : null}
 
       {result ? (
         <div className="space-y-2">
-          <div className="rounded border border-border bg-bg/40 p-2 text-xs">
+          <div className="rounded-lg bg-muted/20 p-2 text-xs">
             <div>
               Outcome: <span className="font-semibold text-fg">{result.outcome}</span>
             </div>

@@ -112,11 +112,19 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
+  PackExport,
+  PackDeltaDigestArgs,
+  PackDeltaDigestV1,
   PackEvent,
+  PackHeadVersion,
   PackSummary,
   PackVersion,
   PackVersionSummary,
   Checkpoint,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GetConflictExportArgs,
+  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -183,6 +191,7 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
+import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
   db: AdeDb;
@@ -1014,6 +1023,9 @@ export function registerIpc({
       throw new Error("Lane pack is empty. Refresh the deterministic pack first.");
     }
 
+    const laneExport = await ctx.packService.getLaneExport({ laneId: arg.laneId, level: "standard" });
+    const packBody = redactSecrets(laneExport.content);
+
     const providerMode = ctx.projectConfigService.get().effective.providerMode ?? "guest";
     if (providerMode === "hosted") {
       if (!ctx.hostedAgentService.getStatus().enabled) {
@@ -1026,7 +1038,7 @@ export function registerIpc({
       try {
         const narrative = await ctx.hostedAgentService.requestLaneNarrative({
           laneId: arg.laneId,
-          packBody: lanePack.body,
+          packBody,
           onJobSubmitted: (submission) => {
             jobId = submission.jobId;
             lastStatus = submission.status;
@@ -1043,7 +1055,10 @@ export function registerIpc({
                   trigger: "manual_ai",
                   sessionId: null,
                   deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
-                  contentHash: lanePack.contentHash
+                  contentHash: lanePack.contentHash,
+                  exportLevel: laneExport.level,
+                  exportApproxTokens: laneExport.approxTokens,
+                  exportMaxTokens: laneExport.maxTokens
                 }
               });
             } catch {
@@ -1108,7 +1123,10 @@ export function registerIpc({
             trigger: "manual_ai",
             sessionId: null,
             deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
-            contentHash: lanePack.contentHash
+            contentHash: lanePack.contentHash,
+            exportLevel: laneExport.level,
+            exportApproxTokens: laneExport.approxTokens,
+            exportMaxTokens: laneExport.maxTokens
           }
         });
       } catch {
@@ -1118,7 +1136,7 @@ export function registerIpc({
       try {
         const narrative = await ctx.byokLlmService.generateLaneNarrative({
           laneId: arg.laneId,
-          packBody: lanePack.body
+          packBody
         });
         return ctx.packService.applyHostedNarrative({
           laneId: arg.laneId,
@@ -1173,6 +1191,26 @@ export function registerIpc({
   ipcMain.handle(IPC.packsGetPlanPack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
     const ctx = getCtx();
     return ctx.packService.getPlanPack(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.packsGetProjectExport, async (_event, arg: GetProjectExportArgs): Promise<PackExport> => {
+    const ctx = getCtx();
+    return await ctx.packService.getProjectExport(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetLaneExport, async (_event, arg: GetLaneExportArgs): Promise<PackExport> => {
+    const ctx = getCtx();
+    return await ctx.packService.getLaneExport(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetConflictExport, async (_event, arg: GetConflictExportArgs): Promise<PackExport> => {
+    const ctx = getCtx();
+    return await ctx.packService.getConflictExport(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetDeltaDigest, async (_event, arg: PackDeltaDigestArgs): Promise<PackDeltaDigestV1> => {
+    const ctx = getCtx();
+    return await ctx.packService.getDeltaDigest(arg);
   });
 
   ipcMain.handle(IPC.packsRefreshFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
@@ -1232,12 +1270,25 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.packsListEventsSince,
+    async (_event, arg: ListPackEventsSinceArgs): Promise<PackEvent[]> => {
+      const ctx = getCtx();
+      return ctx.packService.listEventsSince(arg);
+    }
+  );
+
+  ipcMain.handle(
     IPC.packsListCheckpoints,
     async (_event, arg: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> => {
       const ctx = getCtx();
       return ctx.packService.listCheckpoints({ laneId: arg.laneId, limit: arg.limit });
     }
   );
+
+  ipcMain.handle(IPC.packsGetHeadVersion, async (_event, arg: { packKey: string }): Promise<PackHeadVersion> => {
+    const ctx = getCtx();
+    return ctx.packService.getHeadVersion({ packKey: arg.packKey });
+  });
 
   ipcMain.handle(IPC.hostedGetStatus, async (): Promise<HostedStatus> => {
     const ctx = getCtx();

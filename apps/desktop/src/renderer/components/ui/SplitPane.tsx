@@ -4,6 +4,7 @@ import type { Layout } from "react-resizable-panels";
 import { cn } from "./cn";
 
 export { Panel as SplitPanePanel, Separator as SplitPaneSeparator };
+export { ResizeGutter } from "./ResizeGutter";
 export type SplitPaneLayout = Layout;
 
 export function SplitPane({
@@ -24,7 +25,7 @@ export function SplitPane({
       id={id}
       orientation="horizontal"
       className={cn(
-        "h-full w-full overflow-hidden rounded-lg border border-border bg-card/70 shadow-[0_1px_0_rgba(0,0,0,0.06)] backdrop-blur",
+        "h-full w-full overflow-hidden rounded-xl bg-card/40 shadow-card backdrop-blur-sm",
         className
       )}
       defaultLayout={defaultLayout}
@@ -34,4 +35,3 @@ export function SplitPane({
     </Group>
   );
 }
-

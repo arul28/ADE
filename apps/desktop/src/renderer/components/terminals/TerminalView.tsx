@@ -178,19 +178,27 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     if (!term) return;
     // Avoid reassigning `term.options` wholesale. Some options (cols/rows) are readonly after construction
     // and xterm will throw if we try to set them via the options setter.
-    term.options.theme = termTheme ? { ...termTheme } : undefined;
+    // Defer theme update to next frame so the renderer is fully initialised.
+    const id = requestAnimationFrame(() => {
+      try {
+        term.options.theme = termTheme ? { ...termTheme } : undefined;
+      } catch {
+        // Ignore if terminal was disposed or renderer not ready.
+      }
+    });
+    return () => cancelAnimationFrame(id);
   }, [termTheme]);
 
   return (
     <div
       className={cn(
-        "relative h-full min-h-0 w-full overflow-hidden rounded-md border border-border bg-muted/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]",
+        "relative h-full min-h-0 w-full overflow-hidden rounded-xl bg-muted/70 shadow-card",
         className
       )}
     >
       <div ref={containerRef} className="h-full w-full p-2" />
       {exited != null ? (
-        <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-border bg-bg/90 px-2 py-1 text-[11px] text-muted-fg">
+        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg bg-bg/90 shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
         </div>
       ) : null}

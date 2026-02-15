@@ -90,9 +90,9 @@ Terminal session lifecycle tracking. Each session records:
 Sessions appear in the timeline alongside other operations, providing context about
 what terminal work was happening around each git or pack operation.
 
-### Checkpoint (Future)
+### Checkpoint
 
-An immutable snapshot created at session boundaries. A checkpoint captures:
+An immutable snapshot created at session boundaries (implemented in Phase 8 via packService). A checkpoint captures:
 
 - The exact SHA at the moment of creation
 - Diff stat since the previous checkpoint
@@ -102,11 +102,11 @@ An immutable snapshot created at session boundaries. A checkpoint captures:
 Checkpoints enable navigating to any past state to see what the repository looked
 like at that point.
 
-### Pack Event (Future)
+### Pack Event
 
-Append-only log entries recording changes to pack state. Each event records what
+Append-only log entries recording changes to pack state (implemented in Phase 8 via packService). Each event records what
 happened (checkpoint created, narrative updated, conflict detected, etc.) with a
-typed payload. This provides a granular audit trail of how packs evolved.
+typed payload. This provides a granular audit trail of how packs evolved. Events are surfaced as a human-readable activity feed in the PackViewer UI.
 
 ### Feature History (Future)
 
@@ -466,12 +466,14 @@ interface HistoryEntry {
 
 ### Checkpoints & Snapshots
 
+Backend implementation (packService) is DONE (Phase 8). History tab UI for browsing these remains TODO for Phase 9.
+
 | ID | Task | Status |
 |----|------|--------|
-| HIST-011 | Checkpoint creation on session end | TODO |
-| HIST-012 | Checkpoint storage and indexing (SQLite + filesystem) | TODO |
-| HIST-013 | Pack event logging (append-only event log) | TODO |
-| HIST-014 | Pack version tracking (version numbers, content hashes) | TODO |
+| HIST-011 | Checkpoint creation on session end | DONE — Phase 8 (backend: `packService` creates checkpoints on session end, stored in `checkpoints` table) |
+| HIST-012 | Checkpoint storage and indexing (SQLite + filesystem) | DONE — Phase 8 (backend: SQLite `checkpoints` table + filesystem at `.ade/history/checkpoints/`) |
+| HIST-013 | Pack event logging (append-only event log) | DONE — Phase 8 (backend: SQLite `pack_events` table, append-only, surfaced as activity feed in PackViewer) |
+| HIST-014 | Pack version tracking (version numbers, content hashes) | DONE — Phase 8 (backend: SQLite `pack_versions` + `pack_heads` tables, immutable snapshots with diff viewer) |
 
 ### Advanced Timeline Features
 
@@ -494,4 +496,4 @@ interface HistoryEntry {
 
 ---
 
-*This document describes the History feature for ADE. The core timeline is implemented. Checkpoints and event logging are planned for Phase 8. Advanced timeline features (graph view, undo, replay, export) are planned for Phase 9.*
+*This document describes the History feature for ADE. The core timeline is implemented (Phases 2+). Checkpoints, pack event logging, and pack version tracking are implemented in the backend (Phase 8, via packService). Advanced timeline features (graph view, undo, replay, export, History UI for browsing checkpoints/events) are planned for Phase 9.*

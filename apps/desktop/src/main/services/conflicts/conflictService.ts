@@ -40,6 +40,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createByokLlmService } from "../byok/byokLlmService";
 import type { createPackService } from "../packs/packService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { redactSecretsDeep } from "../../utils/redaction";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -87,7 +88,12 @@ const RISK_SCORE: Record<ConflictRiskLevel, number> = {
   high: 3
 };
 
-const MAX_AUTO_LANES = 15;
+// For small workspaces we can afford the full pairwise matrix automatically.
+const FULL_MATRIX_MAX_LANES = 15;
+// For larger workspaces we prefilter likely-conflicting pairs using a cheap overlap heuristic.
+const PREFILTER_MAX_PEERS_PER_LANE = 6;
+const PREFILTER_MAX_GLOBAL_PAIRS = 800;
+const PREFILTER_MAX_TOUCHED_FILES = 800;
 const STALE_MS = 5 * 60_000;
 
 function safeJsonArray<T>(raw: string | null): T[] {
@@ -894,6 +900,9 @@ export function createConflictService({
     comparedLaneIds?: string[];
     maxAutoLanes?: number;
     totalLanes?: number;
+    strategy?: string;
+    pairwisePairsComputed?: number;
+    pairwisePairsTotal?: number;
   } = {}): Promise<BatchAssessmentResult> => {
     const lanes = await listActiveLanes();
     const statuses = await Promise.all(lanes.map((lane) => getLaneStatusInternal(lane)));
@@ -907,7 +916,10 @@ export function createConflictService({
       truncated: options.truncated,
       comparedLaneIds: options.comparedLaneIds,
       maxAutoLanes: options.maxAutoLanes,
-      totalLanes: options.totalLanes
+      totalLanes: options.totalLanes,
+      strategy: options.strategy,
+      pairwisePairsComputed: options.pairwisePairsComputed,
+      pairwisePairsTotal: options.pairwisePairsTotal
     };
   };
 
@@ -943,7 +955,8 @@ export function createConflictService({
 
   const writeConflictPacks = async (assessment: BatchAssessmentResult): Promise<void> => {
     if (!conflictPacksDir) return;
-    fs.mkdirSync(conflictPacksDir, { recursive: true });
+    const predictionsDir = path.join(conflictPacksDir, "predictions");
+    fs.mkdirSync(predictionsDir, { recursive: true });
 
     for (const status of assessment.lanes) {
       try {
@@ -951,14 +964,54 @@ export function createConflictService({
         const laneMatrix = assessment.matrix.filter(
           (entry) => entry.laneAId === status.laneId || entry.laneBId === status.laneId
         );
+        const matrixRowFor = (peerId: string | null) => {
+          if (!peerId) {
+            return laneMatrix.find((m) => m.laneAId === status.laneId && m.laneBId === status.laneId) ?? null;
+          }
+          return (
+            laneMatrix.find((m) => (m.laneAId === status.laneId && m.laneBId === peerId) || (m.laneAId === peerId && m.laneBId === status.laneId)) ??
+            null
+          );
+        };
+
+        const openConflictSummaries = overlaps
+          .filter((ov) => ov && (ov.files?.length ?? 0) > 0)
+          .map((ov) => {
+            const row = matrixRowFor(ov.peerId ?? null);
+            const riskSignals: string[] = [];
+            if (row?.stale) riskSignals.push("stale_prediction");
+            if (row?.hasConflict) riskSignals.push("predicted_conflict");
+            if ((ov.files?.length ?? 0) > 0) riskSignals.push("overlap_files");
+            if (assessment.truncated) riskSignals.push("partial_coverage");
+            return {
+              peerId: ov.peerId ?? null,
+              peerLabel: ov.peerName,
+              riskLevel: ov.riskLevel,
+              fileCount: ov.files.length,
+              lastSeenAt: row?.computedAt ?? status.lastPredictedAt ?? null,
+              riskSignals
+            };
+          })
+          .sort((a, b) => b.fileCount - a.fileCount || a.peerLabel.localeCompare(b.peerLabel))
+          .slice(0, 12);
+
         const payload = {
+          schema: "ade.conflicts.predictionPack.v2",
           laneId: status.laneId,
           status,
           overlaps,
           matrix: laneMatrix,
-          generatedAt: assessment.computedAt
+          generatedAt: assessment.computedAt,
+          predictionAt: status.lastPredictedAt ?? null,
+          lastRecomputedAt: assessment.computedAt,
+          stalePolicy: { ttlMs: STALE_MS },
+          openConflictSummaries,
+          truncated: Boolean(assessment.truncated),
+          strategy: assessment.strategy,
+          pairwisePairsComputed: assessment.pairwisePairsComputed,
+          pairwisePairsTotal: assessment.pairwisePairsTotal
         };
-        const outPath = path.join(conflictPacksDir, `${status.laneId}.json`);
+        const outPath = path.join(predictionsDir, `${status.laneId}.json`);
         fs.writeFileSync(outPath, JSON.stringify(payload, null, 2), "utf8");
       } catch (error) {
         logger.warn("conflicts.pack_write_failed", {
@@ -1117,6 +1170,94 @@ export function createConflictService({
       }
     };
 
+  const pruneTouchedFilesForHeuristic = (files: Set<string>): Set<string> => {
+    if (files.size <= PREFILTER_MAX_TOUCHED_FILES) return files;
+    const sorted = Array.from(files).sort((a, b) => a.localeCompare(b));
+    return new Set(sorted.slice(0, PREFILTER_MAX_TOUCHED_FILES));
+  };
+
+  const readTouchedFilesSinceBase = async (lane: LaneSummary): Promise<Set<string>> => {
+    try {
+      const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+      const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+      const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+      const touched = await readTouchedFiles(projectRoot, mergeBase, laneHead);
+      return pruneTouchedFilesForHeuristic(touched);
+    } catch {
+      return new Set<string>();
+    }
+  };
+
+  const intersectionCount = (a: Set<string>, b: Set<string>): number => {
+    if (a.size === 0 || b.size === 0) return 0;
+    const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+    let count = 0;
+    for (const file of small) {
+      if (big.has(file)) count += 1;
+    }
+    return count;
+  };
+
+  const buildPrefilterPairs = async (
+    comparisonLanes: LaneSummary[]
+  ): Promise<Array<{ laneA: LaneSummary; laneB: LaneSummary; overlapCount: number }>> => {
+    const touchedById = new Map<string, Set<string>>();
+    for (const lane of comparisonLanes) {
+      touchedById.set(lane.id, await readTouchedFilesSinceBase(lane));
+    }
+
+    const overlapsByLane = new Map<string, Array<{ peerId: string; overlapCount: number }>>();
+    const overlapByPair = new Map<string, number>();
+
+    for (let i = 0; i < comparisonLanes.length; i++) {
+      for (let j = i + 1; j < comparisonLanes.length; j++) {
+        const laneA = comparisonLanes[i]!;
+        const laneB = comparisonLanes[j]!;
+        const count = intersectionCount(touchedById.get(laneA.id) ?? new Set(), touchedById.get(laneB.id) ?? new Set());
+        if (count <= 0) continue;
+        const key = pairKey(laneA.id, laneB.id);
+        overlapByPair.set(key, count);
+
+        const left = overlapsByLane.get(laneA.id) ?? [];
+        left.push({ peerId: laneB.id, overlapCount: count });
+        overlapsByLane.set(laneA.id, left);
+
+        const right = overlapsByLane.get(laneB.id) ?? [];
+        right.push({ peerId: laneA.id, overlapCount: count });
+        overlapsByLane.set(laneB.id, right);
+      }
+    }
+
+    const candidateKeys = new Set<string>();
+    for (const lane of comparisonLanes) {
+      const peers = overlapsByLane.get(lane.id) ?? [];
+      peers.sort((a, b) => b.overlapCount - a.overlapCount || a.peerId.localeCompare(b.peerId));
+      for (const peer of peers.slice(0, PREFILTER_MAX_PEERS_PER_LANE)) {
+        candidateKeys.add(pairKey(lane.id, peer.peerId));
+      }
+    }
+
+    let keys = Array.from(candidateKeys);
+    if (keys.length > PREFILTER_MAX_GLOBAL_PAIRS) {
+      keys.sort((a, b) => (overlapByPair.get(b) ?? 0) - (overlapByPair.get(a) ?? 0) || a.localeCompare(b));
+      keys = keys.slice(0, PREFILTER_MAX_GLOBAL_PAIRS);
+    }
+
+    const laneMap = laneById(comparisonLanes);
+    const out: Array<{ laneA: LaneSummary; laneB: LaneSummary; overlapCount: number }> = [];
+    for (const key of keys) {
+      const [aId, bId] = key.split("::");
+      if (!aId || !bId) continue;
+      const laneA = laneMap.get(aId);
+      const laneB = laneMap.get(bId);
+      if (!laneA || !laneB) continue;
+      out.push({ laneA, laneB, overlapCount: overlapByPair.get(key) ?? 0 });
+    }
+
+    out.sort((a, b) => b.overlapCount - a.overlapCount || a.laneA.id.localeCompare(b.laneA.id) || a.laneB.id.localeCompare(b.laneB.id));
+    return out;
+  };
+
   const runPrediction = async (args: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
       const lanes = await listActiveLanes();
       if (lanes.length === 0) {
@@ -1141,31 +1282,55 @@ export function createConflictService({
           .filter(Boolean)
       );
 
-      let autoLimited = false;
       let comparisonLanes: LaneSummary[] = [];
       let basePredictionLanes: LaneSummary[] = [];
-      let totalPairs = 0;
+      let strategy = "full";
+      let truncated = false;
+      let pairwisePairsTotal = 0;
+      let pairwisePairsComputed = 0;
+      let pairwiseComparisons: Array<{ laneA: LaneSummary; laneB: LaneSummary }> = [];
 
       if (targetLane) {
         comparisonLanes = lanes;
         basePredictionLanes = [targetLane];
-        totalPairs = Math.max(0, lanes.length - 1);
-      } else if (requestedLaneIds.length > 0) {
-        const requestedSet = new Set(requestedLaneIds);
-        const selected = lanes.filter((lane) => requestedSet.has(lane.id));
-        if (selected.length === 0) {
-          throw new Error("No valid lanes selected for conflict prediction");
-        }
-        autoLimited = selected.length > MAX_AUTO_LANES;
-        comparisonLanes = selected.slice(0, autoLimited ? MAX_AUTO_LANES : selected.length);
-        basePredictionLanes = comparisonLanes;
-        totalPairs = Math.max(0, (comparisonLanes.length * (comparisonLanes.length - 1)) / 2);
+        strategy = "full-target";
+        pairwisePairsTotal = Math.max(0, lanes.length - 1);
+        pairwiseComparisons = lanes
+          .filter((lane) => lane.id !== targetLane.id)
+          .map((peer) => ({ laneA: targetLane, laneB: peer }));
       } else {
-        autoLimited = lanes.length > MAX_AUTO_LANES;
-        comparisonLanes = lanes.slice(0, autoLimited ? MAX_AUTO_LANES : lanes.length);
+        if (requestedLaneIds.length > 0) {
+          const requestedSet = new Set(requestedLaneIds);
+          const selected = lanes.filter((lane) => requestedSet.has(lane.id));
+          if (selected.length === 0) {
+            throw new Error("No valid lanes selected for conflict prediction");
+          }
+          comparisonLanes = selected;
+        } else {
+          comparisonLanes = lanes;
+        }
         basePredictionLanes = comparisonLanes;
-        totalPairs = Math.max(0, (comparisonLanes.length * (comparisonLanes.length - 1)) / 2);
+        pairwisePairsTotal = Math.max(0, (comparisonLanes.length * (comparisonLanes.length - 1)) / 2);
+
+        if (comparisonLanes.length <= FULL_MATRIX_MAX_LANES) {
+          strategy = "full";
+          for (let i = 0; i < comparisonLanes.length; i++) {
+            for (let j = i + 1; j < comparisonLanes.length; j++) {
+              const laneA = comparisonLanes[i]!;
+              const laneB = comparisonLanes[j]!;
+              pairwiseComparisons.push({ laneA, laneB });
+            }
+          }
+        } else {
+          strategy = "prefilter-overlap";
+          const pairs = await buildPrefilterPairs(comparisonLanes);
+          pairwiseComparisons = pairs.map((pair) => ({ laneA: pair.laneA, laneB: pair.laneB }));
+          truncated = pairwiseComparisons.length < pairwisePairsTotal;
+        }
       }
+
+      pairwisePairsComputed = pairwiseComparisons.length;
+      const totalPairs = pairwiseComparisons.length;
       let completedPairs = 0;
 
       const emitProgress = (pair?: { laneAId: string; laneBId: string }) => {
@@ -1193,53 +1358,31 @@ export function createConflictService({
         }
       }
 
-      if (targetLane) {
-        for (const peer of lanes) {
-          if (peer.id === targetLane.id) continue;
-          try {
-            const pairId = `pair:${pairKey(targetLane.id, peer.id)}`;
-            await runSerializedPairTask(pairId, async () => {
-              await predictPairwise(targetLane, peer);
-            });
-          } catch (error) {
-            logger.warn("conflicts.predict_pair_failed", {
-              laneId: targetLane.id,
-              peerId: peer.id,
-              error: error instanceof Error ? error.message : String(error)
-            });
-          }
-          completedPairs += 1;
-          emitProgress({ laneAId: targetLane.id, laneBId: peer.id });
+      for (const pair of pairwiseComparisons) {
+        try {
+          const pairId = `pair:${pairKey(pair.laneA.id, pair.laneB.id)}`;
+          await runSerializedPairTask(pairId, async () => {
+            await predictPairwise(pair.laneA, pair.laneB);
+          });
+        } catch (error) {
+          logger.warn("conflicts.predict_pair_failed", {
+            laneId: pair.laneA.id,
+            peerId: pair.laneB.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
         }
-      } else {
-        for (let i = 0; i < comparisonLanes.length; i++) {
-          for (let j = i + 1; j < comparisonLanes.length; j++) {
-            const laneA = comparisonLanes[i]!;
-            const laneB = comparisonLanes[j]!;
-            try {
-              const pairId = `pair:${pairKey(laneA.id, laneB.id)}`;
-              await runSerializedPairTask(pairId, async () => {
-                await predictPairwise(laneA, laneB);
-              });
-            } catch (error) {
-              logger.warn("conflicts.predict_pair_failed", {
-                laneId: laneA.id,
-                peerId: laneB.id,
-                error: error instanceof Error ? error.message : String(error)
-              });
-            }
-            completedPairs += 1;
-            emitProgress({ laneAId: laneA.id, laneBId: laneB.id });
-          }
-        }
+        completedPairs += 1;
+        emitProgress({ laneAId: pair.laneA.id, laneBId: pair.laneB.id });
       }
 
       const after = await buildBatchAssessment({
         progress: { completedPairs, totalPairs },
-        truncated: targetLane ? false : autoLimited,
+        truncated,
         comparedLaneIds: comparisonLanes.map((lane) => lane.id),
-        maxAutoLanes: targetLane ? undefined : autoLimited ? MAX_AUTO_LANES : undefined,
-        totalLanes: lanes.length
+        totalLanes: lanes.length,
+        strategy,
+        pairwisePairsComputed,
+        pairwisePairsTotal
       });
       await writeConflictPacks(after);
       const chips = buildChips(before.matrix, after.matrix);
@@ -1271,13 +1414,68 @@ export function createConflictService({
         return await runPrediction({});
       }
       const lanes = await listActiveLanes();
-      const autoLimited = lanes.length > MAX_AUTO_LANES;
-      const comparedLaneIds = lanes.slice(0, autoLimited ? MAX_AUTO_LANES : lanes.length).map((lane) => lane.id);
+      const comparedLaneIds = lanes.map((lane) => lane.id);
+
+      const readAssessmentMeta = (): {
+        truncated?: boolean;
+        strategy?: string;
+        pairwisePairsComputed?: number;
+        pairwisePairsTotal?: number;
+      } => {
+        if (!conflictPacksDir) return {};
+        const predictionsDir = path.join(conflictPacksDir, "predictions");
+        if (!fs.existsSync(predictionsDir)) return {};
+        try {
+          const entries = fs
+            .readdirSync(predictionsDir, { withFileTypes: true })
+            .filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
+          if (!entries.length) return {};
+
+          let bestName = entries[0]!.name;
+          let bestMtime = fs.statSync(path.join(predictionsDir, bestName)).mtimeMs;
+          for (const entry of entries.slice(1)) {
+            const ms = fs.statSync(path.join(predictionsDir, entry.name)).mtimeMs;
+            if (ms > bestMtime) {
+              bestMtime = ms;
+              bestName = entry.name;
+            }
+          }
+
+          const raw = fs.readFileSync(path.join(predictionsDir, bestName), "utf8");
+          const parsed = JSON.parse(raw) as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+          const record = parsed as Record<string, unknown>;
+
+          return {
+            truncated: typeof record.truncated === "boolean" ? record.truncated : undefined,
+            strategy: typeof record.strategy === "string" ? record.strategy : undefined,
+            pairwisePairsComputed: typeof record.pairwisePairsComputed === "number" ? record.pairwisePairsComputed : undefined,
+            pairwisePairsTotal: typeof record.pairwisePairsTotal === "number" ? record.pairwisePairsTotal : undefined
+          };
+        } catch {
+          return {};
+        }
+      };
+
+      const meta = readAssessmentMeta();
+      const computed = Number(meta.pairwisePairsComputed ?? NaN);
+      const total =
+        Number(meta.pairwisePairsTotal ?? NaN) ||
+        Math.max(0, (comparedLaneIds.length * (comparedLaneIds.length - 1)) / 2);
+      const truncated =
+        typeof meta.truncated === "boolean"
+          ? meta.truncated
+          : Number.isFinite(computed) && Number.isFinite(total) && total > 0
+            ? computed < total
+            : false;
+
       return await buildBatchAssessment({
-        truncated: autoLimited,
+        truncated,
         comparedLaneIds,
-        maxAutoLanes: autoLimited ? MAX_AUTO_LANES : undefined,
-        totalLanes: lanes.length
+        totalLanes: lanes.length,
+        strategy: meta.strategy,
+        pairwisePairsComputed: Number.isFinite(computed) ? computed : undefined,
+        pairwisePairsTotal: Number.isFinite(total) ? total : undefined
       });
     };
 
@@ -1425,7 +1623,8 @@ export function createConflictService({
     const warnings: string[] = [];
     const MAX_FILES = 6;
     const MAX_DIFF_CHARS = 6_000;
-    const MAX_PACK_CHARS = 10_000;
+    const LANE_EXPORT_LEVEL = "lite";
+    const CONFLICT_EXPORT_LEVEL = "standard";
 
     const truncate = (label: string, text: string, maxChars: number): string => {
       const clean = text ?? "";
@@ -1466,13 +1665,29 @@ export function createConflictService({
       warnings.push("No conflicted/overlap files found; proposal context will be minimal.");
     }
 
-    let conflictPackExcerpt: string | null = null;
+    let laneExportLite: string | null = null;
+    let peerLaneExportLite: string | null = null;
+    let conflictExportStandard: string | null = null;
     if (packService) {
-      const pack = packService.getConflictPack({ laneId, peerLaneId });
-      const trimmed = pack.body.trim();
-      if (trimmed.length) {
-        conflictPackExcerpt = truncate("Conflict pack", trimmed, MAX_PACK_CHARS);
+      try {
+        laneExportLite = (await packService.getLaneExport({ laneId, level: LANE_EXPORT_LEVEL })).content;
+      } catch (error) {
+        warnings.push(`Lane export unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
+      if (peerLaneId) {
+        try {
+          peerLaneExportLite = (await packService.getLaneExport({ laneId: peerLaneId, level: LANE_EXPORT_LEVEL })).content;
+        } catch (error) {
+          warnings.push(`Peer lane export unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      try {
+        conflictExportStandard = (await packService.getConflictExport({ laneId, peerLaneId, level: CONFLICT_EXPORT_LEVEL })).content;
+      } catch (error) {
+        warnings.push(`Conflict export unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else {
+      warnings.push("Pack service unavailable; conflict exports omitted from AI context.");
     }
 
     const files: ConflictProposalPreviewFile[] = [];
@@ -1576,26 +1791,30 @@ export function createConflictService({
       overlapSummary,
       activeConflict,
       ...(mergeHeadSha.length ? { mergeHeadSha } : {}),
-      ...(conflictPackExcerpt ? { conflictPackExcerpt } : {}),
+      laneExportLite,
+      peerLaneExportLite,
+      conflictExportStandard,
       files,
       limits: {
         maxFiles: MAX_FILES,
         maxDiffChars: MAX_DIFF_CHARS,
-        maxConflictPackChars: MAX_PACK_CHARS
+        laneExportLevel: LANE_EXPORT_LEVEL,
+        conflictExportLevel: CONFLICT_EXPORT_LEVEL
       }
     };
 
-    const contextDigest = sha256(JSON.stringify(conflictContext));
+    const redactedContext = redactSecretsDeep(conflictContext) as Record<string, unknown>;
+    const contextDigest = sha256(JSON.stringify(redactedContext));
     preparedContexts.set(contextDigest, {
       preparedAt,
       laneId,
       peerLaneId,
       provider,
-      conflictContext
+      conflictContext: redactedContext
     });
 
     const existingProposalId = findExistingProposalIdForDigest({ laneId, peerLaneId, contextDigest });
-    const approxChars = JSON.stringify(conflictContext).length;
+    const approxChars = JSON.stringify(redactedContext).length;
 
     logger.info("conflicts.proposal_prepared", {
       laneId,
@@ -1607,6 +1826,15 @@ export function createConflictService({
       activeInProgress: activeConflict.inProgress
     });
 
+    const redactedLaneExportLite =
+      typeof (redactedContext as any).laneExportLite === "string" ? ((redactedContext as any).laneExportLite as string) : null;
+    const redactedPeerLaneExportLite =
+      typeof (redactedContext as any).peerLaneExportLite === "string" ? ((redactedContext as any).peerLaneExportLite as string) : null;
+    const redactedConflictExportStandard =
+      typeof (redactedContext as any).conflictExportStandard === "string"
+        ? ((redactedContext as any).conflictExportStandard as string)
+        : null;
+
     return {
       laneId,
       peerLaneId,
@@ -1614,11 +1842,15 @@ export function createConflictService({
       preparedAt,
       contextDigest,
       activeConflict,
-      conflictPackExcerpt,
+      laneExportLite: redactedLaneExportLite,
+      peerLaneExportLite: redactedPeerLaneExportLite,
+      conflictExportStandard: redactedConflictExportStandard,
       files,
       stats: {
         approxChars,
-        conflictPackChars: conflictPackExcerpt?.length ?? 0,
+        laneExportChars: redactedLaneExportLite?.length ?? 0,
+        peerLaneExportChars: redactedPeerLaneExportLite?.length ?? 0,
+        conflictExportChars: redactedConflictExportStandard?.length ?? 0,
         fileCount: files.length
       },
       warnings,

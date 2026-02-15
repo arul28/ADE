@@ -28,6 +28,7 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
+import { redactSecrets } from "../../utils/redaction";
 
 type HostedAuthTokens = {
   accessToken?: string;
@@ -178,23 +179,6 @@ function isProbablyText(filePath: string, bytes: Buffer): boolean {
     if (bytes[i] === 0) return false;
   }
   return true;
-}
-
-function redactSecrets(text: string): string {
-  let output = text;
-  output = output.replace(
-    /((?:api[_-]?key|token|secret|password)\s*[:=]\s*)(["']?)[^\s"']{6,}\2/gi,
-    "$1<redacted>"
-  );
-  output = output.replace(
-    /-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g,
-    "<redacted-private-key>"
-  );
-  output = output.replace(
-    /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
-    "<redacted-token>"
-  );
-  return output;
 }
 
 function globLikeMatch(inputPath: string, pattern: string): boolean {
@@ -1402,11 +1386,13 @@ export function createHostedAgentService({
 
   const getStatus = (): HostedStatus => {
     const config = readHostedConfig();
+    const apiBaseUrl = config.apiBaseUrl.trim();
     return {
       enabled: config.mode === "hosted",
       mode: config.mode,
       consentGiven: config.consentGiven,
       apiConfigured: Boolean(config.apiBaseUrl.trim()),
+      apiBaseUrl: apiBaseUrl.length ? apiBaseUrl : null,
       remoteProjectId: config.remoteProjectId,
       auth: getAuthStatus(),
       mirrorExcludePatterns: config.mirrorExcludePatterns,

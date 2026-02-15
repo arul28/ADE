@@ -64,6 +64,7 @@ This document is the master implementation plan for ADE (Agentic Development Env
 | `SECURITY_AND_PRIVACY.md` | Process isolation, IPC security, secret protection, audit trail |
 | `CLOUD_BACKEND.md` | AWS serverless stack (SST, Clerk auth, S3, SQS, DynamoDB, Lambda) |
 | `HOSTED_AGENT.md` | Mirror sync protocol, LLM gateway, job types, provider swapping |
+| `CONTEXT_CONTRACT.md` | Pack contract schema, section markers, export tiers, machine-readable headers (`ade.context.v1`) |
 
 ---
 
@@ -1096,11 +1097,19 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 
 Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-to-end:
 
-- Hosted jobs: fixed worker startup/env alignment issues and DynamoDB update expression reserved keyword handling in the job worker; verified queued → processing → completed with artifact creation.
-- Packs: lane pack markdown reworked into a handoff-oriented structure (what changed / why / validation / key files / errors / sessions / next steps / narrative). Pack events now include hosted job IDs + status for clearer UI feedback.
-- Terminals: added ANSI stripping for previews/error excerpts and deterministic one-line session summaries persisted on sessions for list views.
-- Lanes: terminals panel defaults to running sessions; ended sessions collapsed behind toggles with summary-first display.
-- UI feedback: Pack Viewer and app-level banners surface hosted job failure context and warn when the hosted provider is in `mock` mode.
+- **Hosted jobs**: fixed worker startup/env alignment issues and DynamoDB update expression reserved keyword handling in the job worker; verified queued → processing → completed with artifact creation.
+- **Packs**: lane pack markdown reworked into a handoff-oriented structure (what changed / why / validation / key files / errors / sessions / next steps / narrative). Pack events now include hosted job IDs + status for clearer UI feedback.
+- **Terminals**: added ANSI stripping for previews/error excerpts and deterministic one-line session summaries persisted on sessions for list views.
+- **Lanes**: terminals panel defaults to running sessions; ended sessions collapsed behind toggles with summary-first display.
+- **UI feedback**: Pack Viewer and app-level banners surface hosted job failure context and warn when the hosted provider is in `mock` mode.
+- **Context Contract**: new `docs/architecture/CONTEXT_CONTRACT.md` defines the authoritative contract for pack keys, machine-readable headers (`ade.context.v1`), stable section markers, export levels (Lite/Standard/Deep), and orchestrator delta feed patterns. Shared constants in `apps/desktop/src/shared/contextContract.ts`.
+- **Bounded exports**: new `packExports.ts` implements token-budgeted export engine (`buildLaneExport`, `buildProjectExport`, `buildConflictExport`) with three tiers (~800/2800/8000 tokens). New IPC channels: `ade.packs.getLaneExport`, `ade.packs.getProjectExport`, `ade.packs.getConflictExport`.
+- **Pack sections**: new `packSections.ts` provides marker-based section manipulation (`extractBetweenMarkers`, `replaceBetweenMarkers`, `upsertSectionByHeading`) for safe, non-truncating updates and legacy pack upgrades.
+- **Secret redaction**: new `redaction.ts` implements `redactSecrets()` and `redactSecretsDeep()` for stripping API keys, tokens, private keys, and GitHub PATs from exports before sending to AI providers.
+- **Conflict enhancements**: ConflictsPage extended with restack suggestions, merge plans, integration lane creation, and AI conflict assistant (prepare/apply/undo proposals with export statistics).
+- **BYOK provider**: `byokLlmService.ts` implements direct LLM API calls for OpenAI, Anthropic, and Gemini with prompt templates for narrative generation, PR drafting, and conflict resolution.
+- **Auto-narrative pipeline**: jobEngine now automatically generates AI narratives after every deterministic pack refresh when Hosted/BYOK is configured (narrative_requested → narrative_update/failed events).
+- **Web app**: complete marketing/docs site (`apps/web/`) with feature gallery, download page, privacy/terms pages, responsive design with Framer Motion animations.
 
 ---
 
@@ -1174,11 +1183,10 @@ Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-
 **Architecture References**: `UI_FRAMEWORK.md`, `GIT_ENGINE.md`, `DESKTOP_APP.md`
 
 **Task References**:
-- HIST-015 through HIST-023: History enhancements
-- TERM-021 through TERM-031: Terminal enhancements
-- LANES-024, LANES-025, LANES-030 through LANES-038: Advanced lane operations
+- HIST-015 through HIST-023: History UI enhancements (graph view, checkpoint browser, undo, replay, export). Note: HIST-011–014 (checkpoint/event backend) are DONE (Phase 8 via packService).
+- TERM-021 through TERM-023, TERM-025 through TERM-027, TERM-030, TERM-031: Remaining terminal enhancements (tiling, goal tagging, tool detection, transcript search, pinning, grid view). Note: TERM-024/028/029/032 are DONE (Phases 3/6/8).
+- LANES-024, LANES-025, LANES-031, LANES-032, LANES-036 through LANES-038: Advanced lane operations (primary/attached lane support, merge simulation from context menu, lane profiles, amend commit, branch ops, reset)
 - PROJ-026 through PROJ-032, PROJ-035, PROJ-038 through PROJ-042: Run tab enhancements
-- PACK-026: Pack export
 - CONF-024: Conflict notification/alerts
 
 **New Services Required**:

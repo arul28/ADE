@@ -564,7 +564,7 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-026 | Tool type detection (Claude, Cursor, etc.) | TODO |
 | TERM-027 | Session transcript search | TODO |
 | TERM-028 | Transcript upload opt-in (hosted mirror) | DONE — Phase 6 (toggle in SettingsPage, conditional upload in `hostedAgentService.syncTranscripts()`) |
-| TERM-029 | Checkpoint creation on session end | TODO |
+| TERM-029 | Checkpoint creation on session end | DONE — Phase 8 (checkpoints created via packService on session end; indexed in SQLite `checkpoints` table) |
 | TERM-030 | Pin important sessions | TODO |
 | TERM-031 | Grid view (multi-terminal overview) | TODO |
 | TERM-032 | Untracked session mode | DONE |

@@ -40,7 +40,7 @@ type MergePlanState = {
 
 function previewLines(title: string, bullets: string[]) {
   return (
-    <div className="rounded border border-border bg-card/40 p-3 text-xs">
+    <div className="rounded-lg bg-muted/20 p-3 text-xs">
       <div className="flex items-center gap-2 font-semibold text-fg">
         <Wand2 className="h-4 w-4 text-muted-fg" />
         {title}
@@ -704,7 +704,7 @@ export function ConflictsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-border/15 px-3 py-2">
         <div className="text-sm font-semibold text-fg">Conflicts</div>
         <div className="text-xs text-muted-fg">
           lanes: {lanes.length} · conflicts: {batch?.lanes.filter((entry) => entry.status === "conflict-predicted" || entry.status === "conflict-active").length ?? 0}
@@ -737,10 +737,10 @@ export function ConflictsPage() {
         </div>
       </div>
 
-      {error ? <div className="border-b border-red-800 bg-red-900/30 px-3 py-2 text-xs text-red-200">{error}</div> : null}
+      {error ? <div className="bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr_380px]">
-        <aside className="min-h-0 overflow-auto border-r border-border bg-card/20 p-2">
+        <aside className="min-h-0 overflow-auto bg-[--color-surface-recessed] shadow-inset ade-surface-recessed p-2">
           <div className="mb-2 flex flex-wrap gap-1">
             <Chip
               role="button"
@@ -785,8 +785,8 @@ export function ConflictsPage() {
                   setViewMode("summary");
                 }}
                 className={cn(
-                  "mb-2 block w-full rounded border px-2 py-2 text-left",
-                  selected ? "border-accent bg-accent/20" : "border-border bg-card/50 hover:bg-muted/70"
+                  "mb-2 block w-full rounded-xl px-2 py-2 text-left transition-all",
+                  selected ? "shadow-card-hover bg-card/80" : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70"
                 )}
               >
                 <div className="flex items-center gap-2">
@@ -794,7 +794,7 @@ export function ConflictsPage() {
                   <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
                   {restack ? (
                     <span
-                      className="ml-auto rounded border border-amber-700/60 bg-amber-900/20 px-1.5 py-0.5 text-[10px] text-amber-200"
+                      className="ml-auto rounded-lg bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200"
                       title={`Parent advanced; behind ${restack.behindCount} commit(s).`}
                     >
                       restack
@@ -809,10 +809,10 @@ export function ConflictsPage() {
           })}
         </aside>
 
-        <main className="min-h-0 overflow-auto border-r border-border p-3">
+        <main className="min-h-0 overflow-auto p-3">
           {selectedLane ? (
             <div className="space-y-3">
-              <div className="rounded border border-border bg-card/40 p-3">
+              <div className="rounded-xl shadow-card bg-card/30 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -847,7 +847,7 @@ export function ConflictsPage() {
               </div>
 
               {selectedRestackSuggestion ? (
-                <div className="rounded border border-amber-700/60 bg-amber-900/20 p-3 text-xs">
+                <div className="rounded-lg bg-amber-500/10 p-3 text-xs">
                   <div className="flex items-start gap-2">
                     <AlertCircle className="mt-0.5 h-4 w-4 text-amber-200" />
                     <div className="min-w-0">
@@ -877,10 +877,10 @@ export function ConflictsPage() {
                 </div>
               ) : null}
 
-              <div className="rounded border border-border bg-card/40 p-3">
+              <div className="rounded-xl shadow-card bg-card/30 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Active Merge/Rebase</div>
+                    <div className="text-[13px] font-semibold text-fg/70">Active Merge/Rebase</div>
                     <div className="mt-1 text-xs text-muted-fg">
                       {gitConflictError ? (
                         <span className="text-red-200">{gitConflictError}</span>
@@ -920,7 +920,7 @@ export function ConflictsPage() {
                 </div>
 
                 {continueError ? (
-                  <div className="mt-2 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{continueError}</div>
+                  <div className="mt-2 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{continueError}</div>
                 ) : null}
 
                 {gitConflict?.inProgress && gitConflict.conflictedFiles.length > 0 ? (
@@ -928,7 +928,7 @@ export function ConflictsPage() {
                     <div className="text-[11px] font-semibold text-fg">Conflicted files</div>
                     <div className="mt-1 grid gap-1 md:grid-cols-2">
                       {gitConflict.conflictedFiles.slice(0, 24).map((p) => (
-                        <div key={p} className="truncate rounded border border-border bg-bg/40 px-2 py-1 text-[11px] text-muted-fg" title={p}>
+                        <div key={p} className="truncate rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg" title={p}>
                           {p}
                         </div>
                       ))}
@@ -940,7 +940,7 @@ export function ConflictsPage() {
                 ) : null}
 
                 {mergeActive && mergeActiveSource ? (
-                  <div className="mt-3 rounded border border-amber-700/60 bg-amber-900/20 p-2 text-xs text-amber-200">
+                  <div className="mt-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">
                     Merge plan is paused: merging <span className="text-amber-100 font-semibold">{mergeActiveSource.name}</span> into <span className="text-amber-100 font-semibold">{mergeTargetLane?.name ?? mergeActive.targetLaneId}</span>.
                     Resolve conflicts above, then click Continue.
                   </div>
@@ -963,7 +963,7 @@ export function ConflictsPage() {
                     }}
                   />
                   {selectedPairEntry ? (
-                    <div className="rounded border border-border bg-card/40 p-3 text-xs">
+                    <div className="rounded-xl shadow-card bg-card/30 p-3 text-xs">
                       <div className="font-semibold text-fg">
                         Pair: {lanes.find((lane) => lane.id === selectedPairEntry.laneAId)?.name ?? selectedPairEntry.laneAId}
                         {" vs "}
@@ -984,10 +984,10 @@ export function ConflictsPage() {
                     initialLaneBId={selectedPair && selectedPair.laneAId !== selectedPair.laneBId ? selectedPair.laneBId : null}
                   />
 
-                  <div className="rounded border border-border bg-card/40 p-3">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Workflows</div>
+                  <div className="rounded-xl shadow-card bg-card/30 p-3">
+                    <div className="text-[13px] font-semibold text-fg/70">Workflows</div>
                     <div className="mt-2 grid gap-3 lg:grid-cols-2">
-                      <div className="rounded border border-border bg-bg/30 p-3">
+                      <div className="rounded-lg bg-muted/15 p-3">
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <div className="text-xs font-semibold text-fg">Merge one-by-one</div>
@@ -1011,7 +1011,7 @@ export function ConflictsPage() {
                             <div className="flex flex-wrap items-center gap-2 text-[11px]">
                               <span className="text-muted-fg">Target</span>
                               <select
-                                className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                                className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
                                 value={mergePlan.targetLaneId}
                                 onChange={(e) => setMergePlan((prev) => (prev ? { ...prev, targetLaneId: e.target.value } : prev))}
                               >
@@ -1022,13 +1022,13 @@ export function ConflictsPage() {
                                 ))}
                               </select>
                               {mergeTargetLane?.laneType === "primary" ? (
-                                <span className="rounded border border-amber-700/60 bg-amber-900/20 px-1.5 py-0.5 text-[10px] text-amber-200">
+                                <span className="rounded-lg bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
                                   merging into primary modifies your base branch
                                 </span>
                               ) : null}
                             </div>
 
-                            <div className="max-h-32 overflow-auto rounded border border-border bg-bg/30 p-2 text-[11px]">
+                            <div className="max-h-32 overflow-auto rounded-lg bg-muted/15 p-2 text-[11px]">
                               {lanes
                                 .filter((lane) => lane.id !== mergePlan.targetLaneId && lane.laneType !== "primary")
                                 .map((lane) => {
@@ -1067,7 +1067,7 @@ export function ConflictsPage() {
                             </div>
 
                             {mergePlanError ? (
-                              <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{mergePlanError}</div>
+                              <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{mergePlanError}</div>
                             ) : null}
 
                             <div className="flex flex-wrap items-center gap-2">
@@ -1097,13 +1097,13 @@ export function ConflictsPage() {
                             ) : null}
                           </div>
                         ) : (
-                          <div className="mt-3 rounded border border-dashed border-border bg-bg/30 p-3 text-xs text-muted-fg">
+                          <div className="mt-3 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
                             Set up a merge plan to merge lanes sequentially.
                           </div>
                         )}
                       </div>
 
-                      <div className="rounded border border-border bg-bg/30 p-3">
+                      <div className="rounded-lg bg-muted/15 p-3">
                         <div className="text-xs font-semibold text-fg">Integration lane</div>
                         <div className="mt-1 text-[11px] text-muted-fg">
                           Create a fresh lane from a base (usually Primary), merge lanes into it, resolve conflicts once, then merge it back.
@@ -1119,7 +1119,7 @@ export function ConflictsPage() {
                           <div className="flex flex-wrap items-center gap-2 text-[11px]">
                             <span className="text-muted-fg">Base</span>
                             <select
-                              className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                              className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
                               value={integrationBaseLaneId}
                               onChange={(e) => setIntegrationBaseLaneId(e.target.value)}
                             >
@@ -1133,7 +1133,7 @@ export function ConflictsPage() {
 
                           <div className="flex items-center gap-2">
                             <input
-                              className="h-7 flex-1 rounded border border-border bg-bg px-2 text-[11px] text-fg"
+                              className="h-7 flex-1 rounded-lg bg-muted/30 px-2 text-[11px] text-fg"
                               value={integrationName}
                               onChange={(e) => setIntegrationName(e.target.value)}
                               placeholder="Integration lane name"
@@ -1150,11 +1150,11 @@ export function ConflictsPage() {
                           </div>
 
                           {integrationError ? (
-                            <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{integrationError}</div>
+                            <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{integrationError}</div>
                           ) : null}
 
                           {integrationLaneId ? (
-                            <div className="rounded border border-emerald-800 bg-emerald-900/20 p-2 text-xs text-emerald-200">
+                            <div className="rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-200">
                               <div className="flex items-center gap-2">
                                 <CheckCircle2 className="h-4 w-4" />
                                 Integration lane created.
@@ -1165,11 +1165,11 @@ export function ConflictsPage() {
                         </div>
                       </div>
 
-                      <div className="rounded border border-border bg-bg/30 p-3 lg:col-span-2">
+                      <div className="rounded-lg bg-muted/15 p-3 lg:col-span-2">
                         <div className="text-xs font-semibold text-fg">Pre-align lanes</div>
                         <div className="mt-1 text-[11px] text-muted-fg">When parents advance, restack children early to reduce conflicts.</div>
                         {restackSuggestions.length === 0 ? (
-                          <div className="mt-2 rounded border border-dashed border-border bg-bg/30 p-3 text-xs text-muted-fg">
+                          <div className="mt-2 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
                             No restack suggestions right now.
                           </div>
                         ) : (
@@ -1178,13 +1178,13 @@ export function ConflictsPage() {
                               const lane = lanes.find((l) => l.id === s.laneId);
                               const parent = lanes.find((l) => l.id === s.parentLaneId);
                               return (
-                                <div key={s.laneId} className="rounded border border-border bg-bg/40 p-2 text-xs">
+                                <div key={s.laneId} className="rounded-lg bg-muted/20 p-2 text-xs">
                                   <div className="flex flex-wrap items-center justify-between gap-2">
                                     <div className="min-w-0">
                                       <div className="truncate text-fg font-semibold">{lane?.name ?? s.laneId}</div>
                                       <div className="mt-0.5 text-[11px] text-muted-fg">
                                         behind <span className="text-fg">{s.behindCount}</span> · parent {parent?.name ?? s.parentLaneId}
-                                        {s.hasPr ? <span className="ml-2 rounded border border-border px-1.5 py-0.5 text-[10px]">PR</span> : null}
+                                        {s.hasPr ? <span className="ml-2 rounded-lg bg-muted/30 px-1.5 py-0.5 text-[10px]">PR</span> : null}
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -1211,17 +1211,17 @@ export function ConflictsPage() {
               )}
             </div>
           ) : (
-            <div className="rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+            <div className="rounded-lg bg-muted/10 p-4 text-xs text-muted-fg">
               Select a lane to inspect conflicts.
             </div>
           )}
         </main>
 
-        <aside className="min-h-0 overflow-auto bg-card/10 p-3">
-          <div className="rounded border border-border bg-card/50 p-3">
+        <aside className="min-h-0 overflow-auto bg-[--color-surface-recessed] shadow-inset ade-surface-recessed p-3">
+          <div className="rounded-xl shadow-card bg-card/30 p-3">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">AI Conflict Assistant</div>
+                <div className="text-[13px] font-semibold text-fg/70">AI Conflict Assistant</div>
                 <div className="mt-1 text-xs text-muted-fg">
                   {aiEnabled ? (
                     <span>
@@ -1251,7 +1251,7 @@ export function ConflictsPage() {
             </div>
 
             {!selectedLaneId ? (
-              <div className="mt-3 rounded border border-dashed border-border bg-bg/30 p-3 text-xs text-muted-fg">
+              <div className="mt-3 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
                 Select a lane.
               </div>
             ) : (
@@ -1262,11 +1262,11 @@ export function ConflictsPage() {
                   "Only after you click Send: submit that context to Hosted/BYOK for a diff proposal."
                 ])}
 
-                <div className="rounded border border-border bg-bg/30 p-2 text-xs">
+                <div className="rounded-lg bg-muted/15 p-2 text-xs">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-muted-fg">Peer context</div>
                     <select
-                      className="h-7 rounded border border-border bg-bg px-2 text-[11px]"
+                      className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
                       value={proposalPeerLaneId ?? ""}
                       onChange={(e) => setProposalPeerLaneId(e.target.value ? e.target.value : null)}
                       title="Pick which peer/base to include in diff context"
@@ -1305,20 +1305,23 @@ export function ConflictsPage() {
                 </div>
 
                 {prepareError ? (
-                  <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{prepareError}</div>
+                  <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{prepareError}</div>
                 ) : null}
                 {sendError ? (
-                  <div className="rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{sendError}</div>
+                  <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{sendError}</div>
                 ) : null}
 
                 {proposalPreview ? (
-                  <div className="rounded border border-border bg-bg/30 p-2 text-xs">
+                  <div className="rounded-lg bg-muted/15 p-2 text-xs">
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-fg font-semibold">Preview</div>
                       <div className="text-[11px] text-muted-fg">context {formatShortSha(proposalPreview.contextDigest)}</div>
                     </div>
                     <div className="mt-1 text-[11px] text-muted-fg">
                       files: {proposalPreview.stats.fileCount} · approx chars: {proposalPreview.stats.approxChars.toLocaleString()}
+                      {" "}· lane export: {proposalPreview.stats.laneExportChars.toLocaleString()}
+                      {" "}· peer export: {proposalPreview.stats.peerLaneExportChars.toLocaleString()}
+                      {" "}· conflict export: {proposalPreview.stats.conflictExportChars.toLocaleString()}
                       {proposalPreview.activeConflict.inProgress ? (
                         <>
                           {" "}· active {proposalPreview.activeConflict.kind}
@@ -1326,18 +1329,39 @@ export function ConflictsPage() {
                       ) : null}
                     </div>
                     {proposalPreview.warnings.length ? (
-                      <div className="mt-2 rounded border border-amber-700/60 bg-amber-900/20 px-2 py-1 text-[11px] text-amber-200">
+                      <div className="mt-2 rounded-lg bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
                         {proposalPreview.warnings.slice(0, 3).join(" ")}
                       </div>
                     ) : null}
 
-                    {proposalPreview.conflictPackExcerpt ? (
-                      <div className="mt-2">
-                        <div className="text-[11px] font-semibold text-fg">Conflict pack excerpt</div>
-                        <pre className="mt-1 max-h-40 overflow-auto rounded border border-border bg-bg/50 p-2 text-[10px] text-fg whitespace-pre-wrap">
-                          {proposalPreview.conflictPackExcerpt}
-                        </pre>
-                      </div>
+                    {proposalPreview.laneExportLite || proposalPreview.peerLaneExportLite || proposalPreview.conflictExportStandard ? (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-[11px] font-semibold text-fg">Exports sent to AI</summary>
+                        {proposalPreview.laneExportLite ? (
+                          <div className="mt-2">
+                            <div className="text-[11px] font-semibold text-fg">Lane export (lite)</div>
+                            <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                              {proposalPreview.laneExportLite}
+                            </pre>
+                          </div>
+                        ) : null}
+                        {proposalPreview.peerLaneExportLite ? (
+                          <div className="mt-2">
+                            <div className="text-[11px] font-semibold text-fg">Peer lane export (lite)</div>
+                            <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                              {proposalPreview.peerLaneExportLite}
+                            </pre>
+                          </div>
+                        ) : null}
+                        {proposalPreview.conflictExportStandard ? (
+                          <div className="mt-2">
+                            <div className="text-[11px] font-semibold text-fg">Conflict export (standard)</div>
+                            <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                              {proposalPreview.conflictExportStandard}
+                            </pre>
+                          </div>
+                        ) : null}
+                      </details>
                     ) : null}
 
                     {proposalPreview.files.length ? (
@@ -1345,22 +1369,22 @@ export function ConflictsPage() {
                         <div className="text-[11px] font-semibold text-fg">Included files</div>
                         <div className="mt-1 space-y-2">
                           {proposalPreview.files.map((f) => (
-                            <details key={f.path} className="rounded border border-border bg-bg/40 p-2">
+                            <details key={f.path} className="rounded-lg bg-muted/20 p-2">
                               <summary className="cursor-pointer text-[11px] text-fg">
                                 {f.path} <span className="text-muted-fg">({f.includeReason})</span>
                               </summary>
                               {f.markerPreview ? (
-                                <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
                                   {f.markerPreview}
                                 </pre>
                               ) : null}
                               {f.laneDiff ? (
-                                <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
                                   {f.laneDiff}
                                 </pre>
                               ) : null}
                               {f.peerDiff ? (
-                                <pre className="mt-2 max-h-28 overflow-auto rounded border border-border bg-bg/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                                <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
                                   {f.peerDiff}
                                 </pre>
                               ) : null}
@@ -1372,7 +1396,7 @@ export function ConflictsPage() {
                   </div>
                 ) : null}
 
-                <div className="rounded border border-border bg-bg/30 p-2 text-xs">
+                <div className="rounded-lg bg-muted/15 p-2 text-xs">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-fg font-semibold">Proposals</div>
                     <Button
@@ -1387,7 +1411,7 @@ export function ConflictsPage() {
                   </div>
 
                   {proposalError ? (
-                    <div className="mt-2 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{proposalError}</div>
+                    <div className="mt-2 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{proposalError}</div>
                   ) : null}
 
                   {proposals.length === 0 ? (
@@ -1395,7 +1419,7 @@ export function ConflictsPage() {
                   ) : (
                     <div className="mt-2 space-y-2">
                       {proposals.map((proposal) => (
-                        <div key={proposal.id} className="rounded border border-border bg-card/40 p-2">
+                        <div key={proposal.id} className="rounded-lg shadow-card bg-card/30 p-2">
                           <div className="flex items-center justify-between gap-2 text-[11px]">
                             <span className="text-fg">{proposal.source}</span>
                             <span className="text-muted-fg">
@@ -1411,7 +1435,7 @@ export function ConflictsPage() {
                             </div>
                           ) : null}
 
-                          <div className="mt-2 rounded border border-border bg-bg/40 p-2">
+                          <div className="mt-2 rounded-lg bg-muted/20 p-2">
                             <div className="mb-1 text-[11px] font-semibold text-fg">Apply options</div>
                             <div className="flex flex-wrap gap-2 text-[11px] text-muted-fg">
                               {(["unstaged", "staged", "commit"] as const)
@@ -1425,7 +1449,7 @@ export function ConflictsPage() {
                             </div>
                             {applyMode === "commit" && !(gitConflict?.inProgress ?? false) ? (
                               <input
-                                className="mt-2 h-7 w-full rounded border border-border bg-bg px-2 text-[11px] text-fg"
+                                className="mt-2 h-7 w-full rounded-lg bg-muted/30 px-2 text-[11px] text-fg"
                                 value={commitMessage}
                                 onChange={(e) => setCommitMessage(e.target.value)}
                                 placeholder="Commit message"
@@ -1469,7 +1493,7 @@ export function ConflictsPage() {
                           {proposal.diffPatch.trim().length ? (
                             <details className="mt-2">
                               <summary className="cursor-pointer text-[11px] text-muted-fg">diff patch</summary>
-                              <pre className="mt-1 max-h-40 overflow-auto rounded border border-border bg-bg/50 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                              <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
                                 {proposal.diffPatch.slice(0, 2000)}
                                 {proposal.diffPatch.length > 2000 ? "\n...(truncated)...\n" : ""}
                               </pre>
@@ -1481,7 +1505,7 @@ export function ConflictsPage() {
                   )}
 
                   {proposalError ? (
-                    <div className="mt-2 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{proposalError}</div>
+                    <div className="mt-2 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{proposalError}</div>
                   ) : null}
                 </div>
               </div>
@@ -1491,7 +1515,7 @@ export function ConflictsPage() {
           <Dialog.Root open={abortOpen} onOpenChange={(open) => { setAbortOpen(open); setAbortError(null); }}>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-[--color-surface-overlay] backdrop-blur-xl p-5 shadow-float focus:outline-none">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <Dialog.Title className="text-sm font-semibold text-fg">Abort merge/rebase</Dialog.Title>
                   <Dialog.Close asChild>
@@ -1501,7 +1525,7 @@ export function ConflictsPage() {
                   </Dialog.Close>
                 </div>
 
-                <div className="rounded border border-red-800 bg-red-900/25 p-2 text-xs text-red-200">
+                <div className="rounded-lg bg-red-500/10 p-2 text-xs text-red-200">
                   Aborting discards the in-progress merge/rebase state for the selected lane.
                 </div>
 
@@ -1510,10 +1534,10 @@ export function ConflictsPage() {
                   "Leave your branch HEAD unchanged, but drop the in-progress operation."
                 ])}
 
-                <div className="mt-3 rounded border border-border bg-bg/40 p-2 text-xs">
+                <div className="mt-3 rounded-lg bg-muted/20 p-2 text-xs">
                   <div className="text-muted-fg">Type <span className="text-fg font-semibold">ABORT</span> to confirm.</div>
                   <input
-                    className="mt-2 h-8 w-full rounded border border-border bg-bg px-2 text-xs text-fg"
+                    className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs text-fg"
                     value={abortConfirm}
                     onChange={(e) => setAbortConfirm(e.target.value)}
                     placeholder="ABORT"
@@ -1521,7 +1545,7 @@ export function ConflictsPage() {
                 </div>
 
                 {abortError ? (
-                  <div className="mt-3 rounded border border-red-700 bg-red-900/25 px-2 py-1 text-xs text-red-200">{abortError}</div>
+                  <div className="mt-3 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{abortError}</div>
                 ) : null}
 
                 <div className="mt-3 flex items-center justify-end gap-2">
@@ -1554,7 +1578,7 @@ export function ConflictsPage() {
           <Dialog.Root open={mergeConfirmOpen} onOpenChange={(open) => { setMergeConfirmOpen(open); }}>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-[--color-surface-overlay] backdrop-blur-xl p-5 shadow-float focus:outline-none">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <Dialog.Title className="text-sm font-semibold text-fg">Confirm merge</Dialog.Title>
                   <Dialog.Close asChild>

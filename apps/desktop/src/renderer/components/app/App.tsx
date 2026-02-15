@@ -35,7 +35,7 @@ export function App() {
 
   return (
     <HashRouter>
-      <div data-theme={theme} className="h-full bg-bg text-fg font-mono antialiased selection:bg-accent/30">
+      <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <Routes>
           <Route path="/startup" element={<StartupAuthPage />} />
           <Route element={<ShellLayout />}>

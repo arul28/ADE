@@ -51,13 +51,13 @@ export function RiskTooltip({
     <div
       ref={ref}
       className={cn(
-        "pointer-events-none fixed z-[80] w-[300px] rounded border border-border bg-card/95 p-2 shadow-2xl ade-tooltip-motion",
+        "pointer-events-none fixed z-[80] w-[300px] rounded-xl bg-card/95 p-3 shadow-float ade-tooltip-motion",
         open ? "ade-tooltip-open duration-150" : "ade-tooltip-closed duration-100"
       )}
       style={style}
     >
       <div className="mb-1 text-[11px] font-semibold text-fg">{title}</div>
-      <div className="max-h-[220px] overflow-auto rounded border border-border/70 bg-bg/40 p-1">
+      <div className="max-h-[220px] overflow-auto rounded-lg bg-bg/30 p-1">
         {shown.length === 0 ? (
           <div className="px-1 py-0.5 text-[11px] text-muted-fg">No overlapping files.</div>
         ) : (

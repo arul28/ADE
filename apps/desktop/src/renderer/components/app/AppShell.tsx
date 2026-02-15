@@ -206,9 +206,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
-      {/* TopBar is now part of the 'paper' flow - less like a floating header */
-      /* CONSOLE LAYOUT: Integrated Header */}
-      <div className="shrink-0 bg-bg relative z-20">
+      <div className="shrink-0 relative z-20">
         <TopBar
           onOpenCommandPalette={() => setCommandOpen(true)}
           commandHint={
@@ -220,17 +218,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       {providerMode === "guest" ? (
-        <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
           Running in Guest Mode - AI details disabled. <Link to="/settings" className="underline">Set up provider</Link>
         </div>
       ) : null}
       {providerMode === "hosted" ? (
         hostedStatusError ? (
-          <div className="shrink-0 border-b border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-900">
+          <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-red-500/8 px-4 py-2.5 text-xs text-red-800 shadow-card">
             Hosted AI error: {hostedStatusError} <Link to="/settings" className="underline">Open Settings</Link>
           </div>
         ) : hostedStatus && (!hostedStatus.consentGiven || !hostedStatus.apiConfigured || !hostedStatus.auth.signedIn) ? (
-          <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+          <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
             Hosted AI not ready:
             {!hostedStatus.consentGiven ? " consent not granted;" : ""}
             {!hostedStatus.apiConfigured ? " missing API config;" : ""}
@@ -242,13 +240,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       {providerMode === "hosted" && aiMockProvider ? (
-        <div className="shrink-0 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
           LLM provider is "mock" — AI will return placeholder content. <Link to="/settings" className="underline">Open Settings</Link>
         </div>
       ) : null}
 
       {providerMode === "hosted" && aiFailure ? (
-        <div className="shrink-0 border-b border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-900">
+        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-red-500/8 px-4 py-2.5 text-xs text-red-800 shadow-card">
           <span className="font-semibold">Last AI job failed:</span>{" "}
           {aiFailure.jobId ? `job ${shortId(aiFailure.jobId)} · ` : ""}
           {aiFailure.error}
@@ -303,7 +301,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       {onboardingIncomplete && !onboardingDismissed && location.pathname !== "/onboarding" ? (
-        <div className="shrink-0 border-b border-border bg-card/60 px-3 py-2 text-xs text-fg">
+        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-card/60 px-4 py-2.5 text-xs text-fg shadow-card">
           <span className="font-semibold">Onboarding is incomplete.</span>{" "}
           You can keep working and set it up later, or run the wizard to detect defaults, lanes, and initial packs.
           <span className="ml-2 inline-flex items-center gap-2">
@@ -352,13 +350,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       <div className="flex-1 flex min-h-0">
-        {/* Sidebar Navigation - High contrast, distinct pane */}
-        <aside className="w-[50px] shrink-0 border-r border-border bg-bg flex flex-col items-center py-2 z-10">
+        <aside className="w-[52px] shrink-0 bg-[--color-surface-raised] shadow-panel flex flex-col items-center py-2 z-10">
           <TabNav />
         </aside>
 
-        {/* Main Workspace - Canvas for Lanes/Content */}
-        <main className="relative flex min-h-0 min-w-0 flex-1 bg-bg">
+        <main className="relative flex min-h-0 min-w-0 flex-1">
           <div className="h-full min-h-0 w-full">
             {children}
           </div>
@@ -368,7 +364,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {prToasts.map((toast) => {
                 const laneName = lanes.find((lane) => lane.id === toast.event.laneId)?.name ?? toast.event.laneId;
                 return (
-                  <div key={toast.id} className="pointer-events-auto rounded border border-border bg-card/95 px-3 py-2 text-xs shadow-xl">
+                  <div key={toast.id} className="pointer-events-auto rounded-2xl bg-card/90 backdrop-blur-lg px-4 py-3 text-xs shadow-float">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="font-semibold text-fg truncate">{toast.event.title}</div>
