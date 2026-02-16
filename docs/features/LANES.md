@@ -260,6 +260,30 @@ The inspector is a collapsible sidebar on the right edge of the Lanes tab. It pr
 
 ---
 
+## 2026-02-16 Addendum — Lane/Hosted Context Integration
+
+### Lane-to-hosted context flow
+
+1. Lane activity updates deterministic packs.
+2. Conflict prediction updates lane conflict freshness metadata.
+3. Hosted submission chooses context source (`inline` vs `mirror`) by policy.
+4. `__adeHandoff` carries source, reason code, staleness, and manifest refs.
+5. Worker prompt includes provenance and scoped file-set summary.
+
+### UI connections in Lanes + Settings
+
+- Lanes tab:
+  - Conflict status badges reflect prediction staleness and unresolved state.
+  - Pack view consumes updated manifests with context fingerprint/freshness.
+- Settings page (`Hosted` section):
+  - shows last sync success/attempt/error.
+  - shows last cleanup success/attempt/error.
+  - shows context fallback count.
+  - shows insufficient-context job count.
+  - shows staleness reason when mirror is old.
+
+---
+
 ## Data Model
 
 ### Database Schema
@@ -336,14 +360,14 @@ lanes (
 
 | ID | Task | Status |
 |----|------|--------|
-| LANES-024 | Primary lane support (main repo dir, no worktree) | TODO — **moved to Phase 7** (Workspace Graph) |
-| LANES-025 | Attached lane support (link existing worktree) | TODO — **moved to Phase 7** (Workspace Graph) |
+| LANES-024 | Primary lane support (main repo dir, no worktree) | DONE — Phase 7 (`ensurePrimaryLane()` in laneService, edit-protected, no worktree creation) |
+| LANES-025 | Attached lane support (link existing worktree) | DONE — Phase 7 (`laneService.attach()`, `lane_type = 'attached'`, uses existing directory) |
 | LANES-026 | Stack creation (parent-child relationships) | DONE |
 | LANES-027 | Stack graph visualization in lane list | DONE |
 | LANES-028 | Restack operations (propagate parent to children) | DONE |
 | LANES-029 | Stack-aware status indicators | DONE |
 | LANES-030 | Conflict prediction indicators in lane rows | DONE (implemented in Phase 5) |
-| LANES-031 | Merge simulation from lane context menu | TODO — **moved to Phase 7** (Workspace Graph) |
+| LANES-031 | Merge simulation from lane context menu | DONE — Phase 7 (merge simulation from canvas edge click + conflict panel in WorkspaceGraphPage) |
 | LANES-032 | Lane profiles (preset configs per lane type) | TODO — **moved to Phase 9** (Advanced Features) |
 | LANES-033 | Lane overlay policies | DONE |
 | LANES-034 | Keyboard shortcuts for lane navigation | DONE |
@@ -359,5 +383,16 @@ lanes (
 **Phase 4 completed** as part of the `codex/ade-phase-4-5` branch merge (commit `65b7a6b`). Core stack management (LANES-026–029), lane overlay policies (LANES-033), and conflict prediction indicators (LANES-030, via Phase 5) are all operational.
 
 **Remaining tasks** are scheduled as follows:
-- **Phase 7 (Workspace Graph)**: LANES-024, LANES-025, LANES-030 enhancements, LANES-031
 - **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038
+
+---
+
+## 2026-02-16 Addendum — Integration Lane Rule
+
+ADE now applies an explicit external-resolver integration rule:
+
+- Single source lane merge into target: external CLI runs in source lane worktree.
+- Multiple source lanes into target: ADE auto-creates or reuses an **Integration lane** and runs external CLI there.
+
+No additional orchestrator/scheduler behavior is introduced by this rule; it is scoped to conflict-resolution execution only.
+

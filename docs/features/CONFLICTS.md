@@ -86,6 +86,10 @@ Context inputs (default):
 
 All outbound AI payloads must be token-budgeted and redacted.
 
+Hosted context delivery note:
+
+- For conflict jobs, ADE may deliver context by mirror-ref (content-addressed `__adeContextRef`) with a reduced inline fallback. This prevents large diffs from silently breaking hosted job submissions while keeping behavior deterministic and observable.
+
 ### Conflict Pack
 
 A context bundle assembled for conflict resolution. Contains:
@@ -293,7 +297,7 @@ Job Engine tick →
   For each active lane (always):
     1. Run git merge-tree <base> <lane-HEAD>
     2. Parse result for conflicts + overlap
-    3. Store prediction record
+3. Store prediction record
     4. Update lane conflict status
 
   For lane-vs-lane (scaled for large workspaces):
@@ -495,3 +499,82 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 
 **Remaining tasks** are scheduled as follows:
 - **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)
+
+---
+
+## 2026-02-16 Addendum — Conflict Context Integrity Rules
+
+### Conflict context payload (hosted/BYOK)
+
+Conflict jobs now carry a richer scoped context envelope:
+
+- `relevantFilesForConflict[]`
+- `fileContexts[]` with:
+  - `path`
+  - side snapshots/excerpts (`base`, `left`, `right`)
+  - hunk metadata and selection reason
+- freshness:
+  - `predictionAgeMs`
+  - `predictionStalenessMs`
+  - `stalePolicy.ttlMs`
+  - `pairwisePairsComputed`
+  - `pairwisePairsTotal`
+
+### Omission and clipping signaling
+
+If context is clipped/omitted, reasons are explicit, for example:
+
+- `omitted:path_count_limit`
+- `omitted:byte_cap`
+- `omitted:no_text_context`
+- `omitted:binary`
+- `omitted:secret-filter`
+
+### Insufficient-context guard (no speculative patches)
+
+When patch risk is high and required file context is incomplete:
+
+- set `insufficientContext=true`
+- include `insufficientReasons[]`
+- do not emit speculative patch
+- return explicit data-gap output instead
+
+### Conflict prompt contract
+
+Conflict prompts now enforce this exact output structure:
+
+1. `ResolutionStrategy`
+2. `RelevantEvidence`
+3. `Scope`
+4. `Patch`
+5. `Confidence`
+6. `Assumptions`
+7. `Unknowns`
+8. `InsufficientContext`
+
+If `InsufficientContext=true`, patch output must be empty.
+
+---
+
+## 2026-02-16 Addendum — External CLI Resolution Primary Path
+
+Conflict resolution generation now defaults to **external local CLIs** (Codex or Claude) while ADE remains the context system of record.
+
+### Primary path
+
+1. ADE refreshes lane/conflict packs and builds bounded conflict context.
+2. ADE validates context completeness (`relevantFilesForConflict` + `fileContexts`).
+3. ADE executes external CLI with deterministic prompt + context refs.
+4. ADE captures stdout/stderr, summary, and patch artifact path under `.ade/packs/external-resolver-runs/<runId>/`.
+5. ADE exposes run history via IPC and the Conflicts UI.
+
+### CWD policy
+
+- Single-lane merge: run in the **source lane** worktree.
+- Multi-lane merge: create/use **Integration lane**, run there.
+
+### Safety policy
+
+- If context is insufficient, ADE blocks speculative patch generation (`status=blocked`) and records explicit gap messages.
+- Hosted/BYOK proposal APIs remain for compatibility, but they are deprecated as the primary resolution UX path.
+

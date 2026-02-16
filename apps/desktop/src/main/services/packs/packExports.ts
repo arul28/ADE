@@ -56,8 +56,9 @@ function normalizeForExport(text: string): string {
   return stripAnsi(String(text ?? "")).replace(/\r\n/g, "\n");
 }
 
-function renderHeaderFence(header: ContextHeaderV1): string {
-  return ["```json", JSON.stringify(header, null, 2), "```", ""].join("\n");
+function renderHeaderFence(header: ContextHeaderV1, opts: { pretty?: boolean } = {}): string {
+  const pretty = opts.pretty !== false;
+  return ["```json", pretty ? JSON.stringify(header, null, 2) : JSON.stringify(header), "```", ""].join("\n");
 }
 
 function ensureBudgetOmission(omissions: ExportOmissionV1[], truncated: boolean): ExportOmissionV1[] {
@@ -204,7 +205,7 @@ export function buildLaneExport(args: {
   const omissionsBase: ExportOmissionV1[] = [];
   const userBlockLimits =
     level === "lite"
-      ? { taskSpecChars: 900, intentChars: 500, todosChars: 500, narrativeChars: 0 }
+      ? { taskSpecChars: 650, intentChars: 360, todosChars: 450, narrativeChars: 0 }
       : level === "standard"
         ? { taskSpecChars: 2200, intentChars: 1400, todosChars: 1200, narrativeChars: 0 }
         : { taskSpecChars: 4000, intentChars: 2200, todosChars: 2000, narrativeChars: 5000 };
@@ -290,9 +291,42 @@ export function buildLaneExport(args: {
   lines.push("");
 
   if (args.manifest) {
-    lines.push(...renderJsonSection("## Manifest", args.manifest));
+    const liteManifest =
+      level === "lite"
+        ? {
+            schema: args.manifest.schema,
+            projectId: args.manifest.projectId,
+            laneId: args.manifest.laneId,
+            laneName: args.manifest.laneName,
+            laneType: args.manifest.laneType,
+            branchRef: args.manifest.branchRef,
+            baseRef: args.manifest.baseRef,
+            lineage: args.manifest.lineage,
+            mergeConstraints: args.manifest.mergeConstraints,
+            branchState: {
+              baseRef: args.manifest.branchState?.baseRef ?? null,
+              headRef: args.manifest.branchState?.headRef ?? null,
+              headSha: args.manifest.branchState?.headSha ?? null,
+              lastPackRefreshAt: args.manifest.branchState?.lastPackRefreshAt ?? null,
+              isEditProtected: args.manifest.branchState?.isEditProtected ?? null,
+              packStale: args.manifest.branchState?.packStale ?? null,
+              ...(args.manifest.branchState?.packStaleReason ? { packStaleReason: args.manifest.branchState.packStaleReason } : {})
+            },
+            conflicts: {
+              activeConflictPackKeys: args.manifest.conflicts?.activeConflictPackKeys ?? [],
+              unresolvedPairCount: args.manifest.conflicts?.unresolvedPairCount ?? 0,
+              lastConflictRefreshAt: args.manifest.conflicts?.lastConflictRefreshAt ?? null,
+              lastConflictRefreshAgeMs: args.manifest.conflicts?.lastConflictRefreshAgeMs ?? null,
+              ...(args.manifest.conflicts?.predictionStale != null ? { predictionStale: args.manifest.conflicts.predictionStale } : {}),
+              ...(args.manifest.conflicts?.stalePolicy ? { stalePolicy: args.manifest.conflicts.stalePolicy } : {}),
+              ...(args.manifest.conflicts?.staleReason ? { staleReason: args.manifest.conflicts.staleReason } : {})
+            }
+          }
+        : args.manifest;
+
+    lines.push(...renderJsonSection("## Manifest", liteManifest, { pretty: level !== "lite" }));
   } else {
-    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.lane.v1", unavailable: true }));
+    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.lane.v1", unavailable: true }, { pretty: level !== "lite" }));
     omissionsBase.push({ sectionId: "manifest", reason: "data_unavailable", detail: "Manifest unavailable." });
   }
 
@@ -379,7 +413,7 @@ export function buildLaneExport(args: {
   const buildContent = (omissions: ExportOmissionV1[]) => {
     header.omissions = omissions.length ? omissions : null;
     header.maxTokens = budget.maxTokens;
-    const draft = `${renderHeaderFence(header)}${lines.join("\n")}\n`;
+    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}\n`;
     return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
   };
 
@@ -401,7 +435,9 @@ export function buildLaneExport(args: {
     approxTokens,
     maxTokens: budget.maxTokens,
     truncated: clipped.truncated,
-    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings
+    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
+    clipReason: clipped.truncated ? "budget_clipped" : null,
+    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
   };
 }
 
@@ -458,9 +494,9 @@ export function buildProjectExport(args: {
   lines.push("");
 
   if (args.manifest) {
-    lines.push(...renderJsonSection("## Manifest", args.manifest));
+    lines.push(...renderJsonSection("## Manifest", args.manifest, { pretty: level !== "lite" }));
   } else {
-    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.project.v1", unavailable: true }));
+    lines.push(...renderJsonSection("## Manifest", { schema: "ade.manifest.project.v1", unavailable: true }, { pretty: level !== "lite" }));
     omissionsBase.push({ sectionId: "manifest", reason: "data_unavailable", detail: "Manifest unavailable." });
   }
 
@@ -483,7 +519,7 @@ export function buildProjectExport(args: {
   const buildContent = (omissions: ExportOmissionV1[]) => {
     header.omissions = omissions.length ? omissions : null;
     header.maxTokens = budget.maxTokens;
-    const draft = `${renderHeaderFence(header)}${lines.join("\n")}\n`;
+    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}\n`;
     return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
   };
 
@@ -505,7 +541,9 @@ export function buildProjectExport(args: {
     approxTokens,
     maxTokens: budget.maxTokens,
     truncated: clipped.truncated,
-    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings
+    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
+    clipReason: clipped.truncated ? "budget_clipped" : null,
+    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
   };
 }
 
@@ -575,7 +613,7 @@ export function buildConflictExport(args: {
   lines.push("");
 
   if (args.lineage) {
-    lines.push(...renderJsonSection("## Conflict Lineage", args.lineage));
+    lines.push(...renderJsonSection("## Conflict Lineage", args.lineage, { pretty: level !== "lite" }));
   } else {
     omissionsBase.push({ sectionId: "conflict_lineage", reason: "data_unavailable", detail: "Conflict lineage unavailable." });
   }
@@ -593,7 +631,7 @@ export function buildConflictExport(args: {
   const buildContent = (omissions: ExportOmissionV1[]) => {
     header.omissions = omissions.length ? omissions : null;
     header.maxTokens = budget.maxTokens;
-    const draft = `${renderHeaderFence(header)}${lines.join("\n")}\n`;
+    const draft = `${renderHeaderFence(header, { pretty: level !== "lite" })}${lines.join("\n")}\n`;
     return clipToBudget({ content: draft, maxTokens: budget.maxTokens });
   };
 
@@ -615,7 +653,8 @@ export function buildConflictExport(args: {
     approxTokens,
     maxTokens: budget.maxTokens,
     truncated: clipped.truncated,
-    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings
+    warnings: clipped.truncated ? [...warnings, "Export clipped to fit token budget."] : warnings,
+    clipReason: clipped.truncated ? "budget_clipped" : null,
+    omittedSections: (header.omissions ?? []).map((entry) => entry.sectionId)
   };
 }
-

@@ -22,6 +22,7 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   ConflictProposal,
+  ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
@@ -88,6 +89,7 @@ import type {
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
   HostedMirrorDeleteResult,
+  HostedMirrorCleanupSummaryV1,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
@@ -124,6 +126,10 @@ import type {
   GetLaneExportArgs,
   GetProjectExportArgs,
   GetConflictExportArgs,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextOpenDocArgs,
+  ContextStatus,
   ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
@@ -147,6 +153,10 @@ import type {
   RiskMatrixEntry,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
+  RunExternalConflictResolverArgs,
+  ListExternalConflictResolverRunsArgs,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
   RunTestSuiteArgs,
@@ -977,6 +987,60 @@ export function registerIpc({
     return updated;
   });
 
+  ipcMain.handle(IPC.conflictsRunExternalResolver, async (_event, arg: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.runExternalResolver(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsListExternalResolverRuns, async (_event, arg: ListExternalConflictResolverRunsArgs = {}): Promise<ConflictExternalResolverRunSummary[]> => {
+    const ctx = getCtx();
+    return ctx.conflictService.listExternalResolverRuns(arg);
+  });
+
+  ipcMain.handle(
+    IPC.conflictsCommitExternalResolverRun,
+    async (_event, arg: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> => {
+      const ctx = getCtx();
+      const committed = await ctx.conflictService.commitExternalResolverRun(arg);
+      ctx.jobEngine.runConflictPredictionNow({ laneId: committed.laneId });
+      return committed;
+    }
+  );
+
+  ipcMain.handle(IPC.contextGetStatus, async (): Promise<ContextStatus> => {
+    const ctx = getCtx();
+    const base = ctx.packService.getContextStatus();
+    const hosted = ctx.hostedAgentService.getStatus();
+    return {
+      ...base,
+      contextManifestRefs: {
+        project: hosted.remoteProjectId ? `${hosted.remoteProjectId}/project/manifest.json` : null,
+        packs: hosted.remoteProjectId ? `${hosted.remoteProjectId}/packs/manifest.json` : null,
+        transcripts: hosted.remoteProjectId ? `${hosted.remoteProjectId}/transcripts/manifest.json` : null
+      },
+      hostedTiming: hosted.contextTelemetry?.lastNarrativeTiming ?? null,
+      hostedTimeoutCount: hosted.contextTelemetry?.narrativeTimeoutCount ?? 0,
+      hostedLastTimeoutReason: hosted.contextTelemetry?.lastNarrativeTimeoutReason ?? null,
+      insufficientContextCount:
+        base.insufficientContextCount + (hosted.contextTelemetry?.insufficientContextJobCount ?? 0)
+    };
+  });
+
+  ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+    const ctx = getCtx();
+    return ctx.packService.generateContextDocs(arg);
+  });
+
+  ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {
+    const ctx = getCtx();
+    const explicitPath = typeof arg.path === "string" ? arg.path.trim() : "";
+    const target = explicitPath || (arg.docId ? ctx.packService.getContextDocPath(arg.docId) : "");
+    if (!target) {
+      throw new Error("contextOpenDoc requires docId or path");
+    }
+    await shell.openPath(target);
+  });
+
   ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {
     const ctx = getCtx();
     return ctx.packService.getProjectPack();
@@ -1024,7 +1088,33 @@ export function registerIpc({
     }
 
     const laneExport = await ctx.packService.getLaneExport({ laneId: arg.laneId, level: "standard" });
+    const projectExport = await ctx.packService.getProjectExport({ level: "lite" });
     const packBody = redactSecrets(laneExport.content);
+    const lanePackKey =
+      typeof laneExport.header?.packKey === "string" && laneExport.header.packKey.trim().length
+        ? laneExport.header.packKey
+        : lanePack.packKey;
+    const projectPackKey =
+      typeof projectExport.header?.packKey === "string" && projectExport.header.packKey.trim().length
+        ? projectExport.header.packKey
+        : null;
+    const projectContext = {
+      projectExport: redactSecrets(projectExport.content),
+      refs: {
+        lanePackKey,
+        projectPackKey
+      },
+      omissions: [
+        ...(laneExport.clipReason ? [`lane_export:${laneExport.clipReason}`] : []),
+        ...(projectExport.clipReason ? [`project_export:${projectExport.clipReason}`] : []),
+        ...((laneExport.omittedSections ?? []).map((entry) => `lane_export:${entry}`)),
+        ...((projectExport.omittedSections ?? []).map((entry) => `project_export:${entry}`))
+      ],
+      assumptions: {
+        prdPreferred: true,
+        architecturePreferred: true
+      }
+    };
 
     const providerMode = ctx.projectConfigService.get().effective.providerMode ?? "guest";
     if (providerMode === "hosted") {
@@ -1039,6 +1129,7 @@ export function registerIpc({
         const narrative = await ctx.hostedAgentService.requestLaneNarrative({
           laneId: arg.laneId,
           packBody,
+          projectContext,
           onJobSubmitted: (submission) => {
             jobId = submission.jobId;
             lastStatus = submission.status;
@@ -1058,7 +1149,10 @@ export function registerIpc({
                   contentHash: lanePack.contentHash,
                   exportLevel: laneExport.level,
                   exportApproxTokens: laneExport.approxTokens,
-                  exportMaxTokens: laneExport.maxTokens
+                  exportMaxTokens: laneExport.maxTokens,
+                  projectExportLevel: projectExport.level,
+                  projectExportApproxTokens: projectExport.approxTokens,
+                  projectExportMaxTokens: projectExport.maxTokens
                 }
               });
             } catch {
@@ -1081,12 +1175,15 @@ export function registerIpc({
             inputTokens: narrative.inputTokens,
             outputTokens: narrative.outputTokens,
             latencyMs: narrative.latencyMs,
+            timing: narrative.timing,
+            timeoutReason: narrative.timing.timeoutReason,
             trigger: "manual_ai",
             sessionId: null
           }
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const telemetry = ctx.hostedAgentService.getStatus().contextTelemetry;
         try {
           ctx.packService.recordEvent({
             packKey: lanePack.packKey,
@@ -1099,7 +1196,9 @@ export function registerIpc({
               submittedAt,
               trigger: "manual_ai",
               sessionId: null,
-              error: message
+              error: message,
+              timeoutReason: telemetry?.lastNarrativeTimeoutReason ?? null,
+              timing: telemetry?.lastNarrativeTiming ?? null
             }
           });
         } catch {
@@ -1126,7 +1225,10 @@ export function registerIpc({
             contentHash: lanePack.contentHash,
             exportLevel: laneExport.level,
             exportApproxTokens: laneExport.approxTokens,
-            exportMaxTokens: laneExport.maxTokens
+            exportMaxTokens: laneExport.maxTokens,
+            projectExportLevel: projectExport.level,
+            projectExportApproxTokens: projectExport.approxTokens,
+            projectExportMaxTokens: projectExport.maxTokens
           }
         });
       } catch {
@@ -1136,7 +1238,7 @@ export function registerIpc({
       try {
         const narrative = await ctx.byokLlmService.generateLaneNarrative({
           laneId: arg.laneId,
-          packBody
+          packBody: [packBody, "", "## Project Context", projectContext.projectExport].join("\n")
         });
         return ctx.packService.applyHostedNarrative({
           laneId: arg.laneId,
@@ -1318,6 +1420,11 @@ export function registerIpc({
   ipcMain.handle(IPC.hostedSyncMirror, async (_event, arg: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
     const ctx = getCtx();
     return await ctx.hostedAgentService.syncMirror(arg);
+  });
+
+  ipcMain.handle(IPC.hostedCleanMirrorData, async (): Promise<HostedMirrorCleanupSummaryV1> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.cleanMirrorData();
   });
 
   ipcMain.handle(IPC.hostedDeleteMirrorData, async (): Promise<HostedMirrorDeleteResult> => {

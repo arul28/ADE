@@ -151,12 +151,15 @@ export function computeSectionChanges(args: {
   return out;
 }
 
-export function renderJsonSection(heading: string, value: unknown): string[] {
+export function renderJsonSection(heading: string, value: unknown, opts: { pretty?: boolean } = {}): string[] {
+  const pretty = opts.pretty !== false;
   let json = "";
   try {
-    json = JSON.stringify(value ?? null, null, 2);
+    json = pretty ? JSON.stringify(value ?? null, null, 2) : JSON.stringify(value ?? null);
   } catch {
-    json = JSON.stringify({ error: "Failed to serialize JSON section." }, null, 2);
+    json = pretty
+      ? JSON.stringify({ error: "Failed to serialize JSON section." }, null, 2)
+      : JSON.stringify({ error: "Failed to serialize JSON section." });
   }
   return [heading, "```json", json, "```", ""];
 }

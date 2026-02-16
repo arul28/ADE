@@ -7,6 +7,7 @@ import type {
   HostedGitHubEvent,
   HostedBootstrapConfig,
   HostedStatus,
+  HostedContextDeliveryMode,
   ProviderMode,
   ProjectConfigSnapshot
 } from "../../../shared/types";
@@ -23,6 +24,7 @@ type ProviderDraft = {
   hosted: {
     consentGiven: boolean;
     githubRepoConsent: boolean;
+    contextDeliveryMode: HostedContextDeliveryMode;
     apiBaseUrl: string;
     region: string;
     clerkPublishableKey: string;
@@ -92,6 +94,10 @@ function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
     hosted: {
       consentGiven: asBoolean(hosted.consentGiven),
       githubRepoConsent: asBoolean(hosted.githubRepoConsent),
+      contextDeliveryMode: (() => {
+        const raw = asString(hosted.contextDeliveryMode).trim().toLowerCase();
+        return raw === "inline" || raw === "mirror_preferred" || raw === "auto" ? (raw as HostedContextDeliveryMode) : "auto";
+      })(),
       apiBaseUrl: asString(hosted.apiBaseUrl),
       region: asString(hosted.region),
       clerkPublishableKey: asString(hosted.clerkPublishableKey),
@@ -289,6 +295,8 @@ export function SettingsPage() {
   const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
   const [hostedBootstrapConfig, setHostedBootstrapConfig] = useState<HostedBootstrapConfig | null>(null);
   const [hostedBusy, setHostedBusy] = useState(false);
+  const [hostedCleanupBusy, setHostedCleanupBusy] = useState(false);
+  const [contextGenerateBusy, setContextGenerateBusy] = useState<"codex" | "claude" | null>(null);
   const [showAdvancedHostedFields, setShowAdvancedHostedFields] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
@@ -496,6 +504,7 @@ export function SettingsPage() {
         hosted: {
           consentGiven: providerDraft.hosted.consentGiven,
           githubRepoConsent: providerDraft.hosted.githubRepoConsent,
+          contextDeliveryMode: providerDraft.hosted.contextDeliveryMode,
           apiBaseUrl: providerDraft.hosted.apiBaseUrl.trim(),
           region: providerDraft.hosted.region.trim(),
           clerkPublishableKey: providerDraft.hosted.clerkPublishableKey.trim(),
@@ -601,6 +610,17 @@ export function SettingsPage() {
   const authSummary = hostedStatus?.auth.signedIn
     ? hostedStatus.auth.email || hostedStatus.auth.displayName || hostedStatus.auth.userId || "Signed in"
     : "signed out";
+  const contextTelemetry = hostedStatus?.contextTelemetry;
+  const mirrorSync = hostedStatus?.mirrorSync;
+  const mirrorCleanup = hostedStatus?.mirrorCleanup;
+  const mirrorStalenessReason = (() => {
+    const last = mirrorSync?.lastSuccessAt;
+    if (!last) return "mirror_not_synced";
+    const ts = Date.parse(last);
+    if (!Number.isFinite(ts)) return "mirror_sync_timestamp_invalid";
+    const ageMs = Math.max(0, Date.now() - ts);
+    return ageMs > 20 * 60_000 ? `mirror_stale ageMs=${ageMs}` : null;
+  })();
 
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
@@ -742,6 +762,40 @@ export function SettingsPage() {
             </label>
 
             <div className="mt-3 rounded border border-border bg-card/30 p-2 text-xs">
+              <div className="font-medium text-fg">Hosted Context Delivery</div>
+              <div className="mt-1 text-muted-fg">
+                Controls how ADE sends context to hosted jobs. Auto uses inline params for small requests and mirror refs for large/conflict jobs.
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  value={providerDraft.hosted.contextDeliveryMode}
+                  onChange={(e) => {
+                    const next = e.target.value as HostedContextDeliveryMode;
+                    setProviderDraft((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            hosted: {
+                              ...prev.hosted,
+                              contextDeliveryMode: next
+                            }
+                          }
+                        : prev
+                    );
+                  }}
+                  className="h-9 rounded-md border border-border bg-card/80 px-3 text-sm"
+                >
+                  <option value="auto">Auto (Recommended)</option>
+                  <option value="inline">Inline (always send)</option>
+                  <option value="mirror_preferred">Mirror Preferred (use refs)</option>
+                </select>
+                {hostedStatus ? (
+                  <div className="text-xs text-muted-fg">Effective: {hostedStatus.contextDeliveryMode}</div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-3 rounded border border-border bg-card/30 p-2 text-xs">
               <div className="font-medium text-fg">Bootstrap Config</div>
               {hostedBootstrapConfig ? (
                 <div className="mt-1 text-muted-fg">
@@ -827,6 +881,7 @@ export function SettingsPage() {
                   window.ade.hosted
                     .syncMirror({ includeTranscripts: providerDraft.hosted.uploadTranscripts })
                     .then((result) => {
+                      void window.ade.hosted.getStatus().then((status) => setHostedStatus(status)).catch(() => null);
                       setSaveNotice(
                         `Mirror sync complete. Uploaded ${result.uploaded} blobs (${result.deduplicated} deduplicated, ${result.excluded} excluded).`
                       );
@@ -842,6 +897,23 @@ export function SettingsPage() {
                 {hostedStatus?.auth.expiresAt ? ` · access token exp ${hostedStatus.auth.expiresAt}` : ""}
               </div>
             </div>
+
+            {hostedStatus?.mirrorSync?.lastResult ? (
+              <div className="mt-3 rounded border border-border bg-card/30 p-2 text-xs">
+                <div className="font-medium text-fg">Mirror Sync Status</div>
+                <div className="mt-1 text-muted-fg">
+                  last success: {hostedStatus.mirrorSync.lastSuccessAt ?? "(none)"} · uploaded {hostedStatus.mirrorSync.lastResult.uploaded} · packs {hostedStatus.mirrorSync.lastResult.packCount}
+                  {hostedStatus.mirrorSync.lastError ? ` · error: ${hostedStatus.mirrorSync.lastError}` : ""}
+                </div>
+                {hostedStatus.mirrorSync.lastResult.warnings?.length ? (
+                  <div className="mt-1 text-muted-fg">warnings: {hostedStatus.mirrorSync.lastResult.warnings.join(" | ")}</div>
+                ) : null}
+              </div>
+            ) : hostedStatus?.mirrorSync?.lastError ? (
+              <div className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
+                Mirror sync error: {hostedStatus.mirrorSync.lastError}
+              </div>
+            ) : null}
 
             <div className="mt-3">
               <div className="mb-1 text-xs text-muted-fg">Mirror exclude patterns (one per line)</div>
@@ -1094,6 +1166,118 @@ export function SettingsPage() {
 
             <div className="mt-2 text-xs text-muted-fg">
               Hosted tokens are stored in OS secure storage. Existing sessions are restored across app restarts.
+            </div>
+          </div>
+        ) : null}
+
+        {providerDraft.mode === "hosted" ? (
+          <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+            <div className="text-xs text-muted-fg">Hosted Context Delivery + Mirror Lifecycle</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                disabled={hostedBusy || providerMode !== "hosted" || !hostedStatus?.auth.signedIn}
+                onClick={() => {
+                  setHostedBusy(true);
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.hosted
+                    .syncMirror({ includeTranscripts: false })
+                    .then(() => window.ade.hosted.getStatus())
+                    .then((status) => {
+                      setHostedStatus(status);
+                      setSaveNotice("Mirror sync finished.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedBusy(false));
+                }}
+              >
+                {hostedBusy ? "Syncing..." : "Sync Mirror Now"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={hostedCleanupBusy || providerMode !== "hosted" || !hostedStatus?.auth.signedIn}
+                onClick={() => {
+                  setHostedCleanupBusy(true);
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.hosted
+                    .cleanMirrorData()
+                    .then(() => window.ade.hosted.getStatus())
+                    .then((status) => {
+                      setHostedStatus(status);
+                      setSaveNotice("Mirror cleanup completed.");
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setHostedCleanupBusy(false));
+                }}
+              >
+                {hostedCleanupBusy ? "Cleaning..." : "Clean Mirror Data"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={contextGenerateBusy != null}
+                onClick={() => {
+                  setContextGenerateBusy("codex");
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.context
+                    .generateDocs({ provider: "codex" })
+                    .then((result) => {
+                      setSaveNotice(`Context docs generated with Codex (${result.usedFallbackPath ? "fallback path used" : "preferred path"}).`);
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setContextGenerateBusy(null));
+                }}
+              >
+                {contextGenerateBusy === "codex" ? "Generating..." : "Generate Context Docs (Codex)"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={contextGenerateBusy != null}
+                onClick={() => {
+                  setContextGenerateBusy("claude");
+                  setActionError(null);
+                  setSaveNotice(null);
+                  window.ade.context
+                    .generateDocs({ provider: "claude" })
+                    .then((result) => {
+                      setSaveNotice(`Context docs generated with Claude (${result.usedFallbackPath ? "fallback path used" : "preferred path"}).`);
+                    })
+                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setContextGenerateBusy(null));
+                }}
+              >
+                {contextGenerateBusy === "claude" ? "Generating..." : "Generate Context Docs (Claude)"}
+              </Button>
+            </div>
+            <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+              <div>last sync attempt: {mirrorSync?.lastAttemptAt ?? "never"}</div>
+              <div>last sync success: {mirrorSync?.lastSuccessAt ?? "never"}</div>
+              <div>last sync error: {mirrorSync?.lastError ?? "none"}</div>
+              <div>last cleanup attempt: {mirrorCleanup?.lastAttemptAt ?? "never"}</div>
+              <div>last cleanup success: {mirrorCleanup?.lastSuccessAt ?? "never"}</div>
+              <div>last cleanup error: {mirrorCleanup?.lastError ?? "none"}</div>
+              <div>context fallback count: {contextTelemetry?.inlineFallbackCount ?? 0}</div>
+              <div>insufficient-context job count: {contextTelemetry?.insufficientContextJobCount ?? 0}</div>
+              <div>narrative timeout count: {contextTelemetry?.narrativeTimeoutCount ?? 0}</div>
+              <div>last narrative timeout reason: {contextTelemetry?.lastNarrativeTimeoutReason ?? "none"}</div>
+              <div>
+                last narrative timing:
+                {" "}
+                {contextTelemetry?.lastNarrativeTiming
+                  ? `${contextTelemetry.lastNarrativeTiming.totalDurationMs}ms total (queue ${contextTelemetry.lastNarrativeTiming.queueWaitMs}ms, poll ${contextTelemetry.lastNarrativeTiming.pollDurationMs}ms, artifact ${contextTelemetry.lastNarrativeTiming.artifactFetchMs}ms)`
+                  : "none"}
+              </div>
+              <div>staleness reason: {mirrorStalenessReason ?? "none"}</div>
+              <div>
+                context operations:
+                {" "}
+                <a href="#/context" className="underline">Open Context tab</a>
+              </div>
             </div>
           </div>
         ) : null}

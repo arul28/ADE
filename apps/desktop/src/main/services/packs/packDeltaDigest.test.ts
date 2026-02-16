@@ -110,11 +110,25 @@ describe("packService.getDeltaDigest", () => {
       "insert into pack_events(id, project_id, pack_key, event_type, payload_json, created_at) values (?, ?, ?, ?, ?, ?)",
       [eventId, projectId, "lane:lane-1", "refresh_triggered", JSON.stringify({ trigger: "session_end", laneId: "lane-1" }), "2026-02-15T19:05:00.000Z"]
     );
+    for (let i = 0; i < 12; i += 1) {
+      db.run(
+        "insert into pack_events(id, project_id, pack_key, event_type, payload_json, created_at) values (?, ?, ?, ?, ?, ?)",
+        [
+          randomUUID(),
+          projectId,
+          "lane:lane-1",
+          "refresh_triggered",
+          JSON.stringify({ trigger: "session_end", laneId: "lane-1", i }),
+          `2026-02-15T19:${String(6 + i).padStart(2, "0")}:00.000Z`
+        ]
+      );
+    }
 
     const digest = await packService.getDeltaDigest({
       packKey: "lane:lane-1",
       sinceVersionId: beforeId,
-      minimumImportance: "medium"
+      minimumImportance: "medium",
+      limit: 10
     });
 
     expect(digest.newVersion.versionId).toBe(afterId);
@@ -122,6 +136,7 @@ describe("packService.getDeltaDigest", () => {
     expect(digest.highImpactEvents.length).toBeGreaterThan(0);
     expect((digest.highImpactEvents[0]!.payload as any).importance).toBeDefined();
     expect((digest.highImpactEvents[0]!.payload as any).category).toBeDefined();
+    expect(digest.clipReason).toBe("budget_clipped");
+    expect(digest.omittedSections).toContain("events:limit_cap");
   });
 });
-

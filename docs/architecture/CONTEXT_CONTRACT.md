@@ -20,6 +20,7 @@ The contract prioritizes **reviewability** (diffable, structured artifacts) and 
 - **Budgeted exports**: Orchestrators consume `Lite`/`Standard` exports by default. `Deep` is explicit and on-demand.
 - **Provider-neutral Hosted**: Hosted is a remote gateway and may be self-hosted by setting `providers.hosted.apiBaseUrl` in `.ade/local.yaml`. No AWS assumptions.
 - **Guest mode useful**: Packs, versions, events, diffs, and exports are all usable without any AI provider.
+- **Explainable handoffs**: Every hosted job submission records whether context was delivered inline vs by mirror-ref, with reason codes and explicit fallbacks.
 
 Non-goals:
 
@@ -27,6 +28,54 @@ Non-goals:
 - Full “pack dump” exports by default (intentionally avoided).
 
 ---
+
+## Hosted Job Context Delivery (Inline vs Mirror Ref)
+
+ADE has two distinct context paths:
+
+1. **Bounded export (`packBody`)**: a token-budgeted export generated on desktop and sent inline as part of a job request.
+2. **Hosted mirror**: content-addressed blobs (repo files, packs, transcripts) plus manifests uploaded to the hosted backend.
+
+Historically, hosted jobs always used inline `packBody`. Mirror sync existed for future/advanced hosted use, but packs/transcripts were not discoverable because they were uploaded as orphaned blobs with no manifest mapping.
+
+### Current Policy (Stable + Backward Compatible)
+
+Hosted jobs may be submitted with either:
+
+- **Inline params** (default): `params` contains `packBody` and other context fields.
+- **Mirror-ref params** (for large/conflict jobs or when user prefers): `params` contains:
+  - `__adeContextRef` (sha256 reference to the canonical JSON params stored in the mirror blob bucket)
+  - `__adeContextInline` (a reduced inline fallback payload)
+
+Workers resolve `__adeContextRef` before building prompts. If resolution fails, they fall back to `__adeContextInline`.
+
+Reason codes are surfaced via desktop events (`narrative_requested`, etc.) and via hosted job submission metadata.
+
+### Data Path Diagram
+
+```mermaid
+flowchart TD
+  A["Desktop: packService.refreshLanePack()"] --> B["Desktop: buildLaneExport (Lite/Standard/Deep)"]
+  B --> C["Desktop: hostedAgentService.submitJob()"]
+  C --> D{"Context delivery policy"}
+  D -->|Inline| E["API: POST /projects/:id/jobs (params inline)"]
+  D -->|Mirror-ref| F["API: POST /projects/:id/upload (params JSON blob)"]
+  F --> G["API: POST /projects/:id/jobs (__adeContextRef + __adeContextInline)"]
+  E --> H["SQS -> jobWorker"]
+  G --> H["SQS -> jobWorker"]
+  H --> I{"Resolve __adeContextRef?"}
+  I -->|Yes| J["S3: blobs bucket get(projectId/sha256)"]
+  I -->|No / failed| K["Use __adeContextInline fallback"]
+  J --> L["buildPromptTemplate()"]
+  K --> L["buildPromptTemplate()"]
+  L --> M["LLM gateway -> artifact"]
+```
+
+### Why This Exists
+
+- Keeps hosted job payloads compact and deterministic.
+- Allows richer context delivery without silently depending on mirror freshness.
+- Preserves backward compatibility for existing export consumers (exports/markers unchanged).
 
 ## Pack Keys
 
@@ -210,6 +259,65 @@ Exports are bounded views of packs designed for consumption by LLM jobs and orch
 
 ### Levels
 
+---
+
+## v3 Addendum — Hosted Hybrid Context + Conflict Integrity + Mirror Cleanup
+
+> Last updated: 2026-02-16
+
+This addendum documents the production-hardening behavior added in contract version 3.
+
+### End-to-end backend flow
+
+```mermaid
+flowchart TD
+  A["Repo change or session end"] --> B["Pack refresh (lane/project/conflict)"]
+  B --> C["Pack manifests + context fingerprint updated"]
+  C --> D["Hosted sync uploads blobs + manifests"]
+  D --> E["Context policy decides inline vs mirror-ref"]
+  E --> F["Job submission includes __adeHandoff + provenance"]
+  F --> G["Worker resolves __adeContextRef or inline fallback"]
+  G --> H["Prompt built with Context Provenance block"]
+  H --> I["Model response"]
+  I --> J["Artifact persisted + job metrics"]
+  D --> K["Mirror cleanup planner (reachable/orphan scan)"]
+  K --> L["Delete stale orphan blobs (safe window + caps)"]
+```
+
+### Deterministic source selection rules
+
+1. `inline` is used only when payload is small and safe.
+2. Conflict jobs (`ProposeConflictResolution`, `ConflictResolution`) force `mirror` unless ref path is impossible.
+3. Mirror-ref submit/fetch failures degrade to `inline_fallback` with explicit warning fields.
+4. Every hosted job includes `reasonCode` and `contextSource` in `__adeHandoff`.
+5. Prompts always include context provenance, staleness signals, and selected file-set summary.
+
+### Why mirror is not full-repo-by-default
+
+- ADE intentionally sends bounded, scoped context.
+- Full-repo payloads are expensive, noisy, and less deterministic.
+- Mirror is a storage/transport path for bounded context artifacts and selected blobs, not a blind full checkout.
+
+### Fallback behavior contract
+
+- Submit side:
+  - mirror path can include `__adeContextRef` + reduced `__adeContextInline`.
+- Worker side:
+  - if ref resolves: `contextSource=mirror`.
+  - if ref fails: `contextSource=inline_fallback`, warnings include retrieval failure.
+- Result metadata:
+  - includes source, reason code, warnings, and confidence level.
+
+### Scenario matrix
+
+| Scenario | Delivery | Expected behavior |
+|---|---|---|
+| New lane with active session | inline or mirror (policy) | Fresh pack exports, deterministic handoff, explicit reason code |
+| Conflict-heavy lane | mirror preferred/forced | Conflict context includes `relevantFilesForConflict` and `fileContexts` |
+| Stale mirror | mirror + stale warning or inline fallback | Staleness surfaced in handoff + UI, no hidden failure |
+| No mirror / upload failure | inline_fallback | Job still submitted; warning and fallback telemetry recorded |
+| Periodic delta handoff | bounded delta + exports | Deterministic ordering, optional omission metadata preserved |
+
 - `Lite`
   - Default for spawning new agents and quick context.
   - Strictly bounded; focuses on task spec, intent, key deltas, and blockers.
@@ -257,6 +365,23 @@ Conflict prediction summaries are stored on disk for each lane:
 - `.ade/packs/conflicts/predictions/<laneId>.json`
 
 This file is deterministic and must remain useful in Guest mode.
+
+---
+
+## Competitor Notes (Mapped to ADE Decisions)
+
+Sources:
+
+- [Entire blog](https://entire.io/blog)
+- [Entire CLI](https://github.com/entireio/cli)
+- [OneContext](https://github.com/TheAgentContextLab/OneContext)
+
+Findings and concrete ADE decisions:
+
+- Entire CLI stores agent session metadata on a separate git branch (`entire/checkpoints/v1`) and links it to commits, enabling rewind/resume and audit trails.
+  - ADE already provides immutable pack versions + checkpoints + append-only pack events; this change improves hosted handoffs by adding explicit delivery-mode reason codes and mirror-ref fallback behavior so the cloud path remains audit-friendly.
+- OneContext positions a unified, agent-self-managed context layer with trajectory recording and cross-agent continuation.
+  - ADE’s approach remains deterministic-first: stable pack headers/markers + bounded exports + compact delta digests. This change makes hosted delivery explicit and deterministic (inline vs mirror-ref) rather than implicit/opaque.
 
 It should include (at minimum):
 
@@ -376,3 +501,33 @@ For multi-machine handoffs without Hosted, ADE can optionally provide a git-nati
   - `ADE-CheckpointId: chk-...`
 
 This is intentionally **optional** and should never replace local `.ade/` durable state. It exists to enable “Entire-style” context sharing in organizations that prohibit Hosted usage.
+
+---
+
+## 2026-02-16 Addendum — Context Docs + External Resolver Metadata
+
+Contract version is now `4` (additive only).
+
+New optional schemas:
+
+- `ade.contextDocStatus.v1`
+- `ade.contextDocRun.v1`
+- `ade.conflictExternalRun.v1`
+
+New optional hosted telemetry envelope:
+
+- `ade.hostedNarrativeTiming.v1`
+  - `submitDurationMs`
+  - `queueWaitMs`
+  - `pollDurationMs`
+  - `artifactFetchMs`
+  - `totalDurationMs`
+  - `timeoutMs`
+  - `timeoutReason`
+
+Compatibility guarantees:
+
+- Existing pack/export/event/checkpoint consumers remain valid.
+- Legacy fields and IPC channels remain unchanged.
+- New fields are additive and optional.
+

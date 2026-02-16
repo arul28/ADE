@@ -556,9 +556,9 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 
 | ID | Task | Status |
 |----|------|--------|
-| TERM-021 | Tiling layout for multiple terminals | TODO |
-| TERM-022 | Split horizontal/vertical | TODO |
-| TERM-023 | Drag to rearrange tiles | TODO |
+| TERM-021 | Tiling layout for multiple terminals | DONE — Phase 8 (`TilingLayout.tsx` with `react-resizable-panels`, recursive binary tree layout) |
+| TERM-022 | Split horizontal/vertical | DONE — Phase 8 (alternating horizontal/vertical splits based on tree depth in TilingLayout) |
+| TERM-023 | Drag to rearrange tiles | PARTIAL — resizable split panes implemented; full drag-to-rearrange deferred to Phase 9 |
 | TERM-024 | Terminal theme sync (dark/light) | DONE |
 | TERM-025 | Session goal/purpose tagging | TODO |
 | TERM-026 | Tool type detection (Claude, Cursor, etc.) | TODO |

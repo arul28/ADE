@@ -199,6 +199,36 @@ function buildSuggestedConfig(args: {
     }
   ];
 
+  out.providers = {
+    hosted: {
+      contextDeliveryMode: "auto",
+      mirrorCleanupPolicy: {
+        staleGraceMs: 600000,
+        maxObjectsScanned: 5000,
+        maxDelete: 1000,
+        maxBytesScanned: 524288000
+      }
+    },
+    contextTools: {
+      generators: {
+        codex: {
+          command: ["codex", "exec", "--prompt-file", "{{promptFile}}"]
+        },
+        claude: {
+          command: ["claude", "--print", "--input-file", "{{promptFile}}"]
+        }
+      },
+      conflictResolvers: {
+        codex: {
+          command: ["codex", "exec", "--prompt-file", "{{promptFile}}"]
+        },
+        claude: {
+          command: ["claude", "--print", "--input-file", "{{promptFile}}"]
+        }
+      }
+    }
+  };
+
   return out;
 }
 

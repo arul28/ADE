@@ -18,6 +18,12 @@ type LaneQueueState = {
   next: RefreshRequest | null;
 };
 
+function clipDeterministic(text: string, maxChars: number): { text: string; clipped: boolean } {
+  const raw = String(text ?? "");
+  if (raw.length <= maxChars) return { text: raw, clipped: false };
+  return { text: `${raw.slice(0, Math.max(0, maxChars - 28)).trimEnd()}\n\n...(context clipped)...\n`, clipped: true };
+}
+
 export function createJobEngine({
   logger,
   packService,
@@ -79,13 +85,54 @@ export function createJobEngine({
           if (providerMode === "guest") return;
 
           const laneExport = await packService.getLaneExport({ laneId: payload.laneId, level: "standard" });
-          const packBody = redactSecrets(laneExport.content);
+          const projectExport = await packService.getProjectExport({ level: "lite" });
+          const laneExportClip = clipDeterministic(redactSecrets(laneExport.content), 220_000);
+          const projectExportClip = clipDeterministic(redactSecrets(projectExport.content), 120_000);
+          const packBody = laneExportClip.text;
+          const lanePackKey =
+            typeof laneExport.header?.packKey === "string" && laneExport.header.packKey.trim().length
+              ? laneExport.header.packKey
+              : lanePack.packKey;
+          const projectPackKey =
+            typeof projectExport.header?.packKey === "string" && projectExport.header.packKey.trim().length
+              ? projectExport.header.packKey
+              : null;
+          const projectContext = {
+            projectExport: projectExportClip.text,
+            refs: {
+              lanePackKey,
+              projectPackKey
+            },
+            omissions: [
+              ...(laneExport.clipReason ? [`lane_export:${laneExport.clipReason}`] : []),
+              ...(projectExport.clipReason ? [`project_export:${projectExport.clipReason}`] : []),
+              ...(laneExportClip.clipped ? ["lane_export:clipped_for_job"] : []),
+              ...(projectExportClip.clipped ? ["project_export:clipped_for_job"] : []),
+              ...((laneExport.omittedSections ?? []).map((entry) => `lane_export:${entry}`)),
+              ...((projectExport.omittedSections ?? []).map((entry) => `project_export:${entry}`))
+            ],
+            assumptions: {
+              prdPreferred: true,
+              architecturePreferred: true
+            }
+          };
 
           const submittedAt = new Date().toISOString();
           let jobId: string | null = null;
           let lastStatus: "queued" | "processing" | "completed" | "failed" | null = null;
 
-          const recordRequested = (submission: { jobId: string; status: "queued" | "processing" | "completed" | "failed" }) => {
+          const recordRequested = (submission: {
+            jobId: string;
+            status: "queued" | "processing" | "completed" | "failed";
+            contextDelivery?: {
+              mode: string;
+              contextSource?: string;
+              reasonCode: string;
+              contextRefSha256: string | null;
+              warnings: string[];
+              confidenceLevel?: "high" | "medium" | "low";
+            };
+          }) => {
             jobId = submission.jobId;
             lastStatus = submission.status;
             try {
@@ -104,7 +151,22 @@ export function createJobEngine({
                   contentHash: lanePack.contentHash,
                   exportLevel: laneExport.level,
                   exportApproxTokens: laneExport.approxTokens,
-                  exportMaxTokens: laneExport.maxTokens
+                  exportMaxTokens: laneExport.maxTokens,
+                  projectExportLevel: projectExport.level,
+                  projectExportApproxTokens: projectExport.approxTokens,
+                  projectExportMaxTokens: projectExport.maxTokens,
+                  projectContextOmissions: projectContext.omissions,
+                  ...(submission.contextDelivery
+                    ? {
+                        contextDeliveryMode: submission.contextDelivery.mode,
+                        contextDeliverySource: submission.contextDelivery.contextSource ?? submission.contextDelivery.mode,
+                        contextDeliveryReason: submission.contextDelivery.reasonCode,
+                        contextDeliveryRefSha256: submission.contextDelivery.contextRefSha256,
+                        contextDeliveryWarnings: submission.contextDelivery.warnings,
+                        contextDeliveryConfidence: submission.contextDelivery.confidenceLevel ?? null,
+                        contextDeliveryFallback: (submission.contextDelivery.contextSource ?? "").includes("fallback")
+                      }
+                    : {})
                 }
               });
             } catch {
@@ -120,6 +182,7 @@ export function createJobEngine({
               const narrative = await hostedAgentService.requestLaneNarrative({
                 laneId: payload.laneId,
                 packBody,
+                projectContext,
                 onJobSubmitted: recordRequested,
                 onJobStatus: (status) => {
                   lastStatus = status.status;
@@ -136,6 +199,8 @@ export function createJobEngine({
                   inputTokens: narrative.inputTokens,
                   outputTokens: narrative.outputTokens,
                   latencyMs: narrative.latencyMs,
+                  timing: narrative.timing,
+                  timeoutReason: narrative.timing?.timeoutReason ?? null,
                   trigger: payload.reason,
                   sessionId: payload.sessionId ?? null
                 }
@@ -167,7 +232,7 @@ export function createJobEngine({
               }
               const narrative = await byokLlmService.generateLaneNarrative({
                 laneId: payload.laneId,
-                packBody
+                packBody: [packBody, "", "## Project Context", projectContext.projectExport].join("\n")
               });
               packService.applyHostedNarrative({
                 laneId: payload.laneId,
@@ -183,6 +248,7 @@ export function createJobEngine({
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            const hostedTelemetry = providerMode === "hosted" ? hostedAgentService?.getStatus().contextTelemetry ?? null : null;
             logger.warn("jobs.refresh_lane.narrative_failed", {
               laneId: payload.laneId,
               providerMode,
@@ -200,7 +266,9 @@ export function createJobEngine({
                   submittedAt,
                   trigger: payload.reason,
                   sessionId: payload.sessionId ?? null,
-                  error: message
+                  error: message,
+                  timeoutReason: hostedTelemetry?.lastNarrativeTimeoutReason ?? null,
+                  timing: hostedTelemetry?.lastNarrativeTiming ?? null
                 }
               });
             } catch {

@@ -429,7 +429,10 @@ export function createAutomationService({
           `uploaded: ${res.uploaded}`,
           `deduplicated: ${res.deduplicated}`,
           `excluded: ${res.excluded}`,
-          `syncedAt: ${res.syncedAt}`
+          `syncedAt: ${res.syncedAt}`,
+          `warnings: ${(res.warnings ?? []).join(" | ") || "none"}`,
+          `cleanupDeleted: ${res.cleanup?.deletedBlobs ?? 0}`,
+          `cleanupReclaimedBytes: ${res.cleanup?.reclaimedBytes ?? 0}`
         ].join("\n")
       };
     }

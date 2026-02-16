@@ -7,7 +7,12 @@ import type {
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
   ConflictProposal,
+  ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextOpenDocArgs,
+  ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -49,6 +54,7 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorCleanupSummaryV1,
   HostedMirrorDeleteResult,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
@@ -152,6 +158,10 @@ import type {
   RunTestSuiteArgs,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
+  RunExternalConflictResolverArgs,
+  ListExternalConflictResolverRunsArgs,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
   SessionDeltaSummary,
   StackChainItem,
@@ -313,7 +323,15 @@ declare global {
         requestProposal: (args: RequestConflictProposalArgs) => Promise<ConflictProposal>;
         applyProposal: (args: ApplyConflictProposalArgs) => Promise<ConflictProposal>;
         undoProposal: (args: UndoConflictProposalArgs) => Promise<ConflictProposal>;
+        runExternalResolver: (args: RunExternalConflictResolverArgs) => Promise<ConflictExternalResolverRunSummary>;
+        listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
+        commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
+      };
+      context: {
+        getStatus: () => Promise<ContextStatus>;
+        generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
+        openDoc: (args: ContextOpenDocArgs) => Promise<void>;
       };
       packs: {
         getProjectPack: () => Promise<PackSummary>;
@@ -369,6 +387,7 @@ declare global {
         signIn: (args?: HostedSignInArgs) => Promise<HostedSignInResult>;
         signOut: () => Promise<void>;
         syncMirror: (args?: HostedMirrorSyncArgs) => Promise<HostedMirrorSyncResult>;
+        cleanMirrorData: () => Promise<HostedMirrorCleanupSummaryV1>;
         deleteMirrorData: () => Promise<HostedMirrorDeleteResult>;
         submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
         getJob: (jobId: string) => Promise<HostedJobStatusResult>;

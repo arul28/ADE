@@ -809,8 +809,11 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 - `prService`: PR lifecycle management, stack chain logic, land flow orchestration
 
 **Task References**:
-- CONF-022: Stack-aware conflict resolution
-- PR-001 through PR-020: All PR tasks
+- CONF-022: Stack-aware conflict resolution — DONE
+- PR-001 through PR-020: All PR tasks — ALL DONE
+- LANES-024: Primary lane support — DONE (`ensurePrimaryLane()`)
+- LANES-025: Attached lane support — DONE (`laneService.attach()`)
+- LANES-031: Merge simulation from context menu — DONE (via canvas)
 
 ---
 
@@ -880,20 +883,20 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 - Risk edges show on hover: conflicting file list, conflict types, staleness indicator
 - Tooltip persists while hovering (400ms delay before show, 200ms delay before hide)
 
-**Task References**:
-- GRAPH-026: PR edge overlays
-- GRAPH-027: PR + risk edge coexistence
-- CANVAS-001: Drag-to-open-PR workflow
-- CANVAS-002: PR edge state visualization (color, CI dot, merge animation)
-- CANVAS-003: Merge-from-graph panel and workflow
-- CANVAS-004: Lane disappearance animation on merge
-- CANVAS-005: Conflict resolution panel from edge click
-- CANVAS-006: AI conflict resolution invocation from graph
-- CANVAS-007: Post-resolution edge color animation
-- CANVAS-008: Integration lane creation (multi-lane merge)
-- CANVAS-009: Real-time edge re-evaluation after merge
-- CANVAS-010: Merge-in-progress pulse animation
-- CANVAS-011: Enhanced edge hover tooltips (PR details, conflict files)
+**Task References** (ALL DONE):
+- GRAPH-026: PR edge overlays — DONE
+- GRAPH-027: PR + risk edge coexistence — DONE
+- CANVAS-001: Drag-to-open-PR workflow — DONE (drag lane onto primary triggers PR creation dialog)
+- CANVAS-002: PR edge state visualization (color, CI dot, merge animation) — DONE
+- CANVAS-003: Merge-from-graph panel and workflow — DONE (simulateMerge + merge dialog with method selection)
+- CANVAS-004: Lane disappearance animation on merge — DONE
+- CANVAS-005: Conflict resolution panel from edge click — DONE (openConflictPanelForEdge)
+- CANVAS-006: AI conflict resolution invocation from graph — DONE (proposal generation from conflict panel)
+- CANVAS-007: Post-resolution edge color animation — DONE
+- CANVAS-008: Integration lane creation (multi-lane merge) — DONE (integrationDialog + multi-select create)
+- CANVAS-009: Real-time edge re-evaluation after merge — DONE
+- CANVAS-010: Merge-in-progress pulse animation — DONE
+- CANVAS-011: Enhanced edge hover tooltips (PR details, conflict files) — DONE
 
 ---
 
@@ -923,13 +926,13 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 - Same prompt templates as hosted mode but executed locally
 - Eliminates dependency on AWS infrastructure for AI features
 
-**Task References**:
-- CONF-022: Stack-aware conflict resolution
-- PACK-024: Pack retention and cleanup policy
-- BYOK-001: BYOK LLM provider implementation (desktop-direct API calls)
-- RESOLVE-001: Lane-to-lane conflict resolution (arbitrary pair)
-- RESOLVE-002: Apply resolution with staging choice (unstaged/staged/commit)
-- RESOLVE-003: Post-apply conflict re-prediction trigger
+**Task References** (ALL DONE):
+- CONF-022: Stack-aware conflict resolution — DONE (ConflictsPage restack suggestions + merge-plan workflows)
+- PACK-024: Pack retention and cleanup policy — DONE (age-based + count-based cleanup in packService)
+- BYOK-001: BYOK LLM provider implementation — DONE (`byokLlmService.ts` — OpenAI, Anthropic, Gemini direct API calls)
+- RESOLVE-001: Lane-to-lane conflict resolution (arbitrary pair) — DONE (ConflictsPage `applyProposal()` supports either lane)
+- RESOLVE-002: Apply resolution with staging choice (unstaged/staged/commit) — DONE (3 apply modes in ConflictsPage)
+- RESOLVE-003: Post-apply conflict re-prediction trigger — DONE (batch re-prediction after apply)
 
 ---
 
@@ -978,16 +981,16 @@ Phase 7 is structured into four sub-phases. 7A (GitHub Integration) and 7D (Lane
 - Replace Conflicts stub tab with live conflict status (uses existing `conflictService.getLaneStatus()`)
 - Replace PR stub tab with live PR panel (uses new `prService` from 7A)
 
-**Task References**:
-- COMMIT-001: CommitTimeline component (vertical line, commit nodes, hover details)
-- COMMIT-002: Extend listRecentCommits API to include parent SHAs
-- COMMIT-003: Click commit to view diff in Monaco
-- COMMIT-004: Merge commit branching visual
-- COMMIT-005: Lazy-load older commits on scroll
-- LANE-UI-001: Lane detail 3-column layout rework (unstaged / staged / commit timeline)
-- LANE-UI-002: Dual-mode diff viewer (file selection + commit selection)
-- LANE-UI-003: Inspector Conflicts sub-tab (live, replaces stub)
-- LANE-UI-004: Inspector PR sub-tab (live, replaces stub)
+**Task References** (ALL DONE):
+- COMMIT-001: CommitTimeline component (vertical line, commit nodes, hover details) — DONE (`CommitTimeline.tsx`, metadata caching, lazy loading)
+- COMMIT-002: Extend listRecentCommits API to include parent SHAs — DONE
+- COMMIT-003: Click commit to view diff in Monaco — DONE (commit selection populates diff viewer)
+- COMMIT-004: Merge commit branching visual — DONE
+- COMMIT-005: Lazy-load older commits on scroll — DONE
+- LANE-UI-001: Lane detail 3-column layout rework — DONE (`react-resizable-panels` with files/commit-timeline/diff columns)
+- LANE-UI-002: Dual-mode diff viewer (file selection + commit selection) — DONE
+- LANE-UI-003: Inspector Conflicts sub-tab (live, replaces stub) — DONE
+- LANE-UI-004: Inspector PR sub-tab (live, replaces stub) — DONE (LanePrPanel component)
 
 ---
 
@@ -1117,9 +1120,15 @@ Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-
 
 **Status**: NOT STARTED
 
-**Goal**: Complete the product with advanced history features, terminal enhancements, agent tooling, performance optimization, and per-lane runtime isolation for parallel development.
+**Goal**: Complete the product with advanced history features, terminal polish, agent tooling, performance optimization, onboarding refinements, and per-lane runtime isolation for parallel development.
 
-**Scope**:
+Phase 9 is organized into four sub-phases. 9A (History + Terminal polish) and 9B (Git + Run enhancements) have no mutual dependency and can be developed in parallel. 9C (Cross-Surface UX + Performance) can begin after 9A/9B. 9D (Runtime Isolation) is independent.
+
+---
+
+#### Phase 9A: History Visualization + Terminal Polish
+
+**Goal**: Deliver the advanced History timeline UI (graph view, checkpoint browser, undo) and finish terminal refinements.
 
 **History Enhancements:**
 - Feature history (filtered by feature/issue tag across lanes)
@@ -1128,21 +1137,30 @@ Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-
 - Undo operation (reverse git action via history)
 - Replay operation sequence (dry-run re-execution)
 - Plan version history
-- Jump-to-lane and jump-to-session links from operation detail
 - Export history as CSV/JSON
 
-**Terminal Enhancements:**
-- Tiling layout (split horizontal/vertical)
-- Drag to rearrange tiles
+**Terminal Polish:**
+- Drag to rearrange tiles (full drag-and-drop, extends existing split panes)
 - Grid view (multi-terminal overview)
 - Session goal/purpose tagging
 - Tool type detection (Claude, Cursor, shell, etc.)
 - Session transcript search
 - Pin important sessions
+- Transcript cleanup/retention policy (automated pruning by age/size)
+
+**Task References**:
+- HIST-015 through HIST-020, HIST-023: History UI enhancements. Note: HIST-011–014 (backend) are DONE (Phase 8). HIST-021/022 (jump-to links) are DONE (Phase 7).
+- TERM-023 (completion): Full drag-to-rearrange (split panes exist, need drag reorder). Note: TERM-021/022 (tiling/split) are DONE (Phase 8). TERM-024/028/029/032 are DONE (Phases 3/6/8).
+- TERM-025 through TERM-027, TERM-030, TERM-031: Goal tagging, tool detection, transcript search, pinning, grid view.
+- NEW: TERM-033: Transcript cleanup/retention policy (automated pruning by age and size thresholds).
+
+---
+
+#### Phase 9B: Advanced Git + Run Tab + Settings Polish
+
+**Goal**: Complete git power-user features, agent tooling in the Run tab, and finish onboarding/settings refinements.
 
 **Advanced Git Operations:**
-- Primary lane support (main repo dir, no separate worktree)
-- Attached lane support (link existing external worktree)
 - Amend commit
 - Branch create/delete/rename from lane
 - Reset (soft/mixed/hard) with confirmation dialog
@@ -1159,17 +1177,48 @@ Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-
 - Test suite tags/filtering, test result diff
 - Config diff viewer, config import/export
 
+**Settings & Onboarding Polish:**
+- ONBOARD-013 completion: Generic pre-execution "What ADE will do" dialogs for shared config commands (beyond config trust confirmation)
+- ONBOARD-017 completion: Click-to-record keybinding editor (text override + conflict detection exist; need interactive capture)
+- CLI provider mode completion: Wire actual CLI tool execution (ollama, llama.cpp) for local LLM inference
+- Editor state persistence: Persist open tabs, scroll positions, expanded directories to `.ade/editor-state.json`
+
+**Task References**:
+- LANES-032, LANES-036 through LANES-038: Lane profiles, amend commit, branch ops, reset. Note: LANES-024/025/031 are DONE (Phase 7).
+- PROJ-026 through PROJ-032, PROJ-035, PROJ-038 through PROJ-042: Run tab enhancements.
+- ONBOARD-013 (completion), ONBOARD-017 (completion): Settings polish.
+- NEW: SETTINGS-001: Editor state persistence (`.ade/editor-state.json`).
+- NEW: CLI-001: CLI provider execution wiring (ollama/llama.cpp).
+
+---
+
+#### Phase 9C: Cross-Surface UX + Performance
+
+**Goal**: Deliver cross-tab navigation, attention-driven workflows, and performance hardening.
+
 **Cross-Surface UX:**
 - Global identity bar (project, lane, branch, cwd, environment)
 - PR attention queue ("needs human action")
 - Mission-control overview for project switching
+- Conflict notification/alerts (in-app and system)
 
 **Performance and Quality:**
 - Render batching, virtual scrolling for large lists
 - Error handling hardening, graceful degradation
 - Cross-platform testing and fixes (macOS, Windows, Linux)
 
-**Local Runtime Isolation:**
+**Task References**:
+- CONF-024: Conflict notification/alerts.
+- NEW: UX-001 through UX-003: Global identity bar, PR attention queue, mission-control.
+- NEW: PERF-001 through PERF-003: Virtual scrolling, error hardening, cross-platform.
+
+---
+
+#### Phase 9D: Local Runtime Isolation
+
+**Goal**: Enable per-lane runtime isolation so multiple lanes can run dev servers simultaneously without port conflicts.
+
+**Scope:**
 - Lane runtime identity model (stable hostname, deterministic ports)
 - Deterministic port allocation service with lane/process leases
 - Local host orchestration layer (reverse proxy)
@@ -1178,26 +1227,34 @@ Post-phase hardening to ensure Hosted AI + packs + terminals are reviewable end-
 - Per-lane runtime diagnostics
 - Fallback mode and escape hatches
 
-**Feature Doc References**: `HISTORY.md`, `TERMINALS_AND_SESSIONS.md`, `LANES.md`, `PROJECT_HOME.md`
-
-**Architecture References**: `UI_FRAMEWORK.md`, `GIT_ENGINE.md`, `DESKTOP_APP.md`
-
-**Task References**:
-- HIST-015 through HIST-023: History UI enhancements (graph view, checkpoint browser, undo, replay, export). Note: HIST-011–014 (checkpoint/event backend) are DONE (Phase 8 via packService).
-- TERM-021 through TERM-023, TERM-025 through TERM-027, TERM-030, TERM-031: Remaining terminal enhancements (tiling, goal tagging, tool detection, transcript search, pinning, grid view). Note: TERM-024/028/029/032 are DONE (Phases 3/6/8).
-- LANES-024, LANES-025, LANES-031, LANES-032, LANES-036 through LANES-038: Advanced lane operations (primary/attached lane support, merge simulation from context menu, lane profiles, amend commit, branch ops, reset)
-- PROJ-026 through PROJ-032, PROJ-035, PROJ-038 through PROJ-042: Run tab enhancements
-- CONF-024: Conflict notification/alerts
-
 **New Services Required**:
 - `laneRuntimeService`: lane runtime identity, port leasing, diagnostics
 - `laneProxyService`: local reverse proxy and host-to-port routing
 - `browserProfileService`: per-lane browser profile lifecycle
 - `previewLaunchService`: lane-aware URL and browser launch
 
+---
+
+#### Phase 9 — Cross-Cutting Notes
+
+**Already completed (ahead of Phase 9 schedule):**
+- LANES-024 (Primary lane support) — DONE in Phase 7
+- LANES-025 (Attached lane support) — DONE in Phase 7
+- LANES-031 (Merge simulation from canvas) — DONE in Phase 7
+- TERM-021 (Tiling layout) — DONE in Phase 8 (TilingLayout.tsx)
+- TERM-022 (Split horizontal/vertical) — DONE in Phase 8
+- HIST-021 (Jump to lane from history) — DONE in Phase 7
+- HIST-022 (Jump to session from history) — DONE in Phase 7
+- BYOK-001 (BYOK provider) — DONE in Phase 8 (byokLlmService.ts)
+- All RESOLVE-* tasks — DONE in Phase 8
+
+**Feature Doc References**: `HISTORY.md`, `TERMINALS_AND_SESSIONS.md`, `LANES.md`, `PROJECT_HOME.md`, `ONBOARDING_AND_SETTINGS.md`, `FILES_AND_EDITOR.md`
+
+**Architecture References**: `UI_FRAMEWORK.md`, `GIT_ENGINE.md`, `DESKTOP_APP.md`
+
 **Dependencies**: All prior phases
 
-**Exit Criteria**: All task IDs across all feature docs are marked DONE. History graph view renders parallel tracks. Checkpoint browser works. Terminal tiling enables split views. Agent CLI tools detected and launchable. Performance smooth with large repos. Cross-platform verified. Runtime isolation enables 3+ active lanes without port conflicts.
+**Exit Criteria**: All task IDs across all feature docs are marked DONE. History graph view renders parallel tracks. Checkpoint browser works. Terminal drag-to-rearrange and grid view work. Agent CLI tools detected and launchable. Editor state persists across sessions. CLI provider wires to local LLM tools. Performance smooth with large repos. Cross-platform verified. Runtime isolation enables 3+ active lanes without port conflicts.
 
 ---
 

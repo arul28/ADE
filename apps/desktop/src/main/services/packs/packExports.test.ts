@@ -200,6 +200,8 @@ describe("packExports", () => {
     expect(exp.content).toContain("## Conflict Risk Summary");
     expect(exp.content).toContain("...(truncated)...");
     expect(exp.content).toContain("## Manifest");
+    expect(exp.clipReason).toBe("budget_clipped");
+    expect((exp.omittedSections ?? []).length).toBeGreaterThan(0);
     const header = parseHeaderFromExport(exp.content);
     expect(header.projectId).toBe(projectId);
     expect(header.graph?.schema).toBe("ade.packGraph.v1");

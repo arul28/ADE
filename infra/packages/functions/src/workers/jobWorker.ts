@@ -2,13 +2,14 @@ import { randomUUID, createHash } from "node:crypto";
 import type { SQSHandler } from "aws-lambda";
 import { GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { resolveContextParams } from "../../../core/src/contextResolution";
 import { buildPromptTemplate } from "../../../core/src/prompts";
 import { runLlmGateway } from "../../../core/src/llmGateway";
 import type { HostedJobType, JobArtifact, JobPayload, LlmGatewayConfig, LlmProvider } from "../../../core/src/types";
 import { ddb, nowIso, secretsManager } from "../common/awsClients";
 import { sharedEnv } from "../common/env";
 import { parseJobMessage } from "../common/jobs";
-import { putObject } from "../common/storage";
+import { getObjectText, putObject } from "../common/storage";
 
 type LlmSecretPayload = {
   openaiApiKey?: string;
@@ -17,6 +18,43 @@ type LlmSecretPayload = {
   defaultProvider?: LlmProvider;
   defaultModel?: string;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+async function resolveJobParams(job: JobPayload): Promise<{
+  params: Record<string, unknown>;
+  source: "inline" | "mirror" | "inline_fallback";
+  warnings: string[];
+}> {
+  const raw = isRecord(job.params) ? (job.params as Record<string, unknown>) : {};
+  const refRaw = raw.__adeContextRef;
+  const sha256 = isRecord(refRaw) && typeof refRaw.sha256 === "string" ? refRaw.sha256.trim() : "";
+  const resolved = await resolveContextParams({
+    params: raw,
+    fetchContextRef: async (hash) => {
+      const text = await getObjectText({
+        bucket: sharedEnv.blobsBucketName,
+        key: `${job.projectId}/${hash}`
+      });
+      return JSON.parse(text) as unknown;
+    }
+  });
+  const failedWarning = resolved.warnings.find((warning) => warning.startsWith("context_ref_fetch_failed:"));
+  if (failedWarning && sha256) {
+    console.warn(
+      JSON.stringify({
+        event: "job.context_ref_failed",
+        projectId: job.projectId,
+        jobId: job.jobId,
+        sha256,
+        error: failedWarning.slice("context_ref_fetch_failed:".length)
+      })
+    );
+  }
+  return resolved;
+}
 
 let cachedSecrets: LlmSecretPayload | null = null;
 let cachedSecretsAt = 0;
@@ -71,6 +109,78 @@ function inferArtifactType(jobType: HostedJobType): JobArtifact["artifactType"] 
   if (jobType === "NarrativeGeneration") return "narrative";
   if (jobType === "DraftPrDescription") return "pr-description";
   return "diff";
+}
+
+function readConflictContext(params: Record<string, unknown>): Record<string, unknown> {
+  if (isRecord(params.conflictContext)) return params.conflictContext;
+  return params;
+}
+
+function evaluateInsufficientConflictContext(job: JobPayload, params: Record<string, unknown>): {
+  insufficient: boolean;
+  reasons: string[];
+} {
+  if (job.type !== "ConflictResolution" && job.type !== "ProposeConflictResolution") {
+    return { insufficient: false, reasons: [] };
+  }
+
+  const conflictContext = readConflictContext(params);
+  const reasons: string[] = [];
+  if (Boolean(conflictContext.insufficientContext)) {
+    reasons.push("insufficient_context_flagged");
+  }
+
+  const relevantFiles = Array.isArray(conflictContext.relevantFilesForConflict)
+    ? conflictContext.relevantFilesForConflict
+    : [];
+  const fileContexts = Array.isArray(conflictContext.fileContexts) ? conflictContext.fileContexts : [];
+  if (relevantFiles.length === 0) reasons.push("relevant_files_missing");
+  if (relevantFiles.length > 0 && fileContexts.length === 0) reasons.push("file_contexts_missing");
+  if (relevantFiles.length > 0 && fileContexts.length < relevantFiles.length) reasons.push("file_contexts_incomplete");
+  if (Boolean(conflictContext.fileContextsMissing)) reasons.push("file_contexts_missing_flag");
+
+  const insufficient = reasons.length > 0;
+  return {
+    insufficient,
+    reasons
+  };
+}
+
+async function persistArtifact(args: {
+  job: JobPayload;
+  artifact: JobArtifact;
+}): Promise<{ artifactId: string; contentHash: string }> {
+  const artifactId = randomUUID();
+  const createdAt = nowIso();
+  const expiresAt = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
+  const artifactBody = JSON.stringify(args.artifact, null, 2);
+  const contentHash = createHash("sha256").update(artifactBody).digest("hex");
+  const s3Key = `${args.job.projectId}/${artifactId}.json`;
+
+  await putObject({
+    bucket: sharedEnv.artifactsBucketName,
+    key: s3Key,
+    body: artifactBody,
+    contentType: "application/json"
+  });
+
+  await ddb.send(
+    new PutCommand({
+      TableName: sharedEnv.artifactsTableName,
+      Item: {
+        projectId: args.job.projectId,
+        artifactId,
+        jobId: args.job.jobId,
+        type: args.artifact.artifactType,
+        s3Key,
+        contentHash,
+        createdAt,
+        expiresAt
+      }
+    })
+  );
+
+  return { artifactId, contentHash };
 }
 
 async function updateJob(args: {
@@ -143,7 +253,86 @@ export const handler: SQSHandler = async (event) => {
 
     try {
       const secrets = await getLlmSecrets();
-      const prompt = buildPromptTemplate(job);
+      const resolved = await resolveJobParams(job);
+      const insufficiency = evaluateInsufficientConflictContext(job, resolved.params);
+      if (insufficiency.insufficient) {
+        const insufficientContent = [
+          "## ResolutionStrategy",
+          "Cannot generate a safe conflict patch due to insufficient context.",
+          "",
+          "## RelevantEvidence",
+          "- Context source: worker pre-check",
+          `- Missing signals: ${insufficiency.reasons.join(", ") || "unknown"}`,
+          "",
+          "## Scope",
+          "No safe patch scope could be validated.",
+          "",
+          "## Patch",
+          "```diff",
+          "",
+          "```",
+          "",
+          "## Confidence",
+          "low",
+          "",
+          "## Assumptions",
+          "- A full base/left/right context is required for reliable patching.",
+          "",
+          "## Unknowns",
+          ...insufficiency.reasons.map((reason) => `- ${reason}`),
+          "",
+          "## InsufficientContext",
+          "true"
+        ].join("\n");
+        const artifact: JobArtifact = {
+          artifactType: "diff",
+          content: insufficientContent,
+          confidence: 0,
+          metadata: {
+            provider: "system",
+            model: "insufficient-context-guard",
+            inputTokens: 0,
+            outputTokens: 0,
+            latencyMs: 0,
+            generatedAt: nowIso()
+          }
+        };
+        const persisted = await persistArtifact({ job, artifact });
+        await updateJob({
+          projectId: job.projectId,
+          jobId: job.jobId,
+          status: "completed",
+          updatedAt: nowIso(),
+          completedAt: nowIso(),
+          artifactId: persisted.artifactId,
+          metrics: {
+            provider: "system",
+            model: "insufficient-context-guard",
+            inputTokens: 0,
+            outputTokens: 0,
+            latencyMs: 0,
+            contextSource: resolved.source,
+            contextWarnings: resolved.warnings,
+            insufficientContext: true,
+            insufficientReasons: insufficiency.reasons,
+            totalLatencyMs: Date.now() - startedAt
+          }
+        });
+        console.log(
+          JSON.stringify({
+            event: "job.completed.insufficient_context",
+            stage: sharedEnv.appStage,
+            projectId: job.projectId,
+            jobId: job.jobId,
+            type: job.type,
+            contextSource: resolved.source,
+            reasons: insufficiency.reasons
+          })
+        );
+        continue;
+      }
+
+      const prompt = buildPromptTemplate({ ...job, params: resolved.params });
       const gatewayConfig = buildGatewayConfig(job, secrets);
       const result = await runLlmGateway({
         job,
@@ -152,10 +341,6 @@ export const handler: SQSHandler = async (event) => {
       });
 
       const artifactType = inferArtifactType(job.type);
-      const artifactId = randomUUID();
-      const createdAt = nowIso();
-      const expiresAt = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
-
       const artifact: JobArtifact = {
         artifactType,
         content: result.text,
@@ -166,36 +351,11 @@ export const handler: SQSHandler = async (event) => {
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           latencyMs: result.latencyMs,
-          generatedAt: createdAt
+          generatedAt: nowIso()
         }
       };
 
-      const artifactBody = JSON.stringify(artifact, null, 2);
-      const contentHash = createHash("sha256").update(artifactBody).digest("hex");
-      const s3Key = `${job.projectId}/${artifactId}.json`;
-
-      await putObject({
-        bucket: sharedEnv.artifactsBucketName,
-        key: s3Key,
-        body: artifactBody,
-        contentType: "application/json"
-      });
-
-      await ddb.send(
-        new PutCommand({
-          TableName: sharedEnv.artifactsTableName,
-          Item: {
-            projectId: job.projectId,
-            artifactId,
-            jobId: job.jobId,
-            type: artifactType,
-            s3Key,
-            contentHash,
-            createdAt,
-            expiresAt
-          }
-        })
-      );
+      const persisted = await persistArtifact({ job, artifact });
 
       await updateJob({
         projectId: job.projectId,
@@ -203,13 +363,15 @@ export const handler: SQSHandler = async (event) => {
         status: "completed",
         updatedAt: nowIso(),
         completedAt: nowIso(),
-        artifactId,
+        artifactId: persisted.artifactId,
         metrics: {
           provider: result.provider,
           model: result.model,
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           latencyMs: result.latencyMs,
+          contextSource: resolved.source,
+          contextWarnings: resolved.warnings,
           totalLatencyMs: Date.now() - startedAt
         }
       });
@@ -226,7 +388,9 @@ export const handler: SQSHandler = async (event) => {
           model: result.model,
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
-          latencyMs: result.latencyMs
+          latencyMs: result.latencyMs,
+          contextSource: resolved.source,
+          contextWarnings: resolved.warnings
         })
       );
     } catch (error) {

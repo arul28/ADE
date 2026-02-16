@@ -21,8 +21,9 @@ import {
 import { buildJobPayload, enqueueJob } from "../common/jobs";
 import { enforceJobSubmissionLimits } from "../common/rateLimit";
 import { getDefaultExcludePatterns, pathShouldBeExcluded, redactSecrets } from "../common/redaction";
-import { deletePrefix, getObjectText, putObject, s3ObjectExists } from "../common/storage";
+import { deleteObjects, deletePrefix, getObjectText, listObjectsByPrefix, putObject, s3ObjectExists } from "../common/storage";
 import { isRecord, optionalString, parseJobType, parseSha256, requireString } from "../common/validation";
+import { planMirrorCleanup } from "../../../core/src/mirrorCleanup";
 import type { HostedJobType } from "../../../core/src/types";
 
 type ProjectItem = {
@@ -60,6 +61,7 @@ type JobItem = {
   updatedAt: string;
   error?: { code: string; message: string; details?: Record<string, unknown> };
   metrics?: Record<string, unknown>;
+  expiresAt?: number;
 };
 
 type ArtifactItem = {
@@ -122,6 +124,26 @@ async function listProjectRows<T>(args: {
   } while (lastEvaluatedKey);
 
   return out;
+}
+
+function collectSha256Digests(value: unknown, out: Set<string>): void {
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(trimmed)) out.add(trimmed);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectSha256Digests(entry, out);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "sha256" || key.endsWith("Sha256")) {
+      if (typeof entry === "string") collectSha256Digests(entry, out);
+      continue;
+    }
+    collectSha256Digests(entry, out);
+  }
 }
 
 export async function options(): Promise<APIGatewayProxyStructuredResultV2> {
@@ -357,6 +379,277 @@ export async function updateLaneManifest(event: APIGatewayProxyEventV2): Promise
   }
 }
 
+export async function updatePacksManifest(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  try {
+    const userId = getUserIdFromEvent(event);
+    const projectId = parsePathParam(event, "id");
+    await getProjectForUser({ userId, projectId });
+
+    const body = parseJsonBody<Record<string, unknown>>(event);
+    const packs = Array.isArray(body.packs) ? body.packs : null;
+    if (!packs) {
+      throw new ApiError(400, {
+        code: "VALIDATION_ERROR",
+        message: "packs must be an array"
+      });
+    }
+
+    const timestamp = nowIso();
+    const manifestKey = `${projectId}/packs/manifest.json`;
+
+    const normalized = packs
+      .filter(isRecord)
+      .map((entry) => {
+        const relPath = requireString(entry.path, "packs[].path");
+        const sha256 = parseSha256(entry.sha256, "packs[].sha256");
+        const size = Number(entry.size ?? 0);
+        const contentType = optionalString(entry.contentType) ?? "application/octet-stream";
+        return {
+          path: relPath,
+          sha256,
+          size: Number.isFinite(size) && size >= 0 ? size : 0,
+          contentType
+        };
+      });
+
+    const payload = {
+      schema: optionalString(body.schema) || "ade.mirror.packs.v1",
+      projectId,
+      syncedAt: timestamp,
+      generatedAt: optionalString(body.generatedAt) ?? timestamp,
+      packCount: normalized.length,
+      packs: normalized
+    };
+
+    await putObject({
+      bucket: sharedEnv.manifestsBucketName,
+      key: manifestKey,
+      body: redactSecrets(JSON.stringify(payload, null, 2)),
+      contentType: "application/json"
+    });
+
+    await ddb.send(
+      new UpdateCommand({
+        TableName: sharedEnv.projectsTableName,
+        Key: {
+          userId,
+          projectId
+        },
+        UpdateExpression: "set updatedAt = :updatedAt, packsManifestKey = :manifestKey, packsLastSyncAt = :lastSyncAt, packsCount = :packsCount",
+        ExpressionAttributeValues: {
+          ":updatedAt": nowIso(),
+          ":manifestKey": manifestKey,
+          ":lastSyncAt": timestamp,
+          ":packsCount": normalized.length
+        }
+      })
+    );
+
+    return json(200, {
+      manifestKey,
+      timestamp,
+      packCount: normalized.length
+    });
+  } catch (error) {
+    return toApiResponse(error);
+  }
+}
+
+export async function updateTranscriptsManifest(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  try {
+    const userId = getUserIdFromEvent(event);
+    const projectId = parsePathParam(event, "id");
+    await getProjectForUser({ userId, projectId });
+
+    const body = parseJsonBody<Record<string, unknown>>(event);
+    const transcripts = Array.isArray(body.transcripts) ? body.transcripts : null;
+    if (!transcripts) {
+      throw new ApiError(400, {
+        code: "VALIDATION_ERROR",
+        message: "transcripts must be an array"
+      });
+    }
+
+    const timestamp = nowIso();
+    const manifestKey = `${projectId}/transcripts/manifest.json`;
+
+    const normalized = transcripts
+      .filter(isRecord)
+      .map((entry) => {
+        const relPath = requireString(entry.path, "transcripts[].path");
+        const sha256 = parseSha256(entry.sha256, "transcripts[].sha256");
+        const size = Number(entry.size ?? 0);
+        const contentType = optionalString(entry.contentType) ?? "application/octet-stream";
+        return {
+          path: relPath,
+          sha256,
+          size: Number.isFinite(size) && size >= 0 ? size : 0,
+          contentType
+        };
+      });
+
+    const payload = {
+      schema: optionalString(body.schema) || "ade.mirror.transcripts.v1",
+      projectId,
+      syncedAt: timestamp,
+      generatedAt: optionalString(body.generatedAt) ?? timestamp,
+      transcriptCount: normalized.length,
+      transcripts: normalized
+    };
+
+    await putObject({
+      bucket: sharedEnv.manifestsBucketName,
+      key: manifestKey,
+      body: redactSecrets(JSON.stringify(payload, null, 2)),
+      contentType: "application/json"
+    });
+
+    await ddb.send(
+      new UpdateCommand({
+        TableName: sharedEnv.projectsTableName,
+        Key: {
+          userId,
+          projectId
+        },
+        UpdateExpression:
+          "set updatedAt = :updatedAt, transcriptsManifestKey = :manifestKey, transcriptsLastSyncAt = :lastSyncAt, transcriptsCount = :count",
+        ExpressionAttributeValues: {
+          ":updatedAt": nowIso(),
+          ":manifestKey": manifestKey,
+          ":lastSyncAt": timestamp,
+          ":count": normalized.length
+        }
+      })
+    );
+
+    return json(200, {
+      manifestKey,
+      timestamp,
+      transcriptCount: normalized.length
+    });
+  } catch (error) {
+    return toApiResponse(error);
+  }
+}
+
+export async function cleanMirrorData(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
+  try {
+    const userId = getUserIdFromEvent(event);
+    const projectId = parsePathParam(event, "id");
+    await getProjectForUser({ userId, projectId });
+
+    const startedAt = nowIso();
+    const warnings: string[] = [];
+    const staleGraceMs = 10 * 60_000;
+    const maxObjectsScanned = 5000;
+    const maxDelete = 1000;
+    const maxBytesScanned = 500 * 1024 * 1024;
+
+    const laneRows = await listProjectRows<LaneItem>({
+      tableName: sharedEnv.lanesTableName,
+      partitionKeyName: "projectId",
+      partitionKeyValue: projectId
+    });
+    const manifestKeys = new Set<string>([
+      ...laneRows.map((row) => row.manifestKey).filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+      `${projectId}/packs/manifest.json`,
+      `${projectId}/transcripts/manifest.json`,
+      `${projectId}/project/manifest.json`
+    ]);
+
+    const reachableDigests = new Set<string>();
+    for (const manifestKey of manifestKeys) {
+      try {
+        const raw = await getObjectText({ bucket: sharedEnv.manifestsBucketName, key: manifestKey });
+        if (!raw.trim().length) continue;
+        const parsed = JSON.parse(raw) as unknown;
+        collectSha256Digests(parsed, reachableDigests);
+      } catch (error) {
+        warnings.push(`manifest_unreadable:${manifestKey}`);
+        void error;
+      }
+    }
+
+    const blobObjects = await listObjectsByPrefix({
+      bucket: sharedEnv.blobsBucketName,
+      prefix: `${projectId}/`,
+      maxKeys: maxObjectsScanned
+    });
+    const cleanupPlan = planMirrorCleanup({
+      projectId,
+      reachableDigests,
+      blobObjects,
+      nowMs: Date.now(),
+      staleGraceMs,
+      maxDelete,
+      maxBytesScanned
+    });
+    warnings.push(...cleanupPlan.warnings);
+    const orphanCandidates = cleanupPlan.orphanCandidates;
+    const deletionBatch = cleanupPlan.deletionBatch;
+    const reachableBlobCount = cleanupPlan.reachableBlobCount;
+    const deletedCount = await deleteObjects({
+      bucket: sharedEnv.blobsBucketName,
+      keys: deletionBatch.map((entry) => entry.key)
+    });
+    const reclaimedBytes = cleanupPlan.reclaimedBytes;
+
+    await ddb.send(
+      new UpdateCommand({
+        TableName: sharedEnv.projectsTableName,
+        Key: {
+          userId,
+          projectId
+        },
+        UpdateExpression:
+          "set updatedAt = :updatedAt, blobCount = if_not_exists(blobCount, :zero) - :blobDelta, totalSize = if_not_exists(totalSize, :zero) - :sizeDelta",
+        ExpressionAttributeValues: {
+          ":updatedAt": nowIso(),
+          ":blobDelta": deletedCount,
+          ":sizeDelta": reclaimedBytes,
+          ":zero": 0
+        }
+      })
+    );
+
+    const finishedAt = nowIso();
+    return json(200, {
+      remoteProjectId: projectId,
+      cleanedAt: finishedAt,
+      startedAt,
+      finishedAt,
+      reachableBlobs: reachableBlobCount,
+      orphanedBlobs: orphanCandidates.length,
+      deletedBlobs: deletedCount,
+      reclaimedBytes,
+      mirrorReachableBlobs: reachableBlobCount,
+      mirrorOrphanedBlobs: orphanCandidates.length,
+      mirrorDeleted: deletedCount,
+      mirrorReclaimedBytes: reclaimedBytes,
+      cleanupResult: "success",
+      cleanupError: null,
+      warnings
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return json(200, {
+      remoteProjectId: parsePathParam(event, "id"),
+      cleanedAt: nowIso(),
+      reachableBlobs: 0,
+      orphanedBlobs: 0,
+      deletedBlobs: 0,
+      reclaimedBytes: 0,
+      mirrorReachableBlobs: 0,
+      mirrorOrphanedBlobs: 0,
+      mirrorDeleted: 0,
+      mirrorReclaimedBytes: 0,
+      cleanupResult: "failed",
+      cleanupError: message,
+      warnings: []
+    });
+  }
+}
+
 export async function submitJob(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   try {
     const userId = getUserIdFromEvent(event);
@@ -392,7 +685,8 @@ export async function submitJob(event: APIGatewayProxyEventV2): Promise<APIGatew
       laneId,
       params,
       submittedAt,
-      updatedAt: submittedAt
+      updatedAt: submittedAt,
+      expiresAt: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60
     };
 
     await ddb.send(
@@ -454,6 +748,45 @@ export async function getJob(event: APIGatewayProxyEventV2): Promise<APIGatewayP
         code: "FORBIDDEN",
         message: "Job does not belong to authenticated user"
       });
+    }
+
+    // Inline staleness check: mark stuck jobs as failed on read
+    const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 60 minutes
+    if (
+      (item.status === "queued" || item.status === "processing") &&
+      Date.now() - new Date(item.submittedAt).getTime() > STALE_THRESHOLD_MS
+    ) {
+      const staleStatus = item.status;
+      const staleError = { code: "STALE_JOB_SWEPT", message: `Job stuck in '${staleStatus}' for over 60 minutes` };
+      try {
+        await ddb.send(
+          new UpdateCommand({
+            TableName: sharedEnv.jobsTableName,
+            Key: { projectId, jobId },
+            UpdateExpression: "set #status = :failed, updatedAt = :now, completedAt = :now, #error = :err",
+            ConditionExpression: "#status = :currentStatus",
+            ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+            ExpressionAttributeValues: {
+              ":failed": "failed",
+              ":now": nowIso(),
+              ":currentStatus": staleStatus,
+              ":err": staleError
+            }
+          })
+        );
+        item.status = "failed";
+        item.error = staleError;
+      } catch (condErr: unknown) {
+        // ConditionalCheckFailedException means another process already updated it — re-fetch
+        if ((condErr as { name?: string }).name === "ConditionalCheckFailedException") {
+          const refreshed = await ddb.send(
+            new GetCommand({ TableName: sharedEnv.jobsTableName, Key: { projectId, jobId } })
+          );
+          if (refreshed.Item) {
+            Object.assign(item, refreshed.Item);
+          }
+        }
+      }
     }
 
     return json(200, {

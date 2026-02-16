@@ -354,3 +354,51 @@ If you are not seeing conflicts:
 - Ensure every lane edited the same lines in `src/receipt.js` and `src/router.js`
 - Ensure you committed changes per lane (conflict prediction runs off real git state)
 - Ensure conflict prediction is enabled (automations can help keep it up to date)
+
+## Step 14: Pack + Context Hardening Verification (Refined)
+
+Use this step to validate the new context reliability behavior, not just the UI flow.
+
+Detailed playbook:
+- `/Users/arul/ADE/docs/guides/ADE_PACK_CONTEXT_VALIDATION_PLAYBOOK.md`
+
+### Quick UI checks (during this activity)
+
+1. In **Inspector → Packs** for an active lane:
+- Run deterministic refresh.
+- Confirm Activity includes refresh/version events.
+- Confirm marker edits (`ADE_TASK_SPEC`, `ADE_INTENT`) survive refresh.
+
+2. In **Conflicts** for a risky pair:
+- Click **Prepare**.
+- Confirm the preview includes the specific overlapping files you touched (`src/receipt.js`, `src/router.js`).
+- If proposal is blocked, confirm you get an explicit data-gap message (not a speculative patch).
+
+3. In **Settings → Hosted** (if Hosted/BYOK enabled):
+- Confirm mirror sync status fields update after **Sync Mirror Now**.
+- Confirm cleanup status fields update after **Clean Mirror Data**.
+- Watch counters:
+  - `context fallback count`
+  - `insufficient-context job count`
+- Confirm staleness reason is visible when mirror data is old.
+
+### Quick automated checks (ADE repo)
+
+From the ADE repository root:
+
+```bash
+cd /Users/arul/ADE/apps/desktop
+npm test -- \
+  src/main/services/hosted/hostedContextPolicy.test.ts \
+  src/main/services/hosted/contextResolution.test.ts \
+  src/main/services/hosted/mirrorCleanupPlan.test.ts \
+  src/main/services/hosted/promptProvenance.test.ts \
+  src/main/services/conflicts/conflictService.test.ts \
+  src/main/services/packs/packDeltaDigest.test.ts \
+  src/main/services/packs/packExports.test.ts \
+  src/main/services/packs/packService.docsFreshness.test.ts
+```
+
+Pass condition:
+- All tests pass.
+- You can point to at least one UI run where the new context/pack telemetry moved as expected.

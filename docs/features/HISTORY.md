@@ -490,8 +490,8 @@ Backend implementation (packService) is DONE (Phase 8). History tab UI for brows
 
 | ID | Task | Status |
 |----|------|--------|
-| HIST-021 | Jump to lane from operation detail | TODO |
-| HIST-022 | Jump to session from operation detail | TODO |
+| HIST-021 | Jump to lane from operation detail | DONE — Phase 7 (HistoryPage navigates to `/lanes?laneId=...` on click) |
+| HIST-022 | Jump to session from operation detail | DONE — Phase 7 (HistoryPage navigates to lane with packs/inspector tab) |
 | HIST-023 | Export history (CSV and JSON formats with filters) | TODO |
 
 ---

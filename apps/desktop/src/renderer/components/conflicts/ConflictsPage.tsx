@@ -14,6 +14,7 @@ import type {
   ConflictOverlap,
   ConflictProposal,
   ConflictProposalPreview,
+  ConflictExternalResolverRunSummary,
   ConflictStatus,
   GitConflictState,
   LaneSummary,
@@ -143,6 +144,13 @@ export function ConflictsPage() {
   const [proposals, setProposals] = React.useState<ConflictProposal[]>([]);
   const [proposalBusy, setProposalBusy] = React.useState(false);
   const [proposalError, setProposalError] = React.useState<string | null>(null);
+  const [externalRuns, setExternalRuns] = React.useState<ConflictExternalResolverRunSummary[]>([]);
+  const [externalBusy, setExternalBusy] = React.useState<"codex" | "claude" | null>(null);
+  const [externalError, setExternalError] = React.useState<string | null>(null);
+  const [lastExternalRun, setLastExternalRun] = React.useState<ConflictExternalResolverRunSummary | null>(null);
+  const [externalCommitBusyRunId, setExternalCommitBusyRunId] = React.useState<string | null>(null);
+  const [externalCommitInfo, setExternalCommitInfo] = React.useState<string | null>(null);
+  const [externalCommitError, setExternalCommitError] = React.useState<string | null>(null);
 
   const [proposalPeerLaneId, setProposalPeerLaneId] = React.useState<string | null>(null);
   const [proposalPreview, setProposalPreview] = React.useState<ConflictProposalPreview | null>(null);
@@ -281,6 +289,16 @@ export function ConflictsPage() {
     }
   }, []);
 
+  const loadExternalRuns = React.useCallback(async (laneId: string) => {
+    try {
+      const next = await window.ade.conflicts.listExternalResolverRuns({ laneId, limit: 8 });
+      setExternalRuns(next);
+    } catch (err) {
+      setExternalError(err instanceof Error ? err.message : String(err));
+      setExternalRuns([]);
+    }
+  }, []);
+
   const refreshGitConflict = React.useCallback(async (laneId: string) => {
     setGitConflictBusy(true);
     setGitConflictError(null);
@@ -324,11 +342,14 @@ export function ConflictsPage() {
     if (!selectedLaneId) {
       setOverlaps([]);
       setProposals([]);
+      setExternalRuns([]);
+      setLastExternalRun(null);
       setGitConflict(null);
       return;
     }
     void loadLaneOverlaps(selectedLaneId);
     void loadProposals(selectedLaneId);
+    void loadExternalRuns(selectedLaneId);
     void refreshGitConflict(selectedLaneId);
 
     // Reset AI preview when switching lanes.
@@ -336,7 +357,11 @@ export function ConflictsPage() {
     setProposalPreview(null);
     setPrepareError(null);
     setSendError(null);
-  }, [selectedLaneId, loadLaneOverlaps, loadProposals, refreshGitConflict]);
+    setExternalError(null);
+    setExternalCommitInfo(null);
+    setExternalCommitError(null);
+    setExternalCommitBusyRunId(null);
+  }, [selectedLaneId, loadLaneOverlaps, loadProposals, loadExternalRuns, refreshGitConflict]);
 
   React.useEffect(() => {
     void refreshRestackSuggestions();
@@ -477,6 +502,59 @@ export function ConflictsPage() {
       setSendError(err instanceof Error ? err.message : String(err));
     } finally {
       setSendBusy(false);
+    }
+  };
+
+  const runExternalResolver = async (provider: "codex" | "claude") => {
+    if (!selectedLaneId) return;
+    const resolvedTargetLaneId = proposalPeerLaneId ?? selectedLane?.parentLaneId ?? primaryLane?.id ?? null;
+    if (!resolvedTargetLaneId) {
+      setExternalError("No target lane available. Pick a peer lane or ensure a primary lane exists.");
+      return;
+    }
+    const sourceLaneIds =
+      mergePlan && mergePlan.targetLaneId === resolvedTargetLaneId && mergePlan.sourceLaneIds.length > 1
+        ? mergePlan.sourceLaneIds
+        : [selectedLaneId];
+
+    setExternalBusy(provider);
+    setExternalError(null);
+    try {
+      const run = await window.ade.conflicts.runExternalResolver({
+        provider,
+        targetLaneId: resolvedTargetLaneId,
+        sourceLaneIds,
+        integrationLaneName: integrationName
+      });
+      setLastExternalRun(run);
+      setExternalCommitInfo(null);
+      await Promise.all([loadExternalRuns(selectedLaneId), loadBatch(), refreshLanes(), refreshGitConflict(selectedLaneId)]);
+      if (run.status === "blocked" && run.contextGaps.length) {
+        setExternalError(`Blocked: ${run.contextGaps.map((gap) => gap.message).join(" | ")}`);
+      } else if (run.status === "failed") {
+        setExternalError(run.error ?? "External resolver failed.");
+      }
+    } catch (err) {
+      setExternalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExternalBusy(null);
+    }
+  };
+
+  const commitExternalRun = async (run: ConflictExternalResolverRunSummary) => {
+    if (!selectedLaneId) return;
+    setExternalCommitBusyRunId(run.runId);
+    setExternalCommitError(null);
+    setExternalCommitInfo(null);
+    try {
+      const committed = await window.ade.conflicts.commitExternalResolverRun({ runId: run.runId });
+      const shortSha = committed.commitSha.slice(0, 10);
+      setExternalCommitInfo(`Committed ${shortSha} on ${committed.laneId}.`);
+      await Promise.all([loadExternalRuns(selectedLaneId), loadBatch(), refreshLanes(), refreshGitConflict(selectedLaneId)]);
+    } catch (err) {
+      setExternalCommitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExternalCommitBusyRunId(null);
     }
   };
 
@@ -1228,7 +1306,7 @@ export function ConflictsPage() {
                       provider: <span className="text-fg">{providerMode}</span>
                     </span>
                   ) : (
-                    <span>Enable Hosted or BYOK to generate proposals.</span>
+                    <span>Hosted/BYOK is optional. External Codex/Claude resolver actions are always available if configured.</span>
                   )}
                 </div>
               </div>
@@ -1259,7 +1337,7 @@ export function ConflictsPage() {
                 {previewLines("What ADE will do", [
                   "Refresh deterministic packs (lane pack + conflict pack).",
                   "Build a bounded context (up to 6 files, diff excerpts, and conflict-pack excerpt).",
-                  "Only after you click Send: submit that context to Hosted/BYOK for a diff proposal."
+                  "Run either hosted proposal flow or external Codex/Claude resolver with scoped context."
                 ])}
 
                 <div className="rounded-lg bg-muted/15 p-2 text-xs">
@@ -1288,10 +1366,26 @@ export function ConflictsPage() {
                   <Button
                     size="sm"
                     variant="primary"
+                    disabled={!selectedLaneId || externalBusy != null}
+                    onClick={() => void runExternalResolver("codex")}
+                  >
+                    {externalBusy === "codex" ? "Resolving..." : "Resolve with Codex"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={!selectedLaneId || externalBusy != null}
+                    onClick={() => void runExternalResolver("claude")}
+                  >
+                    {externalBusy === "claude" ? "Resolving..." : "Resolve with Claude"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
                     disabled={!aiEnabled || prepareBusy}
                     onClick={() => void runPrepareProposal()}
                   >
-                    {prepareBusy ? "Preparing..." : "Prepare preview"}
+                    {prepareBusy ? "Preparing..." : "Legacy preview"}
                   </Button>
                   <Button
                     size="sm"
@@ -1300,7 +1394,7 @@ export function ConflictsPage() {
                     onClick={() => void runSendProposal()}
                     title={proposalPreview?.existingProposalId ? "This exact context already has a proposal; clicking will reuse it." : "Send to AI"}
                   >
-                    {sendBusy ? "Sending..." : proposalPreview?.existingProposalId ? "Reuse proposal" : "Send to AI"}
+                    {sendBusy ? "Sending..." : proposalPreview?.existingProposalId ? "Reuse proposal" : "Legacy send"}
                   </Button>
                 </div>
 
@@ -1309,6 +1403,9 @@ export function ConflictsPage() {
                 ) : null}
                 {sendError ? (
                   <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{sendError}</div>
+                ) : null}
+                {externalError ? (
+                  <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{externalError}</div>
                 ) : null}
 
                 {proposalPreview ? (
@@ -1395,6 +1492,80 @@ export function ConflictsPage() {
                     ) : null}
                   </div>
                 ) : null}
+
+                <div className="rounded-lg bg-muted/15 p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-fg font-semibold">External Resolver Runs</div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2 text-[11px]"
+                      disabled={!selectedLaneId}
+                      onClick={() => selectedLaneId && void loadExternalRuns(selectedLaneId)}
+                    >
+                      Refresh
+                    </Button>
+                  </div>
+                  {lastExternalRun ? (
+                    <div className="mt-1 text-[11px] text-muted-fg">
+                      last run: {lastExternalRun.provider} {lastExternalRun.status} · patch {lastExternalRun.patchPath ?? "none"}
+                    </div>
+                  ) : null}
+                  {externalCommitInfo ? (
+                    <div className="mt-2 rounded-lg bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-200">{externalCommitInfo}</div>
+                  ) : null}
+                  {externalCommitError ? (
+                    <div className="mt-2 rounded-lg bg-red-500/10 px-2 py-1 text-[11px] text-red-200">{externalCommitError}</div>
+                  ) : null}
+                  {externalRuns.length === 0 ? (
+                    <div className="mt-2 text-muted-fg">No runs yet.</div>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {externalRuns.map((run) => (
+                        <div key={run.runId} className="rounded-lg bg-muted/20 p-2">
+                          <div className="text-[11px] text-fg">
+                            {run.provider} · {run.status} · {run.sourceLaneIds.join(", ")} → {run.targetLaneId}
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-fg">
+                            summary: {run.summary ?? "none"} · patch: {run.patchPath ?? "none"}
+                          </div>
+                          <div className="text-[11px] text-muted-fg">execution lane: {run.cwdLaneId}</div>
+                          <div className="text-[11px] text-muted-fg">log: {run.logPath ?? "none"}</div>
+                          {run.commitSha ? (
+                            <div className="mt-1 text-[11px] text-emerald-200">
+                              committed: {run.commitSha.slice(0, 12)} · {run.commitMessage ?? "commit message unavailable"}
+                            </div>
+                          ) : null}
+                          {run.insufficientContext ? (
+                            <div className="mt-1 text-[11px] text-amber-200">
+                              gaps: {run.contextGaps.map((gap) => gap.message).join(" | ")}
+                            </div>
+                          ) : null}
+                          {run.error ? (
+                            <div className="mt-1 text-[11px] text-red-200">error: {run.error}</div>
+                          ) : null}
+                          <div className="mt-2 flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-[11px]"
+                              disabled={
+                                run.status !== "completed" ||
+                                !run.patchPath ||
+                                Boolean(run.commitSha) ||
+                                externalCommitBusyRunId === run.runId
+                              }
+                              onClick={() => void commitExternalRun(run)}
+                              title="Commit only files from this external resolver run. This does not push."
+                            >
+                              {externalCommitBusyRunId === run.runId ? "Committing..." : run.commitSha ? "Committed" : "Quick Commit"}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <div className="rounded-lg bg-muted/15 p-2 text-xs">
                   <div className="flex items-center justify-between gap-2">

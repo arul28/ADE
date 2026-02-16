@@ -185,6 +185,33 @@ pack content with interactive features.
 - **Activity feed**: Human-readable pack events (refreshes, AI updates, failures) with deep links into the History tab.
 - **Versions + diff**: Immutable snapshots with a built-in diff viewer.
 
+---
+
+## Hosted Context Delivery (What the Cloud Jobs Actually Consume)
+
+Hosted jobs (narratives, conflict proposals, PR drafts) consume **bounded exports** (for example `LaneExportStandard`) by default.
+
+There are two delivery modes:
+
+1. **Inline**: the export(s) are embedded directly in the job payload `params` (works without mirror sync).
+2. **Mirror-ref**: for large/conflict jobs or when configured, ADE uploads the canonical JSON `params` as a content-addressed blob and submits a small `__adeContextRef` plus a reduced `__adeContextInline` fallback.
+
+This is intentionally deterministic and observable:
+
+- Pack events like `narrative_requested` record the delivery mode and reason code.
+- Settings exposes the hosted context delivery mode (Auto/Inline/Mirror Preferred).
+
+### Expected Behavior Matrix
+
+| Scenario | Mirror Sync | Hosted Job Context | Notes |
+|----------|------------|-------------------|------|
+| New lane with active session | optional | inline bounded export | Works even if mirror is disabled |
+| Stale mirror (no recent sync) | stale | inline bounded export | Jobs do not silently depend on mirror freshness |
+| Mirror disabled / no remoteProjectId | no | inline bounded export | Hosted jobs do not depend on mirror |
+| Conflict-heavy lane | optional | mirror-ref preferred (auto) | Inline fallback is reduced to keep payload compact |
+| Mirror-ref fetch fails (rare) | any | inline fallback | Worker emits `job.context_ref_failed` and proceeds with reduced fallback |
+| Periodic handoff via delta | optional | delta digest + bounded export | Deltas remain compact/deterministic |
+
 ### Pack Freshness Indicator
 
 Displayed in both the Pack Viewer and the Lane Inspector, the freshness indicator
@@ -853,3 +880,81 @@ Narrative metadata is recorded in the pack event payload: `providerMode`, `jobId
 ### Current State
 
 > **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a Hosted or BYOK provider is configured and available, narrative updates can be applied and are recorded as pack events and immutable version snapshots. Bounded exports (Lite/Standard/Deep) are available for orchestrator and AI consumption.
+
+---
+
+## 2026-02-16 Addendum — Context Freshness + Omission Metadata
+
+### Global docs freshness tracking
+
+Project context now fingerprints core docs and refreshes bootstrap context when docs change.
+
+Tracked paths include:
+
+- `docs/PRD.md`
+- `docs/architecture/*`
+- `docs/features/*`
+
+Manifest metadata now includes:
+
+- `contextFingerprint`
+- `contextVersion`
+- `lastDocsRefreshAt`
+- `docsStaleReason` (when docs cannot be refreshed/read)
+
+### Deterministic omission metadata
+
+Pack exports and deltas now carry optional omission metadata:
+
+- `clipReason`
+- `omittedSections`
+
+These fields are additive and backward compatible. Legacy consumers can ignore them.
+
+### Conflict freshness metadata in lane manifests
+
+Lane manifests now include conflict freshness signals:
+
+- `lastConflictRefreshAt`
+- `predictionStalenessMs`
+- `stalePolicy.ttlMs`
+- `pairwisePairsComputed`
+- `pairwisePairsTotal`
+- `unresolvedResolutionState`
+
+### UI connections
+
+- Lane inspector `Packs` view shows refreshed exports and omission warnings.
+- Settings `Hosted` view surfaces mirror sync/cleanup status and context fallback counters.
+
+---
+
+## 2026-02-16 Addendum — Context Hardening
+
+### Structured terminal summaries
+
+Lane pack generation now parses high-signal final terminal summaries and records:
+
+- `summarySource` (`explicit_final_block` or `heuristic_tail`)
+- `summaryConfidence` (`high` or `medium`)
+- deterministic omission tags for clipped summary/file extraction
+
+These markers are included in the `## Sessions` section and preserved in pack history.
+
+### Project/global context in narratives
+
+Narrative jobs now include:
+
+- `LaneExportStandard` (`packBody`)
+- `ProjectExportLite` (`projectContext`)
+- omission metadata and context refs (`projectContextRefs`, `projectContextMeta`)
+
+### ADE-managed minimized docs
+
+ADE now maintains first-class context docs:
+
+- `docs/PRD.ade.md`
+- `docs/architecture/ARCHITECTURE.ade.md`
+
+Model-facing context prefers these minimized docs when present. If canonical docs are too large, deterministic generation emits explicit `omitted_due_size` notes.
+

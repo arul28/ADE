@@ -227,6 +227,7 @@ export default $config({
           rangeKey: "submittedAt"
         }
       },
+      ttl: "expiresAt",
       transform: {
         table: (args: any) => {
           args.name = `ade-${stage}-jobs`;
@@ -441,6 +442,18 @@ export default $config({
       auth: protectedAuth
     });
 
+    api.route("POST /projects/{id}/packs/manifest", "packages/functions/src/api/handlers.updatePacksManifest", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/transcripts/manifest", "packages/functions/src/api/handlers.updateTranscriptsManifest", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/mirror/cleanup", "packages/functions/src/api/handlers.cleanMirrorData", {
+      auth: protectedAuth
+    });
+
     api.route("POST /projects/{id}/jobs", "packages/functions/src/api/handlers.submitJob", {
       auth: protectedAuth
     });
@@ -536,6 +549,21 @@ export default $config({
       }
     );
 
+    const jobSweeper = new sst.aws.Cron("JobSweeper", {
+      schedule: "rate(15 minutes)",
+      job: {
+        handler: "packages/functions/src/workers/jobSweeper.handler",
+        timeout: "60 seconds",
+        memory: "256 MB",
+        architecture: "arm64",
+        environment: {
+          APP_STAGE: stage,
+          JOBS_TABLE_NAME: jobsTable.name
+        },
+        link: [jobsTable]
+      }
+    });
+
 	    const dlqAlarm = new aws.cloudwatch.MetricAlarm("JobsDlqVisibleAlarm", {
 	      name: `ade-${stage}-jobs-dlq-visible`,
 	      alarmDescription: "ADE jobs dead-letter queue has visible messages.",
@@ -609,7 +637,8 @@ export default $config({
         jobsQueueAge: queueAgeAlarm.arn
       },
       workers: {
-        jobsWorker: worker.nodes.function.name
+        jobsWorker: worker.nodes.function.name,
+        jobSweeper: jobSweeper.nodes.job.name
       }
     };
   }

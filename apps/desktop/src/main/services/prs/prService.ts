@@ -632,8 +632,14 @@ export function createPrService({
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
     const template = readPrTemplate(projectRoot);
-    const lanePack = packService.getLanePack(laneId);
-    const packBody = lanePack.body;
+    const packBody = await (async () => {
+      // Use a bounded lane export for AI providers (keeps payload compact + deterministic, and avoids feeding prior narrative).
+      try {
+        return (await packService.getLaneExport({ laneId, level: "standard" })).content;
+      } catch {
+        return packService.getLanePack(laneId).body;
+      }
+    })();
 
     const commits = await runGit(
       ["log", "-n20", "--date=iso-strict", "--pretty=format:%h %aI %an %s"],

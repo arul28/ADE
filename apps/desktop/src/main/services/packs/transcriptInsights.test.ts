@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveSessionSummaryFromText, inferTestOutcomeFromText } from "./transcriptInsights";
+import { deriveSessionSummaryFromText, inferTestOutcomeFromText, parseTranscriptSummary } from "./transcriptInsights";
 
 describe("transcriptInsights", () => {
   it("derives a compact summary from Claude-style output", () => {
@@ -21,6 +21,37 @@ describe("transcriptInsights", () => {
     expect(summary.toLowerCase()).not.toContain("cooked for");
   });
 
+  it("prefers explicit final blocks and records source/confidence", () => {
+    const raw = [
+      "Checking tests...",
+      "",
+      "Done. Here's what changed:",
+      "- Updated `src/main.ts` to normalize args",
+      "- Added retry guard in src/services/retry.ts",
+      "- Wrote docs in docs/features/PACKS.md"
+    ].join("\n");
+
+    const parsed = parseTranscriptSummary(raw);
+    expect(parsed).toBeTruthy();
+    expect(parsed?.source).toBe("explicit_final_block");
+    expect(parsed?.confidence).toBe("high");
+    expect(parsed?.files).toContain("docs/features/PACKS.md");
+    expect(parsed?.files).toContain("src/main.ts");
+  });
+
+  it("falls back to heuristic tail summary when no explicit block exists", () => {
+    const raw = [
+      "starting",
+      "ran tests",
+      "All 12 tests passed in 3.8s",
+      "Updated parser and conflict heuristics"
+    ].join("\n");
+    const parsed = parseTranscriptSummary(raw);
+    expect(parsed).toBeTruthy();
+    expect(parsed?.source).toBe("heuristic_tail");
+    expect(parsed?.confidence).toBe("medium");
+  });
+
   it("infers test pass from an 'All tests pass' line", () => {
     const inferred = inferTestOutcomeFromText("All 4 tests pass.\n");
     expect(inferred?.status).toBe("pass");
@@ -33,4 +64,3 @@ describe("transcriptInsights", () => {
     expect(inferred?.evidence).toContain("Test Suites:");
   });
 });
-

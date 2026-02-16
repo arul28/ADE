@@ -5,7 +5,7 @@ import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { HostedStatus, PackEvent, PrEventPayload } from "../../../shared/types";
+import type { ContextStatus, HostedStatus, PackEvent, PrEventPayload } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 
 type PrToast = {
@@ -50,6 +50,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
   const [aiRetrying, setAiRetrying] = useState(false);
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
+  const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
+  const [contextGenerateBusy, setContextGenerateBusy] = useState<"codex" | "claude" | null>(null);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
     try {
@@ -83,6 +85,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })
       .catch(() => {
         // ignore
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade.context
+      .getStatus()
+      .then((next) => {
+        if (cancelled) return;
+        setContextStatus(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setContextStatus(null);
       });
     return () => {
       cancelled = true;
@@ -237,6 +256,48 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link to="/settings" className="underline">Fix in Settings</Link>
           </div>
         ) : null
+      ) : null}
+
+      {contextStatus?.docs?.some((doc) => !doc.exists) ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
+          Missing ADE context docs:
+          {contextStatus.docs.filter((doc) => !doc.exists).map((doc) => ` ${doc.label}`).join(", ")}.
+          <span className="ml-2 inline-flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={contextGenerateBusy != null}
+              onClick={() => {
+                setContextGenerateBusy("codex");
+                void window.ade.context
+                  .generateDocs({ provider: "codex" })
+                  .then(() => window.ade.context.getStatus())
+                  .then((next) => setContextStatus(next))
+                  .finally(() => setContextGenerateBusy(null));
+              }}
+            >
+              {contextGenerateBusy === "codex" ? "Generating…" : "Generate (Codex)"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              disabled={contextGenerateBusy != null}
+              onClick={() => {
+                setContextGenerateBusy("claude");
+                void window.ade.context
+                  .generateDocs({ provider: "claude" })
+                  .then(() => window.ade.context.getStatus())
+                  .then((next) => setContextStatus(next))
+                  .finally(() => setContextGenerateBusy(null));
+              }}
+            >
+              {contextGenerateBusy === "claude" ? "Generating…" : "Generate (Claude)"}
+            </Button>
+            <Link to="/context" className="underline">Open Context tab</Link>
+          </span>
+        </div>
       ) : null}
 
       {providerMode === "hosted" && aiMockProvider ? (

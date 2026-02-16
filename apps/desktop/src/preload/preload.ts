@@ -20,8 +20,13 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   AutomationsEventPayload,
+  ConflictExternalResolverRunSummary,
   ConflictProposal,
   ConflictProposalPreview,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextOpenDocArgs,
+  ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -91,6 +96,7 @@ import type {
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
   HostedMirrorDeleteResult,
+  HostedMirrorCleanupSummaryV1,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
@@ -144,6 +150,10 @@ import type {
   PtyExitEvent,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
+  RunExternalConflictResolverArgs,
+  ListExternalConflictResolverRunsArgs,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   UndoConflictProposalArgs,
@@ -375,11 +385,23 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.conflictsApplyProposal, args),
     undoProposal: async (args: UndoConflictProposalArgs): Promise<ConflictProposal> =>
       ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
+    runExternalResolver: async (args: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsRunExternalResolver, args),
+    listExternalResolverRuns: async (args: ListExternalConflictResolverRunsArgs = {}): Promise<ConflictExternalResolverRunSummary[]> =>
+      ipcRenderer.invoke(IPC.conflictsListExternalResolverRuns, args),
+    commitExternalResolverRun: async (args: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> =>
+      ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ConflictEventPayload) => cb(payload);
       ipcRenderer.on(IPC.conflictsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.conflictsEvent, listener);
     }
+  },
+  context: {
+    getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
+    generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
+      ipcRenderer.invoke(IPC.contextGenerateDocs, args),
+    openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args)
   },
   packs: {
     getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
@@ -463,6 +485,8 @@ contextBridge.exposeInMainWorld("ade", {
     signOut: async (): Promise<void> => ipcRenderer.invoke(IPC.hostedSignOut),
     syncMirror: async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> =>
       ipcRenderer.invoke(IPC.hostedSyncMirror, args),
+    cleanMirrorData: async (): Promise<HostedMirrorCleanupSummaryV1> =>
+      ipcRenderer.invoke(IPC.hostedCleanMirrorData),
     deleteMirrorData: async (): Promise<HostedMirrorDeleteResult> => ipcRenderer.invoke(IPC.hostedDeleteMirrorData),
     submitJob: async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> =>
       ipcRenderer.invoke(IPC.hostedSubmitJob, args),

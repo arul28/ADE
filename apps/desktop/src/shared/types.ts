@@ -231,6 +231,62 @@ export type ConflictProposal = {
 
 export type ConflictProposalProvider = "hosted" | "byok";
 
+export type ExternalConflictResolverProvider = "codex" | "claude";
+
+export type ConflictExternalResolverRunStatus = "running" | "completed" | "failed" | "blocked";
+
+export type ConflictExternalResolverContextGap = {
+  code: string;
+  message: string;
+};
+
+export type ConflictExternalResolverRunSummary = {
+  runId: string;
+  provider: ExternalConflictResolverProvider;
+  status: ConflictExternalResolverRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  targetLaneId: string;
+  sourceLaneIds: string[];
+  cwdLaneId: string;
+  integrationLaneId: string | null;
+  summary: string | null;
+  patchPath: string | null;
+  logPath: string | null;
+  insufficientContext: boolean;
+  contextGaps: ConflictExternalResolverContextGap[];
+  warnings: string[];
+  committedAt?: string | null;
+  commitSha?: string | null;
+  commitMessage?: string | null;
+  error: string | null;
+};
+
+export type RunExternalConflictResolverArgs = {
+  provider: ExternalConflictResolverProvider;
+  targetLaneId: string;
+  sourceLaneIds: string[];
+  integrationLaneName?: string;
+};
+
+export type ListExternalConflictResolverRunsArgs = {
+  laneId?: string;
+  limit?: number;
+};
+
+export type CommitExternalConflictResolverRunArgs = {
+  runId: string;
+  message?: string;
+};
+
+export type CommitExternalConflictResolverRunResult = {
+  runId: string;
+  laneId: string;
+  commitSha: string;
+  message: string;
+  committedPaths: string[];
+};
+
 export type ConflictProposalPreviewFile = {
   path: string;
   includeReason: "conflicted" | "overlap";
@@ -261,6 +317,59 @@ export type ConflictProposalPreview = {
   stats: ConflictProposalPreviewStats;
   warnings: string[];
   existingProposalId: string | null;
+};
+
+// -----------------------------
+// Conflict Job Context (Hosted)
+// -----------------------------
+
+export type ConflictRelevantFileV1 = {
+  path: string;
+  includeReason: "conflicted" | "overlap" | "touched" | "predicted";
+  selectedBecause: string;
+};
+
+export type ConflictFileHunkV1 = {
+  kind: "base_left" | "base_right";
+  header: string;
+  baseStart: number;
+  baseCount: number;
+  otherStart: number;
+  otherCount: number;
+};
+
+export type ConflictFileContextSideV1 = {
+  side: "base" | "left" | "right";
+  ref: string | null;
+  blobSha: string | null;
+  excerpt: string;
+  excerptFormat: "diff_hunks" | "marker_preview" | "unavailable";
+  truncated: boolean;
+  omittedReasonTags?: string[] | null;
+};
+
+export type ConflictFileContextV1 = {
+  path: string;
+  selectedBecause: string;
+  hunks: ConflictFileHunkV1[];
+  base: ConflictFileContextSideV1 | null;
+  left: ConflictFileContextSideV1 | null;
+  right: ConflictFileContextSideV1 | null;
+  markerPreview: string | null;
+  omittedReasonTags?: string[] | null;
+};
+
+export type ConflictJobContextV1 = {
+  schema: "ade.conflictJobContext.v1";
+  relevantFilesForConflict?: ConflictRelevantFileV1[] | null;
+  fileContexts?: ConflictFileContextV1[] | null;
+  stalePolicy?: { ttlMs: number } | null;
+  predictionAgeMs?: number | null;
+  predictionStalenessMs?: number | null;
+  pairwisePairsComputed?: number | null;
+  pairwisePairsTotal?: number | null;
+  insufficientContext?: boolean | null;
+  insufficientReasons?: string[] | null;
 };
 
 export type PrepareConflictProposalArgs = {
@@ -458,9 +567,105 @@ export type HostedJobType =
   | "ProposeConflictResolution"
   | "DraftPrDescription";
 
+export type HostedContextDeliveryMode = "auto" | "inline" | "mirror_preferred";
+
+export type HostedContextSource = "inline" | "mirror" | "inline_fallback";
+
+export type HostedPackVersionRefV1 = {
+  packKey: string;
+  versionId: string | null;
+  versionNumber: number | null;
+  contentHash: string | null;
+};
+
+export type HostedManifestRefsV1 = {
+  lane?: string | null;
+  packs?: string | null;
+  transcripts?: string | null;
+  project?: string | null;
+  conflict?: string | null;
+};
+
+export type HostedHandoffV1 = {
+  schema: "ade.handoff.v1";
+  contextSource: HostedContextSource;
+  reasonCode?: string | null;
+  approxParamsBytes?: number | null;
+  policyTtlMs?: number | null;
+  staleness?: {
+    mirrorLastSuccessAt?: string | null;
+    mirrorStalenessMs?: number | null;
+    docsLastRefreshAt?: string | null;
+    docsStaleReason?: string | null;
+  } | null;
+  packVersion?: HostedPackVersionRefV1 | null;
+  projectPackVersion?: HostedPackVersionRefV1 | null;
+  conflictPackVersion?: HostedPackVersionRefV1 | null;
+  manifestRefs?: HostedManifestRefsV1 | null;
+  missingRelevanceWarnings?: string[] | null;
+  fileContextsMissing?: boolean | null;
+  warnings?: string[] | null;
+  refSha256?: string | null;
+  inlineClipReasonTags?: string[] | null;
+};
+
+export type HostedJobContextDeliveryV1 = {
+  schema: "ade.hostedJobContextDelivery.v1";
+  mode: "inline" | "mirror";
+  reasonCode: string;
+  approxParamsBytes: number;
+  contextRefSha256: string | null;
+  warnings: string[];
+  contextSource?: HostedContextSource;
+  confidenceLevel?: "high" | "medium" | "low";
+};
+
 export type HostedMirrorSyncArgs = {
   laneId?: string;
   includeTranscripts?: boolean;
+};
+
+export type HostedMirrorCleanupSummaryV1 = {
+  schema: "ade.hostedMirrorCleanupSummary.v1";
+  remoteProjectId: string;
+  startedAt: string;
+  finishedAt: string;
+  reachableBlobs: number;
+  orphanedBlobs: number;
+  deletedBlobs: number;
+  reclaimedBytes: number;
+  policy: {
+    staleGraceMs: number;
+    maxObjectsScanned: number;
+    maxDelete: number;
+    maxBytesScanned: number;
+  };
+  warnings: string[];
+};
+
+export type HostedMirrorCleanupResult = {
+  remoteProjectId: string;
+  cleanedAt: string;
+  reachableBlobs: number;
+  orphanedBlobs: number;
+  deletedBlobs: number;
+  reclaimedBytes: number;
+  warnings?: string[];
+};
+
+export type HostedMirrorSyncSummaryV1 = {
+  schema: "ade.hostedMirrorSyncSummary.v1";
+  remoteProjectId: string;
+  lanesSyncedCount: number;
+  uploaded: number;
+  deduplicated: number;
+  excluded: number;
+  manifestCount: number;
+  transcriptCount: number;
+  packCount: number;
+  syncedAt: string;
+  warnings: string[];
+  cleanup?: HostedMirrorCleanupSummaryV1 | null;
 };
 
 export type HostedMirrorSyncResult = {
@@ -473,6 +678,10 @@ export type HostedMirrorSyncResult = {
   transcriptCount: number;
   packCount: number;
   syncedAt: string;
+  packsManifestKey?: string | null;
+  transcriptsManifestKey?: string | null;
+  warnings?: string[];
+  cleanup?: HostedMirrorCleanupSummaryV1 | null;
 };
 
 export type HostedJobSubmissionArgs = {
@@ -485,6 +694,7 @@ export type HostedJobSubmissionResult = {
   remoteProjectId: string;
   jobId: string;
   status: "queued" | "processing" | "completed" | "failed";
+  contextDelivery?: HostedJobContextDeliveryV1;
 };
 
 export type HostedJobStatusResult = {
@@ -501,6 +711,24 @@ export type HostedJobStatusResult = {
     details?: Record<string, unknown>;
   };
   metrics?: Record<string, unknown> | null;
+};
+
+export type HostedNarrativeTimeoutReason =
+  | "timeout_poll"
+  | "timeout_total"
+  | "job_failed"
+  | "artifact_missing";
+
+export type HostedNarrativeTimingV1 = {
+  schema: "ade.hostedNarrativeTiming.v1";
+  submitStartedAt: string;
+  submitDurationMs: number;
+  queueWaitMs: number;
+  pollDurationMs: number;
+  artifactFetchMs: number;
+  totalDurationMs: number;
+  timeoutMs: number;
+  timeoutReason: HostedNarrativeTimeoutReason | null;
 };
 
 export type HostedArtifactResult = {
@@ -547,6 +775,31 @@ export type HostedStatus = {
   auth: HostedAuthStatus;
   mirrorExcludePatterns: string[];
   transcriptUploadEnabled: boolean;
+  contextDeliveryMode: HostedContextDeliveryMode;
+  mirrorSync: {
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
+    lastResult: HostedMirrorSyncSummaryV1 | null;
+  };
+  mirrorCleanup?: {
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
+    lastResult: HostedMirrorCleanupSummaryV1 | null;
+  };
+  contextTelemetry?: {
+    schema: "ade.hostedContextTelemetry.v1";
+    inlineCount: number;
+    mirrorCount: number;
+    inlineFallbackCount: number;
+    lastUpdatedAt: string | null;
+    lastFallbackAt: string | null;
+    insufficientContextJobCount: number;
+    lastNarrativeTiming?: HostedNarrativeTimingV1 | null;
+    narrativeTimeoutCount?: number;
+    lastNarrativeTimeoutReason?: HostedNarrativeTimeoutReason | null;
+  };
 };
 
 export type HostedSignInResult = {
@@ -558,6 +811,68 @@ export type HostedSignInProvider = "github" | "google";
 
 export type HostedSignInArgs = {
   provider?: HostedSignInProvider;
+};
+
+export type ContextDocStatus = {
+  id: "prd_ade" | "architecture_ade";
+  label: string;
+  preferredPath: string;
+  exists: boolean;
+  sizeBytes: number;
+  updatedAt: string | null;
+  fingerprint: string | null;
+  staleReason: string | null;
+  fallbackCount: number;
+};
+
+export type ContextDocGenerationWarning = {
+  code: string;
+  message: string;
+  actionLabel?: string;
+  actionPath?: string;
+};
+
+export type ContextStatus = {
+  docs: ContextDocStatus[];
+  canonicalDocsPresent: number;
+  canonicalDocsScanned: number;
+  canonicalDocsFingerprint: string;
+  canonicalDocsUpdatedAt: string | null;
+  projectExportFingerprint: string | null;
+  projectExportUpdatedAt: string | null;
+  contextManifestRefs: {
+    project: string | null;
+    packs: string | null;
+    transcripts: string | null;
+  };
+  fallbackWrites: number;
+  insufficientContextCount: number;
+  hostedTiming: HostedNarrativeTimingV1 | null;
+  hostedTimeoutCount: number;
+  hostedLastTimeoutReason: HostedNarrativeTimeoutReason | null;
+  warnings: ContextDocGenerationWarning[];
+};
+
+export type ContextDocProvider = "codex" | "claude";
+
+export type ContextGenerateDocsArgs = {
+  provider: ContextDocProvider;
+  force?: boolean;
+};
+
+export type ContextGenerateDocsResult = {
+  provider: ContextDocProvider;
+  generatedAt: string;
+  prdPath: string;
+  architecturePath: string;
+  usedFallbackPath: boolean;
+  warnings: ContextDocGenerationWarning[];
+  outputPreview: string;
+};
+
+export type ContextOpenDocArgs = {
+  docId?: ContextDocStatus["id"];
+  path?: string;
 };
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
@@ -1437,6 +1752,11 @@ export type PackConflictStateV1 = {
   pairwisePairsComputed?: number;
   pairwisePairsTotal?: number;
   lastRecomputedAt?: string | null;
+  predictionStale?: boolean | null;
+  predictionAgeMs?: number | null;
+  stalePolicy?: { ttlMs: number } | null;
+  staleReason?: string | null;
+  unresolvedResolutionState?: GitConflictState | null;
 };
 
 export type ContextHeaderV1 = {
@@ -1510,6 +1830,10 @@ export type LaneExportManifestV1 = {
   worktreePath: string;
   branchRef: string;
   baseRef: string;
+  contextFingerprint?: string | null;
+  contextVersion?: number | null;
+  lastDocsRefreshAt?: string | null;
+  docsStaleReason?: string | null;
   lineage: LaneLineageV1;
   mergeConstraints: {
     requiredMerges: string[];
@@ -1526,6 +1850,11 @@ export type LaneExportManifestV1 = {
     strategy?: string;
     pairwisePairsComputed?: number;
     pairwisePairsTotal?: number;
+    predictionStale?: boolean | null;
+    predictionStalenessMs?: number | null;
+    stalePolicy?: { ttlMs: number } | null;
+    staleReason?: string | null;
+    unresolvedResolutionState?: GitConflictState | null;
   };
 };
 
@@ -1552,6 +1881,10 @@ export type ProjectExportManifestV1 = {
   schema: "ade.manifest.project.v1";
   projectId: string;
   generatedAt: string;
+  contextFingerprint?: string | null;
+  contextVersion?: number | null;
+  lastDocsRefreshAt?: string | null;
+  docsStaleReason?: string | null;
   lanesTotal: number;
   lanesIncluded: number;
   lanesOmitted: number;
@@ -1567,6 +1900,9 @@ export type ConflictLineageV1 = {
   laneId: string;
   peerKey: string;
   predictionAt: string | null;
+  predictionAgeMs?: number | null;
+  predictionStale?: boolean | null;
+  staleReason?: string | null;
   lastRecomputedAt: string | null;
   truncated: boolean | null;
   strategy: string | null;
@@ -1595,6 +1931,8 @@ export type PackExport = {
   maxTokens: number;
   truncated: boolean;
   warnings: string[];
+  clipReason?: string | null;
+  omittedSections?: string[] | null;
 };
 
 export type GetLaneExportArgs = { laneId: string; level: ContextExportLevel };
@@ -1636,6 +1974,8 @@ export type PackDeltaDigestV1 = {
     reasons: string[];
   };
   handoffSummary: string;
+  clipReason?: string | null;
+  omittedSections?: string[] | null;
 };
 
 export type PackHeadVersion = {

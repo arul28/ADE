@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
@@ -11,6 +12,10 @@ import type { createOperationService } from "../history/operationService";
 import type {
   Checkpoint,
   ConflictLineageV1,
+  ContextDocStatus,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextStatus,
   ContextExportLevel,
   ConflictRiskLevel,
   ConflictStatusValue,
@@ -53,7 +58,7 @@ import {
   ADE_TODOS_START
 } from "../../../shared/contextContract";
 import { stripAnsi } from "../../utils/ansiStrip";
-import { deriveSessionSummaryFromText, inferTestOutcomeFromText } from "./transcriptInsights";
+import { inferTestOutcomeFromText, parseTranscriptSummary } from "./transcriptInsights";
 import { renderLanePackMarkdown } from "./lanePackTemplate";
 import { computeSectionChanges, upsertSectionByHeading } from "./packSections";
 import type { SectionLocator } from "./packSections";
@@ -482,6 +487,537 @@ export function createPackService({
       { id: "bootstrap", kind: "heading", heading: "## Bootstrap context (codebase + docs)" },
       { id: "lane_snapshot", kind: "heading", heading: "## Lane Snapshot" }
     ];
+  };
+
+  const CONTEXT_VERSION = 1;
+  const BOOTSTRAP_FINGERPRINT_RE = /<!--\s*ADE_DOCS_FINGERPRINT:([a-f0-9]{64})\s*-->/i;
+  const ADE_DOC_PRD_REL = "docs/PRD.ade.md";
+  const ADE_DOC_ARCH_REL = "docs/architecture/ARCHITECTURE.ade.md";
+  const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
+  const FALLBACK_GENERATED_ROOT = path.join(path.dirname(packsDir), "context", "generated");
+  const CONTEXT_CLIP_TAG = "omitted_due_size";
+
+  const nowTimestampSegment = () => {
+    const iso = nowIso();
+    return iso.replace(/[:]/g, "-").replace(/\..+$/, "Z");
+  };
+
+  const safeReadDoc = (absPath: string, maxBytes: number): { text: string; truncated: boolean } => {
+    try {
+      const fd = fs.openSync(absPath, "r");
+      try {
+        const buf = Buffer.alloc(maxBytes);
+        const bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
+        const text = buf.slice(0, Math.max(0, bytesRead)).toString("utf8");
+        const size = fs.statSync(absPath).size;
+        return { text, truncated: size > bytesRead };
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return { text: "", truncated: false };
+    }
+  };
+
+  const formatDocDigest = (args: {
+    title: string;
+    sources: string[];
+    maxChars: number;
+  }): { content: string; warnings: string[] } => {
+    const warnings: string[] = [];
+    const lines: string[] = [
+      `# ${args.title}`,
+      "",
+      "> ADE minimized context document. Generated deterministically for model context.",
+      ""
+    ];
+    let usedChars = lines.join("\n").length;
+
+    for (const rel of args.sources) {
+      const abs = path.join(projectRoot, rel);
+      if (!fs.existsSync(abs)) continue;
+      const read = safeReadDoc(abs, 160_000);
+      if (!read.text.trim()) continue;
+      const normalized = read.text.replace(/\r\n/g, "\n");
+      const sourceLines = normalized.split("\n");
+      const digest: string[] = [];
+      for (const line of sourceLines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("```")) continue;
+        digest.push(trimmed);
+        if (digest.join(" ").length > 1_400) break;
+      }
+      const blockHeader = `## Source: ${rel}`;
+      const block = [blockHeader, ...digest.slice(0, 16), ""].join("\n");
+      if (usedChars + block.length > args.maxChars) {
+        warnings.push(`${CONTEXT_CLIP_TAG}:${rel}`);
+        lines.push(blockHeader);
+        lines.push(`- ${CONTEXT_CLIP_TAG}: source exceeded generation cap`);
+        lines.push("");
+        continue;
+      }
+      lines.push(blockHeader);
+      for (const entry of digest.slice(0, 16)) lines.push(entry);
+      if (read.truncated) lines.push(`- ${CONTEXT_CLIP_TAG}: source file truncated while reading`);
+      lines.push("");
+      usedChars = lines.join("\n").length;
+    }
+
+    if (warnings.length) {
+      lines.push("## Omitted");
+      for (const warning of warnings) lines.push(`- ${warning}`);
+      lines.push("");
+    }
+
+    return { content: `${lines.join("\n").trim()}\n`, warnings };
+  };
+
+  const resolveContextGeneratorCommand = (provider: ContextGenerateDocsArgs["provider"]): string[] => {
+    const snapshot = projectConfigService.get();
+    const providers = isRecord(snapshot.local.providers)
+      ? snapshot.local.providers
+      : isRecord(snapshot.effective.providers)
+        ? snapshot.effective.providers
+        : {};
+    const contextTools = isRecord((providers as Record<string, unknown>).contextTools)
+      ? ((providers as Record<string, unknown>).contextTools as Record<string, unknown>)
+      : {};
+    const generators = isRecord(contextTools.generators) ? (contextTools.generators as Record<string, unknown>) : {};
+    const providerConfig = isRecord(generators[provider]) ? (generators[provider] as Record<string, unknown>) : {};
+    const rawCommand = Array.isArray(providerConfig.command) ? providerConfig.command : [];
+    return rawCommand.map((value) => String(value));
+  };
+
+  const runContextGeneratorCommand = (args: {
+    provider: ContextGenerateDocsArgs["provider"];
+    promptFile: string;
+    outputPrd: string;
+    outputArchitecture: string;
+  }): { stdout: string; stderr: string; exitCode: number | null; command: string[] } => {
+    const command = resolveContextGeneratorCommand(args.provider);
+    if (!command.length) {
+      return { stdout: "", stderr: "context_generator_command_missing", exitCode: null, command: [] };
+    }
+    const rendered = command.map((token) =>
+      token
+        .replace(/\{\{promptFile\}\}/g, args.promptFile)
+        .replace(/\{\{projectRoot\}\}/g, projectRoot)
+        .replace(/\{\{outputPrd\}\}/g, args.outputPrd)
+        .replace(/\{\{outputArchitecture\}\}/g, args.outputArchitecture)
+    );
+    const bin = rendered[0];
+    if (!bin) return { stdout: "", stderr: "context_generator_command_invalid", exitCode: null, command: rendered };
+    const proc = spawnSync(bin, rendered.slice(1), {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 240_000,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    return {
+      stdout: proc.stdout ?? "",
+      stderr: proc.stderr ?? "",
+      exitCode: proc.status,
+      command: rendered
+    };
+  };
+
+  const writeDocWithFallback = (args: {
+    preferredAbsPath: string;
+    fallbackFileName: string;
+    content: string;
+  }): { writtenPath: string; usedFallback: boolean; warning: string | null } => {
+    try {
+      ensureDirFor(args.preferredAbsPath);
+      fs.writeFileSync(args.preferredAbsPath, args.content, "utf8");
+      return { writtenPath: args.preferredAbsPath, usedFallback: false, warning: null };
+    } catch (error) {
+      const ts = nowTimestampSegment();
+      const fallbackDir = path.join(FALLBACK_GENERATED_ROOT, ts);
+      fs.mkdirSync(fallbackDir, { recursive: true });
+      const fallbackPath = path.join(fallbackDir, args.fallbackFileName);
+      fs.writeFileSync(fallbackPath, args.content, "utf8");
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        writtenPath: fallbackPath,
+        usedFallback: true,
+        warning: `write_failed_preferred_path:${args.preferredAbsPath}:${reason}`
+      };
+    }
+  };
+
+  const collectContextDocPaths = (): string[] => {
+    const out = new Set<string>(["docs/PRD.md", ADE_DOC_PRD_REL, ADE_DOC_ARCH_REL]);
+    const walk = (relDir: string, depth: number) => {
+      if (depth < 0) return;
+      const abs = path.join(projectRoot, relDir);
+      if (!fs.existsSync(abs)) return;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(abs, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) continue;
+        const rel = path.join(relDir, entry.name).replace(/\\/g, "/");
+        if (entry.isDirectory()) {
+          walk(rel, depth - 1);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (!/\.(md|mdx|txt|yaml|yml|json)$/i.test(entry.name)) continue;
+        out.add(rel);
+      }
+    };
+    walk("docs/architecture", 3);
+    walk("docs/features", 3);
+    return [...out]
+      .sort((a, b) => a.localeCompare(b))
+      .sort((a, b) => {
+        const aAde = a.endsWith(".ade.md") ? 0 : 1;
+        const bAde = b.endsWith(".ade.md") ? 0 : 1;
+        return aAde - bAde;
+      });
+  };
+
+  const readContextDocMeta = (): {
+    contextFingerprint: string;
+    contextVersion: number;
+    lastDocsRefreshAt: string | null;
+    docsStaleReason: string | null;
+  } => {
+    const paths = collectContextDocPaths();
+    const entries: Array<{ path: string; size: number; mtimeMs: number }> = [];
+    for (const rel of paths) {
+      const abs = path.join(projectRoot, rel);
+      try {
+        const st = fs.statSync(abs);
+        if (!st.isFile()) continue;
+        entries.push({ path: rel, size: st.size, mtimeMs: st.mtimeMs });
+      } catch {
+        // ignore missing files
+      }
+    }
+
+    const contextFingerprint = sha256(JSON.stringify(entries));
+    const latestMtime = entries.reduce((max, entry) => Math.max(max, entry.mtimeMs), 0);
+    return {
+      contextFingerprint,
+      contextVersion: CONTEXT_VERSION,
+      lastDocsRefreshAt: latestMtime > 0 ? new Date(latestMtime).toISOString() : null,
+      docsStaleReason: entries.length ? null : "docs_missing_or_unreadable"
+    };
+  };
+
+  const collectCanonicalContextDocPaths = (): string[] =>
+    collectContextDocPaths().filter((rel) => !rel.endsWith(".ade.md"));
+
+  const readCanonicalDocMeta = (): {
+    scanned: number;
+    present: number;
+    fingerprint: string;
+    updatedAt: string | null;
+  } => {
+    const paths = collectCanonicalContextDocPaths();
+    const present: Array<{ path: string; size: number; mtimeMs: number }> = [];
+    for (const rel of paths) {
+      try {
+        const st = fs.statSync(path.join(projectRoot, rel));
+        if (!st.isFile()) continue;
+        present.push({ path: rel, size: st.size, mtimeMs: st.mtimeMs });
+      } catch {
+        // ignore
+      }
+    }
+    const latestMtime = present.reduce((max, entry) => Math.max(max, entry.mtimeMs), 0);
+    return {
+      scanned: paths.length,
+      present: present.length,
+      fingerprint: sha256(JSON.stringify(present)),
+      updatedAt: latestMtime > 0 ? new Date(latestMtime).toISOString() : null
+    };
+  };
+
+  const readDocStatus = (args: {
+    id: ContextDocStatus["id"];
+    label: string;
+    relPath: string;
+    canonicalUpdatedAt: string | null;
+    fallbackCount: number;
+  }): ContextDocStatus => {
+    const absPath = path.join(projectRoot, args.relPath);
+    let exists = false;
+    let sizeBytes = 0;
+    let updatedAt: string | null = null;
+    let fingerprint: string | null = null;
+    try {
+      const st = fs.statSync(absPath);
+      if (st.isFile()) {
+        exists = true;
+        sizeBytes = st.size;
+        updatedAt = st.mtime.toISOString();
+        const body = fs.readFileSync(absPath, "utf8");
+        fingerprint = sha256(body);
+      }
+    } catch {
+      // ignore
+    }
+    const staleReason = (() => {
+      if (!exists) return "missing";
+      if (!updatedAt || !args.canonicalUpdatedAt) return null;
+      const docTs = Date.parse(updatedAt);
+      const canonicalTs = Date.parse(args.canonicalUpdatedAt);
+      if (Number.isFinite(docTs) && Number.isFinite(canonicalTs) && docTs < canonicalTs) {
+        return "older_than_canonical_docs";
+      }
+      return null;
+    })();
+    return {
+      id: args.id,
+      label: args.label,
+      preferredPath: args.relPath,
+      exists,
+      sizeBytes,
+      updatedAt,
+      fingerprint,
+      staleReason,
+      fallbackCount: args.fallbackCount
+    };
+  };
+
+  const countFallbackWrites = (): number => {
+    if (!fs.existsSync(FALLBACK_GENERATED_ROOT)) return 0;
+    const walk = (dir: string): number => {
+      let total = 0;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return 0;
+      }
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) total += walk(abs);
+        if (entry.isFile() && entry.name.endsWith(".ade.md")) total += 1;
+      }
+      return total;
+    };
+    return walk(FALLBACK_GENERATED_ROOT);
+  };
+
+  const readContextStatus = (): ContextStatus => {
+    const canonical = readCanonicalDocMeta();
+    const fallbackCount = countFallbackWrites();
+    const latestRunRaw = db.getJson<{
+      warnings?: Array<{ code?: string; message?: string; actionLabel?: string; actionPath?: string }>;
+    }>(CONTEXT_DOC_LAST_RUN_KEY);
+    const latestWarnings = Array.isArray(latestRunRaw?.warnings)
+      ? latestRunRaw!.warnings!.map((warning) => ({
+          code: String(warning?.code ?? "unknown"),
+          message: String(warning?.message ?? ""),
+          ...(warning?.actionLabel ? { actionLabel: String(warning.actionLabel) } : {}),
+          ...(warning?.actionPath ? { actionPath: String(warning.actionPath) } : {})
+        }))
+      : [];
+    const docs = [
+      readDocStatus({
+        id: "prd_ade",
+        label: "PRD (ADE minimized)",
+        relPath: ADE_DOC_PRD_REL,
+        canonicalUpdatedAt: canonical.updatedAt,
+        fallbackCount
+      }),
+      readDocStatus({
+        id: "architecture_ade",
+        label: "Architecture (ADE minimized)",
+        relPath: ADE_DOC_ARCH_REL,
+        canonicalUpdatedAt: canonical.updatedAt,
+        fallbackCount
+      })
+    ];
+
+    const projectPackIndex = db.get<{ metadata_json: string | null; deterministic_updated_at: string | null }>(
+      `
+        select metadata_json, deterministic_updated_at
+        from packs_index
+        where project_id = ?
+          and pack_key = 'project'
+        limit 1
+      `,
+      [projectId]
+    );
+    const projectPackMeta = (() => {
+      if (!projectPackIndex?.metadata_json) return {} as Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(projectPackIndex.metadata_json) as unknown;
+        return isRecord(parsed) ? parsed : {};
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    })();
+
+    const insufficientContextCount = Number(
+      db.get<{ count: number }>(
+        `
+          select count(1) as count
+          from conflict_proposals
+          where project_id = ?
+            and metadata_json like '%"insufficientContext":true%'
+        `,
+        [projectId]
+      )?.count ?? 0
+    );
+
+    return {
+      docs,
+      canonicalDocsPresent: canonical.present,
+      canonicalDocsScanned: canonical.scanned,
+      canonicalDocsFingerprint: canonical.fingerprint,
+      canonicalDocsUpdatedAt: canonical.updatedAt,
+      projectExportFingerprint: typeof projectPackMeta.contextFingerprint === "string" ? projectPackMeta.contextFingerprint : null,
+      projectExportUpdatedAt: projectPackIndex?.deterministic_updated_at ?? null,
+      contextManifestRefs: {
+        project: null,
+        packs: null,
+        transcripts: null
+      },
+      fallbackWrites: fallbackCount,
+      insufficientContextCount,
+      hostedTiming: null,
+      hostedTimeoutCount: 0,
+      hostedLastTimeoutReason: null,
+      warnings: latestWarnings
+    };
+  };
+
+  const extractGeneratedSection = (stdout: string, marker: string): string => {
+    const start = `<!-- ${marker}_START -->`;
+    const end = `<!-- ${marker}_END -->`;
+    const from = stdout.indexOf(start);
+    const to = stdout.indexOf(end);
+    if (from < 0 || to < 0 || to <= from) return "";
+    return stdout.slice(from + start.length, to).trim();
+  };
+
+  const runContextDocGeneration = (args: ContextGenerateDocsArgs): ContextGenerateDocsResult => {
+    const provider = args.provider;
+    const generatedAt = nowIso();
+    const warnings: ContextGenerateDocsResult["warnings"] = [];
+    const canonicalPaths = collectCanonicalContextDocPaths();
+
+    const prdDigest = formatDocDigest({
+      title: "PRD.ade",
+      sources: canonicalPaths.filter((rel) => /prd|product|roadmap|feature/i.test(rel)).concat(["docs/PRD.md"]).filter(Boolean),
+      maxChars: 18_000
+    });
+    const archDigest = formatDocDigest({
+      title: "ARCHITECTURE.ade",
+      sources: canonicalPaths.filter((rel) => /architecture|system|design|lanes|conflict|pack/i.test(rel)),
+      maxChars: 20_000
+    });
+    for (const warning of [...prdDigest.warnings, ...archDigest.warnings]) {
+      warnings.push({ code: "omitted_due_size", message: warning });
+    }
+
+    const tmpRoot = path.join(path.dirname(packsDir), "context", "tmp");
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const promptFile = path.join(tmpRoot, `generate-context-${Date.now()}.md`);
+    const outputPrd = path.join(tmpRoot, `prd-${Date.now()}.ade.md`);
+    const outputArch = path.join(tmpRoot, `architecture-${Date.now()}.ade.md`);
+    const prompt = [
+      "Generate two markdown documents from the provided repository context.",
+      "Output markers exactly if using stdout:",
+      "<!-- ADE_PRD_DOC_START --> ... <!-- ADE_PRD_DOC_END -->",
+      "<!-- ADE_ARCH_DOC_START --> ... <!-- ADE_ARCH_DOC_END -->",
+      "",
+      "PRD source digest:",
+      prdDigest.content,
+      "",
+      "Architecture source digest:",
+      archDigest.content
+    ].join("\n");
+    fs.writeFileSync(promptFile, prompt, "utf8");
+
+    const cmdResult = runContextGeneratorCommand({
+      provider,
+      promptFile,
+      outputPrd,
+      outputArchitecture: outputArch
+    });
+
+    let generatedPrd = "";
+    let generatedArch = "";
+    if (cmdResult.exitCode === 0) {
+      if (fs.existsSync(outputPrd)) generatedPrd = fs.readFileSync(outputPrd, "utf8");
+      if (fs.existsSync(outputArch)) generatedArch = fs.readFileSync(outputArch, "utf8");
+      if (!generatedPrd) generatedPrd = extractGeneratedSection(cmdResult.stdout, "ADE_PRD_DOC");
+      if (!generatedArch) generatedArch = extractGeneratedSection(cmdResult.stdout, "ADE_ARCH_DOC");
+    } else {
+      warnings.push({
+        code: "generator_failed",
+        message: `provider=${provider} exitCode=${cmdResult.exitCode ?? -1} stderr=${cmdResult.stderr.slice(0, 300)}`
+      });
+    }
+
+    if (!generatedPrd.trim()) {
+      generatedPrd = prdDigest.content;
+      warnings.push({ code: "generator_fallback_prd", message: "Used deterministic fallback PRD digest." });
+    }
+    if (!generatedArch.trim()) {
+      generatedArch = archDigest.content;
+      warnings.push({ code: "generator_fallback_architecture", message: "Used deterministic fallback architecture digest." });
+    }
+
+    const prdWrite = writeDocWithFallback({
+      preferredAbsPath: path.join(projectRoot, ADE_DOC_PRD_REL),
+      fallbackFileName: "PRD.ade.md",
+      content: generatedPrd
+    });
+    const archWrite = writeDocWithFallback({
+      preferredAbsPath: path.join(projectRoot, ADE_DOC_ARCH_REL),
+      fallbackFileName: "ARCHITECTURE.ade.md",
+      content: generatedArch
+    });
+    if (prdWrite.warning) {
+      warnings.push({
+        code: "write_fallback_prd",
+        message: prdWrite.warning,
+        actionLabel: "Open fallback PRD",
+        actionPath: prdWrite.writtenPath
+      });
+    }
+    if (archWrite.warning) {
+      warnings.push({
+        code: "write_fallback_architecture",
+        message: archWrite.warning,
+        actionLabel: "Open fallback architecture",
+        actionPath: archWrite.writtenPath
+      });
+    }
+
+    db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
+      generatedAt,
+      provider,
+      prdPath: prdWrite.writtenPath,
+      architecturePath: archWrite.writtenPath,
+      warnings
+    });
+
+    return {
+      provider,
+      generatedAt,
+      prdPath: prdWrite.writtenPath,
+      architecturePath: archWrite.writtenPath,
+      usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
+      warnings,
+      outputPreview: `${cmdResult.stdout}\n${cmdResult.stderr}`.trim().slice(0, 1500)
+    };
+  };
+
+  const resolveContextDocPath = (docId: ContextDocStatus["id"]): string => {
+    if (docId === "prd_ade") return path.join(projectRoot, ADE_DOC_PRD_REL);
+    return path.join(projectRoot, ADE_DOC_ARCH_REL);
   };
 
   const findBaselineVersionAtOrBefore = (args: { packKey: string; sinceIso: string }): { id: string; versionNumber: number; createdAt: string } | null => {
@@ -1434,24 +1970,64 @@ export function createPackService({
 
     const sessionHighlights = (() => {
       const clean = (raw: string) => stripAnsi(raw).replace(/\s+/g, " ").trim();
-      const pickSummary = (s: { summary: string | null; lastOutputPreview: string | null; transcriptPath: string | null }) => {
-        const fromSummary = clean(String(s.summary ?? "")).trim();
-        if (fromSummary) return fromSummary;
-        const fromPreview = clean(String(s.lastOutputPreview ?? ""));
-        if (fromPreview) return fromPreview;
-        const transcriptTail = getTranscriptTail(s.transcriptPath);
-        return clean(deriveSessionSummaryFromText(transcriptTail));
+      const clipSummary = (value: string) => {
+        const normalized = clean(value);
+        if (normalized.length <= 260) return { summary: normalized, clipped: false };
+        return { summary: `${normalized.slice(0, 259)}…`, clipped: true };
       };
 
-      const out: Array<{ when: string; tool: string; summary: string }> = [];
+      const pickSummary = (s: { summary: string | null; lastOutputPreview: string | null; transcriptPath: string | null }) => {
+        const fromSummary = clean(String(s.summary ?? "")).trim();
+        if (fromSummary) {
+          const clipped = clipSummary(fromSummary);
+          return {
+            summary: clipped.summary,
+            summarySource: "session_summary",
+            summaryConfidence: "high",
+            summaryOmissionTags: clipped.clipped ? ["summary_clipped"] : []
+          };
+        }
+        const fromPreview = clean(String(s.lastOutputPreview ?? ""));
+        if (fromPreview) {
+          const clipped = clipSummary(fromPreview);
+          return {
+            summary: clipped.summary,
+            summarySource: "preview_tail",
+            summaryConfidence: "medium",
+            summaryOmissionTags: clipped.clipped ? ["summary_clipped"] : []
+          };
+        }
+        const transcriptTail = getTranscriptTail(s.transcriptPath);
+        const parsed = parseTranscriptSummary(transcriptTail);
+        if (!parsed) return null;
+        const clipped = clipSummary(parsed.summary);
+        return {
+          summary: clipped.summary,
+          summarySource: parsed.source,
+          summaryConfidence: parsed.confidence,
+          summaryOmissionTags: clipped.clipped ? [...parsed.omissionTags, "summary_clipped"] : parsed.omissionTags
+        };
+      };
+
+      const out: Array<{
+        when: string;
+        tool: string;
+        summary: string;
+        summarySource: string;
+        summaryConfidence: string;
+        summaryOmissionTags: string[];
+      }> = [];
       for (const s of recentSessions) {
         if (!s.endedAt) continue;
-        const summary = pickSummary(s);
-        if (!summary) continue;
+        const picked = pickSummary(s);
+        if (!picked || !picked.summary.trim()) continue;
         out.push({
           when: isoTime(s.startedAt),
           tool: humanToolLabel(s.toolType),
-          summary
+          summary: picked.summary,
+          summarySource: picked.summarySource,
+          summaryConfidence: picked.summaryConfidence,
+          summaryOmissionTags: picked.summaryOmissionTags
         });
       }
       return out.slice(0, 3);
@@ -1601,6 +2177,8 @@ export function createPackService({
       // Common docs that seed useful project context quickly.
       push("README.md");
       push("docs/README.md");
+      push(ADE_DOC_PRD_REL);
+      push(ADE_DOC_ARCH_REL);
       push("docs/PRD.md");
       push("docs/architecture/SYSTEM_OVERVIEW.md");
       push("docs/architecture/DESKTOP_APP.md");
@@ -1715,13 +2293,28 @@ export function createPackService({
   }): Promise<string> => {
     const config = projectConfigService.get().effective;
     const lanes = await laneService.list({ includeArchived: false });
+    const docsMeta = readContextDocMeta();
+    const existingBootstrapRaw = readFileIfExists(projectBootstrapPath);
+    const existingFingerprint = (() => {
+      const m = existingBootstrapRaw.match(BOOTSTRAP_FINGERPRINT_RE);
+      return m?.[1]?.toLowerCase() ?? null;
+    })();
 
-    const shouldBootstrap = reason === "onboarding_init" || !fs.existsSync(projectBootstrapPath);
+    const shouldBootstrap =
+      reason === "onboarding_init" ||
+      !fs.existsSync(projectBootstrapPath) ||
+      existingFingerprint !== docsMeta.contextFingerprint;
     if (shouldBootstrap) {
       try {
         const bootstrap = await buildProjectBootstrap({ lanes });
         ensureDirFor(projectBootstrapPath);
-        fs.writeFileSync(projectBootstrapPath, bootstrap, "utf8");
+        const withMeta = [
+          `<!-- ADE_DOCS_FINGERPRINT:${docsMeta.contextFingerprint} -->`,
+          `<!-- ADE_CONTEXT_VERSION:${docsMeta.contextVersion} -->`,
+          `<!-- ADE_LAST_DOCS_REFRESH_AT:${docsMeta.lastDocsRefreshAt ?? ""} -->`,
+          bootstrap
+        ].join("\n");
+        fs.writeFileSync(projectBootstrapPath, withMeta, "utf8");
       } catch (error) {
         // Don't fail pack refresh on bootstrap scan errors; emit minimal context instead.
         logger.warn("packs.project_bootstrap_failed", {
@@ -1729,7 +2322,11 @@ export function createPackService({
         });
       }
     }
-    const bootstrapBody = readFileIfExists(projectBootstrapPath).trim();
+    const bootstrapBody = readFileIfExists(projectBootstrapPath)
+      .replace(BOOTSTRAP_FINGERPRINT_RE, "")
+      .replace(/<!--\s*ADE_CONTEXT_VERSION:[^>]+-->/gi, "")
+      .replace(/<!--\s*ADE_LAST_DOCS_REFRESH_AT:[^>]*-->/gi, "")
+      .trim();
 
     const lines: string[] = [];
     lines.push("# Project Pack");
@@ -1738,6 +2335,10 @@ export function createPackService({
     lines.push(`Trigger: ${reason}`);
     if (sourceLaneId) lines.push(`Source lane: ${sourceLaneId}`);
     lines.push(`Active lanes: ${lanes.length}`);
+    lines.push(`Context fingerprint: ${docsMeta.contextFingerprint}`);
+    lines.push(`Context version: ${docsMeta.contextVersion}`);
+    lines.push(`Last docs refresh at: ${docsMeta.lastDocsRefreshAt ?? "unknown"}`);
+    if (docsMeta.docsStaleReason) lines.push(`Docs stale reason: ${docsMeta.docsStaleReason}`);
     lines.push("");
 
     if (bootstrapBody) {
@@ -1963,9 +2564,9 @@ export function createPackService({
     const overlappingFileCount = Number(status.overlappingFileCount ?? 0);
     const peerConflictCount = Number(status.peerConflictCount ?? 0);
     const lastPredictedAt = asString(status.lastPredictedAt).trim() || null;
-    const strategy = asString(pack.strategy).trim() || null;
-    const pairwisePairsComputed = Number.isFinite(Number(pack.pairwisePairsComputed)) ? Number(pack.pairwisePairsComputed) : null;
-    const pairwisePairsTotal = Number.isFinite(Number(pack.pairwisePairsTotal)) ? Number(pack.pairwisePairsTotal) : null;
+    const strategy = asString(pack.strategy).trim() || undefined;
+    const pairwisePairsComputed = Number.isFinite(Number(pack.pairwisePairsComputed)) ? Number(pack.pairwisePairsComputed) : undefined;
+    const pairwisePairsTotal = Number.isFinite(Number(pack.pairwisePairsTotal)) ? Number(pack.pairwisePairsTotal) : undefined;
     const lastRecomputedAt = asString(pack.lastRecomputedAt).trim() || asString(pack.generatedAt).trim() || null;
 
     return {
@@ -2268,6 +2869,18 @@ export function createPackService({
         metadata: null,
         body
       };
+    },
+
+    getContextStatus(): ContextStatus {
+      return readContextStatus();
+    },
+
+    generateContextDocs(args: ContextGenerateDocsArgs): ContextGenerateDocsResult {
+      return runContextDocGeneration(args);
+    },
+
+    getContextDocPath(docId: ContextDocStatus["id"]): string {
+      return resolveContextDocPath(docId);
     },
 
     getLanePack(laneId: string): PackSummary {
@@ -2621,6 +3234,7 @@ export function createPackService({
         const version = createPackVersion({ packKey, packType: "project", body });
 
         const metadata = {
+          ...readContextDocMeta(),
           reason: args.reason,
           sourceLaneId: args.laneId ?? null,
           versionId: version.versionId,
@@ -3234,6 +3848,15 @@ export function createPackService({
         return parts.join(" ");
       })();
 
+      const omittedSections: string[] = [];
+      if (eventsRaw.length >= limit) {
+        omittedSections.push("events:limit_cap");
+      }
+      if (conflictState?.truncated) {
+        omittedSections.push("conflicts:partial_coverage");
+      }
+      const clipReason = omittedSections.length > 0 ? "budget_clipped" : null;
+
       return {
         packKey,
         packType,
@@ -3253,7 +3876,9 @@ export function createPackService({
           recommendedExportLevel,
           reasons: decisionReasons
         },
-        handoffSummary
+        handoffSummary,
+        clipReason,
+        omittedSections: omittedSections.length ? omittedSections : null
       };
     },
 
@@ -3328,6 +3953,7 @@ export function createPackService({
 
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+      const docsMeta = readContextDocMeta();
       const conflictRiskSummaryLines = buildLaneConflictRiskSummaryLines(laneId);
 
       const conflictState = deriveConflictStateForLane(laneId);
@@ -3362,6 +3988,13 @@ export function createPackService({
         if (!Number.isFinite(ts)) return null;
         return Math.max(0, Date.now() - ts);
       })();
+      const ttlMs = Number((predictionPack as any)?.stalePolicy?.ttlMs ?? NaN);
+      const staleTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 5 * 60_000;
+      const predictionStale = lastConflictRefreshAgeMs != null ? lastConflictRefreshAgeMs > staleTtlMs : null;
+      const staleReason =
+        predictionStale && lastConflictRefreshAgeMs != null
+          ? `lastConflictRefreshAgeMs=${lastConflictRefreshAgeMs} ttlMs=${staleTtlMs}`
+          : null;
 
       const activeConflictPackKeys = (() => {
         const out: string[] = [];
@@ -3391,6 +4024,10 @@ export function createPackService({
         worktreePath: lane.worktreePath,
         branchRef: lane.branchRef,
         baseRef: lane.baseRef,
+        contextFingerprint: docsMeta.contextFingerprint,
+        contextVersion: docsMeta.contextVersion,
+        lastDocsRefreshAt: docsMeta.lastDocsRefreshAt,
+        ...(docsMeta.docsStaleReason ? { docsStaleReason: docsMeta.docsStaleReason } : {}),
         lineage,
         mergeConstraints: {
           requiredMerges,
@@ -3414,7 +4051,12 @@ export function createPackService({
           ...(predictionPack?.truncated != null ? { truncated: Boolean(predictionPack.truncated) } : {}),
           ...(asString(predictionPack?.strategy).trim() ? { strategy: asString(predictionPack?.strategy).trim() } : {}),
           ...(Number.isFinite(Number(predictionPack?.pairwisePairsComputed)) ? { pairwisePairsComputed: Number(predictionPack?.pairwisePairsComputed) } : {}),
-          ...(Number.isFinite(Number(predictionPack?.pairwisePairsTotal)) ? { pairwisePairsTotal: Number(predictionPack?.pairwisePairsTotal) } : {})
+          ...(Number.isFinite(Number(predictionPack?.pairwisePairsTotal)) ? { pairwisePairsTotal: Number(predictionPack?.pairwisePairsTotal) } : {}),
+          predictionStale,
+          predictionStalenessMs: lastConflictRefreshAgeMs,
+          stalePolicy: { ttlMs: staleTtlMs },
+          ...(staleReason ? { staleReason } : {}),
+          unresolvedResolutionState: null
         }
       };
 
@@ -3493,6 +4135,7 @@ export function createPackService({
       const pack = this.getProjectPack();
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
       const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+      const docsMeta = readContextDocMeta();
 
       const lanes = await laneService.list({ includeArchived: false });
       const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -3554,6 +4197,10 @@ export function createPackService({
         schema: "ade.manifest.project.v1",
         projectId,
         generatedAt: new Date().toISOString(),
+        contextFingerprint: docsMeta.contextFingerprint,
+        contextVersion: docsMeta.contextVersion,
+        lastDocsRefreshAt: docsMeta.lastDocsRefreshAt,
+        ...(docsMeta.docsStaleReason ? { docsStaleReason: docsMeta.docsStaleReason } : {}),
         lanesTotal,
         lanesIncluded: included.length,
         lanesOmitted: Math.max(0, lanesTotal - included.length),
@@ -3606,6 +4253,19 @@ export function createPackService({
       const ttlMs = Number((predictionPack as any)?.stalePolicy?.ttlMs ?? NaN);
       const staleTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 5 * 60_000;
       const nowMs = Date.now();
+      const predictionAt =
+        asString((entry as any)?.computedAt).trim() ||
+        asString((predictionPack as any)?.predictionAt).trim() ||
+        asString((predictionPack as any)?.status?.lastPredictedAt).trim() ||
+        null;
+      const predictionAgeMs = (() => {
+        if (!predictionAt) return null;
+        const ts = Date.parse(predictionAt);
+        if (!Number.isFinite(ts)) return null;
+        return Math.max(0, nowMs - ts);
+      })();
+      const predictionStale = predictionAgeMs != null ? predictionAgeMs > staleTtlMs : null;
+      const staleReason = predictionStale && predictionAgeMs != null ? `predictionAgeMs=${predictionAgeMs} ttlMs=${staleTtlMs}` : null;
 
       const openConflictSummaries = (() => {
         const raw = Array.isArray(predictionPack?.openConflictSummaries) ? predictionPack!.openConflictSummaries! : null;
@@ -3661,11 +4321,10 @@ export function createPackService({
         schema: "ade.conflictLineage.v1",
         laneId,
         peerKey,
-        predictionAt:
-          asString((entry as any)?.computedAt).trim() ||
-          asString((predictionPack as any)?.predictionAt).trim() ||
-          asString((predictionPack as any)?.status?.lastPredictedAt).trim() ||
-          null,
+        predictionAt,
+        predictionAgeMs,
+        predictionStale,
+        ...(staleReason ? { staleReason } : {}),
         lastRecomputedAt:
           asString((predictionPack as any)?.lastRecomputedAt).trim() || asString((predictionPack as any)?.generatedAt).trim() || null,
         truncated: predictionPack?.truncated != null ? Boolean(predictionPack.truncated) : null,

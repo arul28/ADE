@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,10 +7,20 @@ import type {
   ApplyConflictProposalArgs,
   BatchOverlapEntry,
   BatchAssessmentResult,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
   ConflictChip,
   ConflictEventPayload,
+  ConflictExternalResolverContextGap,
+  ConflictExternalResolverRunStatus,
+  ConflictExternalResolverRunSummary,
   ConflictFileType,
   ConflictOverlap,
+  ConflictFileContextV1,
+  ConflictFileContextSideV1,
+  ConflictFileHunkV1,
+  ConflictJobContextV1,
+  ConflictRelevantFileV1,
   ConflictProposal,
   ConflictProposalPreview,
   ConflictProposalPreviewFile,
@@ -25,8 +36,10 @@ import type {
   ListOverlapsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
+  ListExternalConflictResolverRunsArgs,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
+  RunExternalConflictResolverArgs,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs
@@ -81,6 +94,40 @@ type ConflictProposalRow = {
   updated_at: string;
 };
 
+type ExternalResolverRunRecord = {
+  schema: "ade.conflictExternalRun.v1";
+  runId: string;
+  provider: RunExternalConflictResolverArgs["provider"];
+  status: ConflictExternalResolverRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  targetLaneId: string;
+  sourceLaneIds: string[];
+  cwdLaneId: string;
+  integrationLaneId: string | null;
+  command: string[];
+  summary: string | null;
+  patchPath: string | null;
+  logPath: string | null;
+  insufficientContext: boolean;
+  contextGaps: ConflictExternalResolverContextGap[];
+  warnings: string[];
+  committedAt?: string | null;
+  commitSha?: string | null;
+  commitMessage?: string | null;
+  error: string | null;
+};
+
+type ExternalResolverPackRef = {
+  kind: "project_pack" | "lane_pack" | "conflict_pack" | "project_doc";
+  laneId: string | null;
+  peerLaneId: string | null;
+  absPath: string;
+  repoRelativePath: string;
+  exists: boolean;
+  required: boolean;
+};
+
 const RISK_SCORE: Record<ConflictRiskLevel, number> = {
   none: 0,
   low: 1,
@@ -95,6 +142,10 @@ const PREFILTER_MAX_PEERS_PER_LANE = 6;
 const PREFILTER_MAX_GLOBAL_PAIRS = 800;
 const PREFILTER_MAX_TOUCHED_FILES = 800;
 const STALE_MS = 5 * 60_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
 
 function safeJsonArray<T>(raw: string | null): T[] {
   if (!raw) return [];
@@ -208,6 +259,12 @@ async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string):
 
 function uniqueSorted(values: Iterable<string>): string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+}
+
+function safeSegment(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "untitled";
+  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
 }
 
 function latestPerPair(rows: ConflictPredictionRow[]): Map<string, ConflictPredictionRow> {
@@ -344,6 +401,67 @@ function extractPathsFromUnifiedDiff(diffPatch: string): string[] {
   return Array.from(paths).sort((a, b) => a.localeCompare(b));
 }
 
+function extractCommitPathsFromUnifiedDiff(diffPatch: string): string[] {
+  const paths = new Set<string>();
+  for (const line of diffPatch.split(/\r?\n/)) {
+    if (line.startsWith("+++ b/")) {
+      const p = line.slice("+++ b/".length).trim();
+      if (p && p !== "/dev/null") paths.add(p);
+      continue;
+    }
+    if (line.startsWith("--- a/")) {
+      const p = line.slice("--- a/".length).trim();
+      if (p && p !== "/dev/null") paths.add(p);
+      continue;
+    }
+    if (line.startsWith("diff --git ")) {
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      const left = match?.[1]?.trim();
+      const right = match?.[2]?.trim();
+      if (left && left !== "/dev/null") paths.add(left);
+      if (right && right !== "/dev/null") paths.add(right);
+    }
+  }
+  return Array.from(paths).sort((a, b) => a.localeCompare(b));
+}
+
+function parseHunksFromDiff(diffText: string, kind: ConflictFileHunkV1["kind"]): ConflictFileHunkV1[] {
+  const hunks: ConflictFileHunkV1[] = [];
+  for (const line of diffText.split(/\r?\n/)) {
+    const m = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    if (!m) continue;
+    hunks.push({
+      kind,
+      header: line.trim(),
+      baseStart: Number(m[1] ?? 0) || 0,
+      baseCount: Number(m[2] ?? 1) || 1,
+      otherStart: Number(m[3] ?? 0) || 0,
+      otherCount: Number(m[4] ?? 1) || 1
+    });
+  }
+  return hunks;
+}
+
+function makeContextSide(args: {
+  side: ConflictFileContextSideV1["side"];
+  ref: string | null;
+  blobSha: string | null;
+  excerpt: string;
+  fallbackReason?: string | null;
+  truncated?: boolean;
+}): ConflictFileContextSideV1 {
+  const trimmed = args.excerpt.trim();
+  return {
+    side: args.side,
+    ref: args.ref,
+    blobSha: args.blobSha,
+    excerpt: trimmed,
+    excerptFormat: trimmed.length ? "diff_hunks" : "unavailable",
+    truncated: Boolean(args.truncated),
+    ...(args.fallbackReason ? { omittedReasonTags: [args.fallbackReason] } : {})
+  };
+}
+
 function deletePatchFile(filePath: string): void {
   try {
     fs.unlinkSync(filePath);
@@ -438,10 +556,24 @@ export function createConflictService({
   };
 
   const packsRootDir = conflictPacksDir ? path.dirname(conflictPacksDir) : null;
+  const resolvedPacksRootDir = packsRootDir ?? path.join(projectRoot, ".ade", "packs");
+  const projectPackPath = path.join(resolvedPacksRootDir, "project_pack.md");
+  const lanePackPath = (laneId: string) => path.join(resolvedPacksRootDir, "lanes", laneId, "lane_pack.md");
+  const conflictPackPath = (laneId: string, peerKey: string) =>
+    path.join(resolvedPacksRootDir, "conflicts", "v2", `${laneId}__${safeSegment(peerKey)}.md`);
+  const contextDocPaths = [
+    path.join(projectRoot, "docs/PRD.ade.md"),
+    path.join(projectRoot, "docs/architecture/ARCHITECTURE.ade.md"),
+    path.join(projectRoot, "docs/PRD.md")
+  ];
+  const toRepoRelativePath = (absPath: string): string => {
+    const rel = path.relative(projectRoot, absPath).replace(/\\/g, "/");
+    if (!rel || rel.startsWith("..")) return absPath.replace(/\\/g, "/");
+    return rel;
+  };
 
   const readLanePackBody = (laneId: string): string | null => {
-    if (!packsRootDir) return null;
-    const filePath = path.join(packsRootDir, "lanes", laneId, "lane_pack.md");
+    const filePath = lanePackPath(laneId);
     if (!fs.existsSync(filePath)) return null;
     try {
       const raw = fs.readFileSync(filePath, "utf8");
@@ -466,6 +598,188 @@ export function createConflictService({
     } catch {
       return "";
     }
+  };
+
+  const externalRunsRootDir = path.join(resolvedPacksRootDir, "external-resolver-runs");
+
+  const buildExternalResolverPackRefs = (args: {
+    targetLaneId: string;
+    sourceLaneIds: string[];
+    cwdLaneId: string;
+    integrationLaneId: string | null;
+    contexts: Array<{ laneId: string; peerLaneId: string | null }>;
+  }): ExternalResolverPackRef[] => {
+    const refs = new Map<string, ExternalResolverPackRef>();
+    const addRef = (ref: Omit<ExternalResolverPackRef, "exists" | "repoRelativePath">) => {
+      const key = `${ref.kind}:${ref.absPath}`;
+      if (refs.has(key)) return;
+      const absPath = path.resolve(ref.absPath);
+      refs.set(key, {
+        ...ref,
+        absPath,
+        repoRelativePath: toRepoRelativePath(absPath),
+        exists: fs.existsSync(absPath)
+      });
+    };
+
+    addRef({
+      kind: "project_pack",
+      laneId: null,
+      peerLaneId: null,
+      absPath: projectPackPath,
+      required: true
+    });
+
+    const relevantLaneIds = uniqueSorted([
+      args.targetLaneId,
+      args.cwdLaneId,
+      ...(args.integrationLaneId ? [args.integrationLaneId] : []),
+      ...args.sourceLaneIds
+    ]);
+    for (const laneId of relevantLaneIds) {
+      addRef({
+        kind: "lane_pack",
+        laneId,
+        peerLaneId: null,
+        absPath: lanePackPath(laneId),
+        required: true
+      });
+    }
+
+    for (const ctx of args.contexts) {
+      const peerKey = (ctx.peerLaneId?.trim() || laneService.getLaneBaseAndBranch(ctx.laneId).baseRef || "").trim();
+      if (!peerKey) continue;
+      addRef({
+        kind: "conflict_pack",
+        laneId: ctx.laneId,
+        peerLaneId: ctx.peerLaneId ?? null,
+        absPath: conflictPackPath(ctx.laneId, peerKey),
+        required: true
+      });
+    }
+
+    for (const absPath of contextDocPaths) {
+      addRef({
+        kind: "project_doc",
+        laneId: null,
+        peerLaneId: null,
+        absPath,
+        required: false
+      });
+    }
+
+    return [...refs.values()].sort((a, b) => {
+      const rank = (value: ExternalResolverPackRef["kind"]): number => {
+        if (value === "project_pack") return 1;
+        if (value === "project_doc") return 2;
+        if (value === "lane_pack") return 3;
+        return 4;
+      };
+      const rankDelta = rank(a.kind) - rank(b.kind);
+      if (rankDelta !== 0) return rankDelta;
+      const laneDelta = (a.laneId ?? "").localeCompare(b.laneId ?? "");
+      if (laneDelta !== 0) return laneDelta;
+      const peerDelta = (a.peerLaneId ?? "").localeCompare(b.peerLaneId ?? "");
+      if (peerDelta !== 0) return peerDelta;
+      return a.absPath.localeCompare(b.absPath);
+    });
+  };
+
+  const ensureExternalRunsDir = () => {
+    fs.mkdirSync(externalRunsRootDir, { recursive: true });
+  };
+
+  const resolveExternalResolverCommand = (provider: RunExternalConflictResolverArgs["provider"]): string[] => {
+    const snapshot = projectConfigService.get();
+    const providers = isRecord(snapshot.local.providers)
+      ? snapshot.local.providers
+      : isRecord(snapshot.effective.providers)
+        ? snapshot.effective.providers
+        : {};
+    const contextTools = isRecord((providers as Record<string, unknown>).contextTools)
+      ? ((providers as Record<string, unknown>).contextTools as Record<string, unknown>)
+      : {};
+    const conflictResolvers = isRecord(contextTools.conflictResolvers)
+      ? (contextTools.conflictResolvers as Record<string, unknown>)
+      : {};
+    const providerEntry = isRecord(conflictResolvers[provider]) ? (conflictResolvers[provider] as Record<string, unknown>) : {};
+    return Array.isArray(providerEntry.command) ? providerEntry.command.map((entry) => String(entry)) : [];
+  };
+
+  const toRunSummary = (run: ExternalResolverRunRecord): ConflictExternalResolverRunSummary => ({
+    runId: run.runId,
+    provider: run.provider,
+    status: run.status,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    targetLaneId: run.targetLaneId,
+    sourceLaneIds: run.sourceLaneIds,
+    cwdLaneId: run.cwdLaneId,
+    integrationLaneId: run.integrationLaneId,
+    summary: run.summary,
+    patchPath: run.patchPath,
+    logPath: run.logPath,
+    insufficientContext: run.insufficientContext,
+    contextGaps: run.contextGaps,
+    warnings: run.warnings,
+    committedAt: run.committedAt ?? null,
+    commitSha: run.commitSha ?? null,
+    commitMessage: run.commitMessage ?? null,
+    error: run.error
+  });
+
+  const writeExternalRunRecord = (run: ExternalResolverRunRecord): void => {
+    ensureExternalRunsDir();
+    const runDir = path.join(externalRunsRootDir, run.runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
+  };
+
+  const readExternalRunRecord = (runId: string): ExternalResolverRunRecord | null => {
+    const filePath = path.join(externalRunsRootDir, runId, "run.json");
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as ExternalResolverRunRecord;
+      if (!parsed || parsed.schema !== "ade.conflictExternalRun.v1") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const listExternalRunRecords = (): ExternalResolverRunRecord[] => {
+    if (!fs.existsSync(externalRunsRootDir)) return [];
+    const out: ExternalResolverRunRecord[] = [];
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(externalRunsRootDir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const run = readExternalRunRecord(entry.name);
+      if (run) out.push(run);
+    }
+    out.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    return out;
+  };
+
+  const extractResolverSummary = (output: string): string | null => {
+    const normalized = output.replace(/\r\n/g, "\n");
+    const markers = [
+      /done\.?[\s\S]*?here'?s what (?:i|we) (?:changed|did)[:\s]*([\s\S]+)/i,
+      /summary\s*:\s*([\s\S]+)/i
+    ];
+    for (const marker of markers) {
+      const m = normalized.match(marker);
+      if (!m?.[1]) continue;
+      const clean = m[1].split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6).join(" ");
+      if (clean) return clean.length > 420 ? `${clean.slice(0, 419)}…` : clean;
+    }
+    const tail = normalized.split("\n").slice(-10).map((line) => line.trim()).filter(Boolean).join(" ");
+    if (!tail) return null;
+    return tail.length > 420 ? `${tail.slice(0, 419)}…` : tail;
   };
 
   const ensureRelativeRepoPath = (relPath: string): string => {
@@ -1600,9 +1914,6 @@ export function createConflictService({
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
     const usingHosted = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
     const usingByok = providerMode === "byok";
-    if (!usingHosted && !usingByok) {
-      throw new Error("AI conflict resolution requires Hosted or BYOK provider mode.");
-    }
     if (usingByok && !byokLlmService) {
       throw new Error("BYOK provider is enabled but BYOK LLM service is unavailable.");
     }
@@ -1621,8 +1932,12 @@ export function createConflictService({
     }
 
     const warnings: string[] = [];
+    if (!usingHosted && !usingByok) {
+      warnings.push("Provider mode is not Hosted/BYOK; building context for external resolver only.");
+    }
     const MAX_FILES = 6;
     const MAX_DIFF_CHARS = 6_000;
+    const MAX_FILE_CONTEXT_CHARS = 8_000;
     const LANE_EXPORT_LEVEL = "lite";
     const CONFLICT_EXPORT_LEVEL = "standard";
 
@@ -1660,7 +1975,13 @@ export function createConflictService({
 
     const includeFromConflicts = activeConflict.inProgress && activeConflict.conflictedFiles.length > 0;
     const includeReason: ConflictProposalPreviewFile["includeReason"] = includeFromConflicts ? "conflicted" : "overlap";
-    const selectedPaths = uniqueSorted(includeFromConflicts ? activeConflict.conflictedFiles : overlapPaths).slice(0, MAX_FILES);
+    const selectedSourcePaths = uniqueSorted(includeFromConflicts ? activeConflict.conflictedFiles : overlapPaths);
+    const selectedPaths = selectedSourcePaths.slice(0, MAX_FILES);
+    if (selectedSourcePaths.length > MAX_FILES) {
+      warnings.push(
+        `Conflict context omitted ${selectedSourcePaths.length - MAX_FILES} files (omitted:path_count_limit).`
+      );
+    }
     if (selectedPaths.length === 0) {
       warnings.push("No conflicted/overlap files found; proposal context will be minimal.");
     }
@@ -1691,8 +2012,11 @@ export function createConflictService({
     }
 
     const files: ConflictProposalPreviewFile[] = [];
+    const relevantFilesForConflict: ConflictRelevantFileV1[] = [];
+    const fileContexts: ConflictFileContextV1[] = [];
     const laneGit = laneService.getLaneBaseAndBranch(laneId);
-    const laneHeadSha = await readHeadSha(laneGit.worktreePath).catch(() => "");
+    const laneHeadSha = await readHeadSha(laneGit.worktreePath, laneGit.branchRef || "HEAD")
+      .catch(async () => await readHeadSha(laneGit.worktreePath).catch(() => ""));
     const mergeHeadSha = (conflictState.mergeHeadSha ?? "").trim();
 
     const diffMode = await (async (): Promise<
@@ -1710,7 +2034,8 @@ export function createConflictService({
 
       if (peerLaneId) {
         const peerGit = laneService.getLaneBaseAndBranch(peerLaneId);
-        const peerHeadSha = await readHeadSha(peerGit.worktreePath).catch(() => "");
+        const peerHeadSha = await readHeadSha(peerGit.worktreePath, peerGit.branchRef || "HEAD")
+          .catch(async () => await readHeadSha(peerGit.worktreePath).catch(() => ""));
         if (peerHeadSha) {
           const base = await readMergeBase(laneGit.worktreePath, laneHeadSha, peerHeadSha).catch(() => "");
           if (base.trim().length) return { kind: "peer-lane", base: base.trim(), laneHeadSha, peerHeadSha };
@@ -1770,6 +2095,66 @@ export function createConflictService({
         laneDiff,
         peerDiff: peerDiff ?? null
       });
+
+      relevantFilesForConflict.push({
+        path: filePath,
+        includeReason,
+        selectedBecause: includeFromConflicts ? "active_conflict_file" : "overlap_prediction_file"
+      });
+
+      const baseRefForContext =
+        diffMode.kind === "merge-head" || diffMode.kind === "peer-lane"
+          ? diffMode.base
+          : diffMode.kind === "base-ref"
+            ? diffMode.baseRef
+            : null;
+      const leftRefForContext = diffMode.kind === "none" ? null : diffMode.laneHeadSha;
+      const rightRefForContext =
+        diffMode.kind === "merge-head" || diffMode.kind === "peer-lane" ? diffMode.peerHeadSha : null;
+
+      const laneDiffClipped = truncate(`Lane file context (${filePath})`, laneDiff, MAX_FILE_CONTEXT_CHARS);
+      const peerDiffClipped = peerDiff ? truncate(`Peer file context (${filePath})`, peerDiff, MAX_FILE_CONTEXT_CHARS) : "";
+      const markerPreviewClipped = markerPreview ? truncate(`Marker preview (${filePath})`, markerPreview, 2400) : "";
+
+      const hunkSummaries: ConflictFileHunkV1[] = [
+        ...parseHunksFromDiff(laneDiffClipped, "base_left"),
+        ...parseHunksFromDiff(peerDiffClipped, "base_right")
+      ];
+
+      const omittedReasonTags: string[] = [];
+      if (!laneDiffClipped.trim() && !peerDiffClipped.trim() && !markerPreviewClipped.trim()) {
+        omittedReasonTags.push("omitted:no_text_context");
+      }
+      if (laneDiff.length > MAX_FILE_CONTEXT_CHARS || (peerDiff ?? "").length > MAX_FILE_CONTEXT_CHARS) {
+        omittedReasonTags.push("omitted:byte_cap");
+      }
+
+      fileContexts.push({
+        path: filePath,
+        selectedBecause: includeFromConflicts ? "active_conflict_file" : "overlap_prediction_file",
+        hunks: hunkSummaries,
+        base: makeContextSide({
+          side: "base",
+          ref: baseRefForContext,
+          blobSha: null,
+          excerpt: "",
+          fallbackReason: "omitted:base_snapshot_not_loaded"
+        }),
+        left: makeContextSide({
+          side: "left",
+          ref: leftRefForContext,
+          blobSha: null,
+          excerpt: laneDiffClipped
+        }),
+        right: makeContextSide({
+          side: "right",
+          ref: rightRefForContext,
+          blobSha: null,
+          excerpt: peerDiffClipped
+        }),
+        markerPreview: markerPreviewClipped || null,
+        ...(omittedReasonTags.length ? { omittedReasonTags } : {})
+      });
     }
 
     const overlapSummary = overlapEntry
@@ -1781,6 +2166,50 @@ export function createConflictService({
           files: overlapEntry.files.slice(0, 40)
         }
       : null;
+
+    const extractNumericFromConflictExport = (key: string): number | null => {
+      if (!conflictExportStandard) return null;
+      const match = conflictExportStandard.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`));
+      if (!match) return null;
+      const value = Number(match[1] ?? NaN);
+      return Number.isFinite(value) ? value : null;
+    };
+
+    const pairwisePairsComputed = extractNumericFromConflictExport("pairwisePairsComputed");
+    const pairwisePairsTotal = extractNumericFromConflictExport("pairwisePairsTotal");
+    const stalePolicyTtlFromExport = extractNumericFromConflictExport("ttlMs");
+    const stalePolicyTtlMs = stalePolicyTtlFromExport != null ? stalePolicyTtlFromExport : STALE_MS;
+    const predictionAgeMs = status.lastPredictedAt
+      ? Math.max(0, Date.now() - Date.parse(status.lastPredictedAt))
+      : null;
+    const predictionStalenessMs = predictionAgeMs;
+    const highPatchRisk =
+      activeConflict.inProgress ||
+      status.status === "conflict-active" ||
+      status.status === "conflict-predicted" ||
+      overlapEntry?.riskLevel === "high";
+    const insufficientReasons: string[] = [];
+    if (selectedPaths.length === 0) insufficientReasons.push("missing:relevant_files");
+    if (relevantFilesForConflict.length > 0 && fileContexts.length === 0) {
+      insufficientReasons.push("missing:file_contexts");
+    }
+    if (highPatchRisk && fileContexts.some((ctx) => (ctx.omittedReasonTags ?? []).includes("omitted:no_text_context"))) {
+      insufficientReasons.push("missing:file_text_excerpt");
+    }
+    const insufficientContext = highPatchRisk && insufficientReasons.length > 0;
+
+    const conflictJobContext: ConflictJobContextV1 = {
+      schema: "ade.conflictJobContext.v1",
+      relevantFilesForConflict,
+      fileContexts,
+      stalePolicy: { ttlMs: stalePolicyTtlMs },
+      predictionAgeMs,
+      predictionStalenessMs,
+      pairwisePairsComputed,
+      pairwisePairsTotal,
+      insufficientContext,
+      insufficientReasons
+    };
 
     const conflictContext: Record<string, unknown> = {
       laneId,
@@ -1795,9 +2224,20 @@ export function createConflictService({
       peerLaneExportLite,
       conflictExportStandard,
       files,
+      relevantFilesForConflict,
+      fileContexts,
+      predictionAgeMs,
+      predictionStalenessMs,
+      stalePolicy: { ttlMs: stalePolicyTtlMs },
+      pairwisePairsComputed,
+      pairwisePairsTotal,
+      insufficientContext,
+      insufficientReasons,
+      conflictContext: conflictJobContext,
       limits: {
         maxFiles: MAX_FILES,
         maxDiffChars: MAX_DIFF_CHARS,
+        maxFileContextChars: MAX_FILE_CONTEXT_CHARS,
         laneExportLevel: LANE_EXPORT_LEVEL,
         conflictExportLevel: CONFLICT_EXPORT_LEVEL
       }
@@ -1894,6 +2334,81 @@ export function createConflictService({
       return rowToProposal(row);
     }
 
+    const preparedConflictContext =
+      isRecord(prepared.conflictContext.conflictContext) && prepared.conflictContext.conflictContext.schema === "ade.conflictJobContext.v1"
+        ? (prepared.conflictContext.conflictContext as ConflictJobContextV1)
+        : null;
+    const insufficientContext = Boolean(preparedConflictContext?.insufficientContext);
+    const insufficientReasons = Array.isArray(preparedConflictContext?.insufficientReasons)
+      ? preparedConflictContext!.insufficientReasons!.map((value) => String(value))
+      : [];
+    if (insufficientContext) {
+      const createdAt = new Date().toISOString();
+      const proposalId = randomUUID();
+      const predictionId = getLatestPredictionId(laneId, peerLaneId);
+      const explanation = [
+        "Insufficient context to generate a safe conflict patch.",
+        "",
+        "Missing data:",
+        ...insufficientReasons.map((reason) => `- ${reason}`)
+      ].join("\n");
+
+      db.run(
+        `
+          insert into conflict_proposals(
+            id,
+            project_id,
+            lane_id,
+            peer_lane_id,
+            prediction_id,
+            source,
+            confidence,
+            explanation,
+            diff_patch,
+            status,
+            job_id,
+            artifact_id,
+            applied_operation_id,
+            metadata_json,
+            created_at,
+            updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, null, ?, ?, ?)
+        `,
+        [
+          proposalId,
+          projectId,
+          laneId,
+          peerLaneId,
+          predictionId,
+          "local",
+          null,
+          explanation,
+          "",
+          null,
+          null,
+          JSON.stringify({
+            provider: "local",
+            contextDigest,
+            preparedAt: prepared.preparedAt,
+            insufficientContext: true,
+            insufficientReasons
+          }),
+          createdAt,
+          createdAt
+        ]
+      );
+
+      logger.warn("conflicts.proposal_insufficient_context", {
+        laneId,
+        peerLaneId,
+        reasons: insufficientReasons
+      });
+
+      const row = getProposalRow(proposalId);
+      if (!row) throw new Error("Failed to persist insufficient-context proposal");
+      return rowToProposal(row);
+    }
+
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
     const usingHosted = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
     const usingByok = providerMode === "byok";
@@ -1974,6 +2489,390 @@ export function createConflictService({
     const row = getProposalRow(proposalId);
     if (!row) throw new Error("Failed to persist conflict proposal");
     return rowToProposal(row);
+  };
+
+  const ensureIntegrationLane = async (args: {
+    targetLaneId: string;
+    integrationLaneName?: string;
+  }): Promise<LaneSummary> => {
+    const name = (args.integrationLaneName ?? "Integration lane").trim() || "Integration lane";
+    const lanes = await laneService.list({ includeArchived: false });
+    const existing = lanes.find((lane) => !lane.archivedAt && lane.name === name);
+    if (existing) return existing;
+    return await laneService.create({
+      name,
+      description: `Auto-created integration lane for conflict resolution into ${args.targetLaneId}.`,
+      parentLaneId: args.targetLaneId
+    });
+  };
+
+  const buildExternalResolverPrompt = (args: {
+    targetLaneId: string;
+    sourceLaneIds: string[];
+    contexts: Array<{
+      laneId: string;
+      peerLaneId: string | null;
+      preview: ConflictProposalPreview;
+      conflictContext: Record<string, unknown> | null;
+    }>;
+    packRefs: ExternalResolverPackRef[];
+    cwdLaneId: string;
+    integrationLaneId: string | null;
+  }): string => {
+    const lines: string[] = [];
+    lines.push("# ADE External Conflict Resolver");
+    lines.push("");
+    lines.push("## Objective");
+    lines.push("- Resolve merge conflicts using ADE context packs first, then code/docs as needed.");
+    lines.push("- Apply edits in the execution lane worktree only.");
+    lines.push("- Do not commit, push, or stage changes.");
+    lines.push("");
+    lines.push("## Run Metadata");
+    lines.push(`- Target lane: ${args.targetLaneId}`);
+    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
+    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
+    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
+    lines.push("");
+    lines.push("## Required Read Order");
+    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("2) Read optional ADE docs if present.");
+    lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
+    lines.push("");
+    lines.push("## ADE Pack References");
+    for (const ref of args.packRefs) {
+      const tags: string[] = [ref.required ? "required" : "optional", ref.exists ? "present" : "missing"];
+      const laneInfo = ref.laneId ? ` lane=${ref.laneId}` : "";
+      const peerInfo = ref.peerLaneId ? ` peer=${ref.peerLaneId}` : "";
+      lines.push(`- ${ref.kind}${laneInfo}${peerInfo} [${tags.join(", ")}]`);
+      lines.push(`  - path: ${ref.absPath}`);
+      lines.push(`  - repo: ${ref.repoRelativePath}`);
+    }
+    lines.push("");
+    lines.push("## Guardrails (Non-Negotiable)");
+    lines.push("- Do not modify non-relevant files.");
+    lines.push("- Do not run: git add, git commit, git push, git rebase, git merge, git cherry-pick, git reset.");
+    lines.push("- Keep conflict-resolution work sequential; do not spawn parallel editing agents.");
+    lines.push("- Respect staleness markers and insufficient-context signals.");
+    lines.push("- If context is insufficient, do not fabricate changes.");
+    lines.push("- If blocked, print `INSUFFICIENT_CONTEXT` followed by a concrete gap list.");
+    lines.push("");
+    lines.push("## Pair Context (Structured)");
+    for (const ctx of args.contexts) {
+      lines.push(`### Pair ${ctx.laneId} -> ${ctx.peerLaneId ?? "base"}`);
+      lines.push(`- Prepared at: ${ctx.preview.preparedAt}`);
+      lines.push(`- Context digest: ${ctx.preview.contextDigest}`);
+      lines.push(`- Existing proposal: ${ctx.preview.existingProposalId ?? "none"}`);
+      lines.push(`- Preview warnings: ${ctx.preview.warnings.join(" | ") || "none"}`);
+      lines.push(`- Relevant files count: ${ctx.preview.files.length}`);
+      lines.push("```json");
+      lines.push(
+        JSON.stringify(
+          {
+            laneId: ctx.laneId,
+            peerLaneId: ctx.peerLaneId,
+            stats: ctx.preview.stats,
+            files: ctx.preview.files.map((file) => ({
+              path: file.path,
+              includeReason: file.includeReason
+            })),
+            conflictContext: ctx.conflictContext ?? null
+          },
+          null,
+          2
+        )
+      );
+      lines.push("```");
+      lines.push("");
+    }
+    lines.push("## Output Contract");
+    lines.push("Done. Here's what changed:");
+    lines.push("- file: <repo-path>");
+    lines.push("- rationale: <one sentence>");
+    lines.push("- unresolved: <none|short note>");
+    lines.push("");
+    lines.push("If blocked:");
+    lines.push("INSUFFICIENT_CONTEXT");
+    lines.push("- gap: <missing artifact, file, or decision>");
+    lines.push("- requested_action: <what user should provide>");
+    lines.push("");
+    return `${lines.join("\n").trim()}\n`;
+  };
+
+  const runExternalResolver = async (args: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const targetLaneId = args.targetLaneId.trim();
+    const sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
+    if (!targetLaneId) throw new Error("targetLaneId is required");
+    if (!sourceLaneIds.length) throw new Error("sourceLaneIds is required");
+
+    const lanes = await listActiveLanes();
+    const laneByIdMap = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const targetLane = laneByIdMap.get(targetLaneId);
+    if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
+
+    const integrationLane = sourceLaneIds.length > 1
+      ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
+      : null;
+    const cwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : integrationLane!.id;
+    const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
+    if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
+
+    const contexts: Array<{
+      laneId: string;
+      peerLaneId: string | null;
+      preview: ConflictProposalPreview;
+      conflictContext: Record<string, unknown> | null;
+    }> = [];
+    const contextGaps: ConflictExternalResolverContextGap[] = [];
+    for (const sourceLaneId of sourceLaneIds) {
+      const preview = await prepareProposal({ laneId: sourceLaneId, peerLaneId: targetLaneId });
+      const prepared = preparedContexts.get(preview.contextDigest);
+      const conflictContext = prepared?.conflictContext ?? null;
+      const cc =
+        isRecord(conflictContext) && isRecord(conflictContext.conflictContext)
+          ? conflictContext.conflictContext
+          : conflictContext;
+      const insufficient = isRecord(cc) && Boolean(cc.insufficientContext);
+      if (insufficient) {
+        const reasons = Array.isArray(cc.insufficientReasons) ? cc.insufficientReasons.map((value) => String(value)) : [];
+        if (!reasons.length) {
+          contextGaps.push({
+            code: "insufficient_context",
+            message: `${sourceLaneId} -> ${targetLaneId}: insufficient_context_flagged`
+          });
+        } else {
+          for (const reason of reasons) {
+            contextGaps.push({
+              code: "insufficient_context",
+              message: `${sourceLaneId} -> ${targetLaneId}: ${reason}`
+            });
+          }
+        }
+      }
+      contexts.push({
+        laneId: sourceLaneId,
+        peerLaneId: targetLaneId,
+        preview,
+        conflictContext: prepared?.conflictContext ?? null
+      });
+    }
+    const packRefs = buildExternalResolverPackRefs({
+      targetLaneId,
+      sourceLaneIds,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null,
+      contexts: contexts.map((entry) => ({ laneId: entry.laneId, peerLaneId: entry.peerLaneId }))
+    });
+    const missingRequiredPacks = packRefs
+      .filter((entry) => entry.required && !entry.exists)
+      .map((entry) => entry.repoRelativePath);
+
+    const runId = randomUUID();
+    const runDir = path.join(externalRunsRootDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    const startedAt = new Date().toISOString();
+
+    if (contextGaps.length > 0) {
+      const blocked: ExternalResolverRunRecord = {
+        schema: "ade.conflictExternalRun.v1",
+        runId,
+        provider: args.provider,
+        status: "blocked",
+        startedAt,
+        completedAt: new Date().toISOString(),
+        targetLaneId,
+        sourceLaneIds,
+        cwdLaneId,
+        integrationLaneId: integrationLane?.id ?? null,
+        command: [],
+        summary: "Insufficient context blocked external resolver execution.",
+        patchPath: null,
+        logPath: null,
+        insufficientContext: true,
+        contextGaps,
+        warnings: [
+          "insufficient_context_blocked",
+          ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+        ],
+        committedAt: null,
+        commitSha: null,
+        commitMessage: null,
+        error: null
+      };
+      writeExternalRunRecord(blocked);
+      return toRunSummary(blocked);
+    }
+
+    const prompt = buildExternalResolverPrompt({
+      targetLaneId,
+      sourceLaneIds,
+      contexts,
+      packRefs,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null
+    });
+    const promptPath = path.join(runDir, "prompt.md");
+    fs.writeFileSync(promptPath, prompt, "utf8");
+
+    const commandTemplate = resolveExternalResolverCommand(args.provider);
+    if (!commandTemplate.length) {
+      const missing: ExternalResolverRunRecord = {
+        schema: "ade.conflictExternalRun.v1",
+        runId,
+        provider: args.provider,
+        status: "failed",
+        startedAt,
+        completedAt: new Date().toISOString(),
+        targetLaneId,
+        sourceLaneIds,
+        cwdLaneId,
+        integrationLaneId: integrationLane?.id ?? null,
+        command: [],
+        summary: null,
+        patchPath: null,
+        logPath: null,
+        insufficientContext: false,
+        contextGaps: [],
+        warnings: [
+          "resolver_command_missing_in_config",
+          ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+        ],
+        committedAt: null,
+        commitSha: null,
+        commitMessage: null,
+        error: "No external resolver command configured for provider."
+      };
+      writeExternalRunRecord(missing);
+      return toRunSummary(missing);
+    }
+
+    const renderedCommand = commandTemplate.map((token) =>
+      token
+        .replace(/\{\{promptFile\}\}/g, promptPath)
+        .replace(/\{\{projectRoot\}\}/g, projectRoot)
+        .replace(/\{\{targetLaneId\}\}/g, targetLaneId)
+        .replace(/\{\{sourceLaneIds\}\}/g, sourceLaneIds.join(","))
+        .replace(/\{\{runDir\}\}/g, runDir)
+    );
+
+    const bin = renderedCommand[0];
+    if (!bin) {
+      throw new Error("Invalid external resolver command template");
+    }
+
+    const proc = spawnSync(bin, renderedCommand.slice(1), {
+      cwd: cwdLane.worktreePath,
+      encoding: "utf8",
+      timeout: 8 * 60_000,
+      maxBuffer: 8 * 1024 * 1024
+    });
+
+    const stdout = proc.stdout ?? "";
+    const stderr = proc.stderr ?? "";
+    const outputLogPath = path.join(runDir, "output.log");
+    fs.writeFileSync(outputLogPath, `${stdout}\n\n--- STDERR ---\n${stderr}\n`, "utf8");
+
+    const diffResult = await runGit(["diff", "--binary"], {
+      cwd: cwdLane.worktreePath,
+      timeoutMs: 45_000
+    });
+    const patchPath = path.join(runDir, "changes.patch");
+    let finalPatchPath: string | null = null;
+    if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
+      fs.writeFileSync(patchPath, diffResult.stdout, "utf8");
+      finalPatchPath = patchPath;
+    }
+
+    const status: ConflictExternalResolverRunStatus = proc.status === 0 ? "completed" : "failed";
+    const runRecord: ExternalResolverRunRecord = {
+      schema: "ade.conflictExternalRun.v1",
+      runId,
+      provider: args.provider,
+      status,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      targetLaneId,
+      sourceLaneIds,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null,
+      command: renderedCommand,
+      summary: extractResolverSummary(stdout),
+      patchPath: finalPatchPath,
+      logPath: outputLogPath,
+      insufficientContext: false,
+      contextGaps: [],
+      warnings: [
+        ...(proc.signal ? [`process_signal:${proc.signal}`] : []),
+        ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+      ],
+      committedAt: null,
+      commitSha: null,
+      commitMessage: null,
+      error: proc.status === 0 ? null : (stderr.trim() || `Exit code ${proc.status ?? -1}`)
+    };
+    writeExternalRunRecord(runRecord);
+    return toRunSummary(runRecord);
+  };
+
+  const listExternalResolverRuns = (args: ListExternalConflictResolverRunsArgs = {}): ConflictExternalResolverRunSummary[] => {
+    const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+    const limit = Number.isFinite(Number(args.limit)) ? Math.max(1, Number(args.limit)) : 20;
+    const records = listExternalRunRecords().filter((run) =>
+      laneId
+        ? run.targetLaneId === laneId || run.cwdLaneId === laneId || run.sourceLaneIds.includes(laneId)
+        : true
+    );
+    return records.slice(0, limit).map(toRunSummary);
+  };
+
+  const commitExternalResolverRun = async (
+    args: CommitExternalConflictResolverRunArgs
+  ): Promise<CommitExternalConflictResolverRunResult> => {
+    const runId = args.runId.trim();
+    if (!runId) throw new Error("runId is required");
+    const run = readExternalRunRecord(runId);
+    if (!run) throw new Error(`External resolver run not found: ${runId}`);
+    if (run.status !== "completed") throw new Error("Only completed resolver runs can be committed.");
+    if (!run.patchPath || !fs.existsSync(run.patchPath)) {
+      throw new Error("Resolver run has no patch artifact to commit.");
+    }
+    if (run.commitSha && run.committedAt) {
+      throw new Error(`Resolver run already committed at ${run.committedAt}.`);
+    }
+
+    const laneId = run.cwdLaneId;
+    const lane = laneService.getLaneBaseAndBranch(laneId);
+    const patchBody = fs.readFileSync(run.patchPath, "utf8");
+    const touchedPaths = extractCommitPathsFromUnifiedDiff(patchBody);
+    if (!touchedPaths.length) throw new Error("Resolver patch has no changed paths.");
+    const normalizedPaths = touchedPaths.map((entry) => ensureRelativeRepoPath(entry));
+    const commitMessage = args.message?.trim() || `Resolve conflicts via ADE ${run.provider} external resolver`;
+
+    await runGitOrThrow(["add", "--", ...normalizedPaths], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    const commitRes = await runGit(
+      ["commit", "-m", commitMessage, "--", ...normalizedPaths],
+      { cwd: lane.worktreePath, timeoutMs: 90_000 }
+    );
+    if (commitRes.exitCode !== 0) {
+      const reason = commitRes.stderr.trim() || commitRes.stdout.trim() || "Failed to create commit.";
+      throw new Error(reason);
+    }
+
+    const commitSha = await readHeadSha(lane.worktreePath);
+    const committedAt = new Date().toISOString();
+    writeExternalRunRecord({
+      ...run,
+      committedAt,
+      commitSha,
+      commitMessage
+    });
+
+    return {
+      runId,
+      laneId,
+      commitSha,
+      message: commitMessage,
+      committedPaths: normalizedPaths
+    };
   };
 
   const applyProposal = async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
@@ -2185,6 +3084,9 @@ export function createConflictService({
     listProposals,
     prepareProposal,
     requestProposal,
+    runExternalResolver,
+    listExternalResolverRuns,
+    commitExternalResolverRun,
     applyProposal,
     undoProposal
   };

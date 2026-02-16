@@ -42,7 +42,14 @@ export function renderLanePackMarkdown(args: {
   keyFiles: Array<{ file: string; insertions: number | null; deletions: number | null }>;
   errors: string[];
   sessionsRows: Array<{ when: string; tool: string; goal: string; result: string; delta: string }>;
-  sessionHighlights?: Array<{ when: string; tool: string; summary: string }>;
+  sessionHighlights?: Array<{
+    when: string;
+    tool: string;
+    summary: string;
+    summarySource?: string;
+    summaryConfidence?: string;
+    summaryOmissionTags?: string[];
+  }>;
   sessionsTotal: number;
   sessionsRunning: number;
   nextSteps: string[];
@@ -166,7 +173,17 @@ export function renderLanePackMarkdown(args: {
       const summary = stripAnsi(h.summary).trim();
       if (!summary) continue;
       const clipped = summary.length > 240 ? `${summary.slice(0, 239)}…` : summary;
-      lines.push(`- ${when} ${tool}: ${clipped}`);
+      const source = stripAnsi(h.summarySource ?? "").trim();
+      const confidence = stripAnsi(h.summaryConfidence ?? "").trim();
+      const omissions = Array.isArray(h.summaryOmissionTags)
+        ? h.summaryOmissionTags.map((entry) => stripAnsi(String(entry)).trim()).filter(Boolean)
+        : [];
+      const tags: string[] = [];
+      if (source) tags.push(`source=${source}`);
+      if (confidence) tags.push(`confidence=${confidence}`);
+      if (omissions.length) tags.push(`omissions=${omissions.join(",")}`);
+      const prefix = tags.length ? ` [${tags.join(" ")}]` : "";
+      lines.push(`- ${when} ${tool}${prefix}: ${clipped}`);
     }
   }
   lines.push("");

@@ -6,6 +6,7 @@ import { LanesPage } from "../lanes/LanesPage";
 import { FilesPage } from "../files/FilesPage";
 import { TerminalsPage } from "../terminals/TerminalsPage";
 import { ConflictsPage } from "../conflicts/ConflictsPage";
+import { ContextPage } from "../context/ContextPage";
 import { WorkspaceGraphPage } from "../graph/WorkspaceGraphPage";
 import { PRsPage } from "../prs/PRsPage";
 import { HistoryPage } from "../history/HistoryPage";
@@ -46,6 +47,7 @@ export function App() {
             <Route path="/files" element={<FilesPage />} />
             <Route path="/terminals" element={<TerminalsPage />} />
             <Route path="/conflicts" element={<ConflictsPage />} />
+            <Route path="/context" element={<ContextPage />} />
             <Route path="/graph" element={<WorkspaceGraphPage />} />
             <Route path="/prs" element={<PRsPage />} />
             <Route path="/history" element={<HistoryPage />} />
