@@ -562,8 +562,8 @@ export function createConflictService({
   const conflictPackPath = (laneId: string, peerKey: string) =>
     path.join(resolvedPacksRootDir, "conflicts", "v2", `${laneId}__${safeSegment(peerKey)}.md`);
   const contextDocPaths = [
-    path.join(projectRoot, "docs/PRD.ade.md"),
-    path.join(projectRoot, "docs/architecture/ARCHITECTURE.ade.md"),
+    path.join(projectRoot, ".ade/context/PRD.ade.md"),
+    path.join(projectRoot, ".ade/context/ARCHITECTURE.ade.md"),
     path.join(projectRoot, "docs/PRD.md")
   ];
   const toRepoRelativePath = (absPath: string): string => {

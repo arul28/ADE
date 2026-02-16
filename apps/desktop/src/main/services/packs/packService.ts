@@ -491,8 +491,8 @@ export function createPackService({
 
   const CONTEXT_VERSION = 1;
   const BOOTSTRAP_FINGERPRINT_RE = /<!--\s*ADE_DOCS_FINGERPRINT:([a-f0-9]{64})\s*-->/i;
-  const ADE_DOC_PRD_REL = "docs/PRD.ade.md";
-  const ADE_DOC_ARCH_REL = "docs/architecture/ARCHITECTURE.ade.md";
+  const ADE_DOC_PRD_REL = ".ade/context/PRD.ade.md";
+  const ADE_DOC_ARCH_REL = ".ade/context/ARCHITECTURE.ade.md";
   const CONTEXT_DOC_LAST_RUN_KEY = "context:docs:lastRun.v1";
   const FALLBACK_GENERATED_ROOT = path.join(path.dirname(packsDir), "context", "generated");
   const CONTEXT_CLIP_TAG = "omitted_due_size";
@@ -573,6 +573,11 @@ export function createPackService({
     return { content: `${lines.join("\n").trim()}\n`, warnings };
   };
 
+  const DEFAULT_GENERATOR_COMMANDS: Record<string, string[]> = {
+    codex: ["codex", "exec", "-"],
+    claude: ["claude", "--print"]
+  };
+
   const resolveContextGeneratorCommand = (provider: ContextGenerateDocsArgs["provider"]): string[] => {
     const snapshot = projectConfigService.get();
     const providers = isRecord(snapshot.local.providers)
@@ -586,7 +591,9 @@ export function createPackService({
     const generators = isRecord(contextTools.generators) ? (contextTools.generators as Record<string, unknown>) : {};
     const providerConfig = isRecord(generators[provider]) ? (generators[provider] as Record<string, unknown>) : {};
     const rawCommand = Array.isArray(providerConfig.command) ? providerConfig.command : [];
-    return rawCommand.map((value) => String(value));
+    const resolved = rawCommand.map((value) => String(value));
+    if (resolved.length) return resolved;
+    return DEFAULT_GENERATOR_COMMANDS[provider] ?? [];
   };
 
   const runContextGeneratorCommand = (args: {
@@ -608,11 +615,23 @@ export function createPackService({
     );
     const bin = rendered[0];
     if (!bin) return { stdout: "", stderr: "context_generator_command_invalid", exitCode: null, command: rendered };
+    // If {{promptFile}} was not consumed by the command template, feed the
+    // prompt file content via stdin so CLIs like `claude --print` can read it.
+    const commandUsesPromptFile = command.some((t) => t.includes("{{promptFile}}"));
+    let stdinInput: string | undefined;
+    if (!commandUsesPromptFile && args.promptFile) {
+      try {
+        stdinInput = fs.readFileSync(args.promptFile, "utf8");
+      } catch {
+        // fall through – the command will run without stdin
+      }
+    }
     const proc = spawnSync(bin, rendered.slice(1), {
       cwd: projectRoot,
       encoding: "utf8",
       timeout: 240_000,
-      maxBuffer: 4 * 1024 * 1024
+      maxBuffer: 4 * 1024 * 1024,
+      ...(stdinInput !== undefined ? { input: stdinInput } : {})
     });
     return {
       stdout: proc.stdout ?? "",

@@ -1,0 +1,239 @@
+import React from "react";
+import { ArrowUpRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import type { LaneSummary } from "../../../shared/types";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
+
+const TREE_ROW_H = 28;
+const TREE_INDENT = 22;
+const TREE_LEFT_PAD = 16;
+const TREE_DOT_R = 4;
+
+type TreeNodeLayout = {
+  lane: LaneSummary;
+  row: number;
+  depth: number;
+  dotX: number;
+  dotY: number;
+};
+
+function StackGraph({
+  lanes,
+  selectedLaneId,
+  onSelect
+}: {
+  lanes: LaneSummary[];
+  selectedLaneId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const layout = React.useMemo(() => {
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryId = primary?.id ?? null;
+
+    const parentById = new Map<string, string | null>();
+    for (const lane of lanes) {
+      if (lane.laneType === "primary") {
+        parentById.set(lane.id, null);
+        continue;
+      }
+      const parent =
+        lane.parentLaneId && laneById.has(lane.parentLaneId)
+          ? lane.parentLaneId
+          : primaryId;
+      parentById.set(lane.id, parent ?? null);
+    }
+
+    const depthMemo = new Map<string, number>();
+    const visiting = new Set<string>();
+    const depthFor = (laneId: string): number => {
+      if (depthMemo.has(laneId)) return depthMemo.get(laneId)!;
+      if (visiting.has(laneId)) return 0;
+      visiting.add(laneId);
+      const lane = laneById.get(laneId);
+      if (!lane) {
+        visiting.delete(laneId);
+        depthMemo.set(laneId, 0);
+        return 0;
+      }
+      if (lane.laneType === "primary") {
+        visiting.delete(laneId);
+        depthMemo.set(laneId, 0);
+        return 0;
+      }
+      const parent = parentById.get(laneId) ?? null;
+      const depth = parent ? depthFor(parent) + 1 : 0;
+      visiting.delete(laneId);
+      depthMemo.set(laneId, depth);
+      return depth;
+    };
+
+    return lanes.map((lane, idx) => {
+      const depth = depthFor(lane.id);
+      return {
+        lane,
+        row: idx,
+        depth,
+        dotX: TREE_LEFT_PAD + depth * TREE_INDENT,
+        dotY: idx * TREE_ROW_H + TREE_ROW_H / 2
+      } satisfies TreeNodeLayout;
+    });
+  }, [lanes]);
+  const layoutById = React.useMemo(() => new Map(layout.map((n) => [n.lane.id, n])), [layout]);
+
+  const totalHeight = layout.length * TREE_ROW_H + 4;
+
+  const childrenByParent = React.useMemo(() => {
+    const map = new Map<string, TreeNodeLayout[]>();
+    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+    const primaryId = primary?.id ?? null;
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    for (const node of layout) {
+      const parentId =
+        node.lane.laneType === "primary"
+          ? null
+          : node.lane.parentLaneId && laneById.has(node.lane.parentLaneId)
+            ? node.lane.parentLaneId
+            : primaryId;
+      if (!parentId) continue;
+      const arr = map.get(parentId) ?? [];
+      arr.push(node);
+      map.set(parentId, arr);
+    }
+    return map;
+  }, [layout, lanes]);
+
+  const connectors: React.ReactNode[] = [];
+  for (const [parentId, children] of childrenByParent) {
+    const parent = layoutById.get(parentId);
+    if (!parent || children.length === 0) continue;
+
+    const lastChild = children[children.length - 1]!;
+
+    connectors.push(
+      <line
+        key={`v:${parentId}`}
+        x1={parent.dotX}
+        y1={parent.dotY + TREE_DOT_R + 2}
+        x2={parent.dotX}
+        y2={lastChild.dotY}
+        stroke="currentColor"
+        className="text-muted-fg/35"
+        strokeWidth={1.5}
+      />
+    );
+
+    for (const child of children) {
+      connectors.push(
+        <line
+          key={`h:${child.lane.id}`}
+          x1={parent.dotX}
+          y1={child.dotY}
+          x2={child.dotX - TREE_DOT_R - 3}
+          y2={child.dotY}
+          stroke="currentColor"
+          className="text-muted-fg/35"
+          strokeWidth={1.5}
+        />
+      );
+    }
+  }
+
+  return (
+    <div className="h-full overflow-auto">
+      <div className="relative py-1" style={{ height: totalHeight, minWidth: "100%" }}>
+        <svg className="absolute inset-0 pointer-events-none" width="100%" height={totalHeight}>
+          {connectors}
+          {layout.map((node) => (
+            <circle
+              key={`dot:${node.lane.id}`}
+              cx={node.dotX}
+              cy={node.dotY}
+              r={TREE_DOT_R}
+              className={cn(
+                node.lane.laneType === "primary"
+                  ? "fill-emerald-500"
+                  : node.lane.status.dirty
+                    ? "fill-amber-500"
+                    : "fill-sky-500"
+              )}
+            />
+          ))}
+        </svg>
+
+        {layout.map((node) => {
+          const { lane } = node;
+          const isSelected = selectedLaneId === lane.id;
+          return (
+            <button
+              key={`label:${lane.id}`}
+              type="button"
+              className={cn(
+                "absolute flex items-center gap-1.5 rounded-lg px-1.5 text-[11px] transition-colors whitespace-nowrap",
+                isSelected
+                  ? "bg-accent/15 text-fg shadow-sm shadow-accent/20"
+                  : "text-muted-fg hover:bg-muted/60 hover:text-fg"
+              )}
+              style={{
+                left: node.dotX + TREE_DOT_R + 5,
+                top: node.dotY - (TREE_ROW_H - 6) / 2,
+                height: TREE_ROW_H - 6
+              }}
+              onClick={() => onSelect(lane.id)}
+              title={
+                lane.parentLaneId
+                  ? `Child of ${layoutById.get(lane.parentLaneId)?.lane.name ?? "parent"}`
+                  : lane.laneType === "primary"
+                    ? "Primary lane"
+                    : "Based on primary"
+              }
+            >
+              <span className="truncate max-w-[160px]">{lane.name}</span>
+              {(lane.status.ahead > 0 || lane.status.behind > 0) && (
+                <span className="shrink-0 font-mono text-[9px] text-muted-fg/70">
+                  {lane.status.ahead > 0 ? `${lane.status.ahead}\u2191` : ""}
+                  {lane.status.behind > 0 ? `${lane.status.behind}\u2193` : ""}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function LaneStackPane({
+  lanes,
+  selectedLaneId,
+  onSelect
+}: {
+  lanes: LaneSummary[];
+  selectedLaneId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const navigate = useNavigate();
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 flex items-center justify-end px-2 py-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-[11px]"
+          onClick={() => navigate("/graph")}
+          title="Open workspace canvas"
+        >
+          <ArrowUpRight className="h-3 w-3" />
+          Canvas
+        </Button>
+      </div>
+      <StackGraph
+        lanes={lanes}
+        selectedLaneId={selectedLaneId}
+        onSelect={onSelect}
+      />
+    </div>
+  );
+}

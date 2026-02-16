@@ -4,21 +4,24 @@ import { cn } from "./cn";
 
 export function ResizeGutter({
   orientation,
-  className
+  className,
+  thin
 }: {
   orientation: "vertical" | "horizontal";
   className?: string;
+  thin?: boolean;
 }) {
   return (
     <Separator
       className={cn(
-        "ade-gutter group shrink-0",
+        "group shrink-0",
+        thin ? "ade-pane-gutter" : "ade-gutter",
         orientation === "vertical" ? "vertical" : "horizontal",
         className
       )}
     >
-      <div className="ade-gutter-handle">
-        <div className="ade-gutter-pill" />
+      <div className={thin ? undefined : "ade-gutter-handle"}>
+        <div className={thin ? undefined : "ade-gutter-pill"} />
       </div>
     </Separator>
   );

@@ -212,18 +212,18 @@ function buildSuggestedConfig(args: {
     contextTools: {
       generators: {
         codex: {
-          command: ["codex", "exec", "--prompt-file", "{{promptFile}}"]
+          command: ["codex", "exec", "-"]
         },
         claude: {
-          command: ["claude", "--print", "--input-file", "{{promptFile}}"]
+          command: ["claude", "--print"]
         }
       },
       conflictResolvers: {
         codex: {
-          command: ["codex", "exec", "--prompt-file", "{{promptFile}}"]
+          command: ["codex", "exec", "-"]
         },
         claude: {
-          command: ["claude", "--print", "--input-file", "{{promptFile}}"]
+          command: ["claude", "--print"]
         }
       }
     }

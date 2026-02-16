@@ -178,6 +178,8 @@ export const IPC = {
   historyListOperations: "ade.history.listOperations",
   layoutGet: "ade.layout.get",
   layoutSet: "ade.layout.set",
+  tilingTreeGet: "ade.tilingTree.get",
+  tilingTreeSet: "ade.tilingTree.set",
   graphStateGet: "ade.graph.state.get",
   graphStateSet: "ade.graph.state.set",
   processesListDefinitions: "ade.processes.listDefinitions",

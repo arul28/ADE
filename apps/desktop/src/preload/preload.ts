@@ -510,6 +510,11 @@ contextBridge.exposeInMainWorld("ade", {
     set: async (layoutId: string, layout: DockLayout): Promise<void> =>
       ipcRenderer.invoke(IPC.layoutSet, { layoutId, layout })
   },
+  tilingTree: {
+    get: async (layoutId: string): Promise<unknown> => ipcRenderer.invoke(IPC.tilingTreeGet, { layoutId }),
+    set: async (layoutId: string, tree: unknown): Promise<void> =>
+      ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree })
+  },
   graphState: {
     get: async (projectId: string): Promise<GraphPersistedState | null> =>
       ipcRenderer.invoke(IPC.graphStateGet, { projectId }),

@@ -406,6 +406,10 @@ declare global {
         get: (layoutId: string) => Promise<DockLayout | null>;
         set: (layoutId: string, layout: DockLayout) => Promise<void>;
       };
+      tilingTree: {
+        get: (layoutId: string) => Promise<unknown>;
+        set: (layoutId: string, tree: unknown) => Promise<void>;
+      };
       graphState: {
         get: (projectId: string) => Promise<GraphPersistedState | null>;
         set: (projectId: string, state: GraphPersistedState) => Promise<void>;

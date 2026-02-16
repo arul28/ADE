@@ -453,8 +453,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         className="h-7 px-2 text-[11px]"
                         onClick={() => {
                           selectLane(toast.event.laneId);
-                          setLaneInspectorTab(toast.event.laneId, "pr");
-                          window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=pr`;
+                          setLaneInspectorTab(toast.event.laneId, "merge");
+                          window.location.hash = `#/lanes?laneId=${encodeURIComponent(toast.event.laneId)}&focus=single&inspectorTab=merge`;
                           setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
                         }}
                       >

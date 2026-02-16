@@ -576,6 +576,21 @@ export function registerIpc({
     ctx.logger.debug("layout.set", { key, panels: Object.keys(safe).length });
   });
 
+  ipcMain.handle(IPC.tilingTreeGet, async (_event, arg: { layoutId: string }): Promise<unknown> => {
+    const ctx = getCtx();
+    const key = `tiling_tree:${arg.layoutId}`;
+    const value = ctx.db.getJson<unknown>(key);
+    ctx.logger.debug("tilingTree.get", { key, hit: value != null });
+    return value;
+  });
+
+  ipcMain.handle(IPC.tilingTreeSet, async (_event, arg: { layoutId: string; tree: unknown }): Promise<void> => {
+    const ctx = getCtx();
+    const key = `tiling_tree:${arg.layoutId}`;
+    ctx.db.setJson(key, arg.tree);
+    ctx.logger.debug("tilingTree.set", { key });
+  });
+
   ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
     const ctx = getCtx();
     const key = `graph_state:${arg.projectId}`;
