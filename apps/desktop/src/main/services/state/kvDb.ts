@@ -734,6 +734,34 @@ function migrate(db: Database) {
     "automation_action_results",
     ["project_id", "run_id"]
   );
+
+  // Phase 8+ PR groups (stacked / integration).
+  db.run(`
+    create table if not exists pr_groups (
+      id text primary key,
+      project_id text not null,
+      group_type text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_pr_groups_project on pr_groups(project_id)");
+
+  db.run(`
+    create table if not exists pr_group_members (
+      id text primary key,
+      group_id text not null,
+      pr_id text not null,
+      lane_id text not null,
+      position integer not null,
+      role text not null,
+      foreign key(group_id) references pr_groups(id),
+      foreign key(pr_id) references pull_requests(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
+  db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

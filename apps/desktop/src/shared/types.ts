@@ -861,6 +861,25 @@ export type ContextGenerateDocsArgs = {
   force?: boolean;
 };
 
+export type ContextPrepareDocGenArgs = {
+  provider: ContextDocProvider;
+  laneId: string;
+};
+
+export type ContextPrepareDocGenResult = {
+  promptFilePath: string;
+  outputPrdPath: string;
+  outputArchPath: string;
+  cwd: string;
+  provider: ContextDocProvider;
+};
+
+export type ContextInstallGeneratedDocsArgs = {
+  provider: ContextDocProvider;
+  outputPrdPath: string;
+  outputArchPath: string;
+};
+
 export type ContextGenerateDocsResult = {
   provider: ContextDocProvider;
   generatedAt: string;
@@ -1862,6 +1881,18 @@ export type LaneExportManifestV1 = {
     staleReason?: string | null;
     unresolvedResolutionState?: GitConflictState | null;
   };
+  orchestratorSummary?: OrchestratorLaneSummaryV1 | null;
+};
+
+export type LaneCompletionSignal = "not-started" | "in-progress" | "review-ready" | "blocked";
+
+export type OrchestratorLaneSummaryV1 = {
+  laneId: string;
+  completionSignal: LaneCompletionSignal;
+  touchedFiles: string[];
+  peerOverlaps: { peerId: string; files: string[]; risk: ConflictRiskLevel }[];
+  suggestedMergeOrder: number | null;
+  blockers: string[];
 };
 
 export type ProjectManifestLaneEntryV1 = {
@@ -2372,6 +2403,136 @@ export type SessionDeltaSummary = {
   touchedFiles: string[];
   failureLines: string[];
   computedAt: string | null;
+};
+
+// --------------------------------
+// Conflicts Tab Redesign (Phase 8+)
+// --------------------------------
+
+export type ResolverSessionScenario = "single-merge" | "sequential-merge" | "integration-merge";
+
+export type PrepareResolverSessionArgs = {
+  provider: ExternalConflictResolverProvider;
+  targetLaneId: string;
+  sourceLaneIds: string[];
+  integrationLaneName?: string;
+  scenario?: ResolverSessionScenario;
+};
+
+export type PrepareResolverSessionResult = {
+  runId: string;
+  promptFilePath: string;
+  cwdWorktreePath: string;
+  cwdLaneId: string;
+  integrationLaneId: string | null;
+  warnings: string[];
+  contextGaps: ConflictExternalResolverContextGap[];
+  status: "ready" | "blocked";
+};
+
+export type FinalizeResolverSessionArgs = {
+  runId: string;
+  exitCode: number;
+};
+
+export type SuggestResolverTargetArgs = {
+  sourceLaneId: string;
+  targetLaneId: string;
+};
+
+export type SuggestResolverTargetResult = {
+  suggestion: "source" | "target";
+  reason: string;
+};
+
+// --------------------------------
+// PR Tab Enhancement (Phase 8+)
+// --------------------------------
+
+export type PrGroupType = "stacked" | "integration";
+export type PrGroupMemberRole = "source" | "integration" | "target";
+
+export type PrGroup = {
+  id: string;
+  projectId: string;
+  groupType: PrGroupType;
+  createdAt: string;
+};
+
+export type PrGroupMember = {
+  groupId: string;
+  prId: string;
+  laneId: string;
+  position: number;
+  role: PrGroupMemberRole;
+};
+
+export type CreateStackedPrsArgs = {
+  laneIds: string[];
+  targetBranch: string;
+  titles?: Record<string, string>;
+  draft?: boolean;
+};
+
+export type CreateStackedPrsResult = {
+  groupId: string;
+  prs: PrSummary[];
+  errors: Array<{ laneId: string; error: string }>;
+};
+
+export type CreateIntegrationPrArgs = {
+  sourceLaneIds: string[];
+  integrationLaneName: string;
+  baseBranch: string;
+  title: string;
+  body?: string;
+  draft?: boolean;
+};
+
+export type CreateIntegrationPrResult = {
+  groupId: string;
+  integrationLaneId: string;
+  pr: PrSummary;
+  mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
+};
+
+export type LandStackEnhancedArgs = {
+  rootLaneId: string;
+  method: MergeMethod;
+  mode: "sequential" | "all-at-once";
+};
+
+export type PrConflictAnalysis = {
+  prId: string;
+  laneId: string;
+  riskLevel: ConflictRiskLevel;
+  overlapCount: number;
+  conflictPredicted: boolean;
+  peerConflicts: Array<{
+    peerId: string;
+    peerName: string;
+    riskLevel: ConflictRiskLevel;
+    overlapFiles: string[];
+  }>;
+  analyzedAt: string;
+};
+
+export type PrWithConflicts = PrSummary & {
+  conflictAnalysis: PrConflictAnalysis | null;
+};
+
+// --------------------------------
+// Conflicts Tab Multi-Merge State
+// --------------------------------
+
+export type MultiMergeMode = "stacked" | "integration";
+
+export type MultiMergeLaneEntry = {
+  laneId: string;
+  laneName: string;
+  position: number;
+  predictedConflict: boolean;
+  overlapFileCount: number;
 };
 
 export type ListOperationsArgs = {

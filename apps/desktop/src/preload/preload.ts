@@ -25,6 +25,9 @@ import type {
   ConflictProposalPreview,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
+  ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
   ContextStatus,
   ConflictEventPayload,
@@ -158,6 +161,18 @@ import type {
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   UndoConflictProposalArgs,
+  PrepareResolverSessionArgs,
+  PrepareResolverSessionResult,
+  FinalizeResolverSessionArgs,
+  SuggestResolverTargetArgs,
+  SuggestResolverTargetResult,
+  CreateStackedPrsArgs,
+  CreateStackedPrsResult,
+  CreateIntegrationPrArgs,
+  CreateIntegrationPrResult,
+  LandStackEnhancedArgs,
+  PrConflictAnalysis,
+  PrWithConflicts,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   ReparentLaneArgs,
@@ -400,6 +415,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.conflictsListExternalResolverRuns, args),
     commitExternalResolverRun: async (args: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> =>
       ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
+    prepareResolverSession: (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> =>
+      ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
+    finalizeResolverSession: (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
+    suggestResolverTarget: (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> =>
+      ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ConflictEventPayload) => cb(payload);
       ipcRenderer.on(IPC.conflictsEvent, listener);
@@ -410,6 +431,10 @@ contextBridge.exposeInMainWorld("ade", {
     getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
     generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
       ipcRenderer.invoke(IPC.contextGenerateDocs, args),
+    prepareDocGeneration: async (args: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> =>
+      ipcRenderer.invoke(IPC.contextPrepareDocGeneration, args),
+    installGeneratedDocs: async (args: ContextInstallGeneratedDocsArgs): Promise<ContextGenerateDocsResult> =>
+      ipcRenderer.invoke(IPC.contextInstallGeneratedDocs, args),
     openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args)
   },
   packs: {
@@ -480,6 +505,16 @@ contextBridge.exposeInMainWorld("ade", {
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
     openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
+    createStacked: (args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> =>
+      ipcRenderer.invoke(IPC.prsCreateStacked, args),
+    createIntegration: (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> =>
+      ipcRenderer.invoke(IPC.prsCreateIntegration, args),
+    landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
+      ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
+    getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
+      ipcRenderer.invoke(IPC.prsGetConflictAnalysis, prId),
+    listWithConflicts: (): Promise<PrWithConflicts[]> =>
+      ipcRenderer.invoke(IPC.prsListWithConflicts),
     onEvent: (cb: (ev: PrEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);

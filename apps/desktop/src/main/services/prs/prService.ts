@@ -3,19 +3,26 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   CreatePrFromLaneArgs,
+  CreateStackedPrsArgs,
+  CreateStackedPrsResult,
+  CreateIntegrationPrArgs,
+  CreateIntegrationPrResult,
   GitHubRepoRef,
   LandResult,
   LandPrArgs,
   LandStackArgs,
+  LandStackEnhancedArgs,
   LinkPrToLaneArgs,
   MergeMethod,
   PrCheck,
   PrChecksStatus,
+  PrConflictAnalysis,
   PrReview,
   PrReviewStatus,
   PrState,
   PrStatus,
   PrSummary,
+  PrWithConflicts,
   UpdatePrDescriptionArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -27,6 +34,7 @@ import type { createPackService } from "../packs/packService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createByokLlmService } from "../byok/byokLlmService";
+import type { createConflictService } from "../conflicts/conflictService";
 import { runGit } from "../git/git";
 
 type PullRequestRow = {
@@ -194,6 +202,7 @@ export function createPrService({
   hostedAgentService,
   byokLlmService,
   projectConfigService,
+  conflictService,
   openExternal
 }: {
   db: AdeDb;
@@ -207,6 +216,7 @@ export function createPrService({
   hostedAgentService?: ReturnType<typeof createHostedAgentService>;
   byokLlmService?: ReturnType<typeof createByokLlmService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  conflictService?: ReturnType<typeof createConflictService>;
   openExternal: (url: string) => Promise<void>;
 }) {
   const getRow = (prId: string): PullRequestRow | null =>
@@ -950,6 +960,249 @@ export function createPrService({
     return results;
   };
 
+  const createStackedPrs = async (args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> => {
+    const groupId = randomUUID();
+    const now = nowIso();
+    const prs: PrSummary[] = [];
+    const errors: Array<{ laneId: string; error: string }> = [];
+
+    db.run(
+      `insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'stacked', ?)`,
+      [groupId, projectId, now]
+    );
+
+    const lanes = await laneService.list({ includeArchived: false });
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+
+    let previousBranch = args.targetBranch;
+    for (let i = 0; i < args.laneIds.length; i++) {
+      const laneId = args.laneIds[i]!;
+      const lane = laneMap.get(laneId);
+      if (!lane) {
+        errors.push({ laneId, error: `Lane not found: ${laneId}` });
+        break;
+      }
+
+      const title = args.titles?.[laneId] ?? lane.name;
+      try {
+        const pr = await createFromLane({
+          laneId,
+          title,
+          body: "",
+          draft: Boolean(args.draft),
+          baseBranch: previousBranch
+        });
+        prs.push(pr);
+
+        const memberId = randomUUID();
+        db.run(
+          `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
+          [memberId, groupId, pr.id, laneId, i]
+        );
+
+        previousBranch = branchNameFromRef(lane.branchRef);
+      } catch (error) {
+        errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
+        break;
+      }
+    }
+
+    return { groupId, prs, errors };
+  };
+
+  const createIntegrationPr = async (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
+    const groupId = randomUUID();
+    const now = nowIso();
+
+    db.run(
+      `insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'integration', ?)`,
+      [groupId, projectId, now]
+    );
+
+    const integrationLane = await laneService.createChild({
+      parentLaneId: (await laneService.list({ includeArchived: false })).find((lane) => {
+        const base = branchNameFromRef(lane.branchRef);
+        return base === args.baseBranch || lane.baseRef === args.baseBranch;
+      })?.id ?? args.sourceLaneIds[0]!,
+      name: args.integrationLaneName,
+      description: `Integration lane for merging: ${args.sourceLaneIds.join(", ")}`
+    });
+
+    const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
+    const lanes = await laneService.list({ includeArchived: false });
+    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+
+    for (const sourceLaneId of args.sourceLaneIds) {
+      const sourceLane = laneMap.get(sourceLaneId);
+      if (!sourceLane) {
+        mergeResults.push({ laneId: sourceLaneId, success: false, error: `Lane not found: ${sourceLaneId}` });
+        continue;
+      }
+      const mergeRes = await runGit(
+        ["merge", "--no-commit", "--no-ff", branchNameFromRef(sourceLane.branchRef)],
+        { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
+      );
+      if (mergeRes.exitCode !== 0) {
+        mergeResults.push({ laneId: sourceLaneId, success: false, error: mergeRes.stderr.trim() || "Merge failed" });
+      } else {
+        mergeResults.push({ laneId: sourceLaneId, success: true });
+      }
+    }
+
+    const pr = await createFromLane({
+      laneId: integrationLane.id,
+      title: args.title,
+      body: args.body ?? "",
+      draft: Boolean(args.draft),
+      baseBranch: args.baseBranch
+    });
+
+    const integrationMemberId = randomUUID();
+    db.run(
+      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, 0, 'integration')`,
+      [integrationMemberId, groupId, pr.id, integrationLane.id]
+    );
+
+    for (let i = 0; i < args.sourceLaneIds.length; i++) {
+      const memberId = randomUUID();
+      db.run(
+        `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
+        [memberId, groupId, pr.id, args.sourceLaneIds[i]!, i + 1]
+      );
+    }
+
+    return {
+      groupId,
+      integrationLaneId: integrationLane.id,
+      pr,
+      mergeResults
+    };
+  };
+
+  const landStackEnhanced = async (args: LandStackEnhancedArgs): Promise<LandResult[]> => {
+    if (args.mode === "sequential") {
+      return await landStack({ rootLaneId: args.rootLaneId, method: args.method });
+    }
+
+    // all-at-once: land all PRs without waiting for retargeting.
+    const chain = await laneService.getStackChain(args.rootLaneId);
+    if (!chain.length) return [];
+
+    const rootRow = getRowForLane(chain[0]!.laneId);
+    if (!rootRow) throw new Error("Root lane has no PR linked.");
+    const baseTarget = rootRow.base_branch;
+
+    const results: LandResult[] = [];
+    const landPromises: Promise<LandResult>[] = [];
+
+    for (const item of chain) {
+      const row = getRowForLane(item.laneId);
+      if (!row) {
+        results.push({
+          prId: "",
+          prNumber: 0,
+          success: false,
+          mergeCommitSha: null,
+          branchDeleted: false,
+          laneArchived: false,
+          error: `Lane '${item.laneName}' has no PR linked.`
+        });
+        continue;
+      }
+
+      if (row.base_branch !== baseTarget) {
+        await retargetBase(row.id, baseTarget).catch((error) => {
+          logger.warn("prs.retarget_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+
+      landPromises.push(land({ prId: row.id, method: args.method }));
+    }
+
+    const settled = await Promise.allSettled(landPromises);
+    for (const result of settled) {
+      if (result.status === "fulfilled") {
+        results.push(result.value);
+      } else {
+        results.push({
+          prId: "",
+          prNumber: 0,
+          success: false,
+          mergeCommitSha: null,
+          branchDeleted: false,
+          laneArchived: false,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason)
+        });
+      }
+    }
+
+    return results;
+  };
+
+  const getConflictAnalysis = async (prId: string): Promise<PrConflictAnalysis> => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+    const laneId = row.lane_id;
+
+    if (!conflictService) {
+      return {
+        prId,
+        laneId,
+        riskLevel: "none",
+        overlapCount: 0,
+        conflictPredicted: false,
+        peerConflicts: [],
+        analyzedAt: nowIso()
+      };
+    }
+
+    const status = await conflictService.getLaneStatus({ laneId });
+    const overlaps = await conflictService.listOverlaps({ laneId });
+
+    const peerConflicts: PrConflictAnalysis["peerConflicts"] = overlaps
+      .filter((o): o is typeof o & { peerId: string } => o.peerId != null)
+      .map((o) => ({
+        peerId: o.peerId,
+        peerName: o.peerName,
+        riskLevel: o.riskLevel,
+        overlapFiles: o.files.map((f) => f.path)
+      }));
+
+    const riskLevels = ["none", "low", "medium", "high"] as const;
+    const highestRisk = peerConflicts.reduce<PrConflictAnalysis["riskLevel"]>(
+      (max, pc) => {
+        return riskLevels.indexOf(pc.riskLevel) > riskLevels.indexOf(max) ? pc.riskLevel : max;
+      },
+      status.status === "conflict-predicted" || status.status === "conflict-active" ? "high" : "none"
+    );
+
+    return {
+      prId,
+      laneId,
+      riskLevel: highestRisk as PrConflictAnalysis["riskLevel"],
+      overlapCount: status.overlappingFileCount,
+      conflictPredicted: status.status === "conflict-predicted" || status.status === "conflict-active",
+      peerConflicts,
+      analyzedAt: nowIso()
+    };
+  };
+
+  const listWithConflicts = async (): Promise<PrWithConflicts[]> => {
+    const rows = listRows();
+    const results: PrWithConflicts[] = [];
+    for (const row of rows) {
+      const summary = rowToSummary(row);
+      let conflictAnalysis: PrConflictAnalysis | null = null;
+      try {
+        conflictAnalysis = await getConflictAnalysis(row.id);
+      } catch {
+        // Conflict analysis may fail for archived lanes; skip gracefully.
+      }
+      results.push({ ...summary, conflictAnalysis });
+    }
+    return results;
+  };
+
   return {
     async createFromLane(args: CreatePrFromLaneArgs): Promise<PrSummary> {
       return await createFromLane(args);
@@ -1018,6 +1271,26 @@ export function createPrService({
       const row = getRow(prId);
       if (!row) throw new Error(`PR not found: ${prId}`);
       await openExternal(row.github_url);
+    },
+
+    async createStackedPrs(args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> {
+      return await createStackedPrs(args);
+    },
+
+    async createIntegrationPr(args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> {
+      return await createIntegrationPr(args);
+    },
+
+    async landStackEnhanced(args: LandStackEnhancedArgs): Promise<LandResult[]> {
+      return await landStackEnhanced(args);
+    },
+
+    async getConflictAnalysis(prId: string): Promise<PrConflictAnalysis> {
+      return await getConflictAnalysis(prId);
+    },
+
+    async listWithConflicts(): Promise<PrWithConflicts[]> {
+      return await listWithConflicts();
     }
   };
 }

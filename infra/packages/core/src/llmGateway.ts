@@ -41,7 +41,8 @@ async function callOpenAi(config: LlmGatewayConfig, prompt: PromptTemplate): Pro
       ],
       temperature: 0.2,
       max_tokens: config.maxOutputTokens
-    })
+    }),
+    signal: AbortSignal.timeout(300_000)
   });
 
   if (!response.ok) {
@@ -99,7 +100,8 @@ async function callAnthropic(config: LlmGatewayConfig, prompt: PromptTemplate): 
           content: prompt.user
         }
       ]
-    })
+    }),
+    signal: AbortSignal.timeout(300_000)
   });
 
   if (!response.ok) {
@@ -156,7 +158,8 @@ async function callGemini(config: LlmGatewayConfig, prompt: PromptTemplate): Pro
         temperature: 0.2,
         maxOutputTokens: config.maxOutputTokens
       }
-    })
+    }),
+    signal: AbortSignal.timeout(300_000)
   });
 
   if (!response.ok) {

@@ -804,7 +804,7 @@ export function SettingsPage() {
                 </div>
               ) : (
                 <div className="mt-1 text-muted-fg">
-                  No bootstrap file detected at `.ade/hosted/bootstrap.json`.
+                  No bootstrap config available. Rebuild with SST outputs, or place a bootstrap.json override in .ade/hosted/.
                 </div>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2">

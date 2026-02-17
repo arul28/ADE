@@ -60,6 +60,7 @@ export function LaneGitActionsPane({
   const [error, setError] = useState<string | null>(null);
   const [textPrompt, setTextPrompt] = useState<LaneTextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
+  const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [pullDropdownOpen, setPullDropdownOpen] = useState(false);
   const [moreDropdownOpen, setMoreDropdownOpen] = useState(false);
   const pullDropdownRef = useRef<HTMLDivElement>(null);
@@ -153,6 +154,7 @@ export function LaneGitActionsPane({
 
   const refreshAll = async () => {
     await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
+    setCommitTimelineKey((prev) => prev + 1);
   };
 
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
@@ -530,6 +532,7 @@ export function LaneGitActionsPane({
           <CommitTimeline
             laneId={laneId ?? null}
             selectedSha={selectedCommitSha}
+            refreshTrigger={commitTimelineKey}
             onSelectCommit={(commit) => {
               onSelectCommit(commit);
             }}

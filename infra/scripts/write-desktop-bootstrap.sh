@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Optional: for dev overrides only. Build-time defaults (via generate-bootstrap-defaults.cjs)
+# are now the primary path. Use this script to create a per-project .ade/hosted/bootstrap.json
+# that takes priority over the baked-in defaults.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then

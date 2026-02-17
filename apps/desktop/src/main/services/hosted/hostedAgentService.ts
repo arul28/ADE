@@ -3,6 +3,7 @@ import path from "node:path";
 import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { safeStorage } from "electron";
+import { BOOTSTRAP_DEFAULTS } from "../../../generated/bootstrapDefaults";
 import type {
   HostedArtifactResult,
   HostedAuthStatus,
@@ -159,7 +160,7 @@ const HOSTED_FETCH_TIMEOUT_MS = 20_000;
 const POLL_INITIAL_DELAY_MS = 700;
 const POLL_MAX_DELAY_MS = 4_000;
 const POLL_TIMEOUT_FLOOR_MS = 60_000;
-const POLL_STALL_TIMEOUT_MS = 90_000;
+const POLL_STALL_TIMEOUT_MS = 180_000;
 const CONTEXT_POLICY_TTL_MS = 20 * 60_000;
 const MIRROR_CLEANUP_INTERVAL_MS = 6 * 60 * 60_000;
 
@@ -519,53 +520,66 @@ export function createHostedAgentService({
     persistAuthTokens({});
   };
 
-  const readBootstrapConfig = (): HostedBootstrapConfig | null => {
-    if (!fs.existsSync(hostedBootstrapPath)) return null;
+  const parseBootstrapRecord = (parsed: unknown): HostedBootstrapConfig | null => {
+    if (!isRecord(parsed)) return null;
 
-    try {
-      const raw = fs.readFileSync(hostedBootstrapPath, "utf8");
-      const parsed = JSON.parse(raw);
-      if (!isRecord(parsed)) return null;
+    const config: HostedBootstrapConfig = {
+      stage: asString(parsed.stage) || "unknown",
+      apiBaseUrl: asString(parsed.apiBaseUrl),
+      region: asString(parsed.region),
+      clerkPublishableKey: asString(parsed.clerkPublishableKey),
+      clerkOauthClientId: asString(parsed.clerkOauthClientId),
+      clerkIssuer: normalizeHttpUrl(asString(parsed.clerkIssuer)),
+      clerkFrontendApiUrl: normalizeHttpUrl(asString(parsed.clerkFrontendApiUrl)),
+      clerkOauthMetadataUrl: normalizeHttpUrl(asString(parsed.clerkOauthMetadataUrl)),
+      clerkOauthAuthorizeUrl: normalizeHttpUrl(asString(parsed.clerkOauthAuthorizeUrl)),
+      clerkOauthTokenUrl: normalizeHttpUrl(asString(parsed.clerkOauthTokenUrl)),
+      clerkOauthRevocationUrl: normalizeHttpUrl(asString(parsed.clerkOauthRevocationUrl)),
+      clerkOauthUserInfoUrl: normalizeHttpUrl(asString(parsed.clerkOauthUserInfoUrl)),
+      clerkOauthScopes: asString(parsed.clerkOauthScopes) || "openid profile email offline_access",
+      ...(asString(parsed.generatedAt) ? { generatedAt: asString(parsed.generatedAt) } : {})
+    };
 
-      const config: HostedBootstrapConfig = {
-        stage: asString(parsed.stage) || "unknown",
-        apiBaseUrl: asString(parsed.apiBaseUrl),
-        region: asString(parsed.region),
-        clerkPublishableKey: asString(parsed.clerkPublishableKey),
-        clerkOauthClientId: asString(parsed.clerkOauthClientId),
-        clerkIssuer: normalizeHttpUrl(asString(parsed.clerkIssuer)),
-        clerkFrontendApiUrl: normalizeHttpUrl(asString(parsed.clerkFrontendApiUrl)),
-        clerkOauthMetadataUrl: normalizeHttpUrl(asString(parsed.clerkOauthMetadataUrl)),
-        clerkOauthAuthorizeUrl: normalizeHttpUrl(asString(parsed.clerkOauthAuthorizeUrl)),
-        clerkOauthTokenUrl: normalizeHttpUrl(asString(parsed.clerkOauthTokenUrl)),
-        clerkOauthRevocationUrl: normalizeHttpUrl(asString(parsed.clerkOauthRevocationUrl)),
-        clerkOauthUserInfoUrl: normalizeHttpUrl(asString(parsed.clerkOauthUserInfoUrl)),
-        clerkOauthScopes: asString(parsed.clerkOauthScopes) || "openid profile email offline_access",
-        ...(asString(parsed.generatedAt) ? { generatedAt: asString(parsed.generatedAt) } : {})
-      };
-
-      if (
-        !config.apiBaseUrl ||
-        !config.region ||
-        !config.clerkPublishableKey ||
-        !config.clerkOauthClientId ||
-        !config.clerkIssuer ||
-        !config.clerkFrontendApiUrl ||
-        !config.clerkOauthMetadataUrl ||
-        !config.clerkOauthAuthorizeUrl ||
-        !config.clerkOauthTokenUrl
-      ) {
-        return null;
-      }
-
-      return config;
-    } catch (error) {
-      logger.warn("hosted.bootstrap_read_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error)
-      });
+    if (
+      !config.apiBaseUrl ||
+      !config.region ||
+      !config.clerkPublishableKey ||
+      !config.clerkOauthClientId ||
+      !config.clerkIssuer ||
+      !config.clerkFrontendApiUrl ||
+      !config.clerkOauthMetadataUrl ||
+      !config.clerkOauthAuthorizeUrl ||
+      !config.clerkOauthTokenUrl
+    ) {
       return null;
     }
+
+    return config;
+  };
+
+  const readBootstrapConfig = (): HostedBootstrapConfig | null => {
+    // Priority 1: per-project file override
+    if (fs.existsSync(hostedBootstrapPath)) {
+      try {
+        const raw = fs.readFileSync(hostedBootstrapPath, "utf8");
+        const parsed = JSON.parse(raw);
+        const config = parseBootstrapRecord(parsed);
+        if (config) return config;
+      } catch (error) {
+        logger.warn("hosted.bootstrap_read_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    // Priority 2: build-time baked defaults
+    if (BOOTSTRAP_DEFAULTS) {
+      const config = parseBootstrapRecord(BOOTSTRAP_DEFAULTS);
+      if (config) return config;
+    }
+
+    return null;
   };
 
   const readHostedConfig = (): HostedConfig => {
@@ -821,7 +835,7 @@ export function createHostedAgentService({
   const applyBootstrapHostedConfig = (): HostedBootstrapConfig => {
     const bootstrap = readBootstrapConfig();
     if (!bootstrap) {
-      throw new Error("No hosted bootstrap config found at .ade/hosted/bootstrap.json");
+      throw new Error("No hosted bootstrap config available. Rebuild with SST outputs or place a bootstrap.json override in .ade/hosted/.");
     }
 
     updateHostedConfig({
@@ -879,16 +893,16 @@ export function createHostedAgentService({
     }
 
     if (!config.apiBaseUrl.trim()) {
-      throw new Error("Hosted API base URL is not configured. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted API base URL is not configured. Rebuild with SST outputs or check Settings.");
     }
     if (!config.clerkOauthClientId.trim()) {
-      throw new Error("Hosted Clerk OAuth client ID is missing. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted Clerk OAuth client ID is missing. Rebuild with SST outputs or check Settings.");
     }
     if (!config.clerkOauthAuthorizeUrl.trim() || !config.clerkOauthTokenUrl.trim()) {
-      throw new Error("Hosted Clerk OAuth endpoints are missing. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted Clerk OAuth endpoints are missing. Rebuild with SST outputs or check Settings.");
     }
     if (!config.clerkIssuer.trim()) {
-      throw new Error("Hosted Clerk JWT issuer is missing. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted Clerk JWT issuer is missing. Rebuild with SST outputs or check Settings.");
     }
 
     return config;
@@ -2413,7 +2427,7 @@ export function createHostedAgentService({
         run: async () => {
           const submitStartedAtMs = Date.now();
           const submitStartedAtIso = nowIso();
-          const effectiveTimeoutMs = Math.max(45_000, Math.floor(args.timeoutMs ?? 120_000));
+          const effectiveTimeoutMs = Math.max(45_000, Math.floor(args.timeoutMs ?? 240_000));
           let queueEnteredAtMs: number | null = null;
           let queueExitedAtMs: number | null = null;
           let timeoutReason: HostedNarrativeTimingV1["timeoutReason"] = null;
@@ -2456,7 +2470,7 @@ export function createHostedAgentService({
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            timeoutReason = /timed out|timeout/i.test(message) ? "timeout_poll" : "timeout_total";
+            timeoutReason = /timed out|timeout|stuck/i.test(message) ? "timeout_poll" : "timeout_total";
             const timing: HostedNarrativeTimingV1 = {
               schema: "ade.hostedNarrativeTiming.v1",
               submitStartedAt: submitStartedAtIso,

@@ -11,6 +11,9 @@ import type {
   ConflictProposalPreview,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
+  ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
   ContextStatus,
   ConflictEventPayload,
@@ -331,11 +334,16 @@ declare global {
         runExternalResolver: (args: RunExternalConflictResolverArgs) => Promise<ConflictExternalResolverRunSummary>;
         listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
         commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
+        prepareResolverSession: (args: import("../shared/types").PrepareResolverSessionArgs) => Promise<import("../shared/types").PrepareResolverSessionResult>;
+        finalizeResolverSession: (args: import("../shared/types").FinalizeResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
+        suggestResolverTarget: (args: import("../shared/types").SuggestResolverTargetArgs) => Promise<import("../shared/types").SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
       context: {
         getStatus: () => Promise<ContextStatus>;
         generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
+        prepareDocGeneration: (args: ContextPrepareDocGenArgs) => Promise<ContextPrepareDocGenResult>;
+        installGeneratedDocs: (args: ContextInstallGeneratedDocsArgs) => Promise<ContextGenerateDocsResult>;
         openDoc: (args: ContextOpenDocArgs) => Promise<void>;
       };
       packs: {
@@ -383,6 +391,11 @@ declare global {
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
+        createStacked: (args: import("../shared/types").CreateStackedPrsArgs) => Promise<import("../shared/types").CreateStackedPrsResult>;
+        createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
+        landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
+        getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
+        listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
       };
       hosted: {

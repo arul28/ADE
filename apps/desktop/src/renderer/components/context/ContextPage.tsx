@@ -1,6 +1,7 @@
 import React from "react";
 import type { ConflictExternalResolverRunSummary, ContextGenerateDocsResult, ContextStatus } from "../../../shared/types";
 import { Button } from "../ui/Button";
+import { GenerateDocsModal } from "./GenerateDocsModal";
 
 function renderTiming(status: ContextStatus | null): string {
   if (!status?.hostedTiming) return "No timing telemetry yet.";
@@ -28,7 +29,7 @@ export function ContextPage() {
   const [runs, setRuns] = React.useState<ConflictExternalResolverRunSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [generating, setGenerating] = React.useState<"codex" | "claude" | null>(null);
+  const [generateOpen, setGenerateOpen] = React.useState(false);
   const [lastGenerate, setLastGenerate] = React.useState<ContextGenerateDocsResult | null>(null);
 
   const refresh = React.useCallback(async () => {
@@ -52,20 +53,6 @@ export function ContextPage() {
     void refresh();
   }, [refresh]);
 
-  const runGenerate = async (provider: "codex" | "claude") => {
-    setGenerating(provider);
-    setError(null);
-    try {
-      const result = await window.ade.context.generateDocs({ provider });
-      setLastGenerate(result);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setGenerating(null);
-    }
-  };
-
   const openWarningPath = async (pathValue: string | undefined) => {
     const cleaned = (pathValue ?? "").trim();
     if (!cleaned) return;
@@ -87,11 +74,8 @@ export function ContextPage() {
           <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
             Refresh
           </Button>
-          <Button size="sm" variant="outline" onClick={() => void runGenerate("codex")} disabled={generating != null}>
-            {generating === "codex" ? "Generating…" : "Generate with Codex"}
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => void runGenerate("claude")} disabled={generating != null}>
-            {generating === "claude" ? "Generating…" : "Generate with Claude"}
+          <Button size="sm" variant="outline" onClick={() => setGenerateOpen(true)} disabled={generateOpen}>
+            Generate
           </Button>
         </div>
       </div>
@@ -206,6 +190,12 @@ export function ContextPage() {
           ) : null}
         </div>
       ) : null}
+
+      <GenerateDocsModal
+        open={generateOpen}
+        onOpenChange={setGenerateOpen}
+        onCompleted={() => void refresh()}
+      />
     </div>
   );
 }

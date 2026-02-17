@@ -160,7 +160,7 @@ export function StartupAuthPage() {
 
   const bootstrapStatus = useMemo(() => {
     if (!bootstrapConfig) {
-      return "No hosted bootstrap config detected. Run infra deploy + bootstrap script first.";
+      return "No hosted bootstrap config available. Rebuild with SST outputs, or place a bootstrap.json in .ade/hosted/.";
     }
     return `Bootstrap ready (${bootstrapConfig.stage})`;
   }, [bootstrapConfig]);

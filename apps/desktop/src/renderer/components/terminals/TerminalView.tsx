@@ -226,6 +226,13 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     });
     obs.observe(el);
 
+    const intObs = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) scheduleFit();
+      }
+    });
+    intObs.observe(el);
+
     termRef.current = term;
     fitRef.current = fit;
     resizeObsRef.current = obs;
@@ -251,6 +258,11 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       }
       try {
         obs.disconnect();
+      } catch {
+        // ignore
+      }
+      try {
+        intObs.disconnect();
       } catch {
         // ignore
       }

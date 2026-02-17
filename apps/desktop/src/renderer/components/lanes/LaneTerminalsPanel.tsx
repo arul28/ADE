@@ -289,27 +289,9 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     return ordered.slice(0, 10);
   }, [terminalProfiles]);
 
-  const [goalDraft, setGoalDraft] = useState("");
-  const [goalBusy, setGoalBusy] = useState(false);
-
   useEffect(() => {
-    setGoalDraft(current?.goal ?? "");
     setShowTranscriptTail(false);
   }, [current?.id]);
-
-  const saveGoal = useCallback(async () => {
-    if (!current) return;
-    const nextGoal = goalDraft.trim();
-    setGoalBusy(true);
-    try {
-      const updated = await window.ade.sessions.updateMeta({ sessionId: current.id, goal: nextGoal.length ? nextGoal : null });
-      if (updated) setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-    } catch {
-      // ignore
-    } finally {
-      setGoalBusy(false);
-    }
-  }, [current, goalDraft]);
 
   const launchFromProfile = useCallback(
     (profile: TerminalLaunchProfile) => {
@@ -514,25 +496,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                     </div>
                     <div className="shrink-0 text-[11px] text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
                   </div>
-                  <label className="flex items-center gap-2 rounded border border-border bg-card/40 px-2 py-1 text-[11px] text-muted-fg">
-                    <span className="shrink-0">Goal</span>
-                    <input
-                      className="h-7 w-full min-w-0 rounded border border-border bg-bg/40 px-2 text-xs text-fg outline-none"
-                      value={goalDraft}
-                      onChange={(e) => setGoalDraft(e.target.value)}
-                      onBlur={() => void saveGoal()}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void saveGoal();
-                          (e.target as HTMLInputElement).blur();
-                        }
-                      }}
-                      placeholder="Short intent (e.g., fix flaky test, implement login flow)…"
-                      disabled={goalBusy}
-                    />
-                    {goalBusy ? <span className="shrink-0 text-[10px]">saving…</span> : null}
-                  </label>
                   <TerminalView ptyId={current.ptyId} sessionId={current.id} className="h-full" />
                 </div>
               ) : (

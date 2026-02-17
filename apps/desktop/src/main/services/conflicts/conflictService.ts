@@ -42,7 +42,13 @@ import type {
   RunExternalConflictResolverArgs,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
-  UndoConflictProposalArgs
+  UndoConflictProposalArgs,
+  PrepareResolverSessionArgs,
+  PrepareResolverSessionResult,
+  FinalizeResolverSessionArgs,
+  SuggestResolverTargetArgs,
+  SuggestResolverTargetResult,
+  ResolverSessionScenario
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -2506,7 +2512,7 @@ export function createConflictService({
     });
   };
 
-  const buildExternalResolverPrompt = (args: {
+  type PromptBuilderArgs = {
     targetLaneId: string;
     sourceLaneIds: string[];
     contexts: Array<{
@@ -2518,28 +2524,13 @@ export function createConflictService({
     packRefs: ExternalResolverPackRef[];
     cwdLaneId: string;
     integrationLaneId: string | null;
-  }): string => {
+    scenario?: ResolverSessionScenario;
+  };
+
+  const buildPackRefsBlock = (packRefs: ExternalResolverPackRef[]): string[] => {
     const lines: string[] = [];
-    lines.push("# ADE External Conflict Resolver");
-    lines.push("");
-    lines.push("## Objective");
-    lines.push("- Resolve merge conflicts using ADE context packs first, then code/docs as needed.");
-    lines.push("- Apply edits in the execution lane worktree only.");
-    lines.push("- Do not commit, push, or stage changes.");
-    lines.push("");
-    lines.push("## Run Metadata");
-    lines.push(`- Target lane: ${args.targetLaneId}`);
-    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
-    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
-    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
-    lines.push("");
-    lines.push("## Required Read Order");
-    lines.push("1) Read all required ADE pack files listed below.");
-    lines.push("2) Read optional ADE docs if present.");
-    lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
-    lines.push("");
     lines.push("## ADE Pack References");
-    for (const ref of args.packRefs) {
+    for (const ref of packRefs) {
       const tags: string[] = [ref.required ? "required" : "optional", ref.exists ? "present" : "missing"];
       const laneInfo = ref.laneId ? ` lane=${ref.laneId}` : "";
       const peerInfo = ref.peerLaneId ? ` peer=${ref.peerLaneId}` : "";
@@ -2548,6 +2539,11 @@ export function createConflictService({
       lines.push(`  - repo: ${ref.repoRelativePath}`);
     }
     lines.push("");
+    return lines;
+  };
+
+  const buildGuardrailsBlock = (): string[] => {
+    const lines: string[] = [];
     lines.push("## Guardrails (Non-Negotiable)");
     lines.push("- Do not modify non-relevant files.");
     lines.push("- Do not run: git add, git commit, git push, git rebase, git merge, git cherry-pick, git reset.");
@@ -2556,8 +2552,13 @@ export function createConflictService({
     lines.push("- If context is insufficient, do not fabricate changes.");
     lines.push("- If blocked, print `INSUFFICIENT_CONTEXT` followed by a concrete gap list.");
     lines.push("");
+    return lines;
+  };
+
+  const buildPairContextBlock = (contexts: PromptBuilderArgs["contexts"]): string[] => {
+    const lines: string[] = [];
     lines.push("## Pair Context (Structured)");
-    for (const ctx of args.contexts) {
+    for (const ctx of contexts) {
       lines.push(`### Pair ${ctx.laneId} -> ${ctx.peerLaneId ?? "base"}`);
       lines.push(`- Prepared at: ${ctx.preview.preparedAt}`);
       lines.push(`- Context digest: ${ctx.preview.contextDigest}`);
@@ -2584,6 +2585,11 @@ export function createConflictService({
       lines.push("```");
       lines.push("");
     }
+    return lines;
+  };
+
+  const buildOutputContractBlock = (): string[] => {
+    const lines: string[] = [];
     lines.push("## Output Contract");
     lines.push("Done. Here's what changed:");
     lines.push("- file: <repo-path>");
@@ -2595,7 +2601,128 @@ export function createConflictService({
     lines.push("- gap: <missing artifact, file, or decision>");
     lines.push("- requested_action: <what user should provide>");
     lines.push("");
+    return lines;
+  };
+
+  const buildSingleMergePrompt = (args: PromptBuilderArgs): string => {
+    const lines: string[] = [];
+    lines.push("# ADE External Conflict Resolver");
+    lines.push("");
+    lines.push("## Objective");
+    lines.push("- Resolve merge conflicts using ADE context packs first, then code/docs as needed.");
+    lines.push("- Apply edits in the execution lane worktree only.");
+    lines.push("- Do not commit, push, or stage changes.");
+    lines.push("");
+    lines.push("## Run Metadata");
+    lines.push(`- Scenario: single-merge`);
+    lines.push(`- Target lane: ${args.targetLaneId}`);
+    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
+    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
+    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
+    lines.push("");
+    lines.push("## Required Read Order");
+    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("2) Read optional ADE docs if present.");
+    lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
+    lines.push("");
+    lines.push(...buildPackRefsBlock(args.packRefs));
+    lines.push(...buildGuardrailsBlock());
+    lines.push("## Strategy");
+    lines.push("- Merge the single source lane into the target lane.");
+    lines.push("- Resolve each conflicting file using pack context to determine correct resolution.");
+    lines.push("- Verify that no unrelated files are modified.");
+    lines.push("");
+    lines.push(...buildPairContextBlock(args.contexts));
+    lines.push(...buildOutputContractBlock());
     return `${lines.join("\n").trim()}\n`;
+  };
+
+  const buildSequentialMergePrompt = (args: PromptBuilderArgs): string => {
+    const lines: string[] = [];
+    lines.push("# ADE External Conflict Resolver");
+    lines.push("");
+    lines.push("## Objective");
+    lines.push("- Resolve merge conflicts across multiple source lanes sequentially.");
+    lines.push("- Apply edits in the execution lane worktree only.");
+    lines.push("- Do not commit, push, or stage changes.");
+    lines.push("");
+    lines.push("## Run Metadata");
+    lines.push(`- Scenario: sequential-merge`);
+    lines.push(`- Target lane: ${args.targetLaneId}`);
+    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
+    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
+    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
+    lines.push("");
+    lines.push("## Required Read Order");
+    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("2) Read optional ADE docs if present.");
+    lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
+    lines.push("");
+    lines.push(...buildPackRefsBlock(args.packRefs));
+    lines.push(...buildGuardrailsBlock());
+    lines.push("## Strategy");
+    lines.push("- Process source lanes in order: " + args.sourceLaneIds.join(" -> ") + ".");
+    lines.push("- For each source lane, resolve conflicts against the current worktree state.");
+    lines.push("- After resolving each source, verify the worktree is clean before proceeding to the next.");
+    lines.push("- Accumulate changes; do not revert between sources.");
+    lines.push("");
+    lines.push(...buildPairContextBlock(args.contexts));
+    lines.push(...buildOutputContractBlock());
+    return `${lines.join("\n").trim()}\n`;
+  };
+
+  const buildIntegrationMergePrompt = (args: PromptBuilderArgs): string => {
+    const lines: string[] = [];
+    lines.push("# ADE External Conflict Resolver");
+    lines.push("");
+    lines.push("## Objective");
+    lines.push("- Resolve merge conflicts by integrating multiple source lanes into a dedicated integration lane.");
+    lines.push("- Apply edits in the integration lane worktree only.");
+    lines.push("- Do not commit, push, or stage changes.");
+    lines.push("");
+    lines.push("## Run Metadata");
+    lines.push(`- Scenario: integration-merge`);
+    lines.push(`- Target lane: ${args.targetLaneId}`);
+    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
+    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
+    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
+    lines.push("");
+    lines.push("## Required Read Order");
+    lines.push("1) Read all required ADE pack files listed below.");
+    lines.push("2) Read optional ADE docs if present.");
+    lines.push("3) Read additional repository files only when needed to resolve conflicts safely.");
+    lines.push("");
+    lines.push(...buildPackRefsBlock(args.packRefs));
+    lines.push(...buildGuardrailsBlock());
+    lines.push("## Strategy");
+    lines.push("- The integration lane aggregates changes from all source lanes.");
+    lines.push("- Resolve all conflicts holistically, considering interactions between source lanes.");
+    lines.push("- Ensure the integration lane cleanly merges all source contributions.");
+    lines.push("- Pay special attention to files modified by multiple source lanes.");
+    lines.push("");
+    lines.push(...buildPairContextBlock(args.contexts));
+    lines.push(...buildOutputContractBlock());
+    return `${lines.join("\n").trim()}\n`;
+  };
+
+  const buildExternalResolverPrompt = (args: PromptBuilderArgs): string => {
+    const scenario: ResolverSessionScenario = args.scenario
+      ?? (args.sourceLaneIds.length === 1
+        ? "single-merge"
+        : args.integrationLaneId
+          ? "integration-merge"
+          : "sequential-merge");
+
+    switch (scenario) {
+      case "single-merge":
+        return buildSingleMergePrompt(args);
+      case "sequential-merge":
+        return buildSequentialMergePrompt(args);
+      case "integration-merge":
+        return buildIntegrationMergePrompt(args);
+      default:
+        return buildSingleMergePrompt(args);
+    }
   };
 
   const runExternalResolver = async (args: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
@@ -3074,6 +3201,200 @@ export function createConflictService({
     return rowToProposal(updated);
   };
 
+  const prepareResolverSession = async (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> => {
+    const targetLaneId = args.targetLaneId.trim();
+    const sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
+    if (!targetLaneId) throw new Error("targetLaneId is required");
+    if (!sourceLaneIds.length) throw new Error("sourceLaneIds is required");
+
+    const lanes = await listActiveLanes();
+    const laneByIdMap = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const targetLane = laneByIdMap.get(targetLaneId);
+    if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
+
+    const scenario: ResolverSessionScenario = args.scenario
+      ?? (sourceLaneIds.length === 1
+        ? "single-merge"
+        : args.integrationLaneName
+          ? "integration-merge"
+          : "sequential-merge");
+
+    const integrationLane = scenario === "integration-merge"
+      ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
+      : null;
+    const cwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : (integrationLane?.id ?? sourceLaneIds[0]!);
+    const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
+    if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
+
+    const contexts: Array<{
+      laneId: string;
+      peerLaneId: string | null;
+      preview: ConflictProposalPreview;
+      conflictContext: Record<string, unknown> | null;
+    }> = [];
+    const contextGaps: ConflictExternalResolverContextGap[] = [];
+    for (const sourceLaneId of sourceLaneIds) {
+      const preview = await prepareProposal({ laneId: sourceLaneId, peerLaneId: targetLaneId });
+      const prepared = preparedContexts.get(preview.contextDigest);
+      const conflictContext = prepared?.conflictContext ?? null;
+      const cc =
+        isRecord(conflictContext) && isRecord(conflictContext.conflictContext)
+          ? conflictContext.conflictContext
+          : conflictContext;
+      const insufficient = isRecord(cc) && Boolean(cc.insufficientContext);
+      if (insufficient) {
+        const reasons = Array.isArray(cc.insufficientReasons) ? cc.insufficientReasons.map((value) => String(value)) : [];
+        if (!reasons.length) {
+          contextGaps.push({
+            code: "insufficient_context",
+            message: `${sourceLaneId} -> ${targetLaneId}: insufficient_context_flagged`
+          });
+        } else {
+          for (const reason of reasons) {
+            contextGaps.push({
+              code: "insufficient_context",
+              message: `${sourceLaneId} -> ${targetLaneId}: ${reason}`
+            });
+          }
+        }
+      }
+      contexts.push({
+        laneId: sourceLaneId,
+        peerLaneId: targetLaneId,
+        preview,
+        conflictContext: prepared?.conflictContext ?? null
+      });
+    }
+
+    const packRefs = buildExternalResolverPackRefs({
+      targetLaneId,
+      sourceLaneIds,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null,
+      contexts: contexts.map((entry) => ({ laneId: entry.laneId, peerLaneId: entry.peerLaneId }))
+    });
+    const missingRequiredPacks = packRefs
+      .filter((entry) => entry.required && !entry.exists)
+      .map((entry) => entry.repoRelativePath);
+
+    const warnings: string[] = [
+      ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
+    ];
+    const status: PrepareResolverSessionResult["status"] = contextGaps.length > 0 ? "blocked" : "ready";
+
+    const runId = randomUUID();
+    const runDir = path.join(externalRunsRootDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+
+    const prompt = buildExternalResolverPrompt({
+      targetLaneId,
+      sourceLaneIds,
+      contexts,
+      packRefs,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null,
+      scenario
+    });
+    const promptPath = path.join(runDir, "prompt.md");
+    fs.writeFileSync(promptPath, prompt, "utf8");
+
+    const startedAt = new Date().toISOString();
+    const runRecord: ExternalResolverRunRecord = {
+      schema: "ade.conflictExternalRun.v1",
+      runId,
+      provider: args.provider,
+      status: status === "blocked" ? "blocked" : "running",
+      startedAt,
+      completedAt: status === "blocked" ? startedAt : null,
+      targetLaneId,
+      sourceLaneIds,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null,
+      command: [],
+      summary: status === "blocked" ? "Insufficient context blocked external resolver execution." : null,
+      patchPath: null,
+      logPath: null,
+      insufficientContext: contextGaps.length > 0,
+      contextGaps,
+      warnings,
+      committedAt: null,
+      commitSha: null,
+      commitMessage: null,
+      error: null
+    };
+    writeExternalRunRecord(runRecord);
+
+    return {
+      runId,
+      promptFilePath: promptPath,
+      cwdWorktreePath: cwdLane.worktreePath,
+      cwdLaneId,
+      integrationLaneId: integrationLane?.id ?? null,
+      warnings,
+      contextGaps,
+      status
+    };
+  };
+
+  const finalizeResolverSession = async (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const runId = args.runId.trim();
+    if (!runId) throw new Error("runId is required");
+    const run = readExternalRunRecord(runId);
+    if (!run) throw new Error(`External resolver run not found: ${runId}`);
+
+    const cwdLane = laneService.getLaneBaseAndBranch(run.cwdLaneId);
+    const diffResult = await runGit(["diff", "--binary"], {
+      cwd: cwdLane.worktreePath,
+      timeoutMs: 45_000
+    });
+
+    const runDir = path.join(externalRunsRootDir, runId);
+    const patchPath = path.join(runDir, "changes.patch");
+    let finalPatchPath: string | null = null;
+    if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
+      fs.writeFileSync(patchPath, diffResult.stdout, "utf8");
+      finalPatchPath = patchPath;
+    }
+
+    const completedAt = new Date().toISOString();
+    const status: ConflictExternalResolverRunStatus = args.exitCode === 0 ? "completed" : "failed";
+    const updatedRecord: ExternalResolverRunRecord = {
+      ...run,
+      status,
+      completedAt,
+      patchPath: finalPatchPath,
+      error: args.exitCode === 0 ? null : `Exit code ${args.exitCode}`
+    };
+    writeExternalRunRecord(updatedRecord);
+
+    return toRunSummary(updatedRecord);
+  };
+
+  const suggestResolverTarget = async (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> => {
+    const sourceLaneId = args.sourceLaneId.trim();
+    const targetLaneId = args.targetLaneId.trim();
+    if (!sourceLaneId || !targetLaneId) throw new Error("sourceLaneId and targetLaneId are required");
+
+    const sourcePack = packService?.getLanePack(sourceLaneId);
+    const targetPack = packService?.getLanePack(targetLaneId);
+
+    const overlaps = await listOverlaps({ laneId: sourceLaneId });
+    const targetOverlap = overlaps.find((entry) => entry.peerId === targetLaneId);
+    const overlapCount = targetOverlap?.files.length ?? 0;
+
+    // Heuristic based on overlap count and pack availability.
+    if (overlapCount > 5) {
+      return {
+        suggestion: "target",
+        reason: `High overlap count (${overlapCount}) suggests resolving in target to minimize coordination.`
+      };
+    }
+    return {
+      suggestion: "source",
+      reason: `Low overlap count (${overlapCount}) suggests resolving in source for simpler integration.`
+    };
+  };
+
   return {
     getLaneStatus,
     listOverlaps,
@@ -3088,6 +3409,9 @@ export function createConflictService({
     listExternalResolverRuns,
     commitExternalResolverRun,
     applyProposal,
-    undoProposal
+    undoProposal,
+    prepareResolverSession,
+    finalizeResolverSession,
+    suggestResolverTarget
   };
 }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
@@ -15,6 +15,9 @@ import type {
   ContextDocStatus,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
+  ContextInstallGeneratedDocsArgs,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
   ContextStatus,
   ContextExportLevel,
   ConflictRiskLevel,
@@ -23,9 +26,11 @@ import type {
   GetLaneExportArgs,
   GetProjectExportArgs,
   GitConflictState,
+  LaneCompletionSignal,
   LaneExportManifestV1,
   LaneLineageV1,
   LaneSummary,
+  OrchestratorLaneSummaryV1,
   ListPackEventsSinceArgs,
   PackConflictStateV1,
   PackDeltaDigestArgs,
@@ -596,12 +601,12 @@ export function createPackService({
     return DEFAULT_GENERATOR_COMMANDS[provider] ?? [];
   };
 
-  const runContextGeneratorCommand = (args: {
+  const runContextGeneratorCommand = async (args: {
     provider: ContextGenerateDocsArgs["provider"];
     promptFile: string;
     outputPrd: string;
     outputArchitecture: string;
-  }): { stdout: string; stderr: string; exitCode: number | null; command: string[] } => {
+  }): Promise<{ stdout: string; stderr: string; exitCode: number | null; command: string[] }> => {
     const command = resolveContextGeneratorCommand(args.provider);
     if (!command.length) {
       return { stdout: "", stderr: "context_generator_command_missing", exitCode: null, command: [] };
@@ -626,19 +631,60 @@ export function createPackService({
         // fall through – the command will run without stdin
       }
     }
-    const proc = spawnSync(bin, rendered.slice(1), {
-      cwd: projectRoot,
-      encoding: "utf8",
-      timeout: 240_000,
-      maxBuffer: 4 * 1024 * 1024,
-      ...(stdinInput !== undefined ? { input: stdinInput } : {})
+    return new Promise((resolve) => {
+      const child = spawn(bin, rendered.slice(1), {
+        cwd: projectRoot,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      const MAX_BUFFER = 4 * 1024 * 1024;
+      let stdoutLen = 0;
+      let stderrLen = 0;
+      let killed = false;
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdoutLen += chunk.length;
+        if (stdoutLen <= MAX_BUFFER) stdoutChunks.push(chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderrLen += chunk.length;
+        if (stderrLen <= MAX_BUFFER) stderrChunks.push(chunk);
+      });
+
+      const timer = setTimeout(() => {
+        killed = true;
+        child.kill("SIGTERM");
+      }, 240_000);
+
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+          stderr: killed
+            ? "context_generator_timeout"
+            : Buffer.concat(stderrChunks).toString("utf8"),
+          exitCode: killed ? null : code,
+          command: rendered
+        });
+      });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({
+          stdout: "",
+          stderr: `spawn_error: ${err.message}`,
+          exitCode: null,
+          command: rendered
+        });
+      });
+
+      if (stdinInput !== undefined) {
+        child.stdin.write(stdinInput);
+        child.stdin.end();
+      } else {
+        child.stdin.end();
+      }
     });
-    return {
-      stdout: proc.stdout ?? "",
-      stderr: proc.stderr ?? "",
-      exitCode: proc.status,
-      command: rendered
-    };
   };
 
   const writeDocWithFallback = (args: {
@@ -919,7 +965,7 @@ export function createPackService({
     return stdout.slice(from + start.length, to).trim();
   };
 
-  const runContextDocGeneration = (args: ContextGenerateDocsArgs): ContextGenerateDocsResult => {
+  const runContextDocGeneration = async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
     const provider = args.provider;
     const generatedAt = nowIso();
     const warnings: ContextGenerateDocsResult["warnings"] = [];
@@ -958,7 +1004,7 @@ export function createPackService({
     ].join("\n");
     fs.writeFileSync(promptFile, prompt, "utf8");
 
-    const cmdResult = runContextGeneratorCommand({
+    const cmdResult = await runContextGeneratorCommand({
       provider,
       promptFile,
       outputPrd,
@@ -1031,6 +1077,149 @@ export function createPackService({
       usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
       warnings,
       outputPreview: `${cmdResult.stdout}\n${cmdResult.stderr}`.trim().slice(0, 1500)
+    };
+  };
+
+  const prepareContextDocGeneration = (args: ContextPrepareDocGenArgs): ContextPrepareDocGenResult => {
+    let cwd = projectRoot;
+    try {
+      const info = laneService.getLaneBaseAndBranch(args.laneId);
+      if (info.worktreePath) cwd = info.worktreePath;
+    } catch {
+      // fallback to projectRoot
+    }
+
+    const tmpRoot = path.join(path.dirname(packsDir), "context", "tmp");
+    fs.mkdirSync(tmpRoot, { recursive: true });
+
+    // Clean old temp files (>24h)
+    try {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const entry of fs.readdirSync(tmpRoot)) {
+        const abs = path.join(tmpRoot, entry);
+        try {
+          const stat = fs.statSync(abs);
+          if (stat.mtimeMs < cutoff) fs.rmSync(abs, { force: true });
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+
+    // Always write to the project root's canonical context paths so getContextStatus
+    // picks them up immediately.  For sandboxed worktree runs (codex workspace-write)
+    // this may require the user to grant extra write access to the project root.
+    const outputPrdPath = path.join(projectRoot, ADE_DOC_PRD_REL);
+    const outputArchPath = path.join(projectRoot, ADE_DOC_ARCH_REL);
+    // Ensure the parent dirs exist so the agent can create files.
+    fs.mkdirSync(path.dirname(outputPrdPath), { recursive: true });
+    fs.mkdirSync(path.dirname(outputArchPath), { recursive: true });
+
+    const prompt = `# ADE Context Document Generation
+
+You are generating context documentation for a software project. Explore this
+codebase and produce two markdown files that ADE uses as context for AI coding
+agents working in this repository.
+
+## Output Files — Write exactly two files:
+
+1. \`${outputPrdPath}\` — Product Requirements Document
+2. \`${outputArchPath}\` — Architecture Document
+
+## Exploration Strategy
+
+Before writing, explore to understand:
+- Project structure (top-level directories, key files)
+- Dependencies and package manager (package.json, Cargo.toml, go.mod, etc.)
+- Existing documentation (README, docs/, CONTRIBUTING)
+- Source code organization (src/, lib/, app/)
+- Test structure and frameworks
+- Build and CI configuration
+- Key entry points and main modules
+
+## PRD Document Content
+
+- **Project Overview**: What this project does, its purpose, target users
+- **Key Features**: Main capabilities, described functionally
+- **Technical Stack**: Languages, frameworks, key dependencies
+- **Project Status**: Current state, recent activity
+- **Development Workflow**: Branching strategy, contribution patterns
+- **Key Concepts**: Important domain terminology
+
+## Architecture Document Content
+
+- **System Overview**: High-level architecture (layers, services, components)
+- **Directory Structure**: Key directories and their purposes
+- **Core Modules**: Most important modules and responsibilities
+- **Data Flow**: How data moves through the system
+- **Key Patterns**: Design patterns used (MVC, event sourcing, etc.)
+- **Configuration**: How the app is configured
+- **Build & Deploy**: Build system, deployment targets
+- **Testing Strategy**: Test organization and frameworks
+
+## Rules
+
+- Base everything on actual code you read — do not speculate
+- Keep each document concise (under 2500 words)
+- Use the project's actual terminology
+- If existing docs/ exist, use them as primary source material
+- Write the files directly to the paths above — do not ask questions
+`;
+
+    const promptFilePath = path.join(tmpRoot, `generate-context-${Date.now()}.md`);
+    fs.writeFileSync(promptFilePath, prompt, "utf8");
+
+    return { promptFilePath, outputPrdPath, outputArchPath, cwd, provider: args.provider };
+  };
+
+  const installGeneratedDocs = (args: ContextInstallGeneratedDocsArgs): ContextGenerateDocsResult => {
+    const generatedAt = nowIso();
+    const warnings: ContextGenerateDocsResult["warnings"] = [];
+
+    let generatedPrd = "";
+    let generatedArch = "";
+    try {
+      if (fs.existsSync(args.outputPrdPath)) generatedPrd = fs.readFileSync(args.outputPrdPath, "utf8");
+    } catch { /* ignore */ }
+    try {
+      if (fs.existsSync(args.outputArchPath)) generatedArch = fs.readFileSync(args.outputArchPath, "utf8");
+    } catch { /* ignore */ }
+
+    if (!generatedPrd.trim()) {
+      warnings.push({ code: "output_missing_prd", message: "PRD file was not created by the agent." });
+    }
+    if (!generatedArch.trim()) {
+      warnings.push({ code: "output_missing_architecture", message: "Architecture file was not created by the agent." });
+    }
+
+    const prdWrite = generatedPrd.trim()
+      ? writeDocWithFallback({ preferredAbsPath: path.join(projectRoot, ADE_DOC_PRD_REL), fallbackFileName: "PRD.ade.md", content: generatedPrd })
+      : { writtenPath: path.join(projectRoot, ADE_DOC_PRD_REL), usedFallback: false, warning: null };
+    const archWrite = generatedArch.trim()
+      ? writeDocWithFallback({ preferredAbsPath: path.join(projectRoot, ADE_DOC_ARCH_REL), fallbackFileName: "ARCHITECTURE.ade.md", content: generatedArch })
+      : { writtenPath: path.join(projectRoot, ADE_DOC_ARCH_REL), usedFallback: false, warning: null };
+
+    if (prdWrite.warning) {
+      warnings.push({ code: "write_fallback_prd", message: prdWrite.warning, actionLabel: "Open fallback PRD", actionPath: prdWrite.writtenPath });
+    }
+    if (archWrite.warning) {
+      warnings.push({ code: "write_fallback_architecture", message: archWrite.warning, actionLabel: "Open fallback architecture", actionPath: archWrite.writtenPath });
+    }
+
+    db.setJson(CONTEXT_DOC_LAST_RUN_KEY, {
+      generatedAt,
+      provider: args.provider,
+      prdPath: prdWrite.writtenPath,
+      architecturePath: archWrite.writtenPath,
+      warnings
+    });
+
+    return {
+      provider: args.provider,
+      generatedAt,
+      prdPath: prdWrite.writtenPath,
+      architecturePath: archWrite.writtenPath,
+      usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
+      warnings,
+      outputPreview: ""
     };
   };
 
@@ -1895,8 +2084,35 @@ export function createPackService({
 
     const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
     if (statusRes.exitCode === 0) {
-      for (const rel of parsePorcelainPaths(statusRes.stdout)) {
-        if (!deltas.has(rel)) deltas.set(rel, { insertions: 0, deletions: 0 });
+      const statusLines = statusRes.stdout.split("\n").map(l => l.trimEnd()).filter(Boolean);
+      const newUntrackedPaths: string[] = [];
+
+      for (const line of statusLines) {
+        const statusCode = line.slice(0, 2);
+        const raw = line.slice(2).trim();
+        const arrow = raw.indexOf("->");
+        const rel = arrow >= 0 ? raw.slice(arrow + 2).trim() : raw;
+        if (!rel) continue;
+
+        if (!deltas.has(rel)) {
+          if (statusCode === "??") {
+            newUntrackedPaths.push(rel);
+          } else {
+            deltas.set(rel, { insertions: 0, deletions: 0 });
+          }
+        }
+      }
+
+      // Count lines for untracked new files so they don't report 0/0
+      for (const rel of newUntrackedPaths) {
+        try {
+          const fullPath = path.join(worktreePath, rel);
+          const content = await fs.promises.readFile(fullPath, "utf-8");
+          const lineCount = content.split("\n").length;
+          deltas.set(rel, { insertions: lineCount, deletions: 0 });
+        } catch {
+          deltas.set(rel, { insertions: 0, deletions: 0 });
+        }
       }
     }
 
@@ -2894,8 +3110,16 @@ export function createPackService({
       return readContextStatus();
     },
 
-    generateContextDocs(args: ContextGenerateDocsArgs): ContextGenerateDocsResult {
+    async generateContextDocs(args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> {
       return runContextDocGeneration(args);
+    },
+
+    prepareContextDocGeneration(args: ContextPrepareDocGenArgs): ContextPrepareDocGenResult {
+      return prepareContextDocGeneration(args);
+    },
+
+    installGeneratedDocs(args: ContextInstallGeneratedDocsArgs): ContextGenerateDocsResult {
+      return installGeneratedDocs(args);
     },
 
     getContextDocPath(docId: ContextDocStatus["id"]): string {
@@ -3953,6 +4177,49 @@ export function createPackService({
       }));
     },
 
+    getPeerLanesContext(laneId: string): string {
+      const id = laneId.trim();
+      if (!id) return "";
+      try {
+        const pack = readConflictPredictionPack(id);
+        if (!pack) return "";
+        const overlaps = Array.isArray(pack.overlaps) ? pack.overlaps : [];
+        if (!overlaps.length) return "";
+
+        const riskScore = (r: string): number => {
+          const n = r.trim().toLowerCase();
+          if (n === "high") return 3;
+          if (n === "medium") return 2;
+          if (n === "low") return 1;
+          return 0;
+        };
+
+        const peers = overlaps
+          .filter((ov) => ov && ov.peerId != null)
+          .map((ov) => {
+            const peerName = asString(ov.peerName).trim() || asString(ov.peerId).trim() || "unknown";
+            const riskLevel = asString(ov.riskLevel).trim() || "unknown";
+            const files = Array.isArray(ov.files) ? ov.files.map((f) => asString(typeof f === "string" ? f : f?.path).trim()).filter(Boolean) : [];
+            return { peerName, riskLevel, files, score: riskScore(riskLevel) };
+          })
+          .filter((ov) => ov.score > 0 || ov.files.length > 0)
+          .sort((a, b) => b.score - a.score || b.files.length - a.files.length || a.peerName.localeCompare(b.peerName))
+          .slice(0, 10);
+
+        if (!peers.length) return "";
+
+        const lines = ["## Peer Lanes Context", ""];
+        for (const peer of peers) {
+          const risk = ` | conflict risk: ${peer.riskLevel}`;
+          const fileList = peer.files.length ? ` | overlapping files: ${peer.files.slice(0, 5).join(", ")}` : "";
+          lines.push(`- **${peer.peerName}**${risk}${fileList}`);
+        }
+        return lines.join("\n");
+      } catch {
+        return "";
+      }
+    },
+
     async getLaneExport(args: GetLaneExportArgs): Promise<PackExport> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required");
@@ -4034,6 +4301,64 @@ export function createPackService({
         return uniqueSorted(out);
       })();
 
+      // --- Orchestrator summary ---
+      const orchestratorSummary: OrchestratorLaneSummaryV1 = (() => {
+        // Completion signal
+        let completionSignal: LaneCompletionSignal = "in-progress";
+        if (lane.status.ahead === 0) {
+          completionSignal = "not-started";
+        } else if (conflictState?.status === "conflict-active") {
+          completionSignal = "blocked";
+        } else if (
+          lane.status.ahead > 0 &&
+          !lane.status.dirty &&
+          conflictState?.status === "merge-ready"
+        ) {
+          completionSignal = "review-ready";
+        }
+
+        // Touched files — extract from Key Files table in pack body
+        const touchedFiles: string[] = [];
+        const keyFilesRe = /\|\s*`([^`]+)`/g;
+        let kfMatch: RegExpExecArray | null;
+        const bodyText = pack.body ?? "";
+        const keyFilesStart = bodyText.indexOf("## Key Files");
+        if (keyFilesStart !== -1) {
+          const keyFilesSection = bodyText.slice(keyFilesStart, bodyText.indexOf("\n## ", keyFilesStart + 1) >>> 0 || bodyText.length);
+          while ((kfMatch = keyFilesRe.exec(keyFilesSection)) !== null) {
+            const fp = kfMatch[1].trim();
+            if (fp.length > 0 && !touchedFiles.includes(fp)) touchedFiles.push(fp);
+          }
+        }
+
+        // Peer overlaps from prediction pack
+        const peerOverlaps = (Array.isArray(predictionPack?.overlaps) ? predictionPack!.overlaps : [])
+          .filter((ov: any) => ov && ov.peerId)
+          .slice(0, 10)
+          .map((ov: any) => ({
+            peerId: String(ov.peerId ?? "").trim(),
+            files: Array.isArray(ov.files) ? ov.files.map(String).slice(0, 20) : [],
+            risk: (normalizeRiskLevel(String(ov.riskLevel ?? "")) ?? "none") as ConflictRiskLevel
+          }))
+          .filter((ov: { peerId: string }) => ov.peerId.length > 0);
+
+        // Blockers
+        const blockers: string[] = [];
+        if (lane.status.dirty) blockers.push("dirty working tree");
+        if (conflictState?.status === "conflict-active") blockers.push("active merge conflict");
+        if (conflictState?.status === "conflict-predicted") blockers.push("predicted conflicts with peer lanes");
+        if (lane.status.behind > 0) blockers.push(`behind base by ${lane.status.behind} commits`);
+
+        return {
+          laneId,
+          completionSignal,
+          touchedFiles: touchedFiles.slice(0, 50),
+          peerOverlaps,
+          suggestedMergeOrder: null,
+          blockers
+        };
+      })();
+
       const manifest: LaneExportManifestV1 = {
         schema: "ade.manifest.lane.v1",
         projectId,
@@ -4076,7 +4401,8 @@ export function createPackService({
           stalePolicy: { ttlMs: staleTtlMs },
           ...(staleReason ? { staleReason } : {}),
           unresolvedResolutionState: null
-        }
+        },
+        orchestratorSummary
       };
 
       const graph = buildGraphEnvelope(

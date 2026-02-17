@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, GitPullRequest } from "lucide-react";
+import { Eye, GitPullRequest, Plus } from "lucide-react";
 import type { LandResult, MergeMethod, PrSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -8,6 +8,8 @@ import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
+import { CreatePrModal } from "./CreatePrModal";
+import { PrConflictBadge } from "./PrConflictBadge";
 
 type ViewMode = "chains" | "all";
 
@@ -78,6 +80,8 @@ export function PRsPage() {
     results: LandResult[] | null;
     error: string | null;
   } | null>(null);
+
+  const [createPrOpen, setCreatePrOpen] = React.useState(false);
 
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
   const prByLaneId = React.useMemo(() => new Map(prs.map((pr) => [pr.laneId, pr] as const)), [prs]);
@@ -460,6 +464,10 @@ export function PRsPage() {
             <option value="merge">merge</option>
             <option value="rebase">rebase</option>
           </select>
+          <Button size="sm" variant="primary" onClick={() => setCreatePrOpen(true)}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            Create PR
+          </Button>
           <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </Button>
@@ -520,6 +528,13 @@ export function PRsPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Create PR modal */}
+      <CreatePrModal
+        open={createPrOpen}
+        onOpenChange={setCreatePrOpen}
+        onCreated={() => void refresh()}
+      />
 
       {/* Pane tiling layout */}
       <PaneTilingLayout

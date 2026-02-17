@@ -80,7 +80,7 @@ export function buildPromptTemplate(job: JobPayload): PromptTemplate {
     return {
       expectedArtifactType: "narrative",
       system:
-        "You are ADE's hosted narrative writer. Be concise, factual, and deterministic. Never invent file names, commands, risks, or validations.",
+        "You are ADE's hosted narrative writer. Be concise, factual, and deterministic. Never invent file names, commands, risks, or validations. Never use hedging language like 'likely', 'possibly', 'appears to', 'seems to', or 'probably'. State facts from the provided data or explicitly say 'unknown — intent not set' when information is missing.",
       user: [
         "Generate a lane narrative for this ADE lane context.",
         "Focus on what changed and why it matters for reviewers and future maintainers.",
@@ -91,6 +91,13 @@ export function buildPromptTemplate(job: JobPayload): PromptTemplate {
         "## Why This Matters",
         "## Risks",
         "## Suggested Next Steps",
+        "",
+        "Rules:",
+        "- Every claim must reference specific data from the lane export (file paths, line counts, test results).",
+        "- If the lane intent is not set, say 'Intent: not set' — do not guess the purpose.",
+        "- Prefer raw data ('4 additions to router.js') over interpretation ('integrating middleware').",
+        "- Risks must cite specific evidence (e.g., 'no test run recorded') not speculative concerns.",
+        "- When peer lanes are provided, mention specific overlap risks with peer lane names and shared files.",
         "",
         "Use project-level PRD and architecture assumptions when provided. If assumptions are missing, state that explicitly.",
         "",

@@ -129,6 +129,9 @@ import type {
   GetConflictExportArgs,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
+  ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
   ContextStatus,
   ListPackEventsSinceArgs,
@@ -1042,6 +1045,12 @@ export function registerIpc({
     }
   );
 
+  ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => getCtx().conflictService.prepareResolverSession(arg));
+
+  ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => getCtx().conflictService.finalizeResolverSession(arg));
+
+  ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
+
   ipcMain.handle(IPC.contextGetStatus, async (): Promise<ContextStatus> => {
     const ctx = getCtx();
     const base = ctx.packService.getContextStatus();
@@ -1064,6 +1073,16 @@ export function registerIpc({
   ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
     const ctx = getCtx();
     return ctx.packService.generateContextDocs(arg);
+  });
+
+  ipcMain.handle(IPC.contextPrepareDocGeneration, async (_event, arg: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> => {
+    const ctx = getCtx();
+    return ctx.packService.prepareContextDocGeneration(arg);
+  });
+
+  ipcMain.handle(IPC.contextInstallGeneratedDocs, async (_event, arg: ContextInstallGeneratedDocsArgs): Promise<ContextGenerateDocsResult> => {
+    const ctx = getCtx();
+    return ctx.packService.installGeneratedDocs(arg);
   });
 
   ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {
@@ -1583,6 +1602,16 @@ export function registerIpc({
     const ctx = getCtx();
     return await ctx.prService.openInGitHub(arg.prId);
   });
+
+  ipcMain.handle(IPC.prsCreateStacked, async (_event, arg) => getCtx().prService.createStackedPrs(arg));
+
+  ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg) => getCtx().prService.createIntegrationPr(arg));
+
+  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg) => getCtx().prService.landStackEnhanced(arg));
+
+  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg) => getCtx().prService.getConflictAnalysis(arg));
+
+  ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
 
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
     const ctx = getCtx();

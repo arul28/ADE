@@ -32,11 +32,13 @@ type CommitMeta = {
 export function CommitTimeline({
   laneId,
   selectedSha,
-  onSelectCommit
+  onSelectCommit,
+  refreshTrigger
 }: {
   laneId: string | null;
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary) => void;
+  refreshTrigger?: number;
 }) {
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -75,7 +77,7 @@ export function CommitTimeline({
 
   React.useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshTrigger]);
 
   // Scroll to bottom on initial load so newest commits are visible
   React.useLayoutEffect(() => {

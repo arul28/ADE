@@ -97,8 +97,12 @@ export function createJobEngine({
             typeof projectExport.header?.packKey === "string" && projectExport.header.packKey.trim().length
               ? projectExport.header.packKey
               : null;
+          const peerLanesContext = packService.getPeerLanesContext(payload.laneId);
+          const projectExportWithPeers = peerLanesContext
+            ? `${projectExportClip.text}\n\n${peerLanesContext}`
+            : projectExportClip.text;
           const projectContext = {
-            projectExport: projectExportClip.text,
+            projectExport: projectExportWithPeers,
             refs: {
               lanePackKey,
               projectPackKey
