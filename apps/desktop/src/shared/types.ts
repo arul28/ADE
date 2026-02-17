@@ -566,7 +566,8 @@ export type HostedJobType =
   | "NarrativeGeneration"
   | "ConflictResolution"
   | "ProposeConflictResolution"
-  | "DraftPrDescription";
+  | "DraftPrDescription"
+  | "SessionTitleGeneration";
 
 export type HostedContextDeliveryMode = "auto" | "inline" | "mirror_preferred";
 
@@ -1721,6 +1722,7 @@ export type GitCommitSummary = {
   authorName: string;
   authoredAt: string;
   subject: string;
+  pushed: boolean;
 };
 
 export type GitListCommitFilesArgs = {
@@ -2383,6 +2385,7 @@ export type TerminalLaunchProfile = {
   command: string;
   tracked: boolean;
   description?: string | null;
+  color?: string | null;
 };
 
 export type TerminalProfilesSnapshot = {

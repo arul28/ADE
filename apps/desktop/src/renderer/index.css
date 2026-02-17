@@ -1421,3 +1421,17 @@ h6 {
     0 -2px 8px -2px rgba(198, 12, 48, 0.2),
     inset 0 0 0 0.5px rgba(207, 224, 243, 0.1);
 }
+
+/* Opaque dropdown background utility */
+.ade-dropdown-opaque {
+  background-color: var(--color-bg);
+}
+
+.ade-dropdown-opaque::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-bg);
+  border-radius: inherit;
+  z-index: -1;
+}

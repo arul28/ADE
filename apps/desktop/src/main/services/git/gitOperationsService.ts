@@ -346,6 +346,27 @@ export function createGitOperationsService({
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
 
+      // Determine which commits are unpushed by comparing with upstream.
+      let unpushedShas: Set<string> | null = null;
+      const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      if (upstreamRes.exitCode === 0) {
+        const upstream = upstreamRes.stdout.trim();
+        if (upstream.length) {
+          const unpushedRes = await runGit(["log", "--format=%H", `${upstream}..HEAD`], {
+            cwd: lane.worktreePath,
+            timeoutMs: 15_000
+          });
+          if (unpushedRes.exitCode === 0) {
+            unpushedShas = new Set(
+              unpushedRes.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
+            );
+          }
+        }
+      }
+
       const rows = out
         .split("\n")
         .map((line) => line.trim())
@@ -363,7 +384,8 @@ export function createGitOperationsService({
             parents,
             authorName: authorName ?? "",
             authoredAt: authoredAt ?? "",
-            subject: subject ?? ""
+            subject: subject ?? "",
+            pushed: unpushedShas ? !unpushedShas.has(sha) : false
           };
         })
         .filter((entry): entry is GitCommitSummary => entry != null);

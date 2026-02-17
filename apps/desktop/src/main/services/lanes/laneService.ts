@@ -390,6 +390,27 @@ export function createLaneService({
         const parent = getLaneRow(parentLaneId);
         if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
         if (parent.status === "archived") throw new Error("Parent lane is archived");
+
+        // If parent is the primary lane, ensure it's in sync with remote.
+        if (parent.lane_type === "primary") {
+          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: 60_000 });
+          const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+          if (upstreamRes.exitCode === 0) {
+            const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+              cwd: parent.worktree_path,
+              timeoutMs: 10_000
+            });
+            if (behindRes.exitCode === 0) {
+              const behindCount = parseInt(behindRes.stdout.trim(), 10);
+              if (behindCount > 0) {
+                throw new Error(
+                  `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
+                );
+              }
+            }
+          }
+        }
+
         const parentHeadSha = await getHeadSha(parent.worktree_path);
         if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
         return await createWorktreeLane({
@@ -401,11 +422,17 @@ export function createLaneService({
         });
       }
 
+      // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
+      const headRes = await runGit(["rev-parse", defaultBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
+      const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
+        ? headRes.stdout.trim()
+        : defaultBaseRef;
+
       return await createWorktreeLane({
         name,
         description,
         baseRef: defaultBaseRef,
-        startPoint: defaultBaseRef,
+        startPoint,
         parentLaneId: null
       });
     },
@@ -414,6 +441,27 @@ export function createLaneService({
       const parent = getLaneRow(args.parentLaneId);
       if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
       if (parent.status === "archived") throw new Error("Parent lane is archived");
+
+      // If parent is the primary lane, ensure it's in sync with remote.
+      if (parent.lane_type === "primary") {
+        await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: 60_000 });
+        const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+        if (upstreamRes.exitCode === 0) {
+          const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+            cwd: parent.worktree_path,
+            timeoutMs: 10_000
+          });
+          if (behindRes.exitCode === 0) {
+            const behindCount = parseInt(behindRes.stdout.trim(), 10);
+            if (behindCount > 0) {
+              throw new Error(
+                `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
+              );
+            }
+          }
+        }
+      }
+
       const parentHeadSha = await getHeadSha(parent.worktree_path);
       if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
       return await createWorktreeLane({

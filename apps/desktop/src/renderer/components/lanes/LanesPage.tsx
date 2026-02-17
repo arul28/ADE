@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Group, Panel } from "react-resizable-panels";
-import { FileCode2, GitMerge, Home, Layers3, Link2, Pin, Play, Plus, Terminal, X } from "lucide-react";
+import { FileCode2, Home, Layers3, Link2, Maximize2, Pin, Play, Plus, Search, Terminal, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -13,7 +13,7 @@ import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneDiffPane } from "./LaneDiffPane";
 import { LaneWorkPane } from "./LaneWorkPane";
-import { LaneMergePane } from "./LaneMergePane";
+import { LaneInspectorPane } from "./LaneInspectorPane";
 import type {
   ConflictChip,
   ConflictStatus,
@@ -178,7 +178,7 @@ const LANES_TILING_TREE: PaneSplit = {
               direction: "horizontal",
               children: [
                 { node: { type: "pane", id: "git-actions" }, defaultSize: 50, minSize: 20 },
-                { node: { type: "pane", id: "merge" }, defaultSize: 50, minSize: 20 }
+                { node: { type: "pane", id: "inspector" }, defaultSize: 50, minSize: 20 }
               ]
             },
             defaultSize: 30,
@@ -248,6 +248,7 @@ export function LanesPage() {
 
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
+  const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
@@ -452,6 +453,11 @@ export function LanesPage() {
         if (input instanceof HTMLInputElement) { input.focus(); input.select(); }
         return;
       }
+      if (event.key === "Escape" && expandedLaneId) {
+        event.preventDefault();
+        setExpandedLaneId(null);
+        return;
+      }
       if (targetIsTyping) {
         if (event.key === "Escape") {
           const active = document.activeElement;
@@ -480,7 +486,7 @@ export function LanesPage() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm]);
+  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId]);
 
   /* ---- Lane management actions ---- */
 
@@ -706,11 +712,11 @@ export function LanesPage() {
         bodyClassName: "overflow-hidden",
         children: <LaneWorkPane laneId={laneId} />
       },
-      "merge": {
-        title: "Merge",
-        icon: GitMerge,
+      "inspector": {
+        title: "Inspector",
+        icon: Search,
         bodyClassName: "overflow-hidden",
-        children: <LaneMergePane laneId={laneId} />
+        children: <LaneInspectorPane laneId={laneId} />
       }
     };
   }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit]);
@@ -889,6 +895,16 @@ export function LanesPage() {
                   <Pin className="h-2.5 w-2.5" />
                 </span>
               ) : null}
+              <span
+                className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpandedLaneId(lane.id === expandedLaneId ? null : lane.id);
+                }}
+                title="Expand lane fullscreen"
+              >
+                <Maximize2 className="h-2.5 w-2.5" />
+              </span>
               {closable ? (
                 <span
                   className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
@@ -994,6 +1010,27 @@ export function LanesPage() {
           })}
         </Group>
       )}
+
+      {/* Fullscreen lane overlay */}
+      {expandedLaneId && lanesById.has(expandedLaneId) ? (
+        <div className="fixed inset-0 z-[80] bg-bg flex flex-col">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">{lanesById.get(expandedLaneId)?.name}</span>
+              <span className="text-xs text-muted-fg">Fullscreen</span>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => setExpandedLaneId(null)} title="Exit fullscreen (Esc)">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <PaneTilingLayout
+            layoutId={`lanes:tiling:v3:fullscreen:${expandedLaneId}`}
+            tree={LANES_TILING_TREE}
+            panes={getPaneConfigs(expandedLaneId)}
+            className="flex-1 min-h-0"
+          />
+        </div>
+      ) : null}
 
       {/* Lane tab context menu */}
       {laneContextMenu ? (() => {

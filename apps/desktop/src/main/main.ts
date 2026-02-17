@@ -342,6 +342,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
       sessionService,
+      hostedAgentService,
       logger,
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),

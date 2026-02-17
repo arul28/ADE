@@ -1360,6 +1360,8 @@ export function createHostedAgentService({
     }>
   >();
 
+  const sessionTitleRequests = new Map<string, Promise<string | null>>();
+
   const runSingleRequest = async <T>(args: {
     key: string;
     inFlight: Map<string, Promise<T>>;
@@ -2616,6 +2618,63 @@ export function createHostedAgentService({
             title: "",
             body
           };
+        }
+      });
+    },
+
+    async requestSessionTitle(args: {
+      sessionId: string;
+      laneId: string;
+      initialOutput: string;
+    }): Promise<string | null> {
+      const requestKey = makeRequestKey("session-title", {
+        sessionId: args.sessionId,
+        initialOutput: args.initialOutput
+      });
+
+      return runSingleRequest({
+        key: requestKey,
+        inFlight: sessionTitleRequests,
+        run: async () => {
+          try {
+            const submission = await submitJob({
+              type: "SessionTitleGeneration" as HostedJobType,
+              laneId: args.laneId,
+              params: {
+                sessionId: args.sessionId,
+                initialOutput: args.initialOutput.slice(0, 500),
+                prompt:
+                  "Generate a brief 3-8 word title describing what this terminal session is doing based on the initial output. Return ONLY the title, nothing else."
+              }
+            });
+
+            const status = await pollJob(submission.jobId, 18_000);
+            if (status.status !== "completed" || !status.artifactId) {
+              logger.warn("hosted.session_title_job_incomplete", {
+                jobId: submission.jobId,
+                status: status.status
+              });
+              return null;
+            }
+
+            const artifact = await getArtifact(status.artifactId);
+            const raw =
+              isRecord(artifact.content) && typeof artifact.content.content === "string"
+                ? (artifact.content.content as string)
+                : typeof artifact.content === "string"
+                  ? artifact.content
+                  : "";
+
+            const title = raw.trim().replace(/^["']|["']$/g, "").trim();
+            if (!title || title.length > 120) return null;
+            return title;
+          } catch (err) {
+            logger.warn("hosted.session_title_failed", {
+              sessionId: args.sessionId,
+              error: err instanceof Error ? err.message : String(err)
+            });
+            return null;
+          }
         }
       });
     }

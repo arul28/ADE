@@ -6,6 +6,7 @@ import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import { runGit } from "../git/git";
 import type { PtyDataEvent, PtyExitEvent, PtyCreateArgs, PtyCreateResult, TerminalSessionStatus } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -56,6 +57,7 @@ export function createPtyService({
   transcriptsDir,
   laneService,
   sessionService,
+  hostedAgentService,
   logger,
   broadcastData,
   broadcastExit,
@@ -66,6 +68,7 @@ export function createPtyService({
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
+  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -250,16 +253,62 @@ export function createPtyService({
       };
       ptys.set(ptyId, entry);
 
+      // Buffer initial output for AI title generation
+      let titleOutputBuffer = "";
+      let titleBufferFull = false;
+
       pty.onData((data) => {
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
         broadcastData({ ptyId, sessionId, data });
+
+        // Accumulate initial output for session title generation
+        if (!titleBufferFull) {
+          titleOutputBuffer += data;
+          if (titleOutputBuffer.length >= 500) {
+            titleBufferFull = true;
+          }
+        }
       });
 
       pty.onExit(({ exitCode }) => {
         logger.info("pty.exit", { ptyId, sessionId, exitCode });
         closeEntry(ptyId, exitCode ?? null);
       });
+
+      // Fire-and-forget: after 4s, attempt AI title generation for non-shell sessions
+      if (hostedAgentService) {
+        const capturedHostedAgent = hostedAgentService;
+        setTimeout(() => {
+          if (entry.disposed) return;
+          const strippedOutput = stripAnsi(titleOutputBuffer).trim();
+          if (strippedOutput.length < 10) return;
+
+          // Check if session has a non-shell toolType (set by the renderer after creation)
+          const session = sessionService.get(sessionId);
+          if (!session) return;
+          const toolType = session.toolType;
+          if (!toolType || toolType === "shell") return;
+
+          capturedHostedAgent
+            .requestSessionTitle({
+              sessionId,
+              laneId,
+              initialOutput: strippedOutput.slice(0, 500)
+            })
+            .then((title) => {
+              if (title) {
+                sessionService.updateMeta({ sessionId, goal: title });
+              }
+            })
+            .catch((err) => {
+              logger.warn("pty.session_title_generation_failed", {
+                sessionId,
+                error: err instanceof Error ? err.message : String(err)
+              });
+            });
+        }, 4000);
+      }
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });
 

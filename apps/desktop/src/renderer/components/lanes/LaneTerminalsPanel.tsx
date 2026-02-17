@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronDown, ChevronRight, ExternalLink, Grid, LayoutList, Plus, RefreshCw, Settings, Trash2, X } from "lucide-react";
+import { ExternalLink, Grid, LayoutList, Plus, Settings, Trash2, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import type { TerminalLaunchProfile, TerminalProfilesSnapshot, TerminalSessionSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -9,15 +9,26 @@ import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { TerminalView } from "../terminals/TerminalView";
-import { SessionDeltaCard } from "../terminals/SessionDeltaCard";
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
 
 const tabTrigger =
-  "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-muted/60";
+  "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-accent/10 data-[state=active]:ring-1 data-[state=active]:ring-accent/50";
 
 const LAUNCH_TRACKED_KEY = "ade.terminals.launchTracked";
 const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
+
+const PROFILE_COLORS = [
+  null, // no color / default
+  "#ef4444", // red
+  "#f97316", // orange
+  "#f59e0b", // amber
+  "#22c55e", // green
+  "#06b6d4", // cyan
+  "#3b82f6", // blue
+  "#8b5cf6", // violet
+  "#ec4899", // pink
+] as const;
 
 function statusDot(status: string) {
   if (status === "running") return "bg-accent";
@@ -89,27 +100,6 @@ function uniqueProfileId(base: string, existing: Set<string>): string {
   return `${base}-${Date.now()}`;
 }
 
-function TranscriptTail({ sessionId }: { sessionId: string }) {
-  const [text, setText] = useState<string>("Loading…");
-  useEffect(() => {
-    let cancelled = false;
-    window.ade.sessions
-      .readTranscriptTail({ sessionId, maxBytes: 220_000 })
-      .then((t) => {
-        if (cancelled) return;
-        setText(t.trim().length ? t : "(empty)");
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setText("(failed to read transcript)");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
-  return <>{text}</>;
-}
-
 export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string | null } = {}) {
   const navigate = useNavigate();
   const globalLaneId = useAppStore((s) => s.selectedLaneId);
@@ -122,10 +112,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const laneName = useMemo(() => lanes.find((l) => l.id === laneId)?.name ?? null, [lanes, laneId]);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
-  const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<"tabs" | "grid">("tabs");
-  const [showEndedSessions, setShowEndedSessions] = useState(false);
-  const [showTranscriptTail, setShowTranscriptTail] = useState(false);
   const [closingSessionIds, setClosingSessionIds] = useState<Set<string>>(new Set());
   const [localFocusedSessionId, setLocalFocusedSessionId] = useState<string | null>(null);
   const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfilesSnapshot | null>(null);
@@ -152,25 +139,20 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
 
   const refresh = useCallback(async () => {
     if (!laneId) return;
-    setLoading(true);
-    try {
-      const rows = await window.ade.sessions.list({ laneId, limit: 80 });
-      setSessions(rows);
-      laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
-      if (rows.length > 0) {
-        const runningOnly = rows.filter((s) => s.status === "running" && Boolean(s.ptyId));
-        const visible = viewMode === "tabs" && !showEndedSessions && runningOnly.length ? runningOnly : rows;
-        const currentExists = focusedSessionId && visible.some((s) => s.id === focusedSessionId);
-        if (!currentExists && viewMode === "tabs") {
-          focusSession(visible[0]!.id);
-        }
-      } else {
-        focusSession(null);
+    const rows = await window.ade.sessions.list({ laneId, limit: 80 });
+    setSessions(rows);
+    laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
+    if (rows.length > 0) {
+      const runningOnly = rows.filter((s) => s.status === "running" && Boolean(s.ptyId));
+      const visible = viewMode === "tabs" && runningOnly.length ? runningOnly : rows;
+      const currentExists = focusedSessionId && visible.some((s) => s.id === focusedSessionId);
+      if (!currentExists && viewMode === "tabs") {
+        focusSession(visible[0]!.id);
       }
-    } finally {
-      setLoading(false);
+    } else {
+      focusSession(null);
     }
-  }, [laneId, focusedSessionId, viewMode, showEndedSessions, focusSession]);
+  }, [laneId, focusedSessionId, viewMode, focusSession]);
 
   useEffect(() => {
     setSessions([]);
@@ -262,17 +244,20 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     () => sessions.filter((s) => s.status === "running" && Boolean(s.ptyId)),
     [sessions]
   );
-  const endedSessions = useMemo(
-    () => sessions.filter((s) => !(s.status === "running" && Boolean(s.ptyId))),
-    [sessions]
-  );
   const tabSessions = useMemo(() => {
     if (viewMode !== "tabs") return sessions;
-    if (!showEndedSessions && runningSessions.length) return runningSessions;
-    return sessions;
-  }, [sessions, viewMode, showEndedSessions, runningSessions]);
+    return runningSessions.length ? runningSessions : sessions;
+  }, [sessions, viewMode, runningSessions]);
 
   const current = tabSessions.find((s) => s.id === focusedSessionId) ?? tabSessions[0] ?? null;
+
+  const profileColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of terminalProfiles?.profiles ?? []) {
+      if (p.color) m.set(p.id, p.color);
+    }
+    return m;
+  }, [terminalProfiles]);
 
   const orderedProfiles = useMemo(() => {
     const profiles = terminalProfiles?.profiles ?? [];
@@ -289,9 +274,14 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     return ordered.slice(0, 10);
   }, [terminalProfiles]);
 
+  // Auto-refresh sessions every 5 seconds
   useEffect(() => {
-    setShowTranscriptTail(false);
-  }, [current?.id]);
+    if (!laneId) return;
+    const id = setInterval(() => {
+      refresh().catch(() => {});
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [laneId, refresh]);
 
   const launchFromProfile = useCallback(
     (profile: TerminalLaunchProfile) => {
@@ -355,7 +345,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     const existing = new Set(profileDraft.map((p) => p.id));
     const base = slugify(name) || "custom";
     const id = uniqueProfileId(base, existing);
-    setProfileDraft((prev) => [...prev, { id, name, command, tracked: true, description: null }]);
+    setProfileDraft((prev) => [...prev, { id, name, command, tracked: true, description: null, color: null }]);
     setNewProfileName("");
     setNewProfileCommand("");
     setProfilesError(null);
@@ -384,21 +374,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           <div className="h-4 w-px bg-border" />
           <div className="truncate text-xs font-semibold">{laneName ?? laneId}</div>
           <Chip className="text-[10px]">{runningSessions.length} running</Chip>
-          {endedSessions.length ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded border border-border bg-card/40 px-2 py-1 text-[10px] text-muted-fg hover:text-fg"
-              onClick={() => setShowEndedSessions((prev) => !prev)}
-              title={showEndedSessions ? "Hide ended sessions" : "Show ended sessions"}
-            >
-              {showEndedSessions || runningSessions.length === 0 ? (
-                <ChevronDown className="h-3 w-3" />
-              ) : (
-                <ChevronRight className="h-3 w-3" />
-              )}
-              {endedSessions.length} ended
-            </button>
-          ) : null}
           {!launchTracked ? <Chip className="text-[10px]">no context</Chip> : null}
         </div>
         <div className="flex items-center gap-2">
@@ -411,9 +386,11 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   variant={profile.id === "shell" ? "outline" : "primary"}
                   size="sm"
                   className="h-7 px-2 text-[11px]"
+                  style={profile.color ? { backgroundColor: profile.color, borderColor: profile.color, color: "#fff" } : undefined}
                   onClick={() => launchFromProfile(profile)}
                   title={profile.command ? `${profile.name} (${profile.command})` : profile.name}
                 >
+                  {profile.color ? <span className="h-2 w-2 rounded-full bg-white/40" /> : null}
                   {profile.name}
                 </Button>
               ))}
@@ -429,9 +406,6 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           >
             <ExternalLink className="h-3.5 w-3.5" />
             Terminals
-          </Button>
-          <Button variant="ghost" size="sm" title="Refresh sessions" onClick={() => refresh().catch(() => {})}>
-            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           </Button>
           <Button variant="outline" size="sm" className="h-7 w-7 p-0" title="Terminal settings" onClick={openSettings}>
             <Settings className="h-4 w-4" />
@@ -450,9 +424,14 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           className="flex min-h-0 flex-1 flex-col"
         >
           <Tabs.List className="flex flex-wrap gap-1 rounded-lg border border-border bg-card/60 p-1">
-            {tabSessions.map((s) => (
+            {tabSessions.map((s) => {
+              const profileColor = s.toolType ? profileColorMap.get(s.toolType) : undefined;
+              return (
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>
-                <span className={cn("h-2 w-2 rounded-full", statusDot(s.status))} />
+                <span
+                  className={cn("h-2 w-2 rounded-full", !profileColor && statusDot(s.status))}
+                  style={profileColor ? { backgroundColor: profileColor } : undefined}
+                />
                 <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
                 {!s.tracked ? <span className="rounded border border-border px-1 text-[10px] text-muted-fg">no ctx</span> : null}
                 {s.status === "running" && s.ptyId ? (
@@ -481,66 +460,32 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   </span>
                 ) : null}
               </Tabs.Trigger>
-            ))}
+              );
+            })}
           </Tabs.List>
 
           <div className="mt-2 min-h-0 flex-1 relative">
-            {current ? (
-              current.status === "running" && current.ptyId ? (
-                <div className="flex h-full min-h-0 flex-col gap-2">
-                  <div className="flex items-center justify-between gap-2 rounded border border-border bg-card/50 px-2 py-1">
-                    <div className="min-w-0 flex items-center gap-2">
-                      <div className="truncate text-xs font-semibold text-fg">{current.title}</div>
-                      {current.toolType ? <Chip className="text-[10px]">{current.toolType}</Chip> : null}
-                      {!current.tracked ? <Chip className="text-[10px]">no context</Chip> : null}
-                    </div>
-                    <div className="shrink-0 text-[11px] text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
-                  </div>
-                  <TerminalView ptyId={current.ptyId} sessionId={current.id} className="h-full" />
+            {/* Render a header for the current running session */}
+            {current && current.status === "running" && current.ptyId ? (
+              <div className="flex items-center justify-between gap-2 rounded border border-border bg-card/50 px-2 py-1 mb-2 shrink-0">
+                <div className="min-w-0 flex items-center gap-2">
+                  <div className="truncate text-xs font-semibold text-fg">{current.title}</div>
+                  {current.toolType ? <Chip className="text-[10px]">{current.toolType}</Chip> : null}
+                  {!current.tracked ? <Chip className="text-[10px]">no context</Chip> : null}
                 </div>
-              ) : (
-                <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold">{current.goal?.trim().length ? current.goal : current.title}</div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
-                        <span>{current.status}</span>
-                        {current.toolType ? <Chip className="text-[10px]">{current.toolType}</Chip> : null}
-                        {!current.tracked ? <Chip className="text-[10px]">no context</Chip> : null}
-                        {current.exitCode != null ? <Chip className="text-[10px]">exit {current.exitCode}</Chip> : null}
-                      </div>
-                    </div>
-                    <Chip className="text-[11px]">{new Date(current.startedAt).toLocaleString()}</Chip>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    <SessionDeltaCard sessionId={current.id} />
-                    {current.summary ? (
-                      <div className="rounded border border-border bg-card/70 px-2 py-1 text-[11px] text-muted-fg">
-                        {current.summary}
-                      </div>
-                    ) : null}
-                    {current.tracked ? (
-                      <div className="rounded border border-border bg-card/50 p-2 text-[11px] text-muted-fg">
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-fg hover:bg-muted/60 hover:text-fg"
-                          onClick={() => setShowTranscriptTail((prev) => !prev)}
-                          title={showTranscriptTail ? "Hide transcript tail" : "Show transcript tail"}
-                        >
-                          {showTranscriptTail ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                          Transcript tail
-                        </button>
-                        {showTranscriptTail ? (
-                          <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-card/70 p-2 text-[11px] leading-relaxed text-fg">
-                            {current.id ? <TranscriptTail sessionId={current.id} /> : <span className="text-muted-fg">No transcript.</span>}
-                          </pre>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              )
+                <div className="shrink-0 text-[11px] text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
+              </div>
             ) : null}
+
+            {/* All running terminals rendered simultaneously, only active one visible */}
+            <div className="flex-1 min-h-0 relative" style={{ height: 'calc(100% - 40px)' }}>
+              {tabSessions.filter(s => s.status === "running" && s.ptyId).map(s => (
+                <div key={s.id} className={cn("absolute inset-0", s.id !== current?.id && "invisible pointer-events-none")}>
+                  <TerminalView ptyId={s.ptyId!} sessionId={s.id} className="h-full" />
+                </div>
+              ))}
+            </div>
+
           </div>
         </Tabs.Root>
       ) : (
@@ -604,36 +549,56 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                     profileDraft.map((p) => {
                       const locked = isDefaultProfile(p);
                       return (
-                        <div key={p.id} className="flex flex-wrap items-center gap-2 rounded border border-border bg-card/50 p-2">
-                          <div className="min-w-[140px] text-[11px] text-muted-fg">{p.id}</div>
-                          <input
-                            className="h-8 flex-1 min-w-[180px] rounded border border-border bg-bg/40 px-2 text-xs text-fg outline-none"
-                            value={p.name}
-                            onChange={(e) =>
-                              setProfileDraft((prev) => prev.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x)))
-                            }
-                            placeholder="Name"
-                            disabled={locked}
-                          />
-                          <input
-                            className="h-8 flex-[2] min-w-[220px] rounded border border-border bg-bg/40 px-2 text-xs text-fg font-mono outline-none"
-                            value={p.command}
-                            onChange={(e) =>
-                              setProfileDraft((prev) => prev.map((x) => (x.id === p.id ? { ...x, command: e.target.value } : x)))
-                            }
-                            placeholder="Command"
-                            disabled={locked}
-                          />
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 px-2 text-[11px]"
-                            disabled={locked}
-                            onClick={() => setProfileDraft((prev) => prev.filter((x) => x.id !== p.id))}
-                            title={locked ? "Default buttons cannot be removed" : "Remove button"}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                        <div key={p.id} className="rounded border border-border bg-card/50 p-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="min-w-[140px] text-[11px] text-muted-fg">{p.id}</div>
+                            <input
+                              className="h-8 flex-1 min-w-[180px] rounded border border-border bg-bg/40 px-2 text-xs text-fg outline-none"
+                              value={p.name}
+                              onChange={(e) =>
+                                setProfileDraft((prev) => prev.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x)))
+                              }
+                              placeholder="Name"
+                            />
+                            <input
+                              className="h-8 flex-[2] min-w-[220px] rounded border border-border bg-bg/40 px-2 text-xs text-fg font-mono outline-none"
+                              value={p.command}
+                              onChange={(e) =>
+                                setProfileDraft((prev) => prev.map((x) => (x.id === p.id ? { ...x, command: e.target.value } : x)))
+                              }
+                              placeholder="Command"
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 px-2 text-[11px]"
+                              disabled={locked}
+                              onClick={() => setProfileDraft((prev) => prev.filter((x) => x.id !== p.id))}
+                              title={locked ? "Default buttons cannot be removed" : "Remove button"}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="mt-1.5 flex items-center gap-1">
+                            <span className="text-[10px] text-muted-fg mr-1">Color</span>
+                            {PROFILE_COLORS.map((c) => (
+                              <button
+                                key={c ?? "none"}
+                                type="button"
+                                className={cn(
+                                  "h-5 w-5 rounded-full border-2 transition-transform hover:scale-110",
+                                  (p.color ?? null) === c ? "border-fg scale-110" : "border-transparent"
+                                )}
+                                style={{ backgroundColor: c ?? "transparent" }}
+                                onClick={() =>
+                                  setProfileDraft((prev) => prev.map((x) => (x.id === p.id ? { ...x, color: c } : x)))
+                                }
+                                title={c ?? "Default (no color)"}
+                              >
+                                {c == null ? <X className="h-3 w-3 mx-auto text-muted-fg" /> : null}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       );
                     })

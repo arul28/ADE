@@ -136,9 +136,9 @@ The center pane is the main working area. The LanesPage uses `PaneTilingLayout` 
 - **Diff pane** (`LaneDiffPane`): Git diff viewer with Monaco side-by-side diffs, per-file stage/unstage/discard, commit diff viewing
 - **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, restack button for stacked lanes
 - **Terminals pane** (`LaneTerminalsPanel`): Embedded terminal sessions with tab/tiling views, quick-launch profiles, session delta cards
-- **Work pane** (`LaneWorkPane`): Workspace tooling and pack viewer
+- **Work pane** (`LaneWorkPane`): Embedded terminal sessions
 - **Stack pane** (`LaneStackPane`): Stack chain visualization and management
-- **Merge pane** (`LaneMergePane`): Merge operations interface
+- **Inspector pane** (`LaneInspectorPane`): Packs, PR, and conflict management
 
 **Terminals pane (signal-first)**:
 - Default view prioritizes **running** sessions. Ended/closed sessions are collapsed behind a toggle.

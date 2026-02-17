@@ -201,6 +201,9 @@ export function CommitTimeline({
                         {commit.shortSha}
                       </span>
                       {isNewest ? <span className="rounded bg-emerald-900/30 border border-emerald-700/60 px-1 text-[9px] text-emerald-300 uppercase tracking-wider">HEAD</span> : null}
+                      {commit.pushed
+                        ? <span className="rounded px-1 text-[9px] bg-sky-500/15 text-sky-600">pushed</span>
+                        : <span className="rounded px-1 text-[9px] bg-amber-500/15 text-amber-700">local</span>}
                       <span className="ml-auto text-[10px] text-muted-fg/60 shrink-0">{formatRelative(commit.authoredAt)}</span>
                     </div>
                     <div className="truncate text-fg leading-tight">{commit.subject}</div>

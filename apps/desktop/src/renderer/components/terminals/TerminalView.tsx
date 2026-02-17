@@ -190,8 +190,9 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       const isMac = navigator.platform.toLowerCase().includes("mac");
       const mod = isMac ? ev.metaKey : ev.ctrlKey;
       const key = ev.key.toLowerCase();
+
+      // Cmd+V: handle paste
       if (mod && key === "v" && ev.type === "keydown") {
-        // Best-effort paste.
         navigator.clipboard
           .readText()
           .then((text) => {
@@ -201,6 +202,19 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
           .catch(() => {});
         return false;
       }
+
+      // Cmd+C: copy if selection exists, otherwise let xterm handle (SIGINT)
+      if (mod && key === "c" && ev.type === "keydown") {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection).catch(() => {});
+          return false;
+        }
+        // No selection - let xterm send SIGINT
+        return true;
+      }
+
+      // Let ALL other keys pass through to xterm
       return true;
     });
 
@@ -232,6 +246,29 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       }
     });
     intObs.observe(el);
+
+    // Watch for visibility changes via CSS class toggling (invisible/pointer-events-none)
+    const mutObs = new MutationObserver(() => {
+      if (cancelled) return;
+      // Check if our container is currently visible
+      const parentEl = el.parentElement;
+      if (!parentEl) return;
+      const isHidden = parentEl.classList.contains('invisible');
+      if (!isHidden && el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) {
+        // Terminal just became visible - schedule a double-RAF fit
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            doFit();
+          });
+        });
+      }
+    });
+
+    // Observe the parent element for class changes
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      mutObs.observe(parentEl, { attributes: true, attributeFilter: ['class'] });
+    }
 
     termRef.current = term;
     fitRef.current = fit;
@@ -266,6 +303,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       } catch {
         // ignore
       }
+      try { mutObs.disconnect(); } catch { /* ignore */ }
       cancelViewportRaf(term);
       try {
         term.dispose();
