@@ -1,6 +1,6 @@
 # Security & Privacy Architecture
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 This document describes how ADE protects user data, source code, and development workflows across both the local desktop application and the optional hosted cloud services.
 
@@ -180,9 +180,9 @@ The following patterns are excluded from hosted mirror uploads by default:
 
 | Secret Type | Storage Location | Encryption |
 |-------------|-----------------|------------|
-| Hosted Clerk OAuth tokens | OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) | OS-level encryption |
+| Hosted Clerk OAuth tokens | `~/.ade/hosted/hosted-auth.v1.bin` | Electron `safeStorage` (OS-level encryption via macOS Keychain / Windows DPAPI / Linux Secret Service) |
 | BYOK API keys | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
-| Clerk OAuth tokens | Memory (access/ID) + OS keychain (refresh) | OS-level encryption for refresh token |
+| GitHub PAT (local) | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
 
 **Important**: API keys for BYOK providers must ONLY be placed in `local.yaml`, never in `ade.yaml`. The config validation system warns if it detects an `apiKey` field in the shared config file.
 

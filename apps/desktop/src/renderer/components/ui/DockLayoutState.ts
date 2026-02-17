@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type DockLayout = Record<string, number>;
+type DockLayoutUpdater = DockLayout | ((prev: DockLayout) => DockLayout);
 
 export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
   const [layout, setLayout] = useState<DockLayout>(fallbackLayout);
   const [loaded, setLoaded] = useState(false);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -23,14 +25,24 @@ export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
 
     return () => {
       cancelled = true;
+      if (persistTimerRef.current) {
+        clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
     };
   }, [layoutId]);
 
   const saveLayout = useCallback(
-    (next: DockLayout) => {
-      setLayout(next);
-      window.ade.layout.set(layoutId, next).catch(() => {
-        // Non-fatal; persistence failures should not break resizing.
+    (update: DockLayoutUpdater) => {
+      setLayout((prev) => {
+        const next = typeof update === "function" ? update(prev) : update;
+        if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = setTimeout(() => {
+          window.ade.layout.set(layoutId, next).catch(() => {
+            // Non-fatal; persistence failures should not break resizing.
+          });
+        }, 120);
+        return next;
       });
     },
     [layoutId]
@@ -38,4 +50,3 @@ export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
 
   return { layout, loaded, saveLayout };
 }
-

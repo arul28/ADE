@@ -231,11 +231,26 @@ Real-time events (PTY data, process status changes, test run updates) are broadc
 - Lane selector on Run tab (execution context dropdown)
 - Renderer error boundary (graceful crash recovery)
 
+### Completed (Phase 4 — Stacks)
+
+- Stack operations: parent-child lane relationships, restack propagation, primary/attached lane types
+
+### Completed (Phase 5 — Conflict Prediction)
+
+- Conflict prediction via dry-merge simulation, pairwise lane comparison, conflict radar UI
+
+### Completed (Phase 6 — Hosted Agent)
+
+- Hosted ADE Agent integration: cloud sync, LLM narratives (hosted + BYOK), proposal pipeline
+
+### Completed (Phase 7 — GitHub & Workspace Graph)
+
+- GitHub PR integration (create, track, check/review status), workspace graph (React Flow), advanced pack types
+
+### Completed (Phase 8 — Automations, Packs V2, Onboarding)
+
+- Automation service (user-defined triggers and handlers), checkpoint system, pack versioning, onboarding wizard, scope-based keyboard shortcuts
+
 ### Planned
 
-- **Phase 4**: Stack operations (parent-child lane relationships, restack)
-- **Phase 5**: Conflict prediction (dry-merge simulation, pairwise lane comparison)
-- **Phase 6**: Hosted ADE Agent integration (cloud sync, LLM narratives, proposal pipeline)
-- **Phase 7**: Advanced pack types (feature packs, conflict packs)
-- **Phase 8**: Checkpoint system (immutable snapshots at session boundaries)
-- **Phase 9**: Automation actions (user-defined triggers and handlers)
+- **Phase 9**: TBD (not yet started)

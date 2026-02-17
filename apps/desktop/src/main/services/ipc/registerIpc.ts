@@ -56,6 +56,7 @@ import type {
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitBatchFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -275,6 +276,12 @@ export function registerIpc({
     await shell.openExternal(parsed.toString());
   });
 
+  ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
+    const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
+    if (!raw) return;
+    shell.showItemInFolder(raw);
+  });
+
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     return {
       appVersion: app.getVersion(),
@@ -420,7 +427,8 @@ export function registerIpc({
     return (state.recentProjects ?? []).map((entry) => ({
       rootPath: entry.rootPath,
       displayName: entry.displayName,
-      lastOpenedAt: entry.lastOpenedAt
+      lastOpenedAt: entry.lastOpenedAt,
+      exists: fs.existsSync(entry.rootPath)
     }));
   });
 
@@ -431,7 +439,8 @@ export function registerIpc({
       return (state.recentProjects ?? []).map((entry) => ({
         rootPath: entry.rootPath,
         displayName: entry.displayName,
-        lastOpenedAt: entry.lastOpenedAt
+        lastOpenedAt: entry.lastOpenedAt,
+        exists: fs.existsSync(entry.rootPath)
       }));
     }
     const state = readGlobalState(globalStatePath);
@@ -444,7 +453,8 @@ export function registerIpc({
     return filtered.map((entry) => ({
       rootPath: entry.rootPath,
       displayName: entry.displayName,
-      lastOpenedAt: entry.lastOpenedAt
+      lastOpenedAt: entry.lastOpenedAt,
+      exists: fs.existsSync(entry.rootPath)
     }));
   });
 
@@ -833,9 +843,19 @@ export function registerIpc({
     return ctx.gitService.stageFile(arg);
   });
 
+  ipcMain.handle(IPC.gitStageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stageAll(arg);
+  });
+
   ipcMain.handle(IPC.gitUnstageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.unstageFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitUnstageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.unstageAll(arg);
   });
 
   ipcMain.handle(IPC.gitDiscardFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {

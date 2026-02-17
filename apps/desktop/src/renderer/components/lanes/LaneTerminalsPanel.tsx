@@ -602,6 +602,9 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           <Dialog.Content className="fixed left-1/2 top-[12%] z-50 w-[min(880px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-card p-4 shadow-2xl focus:outline-none">
             <div className="mb-3 flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Terminal Settings</Dialog.Title>
+              <Dialog.Description className="sr-only">
+                Configure launch profiles and whether new terminals collect context.
+              </Dialog.Description>
               <Dialog.Close asChild>
                 <Button variant="ghost" size="sm">
                   Close

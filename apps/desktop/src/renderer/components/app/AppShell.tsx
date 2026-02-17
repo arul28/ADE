@@ -52,6 +52,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [onboardingIncomplete, setOnboardingIncomplete] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextStatus | null>(null);
   const [contextGenerateBusy, setContextGenerateBusy] = useState<"codex" | "claude" | null>(null);
+  const [projectMissing, setProjectMissing] = useState(false);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
     try {
@@ -90,6 +91,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [location.pathname]);
+
+  // Listen for projectMissing broadcast from main process.
+  useEffect(() => {
+    const unsub = window.ade.project.onMissing(() => setProjectMissing(true));
+    return unsub;
+  }, []);
+
+  // Reset projectMissing when the project changes (e.g. after relocate).
+  const project = useAppStore((s) => s.project);
+  useEffect(() => {
+    setProjectMissing(false);
+  }, [project?.rootPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,6 +248,57 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           }
         />
       </div>
+
+      {projectMissing ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-red-500/10 px-4 py-2.5 text-xs text-red-800 shadow-card">
+          <span className="font-semibold">Project directory not found</span> — it may have been moved or deleted.
+          <span className="ml-2 inline-flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => {
+                window.ade.project
+                  .openRepo()
+                  .then(() => setProjectMissing(false))
+                  .catch(() => {});
+              }}
+            >
+              Relocate
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => {
+                const rootPath = project?.rootPath;
+                if (!rootPath) return;
+                window.ade.project
+                  .forgetRecent(rootPath)
+                  .then(async (remaining) => {
+                    setProjectMissing(false);
+                    // Switch to the next available project, or open a new one.
+                    const next = remaining.find((rp) => rp.exists);
+                    if (next) {
+                      await window.ade.project.switchToPath(next.rootPath);
+                    }
+                  })
+                  .catch(() => {});
+              }}
+            >
+              Remove
+            </Button>
+            <button
+              type="button"
+              className="text-red-900/70 hover:text-red-900"
+              onClick={() => setProjectMissing(false)}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </span>
+        </div>
+      ) : null}
 
       {providerMode === "guest" ? (
         <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">

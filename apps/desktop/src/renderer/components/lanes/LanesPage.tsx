@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
+import { Group, Panel } from "react-resizable-panels";
 import { FileCode2, GitMerge, Home, Layers3, Link2, Pin, Play, Plus, Terminal, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
+import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneDiffPane } from "./LaneDiffPane";
@@ -21,6 +23,7 @@ import type {
   RestackSuggestion
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { revealLabel } from "../../lib/platform";
 import type { PaneSplit } from "../ui/PaneTilingLayout";
 
 /* ---- Utility functions ---- */
@@ -77,6 +80,19 @@ function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
   for (const root of roots) visit(root);
   const seen = new Set(out.map((lane) => lane.id));
   return out.concat(lanes.filter((lane) => !seen.has(lane.id)).sort(byCreatedAsc));
+}
+
+function mergeUnique(...lists: string[][]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const id of list) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
 }
 
 function toggleFilterToken(query: string, token: string): string {
@@ -177,6 +193,20 @@ const LANES_TILING_TREE: PaneSplit = {
   ]
 };
 
+const RESIZE_TARGET_MINIMUM_SIZE = { coarse: 37, fine: 27 } as const;
+
+type LanePaneDetailSelection = {
+  selectedFilePath: string | null;
+  selectedFileMode: "staged" | "unstaged" | null;
+  selectedCommit: GitCommitSummary | null;
+};
+
+const EMPTY_LANE_PANE_DETAIL: LanePaneDetailSelection = {
+  selectedFilePath: null,
+  selectedFileMode: null,
+  selectedCommit: null
+};
+
 /* ---- Component ---- */
 
 export function LanesPage() {
@@ -192,6 +222,8 @@ export function LanesPage() {
   const project = useAppStore((s) => s.project);
   const baseRef = project?.baseRef;
 
+  const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
+  const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
   const [laneFilter, setLaneFilter] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -214,10 +246,8 @@ export function LanesPage() {
   const [restackBusyLaneId, setRestackBusyLaneId] = useState<string | null>(null);
   const [restackSuggestionError, setRestackSuggestionError] = useState<string | null>(null);
 
-  // Shared detail state between GitActionsPane and DiffPane
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [selectedFileMode, setSelectedFileMode] = useState<"staged" | "unstaged" | null>(null);
-  const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
+  const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
+  const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
@@ -227,15 +257,25 @@ export function LanesPage() {
   );
 
   const filteredLanes = useMemo(() => {
-    return sortedLanes.filter((lane) => laneMatchesFilter(lane, false, laneFilter));
-  }, [sortedLanes, laneFilter]);
+    return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
+  }, [sortedLanes, laneFilter, pinnedLaneIds]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
+  const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
   const visibleRestackSuggestions = useMemo(() => {
     const laneIdSet = new Set(filteredLaneIds);
     return restackSuggestions.filter((s) => laneIdSet.has(s.laneId));
   }, [restackSuggestions, filteredLaneIds]);
+
+  const activeWithPins = useMemo(
+    () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
+    [activeLaneIds, pinnedLaneIds, lanesById]
+  );
+  const visibleLaneIds = useMemo(
+    () => activeWithPins.filter((id) => lanesById.has(id) && filteredSet.has(id)),
+    [activeWithPins, lanesById, filteredSet]
+  );
 
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const canManageLane = Boolean(managedLane && managedLane.laneType !== "primary");
@@ -301,6 +341,9 @@ export function LanesPage() {
       if (inspectorTab === "terminals" || inspectorTab === "packs" || inspectorTab === "stack" || inspectorTab === "merge") {
         setLaneInspectorTab(laneId, inspectorTab);
       }
+      if (params.get("focus") === "single") {
+        setActiveLaneIds([laneId]);
+      }
     }
     if (sessionId) focusSession(sessionId);
   }, [params, selectLane, setLaneInspectorTab, focusSession]);
@@ -332,16 +375,50 @@ export function LanesPage() {
     };
   }, []);
 
-  // Clear detail selection when lane changes
   useEffect(() => {
-    setSelectedFilePath(null);
-    setSelectedFileMode(null);
-    setSelectedCommit(null);
-  }, [selectedLaneId]);
+    if (!laneContextMenu) return;
+    const onPointerDown = () => setLaneContextMenu(null);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [laneContextMenu]);
+
+  useEffect(() => {
+    setPinnedLaneIds((prev) => {
+      const next = new Set<string>();
+      for (const laneId of prev) {
+        if (lanesById.has(laneId)) next.add(laneId);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [lanesById]);
+
+  useEffect(() => {
+    const pinned = Array.from(pinnedLaneIds).filter((laneId) => lanesById.has(laneId));
+    setActiveLaneIds((prev) => {
+      const validPrev = prev.filter((laneId) => lanesById.has(laneId));
+      const selected = selectedLaneId && lanesById.has(selectedLaneId) ? [selectedLaneId] : [];
+      const fallback = selected.length
+        ? []
+        : validPrev.length
+          ? [validPrev[0]!]
+          : sortedLanes[0]?.id
+            ? [sortedLanes[0]!.id]
+            : [];
+      return mergeUnique(selected, fallback, validPrev, pinned);
+    });
+  }, [selectedLaneId, lanesById, sortedLanes, pinnedLaneIds]);
+
+  useEffect(() => {
+    setLanePaneDetails((prev) => {
+      const next: Record<string, LanePaneDetailSelection> = {};
+      for (const [laneId, detail] of Object.entries(prev)) {
+        if (lanesById.has(laneId)) next[laneId] = detail;
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [lanesById]);
 
   /* ---- Keyboard navigation ---- */
-
-  const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
 
   const stepLaneSelection = useCallback((direction: -1 | 1) => {
     if (filteredLaneIds.length === 0) return;
@@ -350,8 +427,10 @@ export function LanesPage() {
     const nextIdx = (currentIdx + direction + filteredLaneIds.length) % filteredLaneIds.length;
     const nextId = filteredLaneIds[nextIdx];
     if (!nextId) return;
+    const pinned = Array.from(pinnedLaneIds).filter((laneId) => laneId !== nextId && lanesById.has(laneId));
+    setActiveLaneIds(mergeUnique([nextId], pinned));
     selectLane(nextId);
-  }, [filteredLaneIds, selectedLaneId, filteredSet, selectLane]);
+  }, [filteredLaneIds, selectedLaneId, filteredSet, pinnedLaneIds, lanesById, selectLane]);
 
   const kbFilterFocus = useMemo(() => getEffectiveBinding(keybindings, "lanes.filter.focus", "/,Mod+F"), [keybindings]);
   const kbNext = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.next", "J,ArrowDown"), [keybindings]);
@@ -394,12 +473,14 @@ export function LanesPage() {
       if (eventMatchesBinding(event, kbConfirm) && filteredLaneIds.length > 0) {
         event.preventDefault();
         const laneId = selectedLaneId && filteredSet.has(selectedLaneId) ? selectedLaneId : filteredLaneIds[0]!;
+        const pinned = Array.from(pinnedLaneIds).filter((lane) => lane !== laneId && lanesById.has(lane));
+        setActiveLaneIds(mergeUnique([laneId], pinned));
         selectLane(laneId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredLaneIds, filteredSet, selectedLaneId, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm]);
+  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm]);
 
   /* ---- Lane management actions ---- */
 
@@ -447,6 +528,58 @@ export function LanesPage() {
     });
   };
 
+  const handleLaneSelect = useCallback((laneId: string, args: { extend: boolean }) => {
+    const lane = lanesById.get(laneId);
+    if (!lane) return;
+
+    if (!args.extend) {
+      const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id));
+      setActiveLaneIds(mergeUnique([laneId], pinned));
+      selectLane(laneId);
+      return;
+    }
+
+    const isPinned = pinnedLaneIds.has(laneId);
+    const isActive = activeWithPins.includes(laneId);
+    if (isPinned && isActive) {
+      selectLane(laneId);
+      return;
+    }
+
+    const next = isActive ? activeWithPins.filter((id) => id !== laneId) : [...activeWithPins, laneId];
+    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+    setActiveLaneIds(mergeUnique(next.length ? next : [laneId], pinned));
+    selectLane(laneId);
+  }, [lanesById, pinnedLaneIds, activeWithPins, selectLane]);
+
+  const removeSplitLane = useCallback((laneId: string) => {
+    if (pinnedLaneIds.has(laneId)) return;
+
+    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+    const next = activeWithPins.filter((id) => id !== laneId);
+    const normalized = mergeUnique(next, pinned);
+    setActiveLaneIds(normalized);
+    if (!normalized.includes(selectedLaneId ?? "")) {
+      selectLane(normalized[0] ?? null);
+    }
+  }, [pinnedLaneIds, lanesById, activeWithPins, selectedLaneId, selectLane]);
+
+  const togglePinnedLane = useCallback((laneId: string) => {
+    const lane = lanesById.get(laneId);
+    if (!lane || lane.laneType === "primary") return;
+
+    const isPinned = pinnedLaneIds.has(laneId);
+    setPinnedLaneIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(laneId)) next.delete(laneId);
+      else next.add(laneId);
+      return next;
+    });
+    if (!isPinned) {
+      setActiveLaneIds((prev) => mergeUnique(prev, [laneId]));
+    }
+  }, [lanesById, pinnedLaneIds]);
+
   const restackNow = async (laneId: string) => {
     setRestackSuggestionError(null);
     setRestackBusyLaneId(laneId);
@@ -489,75 +622,98 @@ export function LanesPage() {
 
   /* ---- Detail handlers ---- */
 
-  const handleSelectFile = useCallback((path: string, mode: "staged" | "unstaged") => {
-    setSelectedFilePath(path);
-    setSelectedFileMode(mode);
-    setSelectedCommit(null);
+  const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged") => {
+    setLanePaneDetails((prev) => ({
+      ...prev,
+      [laneId]: {
+        selectedFilePath: path,
+        selectedFileMode: mode,
+        selectedCommit: null
+      }
+    }));
   }, []);
 
-  const handleSelectCommit = useCallback((commit: GitCommitSummary | null) => {
-    setSelectedCommit(commit);
-    if (commit) {
-      setSelectedFilePath(null);
-      setSelectedFileMode(null);
-    }
+  const handleSelectCommit = useCallback((laneId: string, commit: GitCommitSummary | null) => {
+    setLanePaneDetails((prev) => {
+      const prevDetail = prev[laneId] ?? EMPTY_LANE_PANE_DETAIL;
+      const nextDetail: LanePaneDetailSelection = commit
+        ? {
+            selectedFilePath: null,
+            selectedFileMode: null,
+            selectedCommit: commit
+          }
+        : {
+            ...prevDetail,
+            selectedCommit: null
+          };
+      return { ...prev, [laneId]: nextDetail };
+    });
   }, []);
 
   /* ---- Pane configs ---- */
 
-  const paneConfigs = useMemo(() => ({
-    "stack": {
-      title: "Stack",
-      icon: Layers3,
-      bodyClassName: "overflow-hidden",
-      children: (
-        <LaneStackPane
-          lanes={stackGraphLanes}
-          selectedLaneId={selectedLaneId}
-          onSelect={(id) => selectLane(id)}
-        />
-      )
-    },
-    "git-actions": {
-      title: "Git Actions",
-      icon: FileCode2,
-      bodyClassName: "overflow-hidden",
-      children: (
-        <LaneGitActionsPane
-          laneId={selectedLaneId}
-          selectedPath={selectedFilePath}
-          selectedCommitSha={selectedCommit?.sha ?? null}
-          onSelectFile={handleSelectFile}
-          onSelectCommit={handleSelectCommit}
-        />
-      )
-    },
-    "diff-viewer": {
-      title: "Diff",
-      icon: FileCode2,
-      bodyClassName: "overflow-hidden",
-      children: (
-        <LaneDiffPane
-          laneId={selectedLaneId}
-          selectedPath={selectedFilePath}
-          selectedFileMode={selectedFileMode}
-          selectedCommit={selectedCommit}
-        />
-      )
-    },
-    "work": {
-      title: "Work",
-      icon: Terminal,
-      bodyClassName: "overflow-hidden",
-      children: <LaneWorkPane laneId={selectedLaneId} />
-    },
-    "merge": {
-      title: "Merge",
-      icon: GitMerge,
-      bodyClassName: "overflow-hidden",
-      children: <LaneMergePane laneId={selectedLaneId} />
-    }
-  }), [stackGraphLanes, selectedLaneId, selectedFilePath, selectedFileMode, selectedCommit, handleSelectFile, handleSelectCommit, selectLane]);
+  const getPaneConfigs = useCallback((laneId: string | null) => {
+    const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
+    return {
+      "stack": {
+        title: "Stack",
+        icon: Layers3,
+        bodyClassName: "overflow-hidden",
+        children: (
+          <LaneStackPane
+            lanes={stackGraphLanes}
+            selectedLaneId={laneId}
+            onSelect={(id) => handleLaneSelect(id, { extend: false })}
+          />
+        )
+      },
+      "git-actions": {
+        title: "Git Actions",
+        icon: FileCode2,
+        bodyClassName: "overflow-hidden",
+        children: (
+          <LaneGitActionsPane
+            laneId={laneId}
+            selectedPath={laneDetail.selectedFilePath}
+            selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
+            onSelectFile={(path, mode) => {
+              if (!laneId) return;
+              handleSelectFile(laneId, path, mode);
+            }}
+            onSelectCommit={(commit) => {
+              if (!laneId) return;
+              handleSelectCommit(laneId, commit);
+            }}
+          />
+        )
+      },
+      "diff-viewer": {
+        title: "Diff",
+        icon: FileCode2,
+        bodyClassName: "overflow-hidden",
+        children: (
+          <LaneDiffPane
+            laneId={laneId}
+            selectedPath={laneDetail.selectedFilePath}
+            selectedFileMode={laneDetail.selectedFileMode}
+            selectedCommit={laneDetail.selectedCommit}
+          />
+        )
+      },
+      "work": {
+        title: "Work",
+        icon: Terminal,
+        bodyClassName: "overflow-hidden",
+        children: <LaneWorkPane laneId={laneId} />
+      },
+      "merge": {
+        title: "Merge",
+        icon: GitMerge,
+        bodyClassName: "overflow-hidden",
+        children: <LaneMergePane laneId={laneId} />
+      }
+    };
+  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit]);
 
   /* ---- Render ---- */
 
@@ -572,7 +728,7 @@ export function LanesPage() {
               id="lanes-filter-input"
               value={laneFilter}
               onChange={(event) => setLaneFilter(event.target.value)}
-              placeholder="Filter lanes (is:dirty type:worktree)"
+              placeholder="Filter lanes (is:dirty is:pinned type:worktree)"
               className="h-7 min-w-[280px] rounded-xl bg-muted/30 shadow-card px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
             />
             {laneFilter.trim().length > 0 ? (
@@ -593,6 +749,14 @@ export function LanesPage() {
             onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:dirty"))}
           >
             dirty
+          </Button>
+          <Button
+            size="sm"
+            variant={activeFilterTokens.has("is:pinned") ? "primary" : "outline"}
+            className="h-7 px-2 text-[11px]"
+            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:pinned"))}
+          >
+            pinned
           </Button>
           <Button
             size="sm"
@@ -648,7 +812,7 @@ export function LanesPage() {
           </Button>
 
           <div className="ml-auto text-[11px] text-muted-fg">
-            {filteredLanes.length}/{sortedLanes.length} · j/k move · [ ] cycle · / filter
+            {filteredLanes.length}/{sortedLanes.length} · shift-click split · j/k move · [ ] cycle · / filter
           </div>
         </div>
       </div>
@@ -656,8 +820,11 @@ export function LanesPage() {
       {/* Lane tabs */}
       <div className="flex items-center gap-1 overflow-x-auto border-b border-border/15 px-2 py-1.5">
         {filteredLanes.map((lane) => {
+          const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
           const isPrimary = lane.laneType === "primary";
+          const isPinned = pinnedLaneIds.has(lane.id);
+          const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const conflictStatus = conflictStatusByLane[lane.id];
           const chips = conflictChipsByLane[lane.id] ?? [];
           const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
@@ -670,15 +837,30 @@ export function LanesPage() {
                 "inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-xs transition-colors",
                 isSelected
                   ? "bg-accent/20 text-fg shadow-card ring-1 ring-accent/40 font-semibold"
-                  : "bg-muted/30 text-muted-fg hover:bg-muted/50 hover:text-fg",
+                  : isVisible
+                    ? "bg-accent/10 text-fg"
+                    : "bg-muted/30 text-muted-fg hover:bg-muted/50 hover:text-fg",
                 isPrimary && !isSelected && "bg-emerald-500/15"
               )}
-              onClick={() => selectLane(lane.id)}
+              onClick={(event) => {
+                handleLaneSelect(lane.id, {
+                  extend: Boolean(event.shiftKey || event.metaKey || event.ctrlKey)
+                });
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setLaneContextMenu({ laneId: lane.id, x: event.clientX, y: event.clientY });
+              }}
             >
-              {isPrimary ? <Home className="h-3.5 w-3.5 text-emerald-700" /> : <Pin className="h-3.5 w-3.5 text-muted-fg/60" />}
+              {isPrimary ? (
+                <Home className="h-3.5 w-3.5 text-emerald-700" />
+              ) : (
+                <Pin className={cn("h-3.5 w-3.5", isPinned ? "text-amber-700" : "text-muted-fg/60")} />
+              )}
               <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
               <span className="truncate">{lane.name}</span>
               {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">HOME</span> : null}
+              {!isPrimary && isPinned ? <span className="rounded-lg bg-amber-500/15 px-1 text-[10px] text-amber-800">PINNED</span> : null}
               {restackSuggestion ? (
                 <span className="rounded-lg bg-amber-500/10 px-1 text-[10px] text-amber-800" title={`Behind parent by ${restackSuggestion.behindCount} commit(s)`}>
                   RESTACK {restackSuggestion.behindCount}
@@ -692,6 +874,33 @@ export function LanesPage() {
                   {chipLabel(chip.kind)}
                 </span>
               ))}
+              {!isPrimary ? (
+                <span
+                  className={cn(
+                    "inline-flex h-4 w-4 items-center justify-center rounded-lg",
+                    isPinned ? "bg-amber-100 text-amber-800" : "text-muted-fg hover:text-fg"
+                  )}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    togglePinnedLane(lane.id);
+                  }}
+                  title={isPinned ? "Unpin lane" : "Pin lane"}
+                >
+                  <Pin className="h-2.5 w-2.5" />
+                </span>
+              ) : null}
+              {closable ? (
+                <span
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeSplitLane(lane.id);
+                  }}
+                  title="Remove from split"
+                >
+                  <X className="h-3 w-3" />
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -745,21 +954,71 @@ export function LanesPage() {
       ) : null}
 
       {/* Floating pane tiling layout */}
-      {!selectedLaneId ? (
+      {visibleLaneIds.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <EmptyState
             title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
             description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to begin."}
           />
         </div>
-      ) : (
+      ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
-          layoutId="lanes:tiling:v3"
+          layoutId={`lanes:tiling:v3:${visibleLaneIds[0]}`}
           tree={LANES_TILING_TREE}
-          panes={paneConfigs}
+          panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
           className="flex-1 min-h-0"
         />
+      ) : (
+        <Group
+          key={`lanes-split-columns:${visibleLaneIds.join(",")}`}
+          id="lanes-split-columns"
+          orientation="horizontal"
+          resizeTargetMinimumSize={RESIZE_TARGET_MINIMUM_SIZE}
+          className="flex-1 min-h-0 min-w-0"
+        >
+          {visibleLaneIds.map((laneId, index) => {
+            const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
+            return (
+              <React.Fragment key={laneId}>
+                <Panel id={`lane-column:${laneId}`} minSize="18%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
+                  <PaneTilingLayout
+                    layoutId={`lanes:tiling:v3:${laneId}`}
+                    tree={LANES_TILING_TREE}
+                    panes={getPaneConfigs(laneId)}
+                    className="h-full min-h-0"
+                  />
+                </Panel>
+                {index < visibleLaneIds.length - 1 ? <ResizeGutter orientation="vertical" laneDivider /> : null}
+              </React.Fragment>
+            );
+          })}
+        </Group>
       )}
+
+      {/* Lane tab context menu */}
+      {laneContextMenu ? (() => {
+        const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
+        return (
+          <div
+            className="fixed z-40 min-w-[190px] rounded-xl bg-[--color-surface-overlay] p-1 shadow-float backdrop-blur-xl"
+            style={{ left: laneContextMenu.x, top: laneContextMenu.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {ctxLane?.worktreePath ? (
+              <>
+                <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+                  setLaneContextMenu(null);
+                  window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});
+                }}>{revealLabel}</button>
+                <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+                  setLaneContextMenu(null);
+                  navigator.clipboard.writeText(ctxLane.worktreePath).catch(() => {});
+                }}>Copy Path</button>
+              </>
+            ) : null}
+          </div>
+        );
+      })() : null}
 
       {/* Manage Lane dialog */}
       <Dialog.Root open={manageOpen} onOpenChange={setManageOpen}>

@@ -1,6 +1,6 @@
 # Hosted Agent Architecture
 
-> Last updated: 2026-02-14
+> Last updated: 2026-02-16
 
 The hosted ADE agent is a cloud-based service that receives read-only snapshots of lane state and uses large language models to generate useful artifacts. It is designed as a stateless, event-driven processing layer that never directly interacts with the user's repository.
 
@@ -19,6 +19,7 @@ The hosted ADE agent is a cloud-based service that receives read-only snapshots 
   - [Provider Swapping](#provider-swapping)
   - [Authentication (OAuth 2.0 PKCE)](#authentication-oauth-20-pkce)
   - [Secret Redaction](#secret-redaction)
+  - [Context Delivery Policy](#context-delivery-policy)
   - [Job Polling & Deduplication](#job-polling--deduplication)
   - [BYOK Provider Details](#byok-provider-details)
   - [GitHub Integration (Hosted)](#github-integration-hosted)
@@ -302,6 +303,27 @@ All data leaving the local machine is scrubbed by the redaction engine before tr
 - All mirror sync blob content before upload
 - All BYOK prompts before sending to provider API
 - All bounded exports before transmission
+
+### Context Delivery Policy
+
+The desktop decides whether to send job context inline or via mirror reference using `hostedContextPolicy.ts`:
+
+**Thresholds**:
+- `AUTO_MIRROR_THRESHOLD_BYTES`: 60,000 — payloads above this size prefer mirror delivery.
+- `INLINE_FALLBACK_MAX_BYTES`: 18,000 — maximum inline fallback payload size for mirror-ref jobs.
+
+**Decision logic** (`decideHostedContextDelivery()`):
+1. Conflict jobs (`ProposeConflictResolution`, `ConflictResolution`) force mirror delivery.
+2. If payload exceeds `AUTO_MIRROR_THRESHOLD_BYTES`, use mirror-ref.
+3. Otherwise, use inline delivery.
+
+**Inline fallback construction** (`buildInlineFallbackParams()`):
+- Two-pass reduction to fit within `INLINE_FALLBACK_MAX_BYTES`:
+  - Pass 1: Clip pack body to 1,800 chars, file contexts to 60 items.
+  - Pass 2: Clip pack body to 900 chars, file contexts to 24 items.
+- Fallback is always included in mirror-ref submissions so jobs succeed even if ref resolution fails.
+
+**Telemetry**: Every job submission records `contextDelivery` metadata (mode, contextSource, reasonCode, contextRefSha256, warnings, confidenceLevel) in the `narrative_requested` pack event.
 
 ### Job Polling & Deduplication
 

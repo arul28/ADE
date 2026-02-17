@@ -271,12 +271,19 @@ src/renderer/components/
 │   └── PackFreshnessIndicator.tsx # Visual freshness indicator
 │
 ├── conflicts/              # Conflict resolution
-│   └── ConflictsPage.tsx  # Conflict resolution interface (placeholder)
+│   └── ConflictsPage.tsx  # Conflict resolution interface
 │
 ├── prs/                    # Pull request management
-│   └── PRsPage.tsx        # PR management interface (placeholder)
+│   └── PRsPage.tsx        # PR management interface
 │
-├── settings/               # Settings
+├── graph/                  # Workspace graph
+│   └── WorkspaceGraphPage.tsx  # React Flow graph canvas
+│
+├── files/                  # Files tab
+│   └── FilesPage.tsx      # File tree, editor, search
+│
+├── onboarding/             # Onboarding & settings
+│   ├── OnboardingWizard.tsx  # First-run setup wizard
 │   └── SettingsPage.tsx   # Settings interface
 │
 └── ui/                     # Shared primitives
@@ -474,16 +481,19 @@ Layout preferences and theme state are persisted through IPC calls to the `kvDb`
 | PackViewer | Done | Pack content display |
 | PackFreshnessIndicator | Done | Visual freshness badge |
 | SessionDeltaCard | Done | Session change summary |
-| ConflictsPage | Placeholder | Route exists, UI not implemented |
-| PRsPage | Placeholder | Route exists, UI not implemented |
+| ConflictsPage | Done | Conflict prediction radar, pairwise matrix, proposal review (Phase 5+) |
+| PRsPage | Done | GitHub PR creation, status tracking, check/review indicators (Phase 7) |
+| WorkspaceGraphPage | Done | React Flow canvas with lane nodes, edge relationships (Phase 7) |
+| FilesPage | Done | File tree, Monaco editor, multi-tab, quick-open, text search (Phase 3) |
+| OnboardingWizard | Done | First-run setup wizard with provider selection (Phase 8) |
 | SettingsPage | Done | Configuration display and editing |
 | Shared UI primitives (Button, Chip, etc.) | Done | Consistent component library |
 | `cn()` utility | Done | `clsx` + `tailwind-merge` helper |
 | react-resizable-panels integration | Done | Pane sizes persisted |
 | Layout persistence (SQLite kv) | Done | Sizes saved/restored on restart |
-| React Flow integration | Not started | Graph canvas not implemented |
-| Advanced keyboard shortcuts | Not started | Global shortcut system not built |
+| React Flow integration | Done | Workspace graph with full React Flow canvas (Phase 7) |
+| Advanced keyboard shortcuts | Done | Scope-based keybindingsService with configurable definitions (Phase 8) |
 | Accessibility audit | Not started | Radix provides base a11y |
 | Performance profiling | Not started | No bottlenecks identified yet |
 
-**Overall status**: Core UI framework is DONE (app shell, navigation, themes, state management, pane layouts, terminal rendering, Monaco diff views). React Flow integration for the workspace graph is NOT YET STARTED. Advanced keyboard shortcuts and accessibility audit are NOT YET STARTED.
+**Overall status**: The UI is comprehensive with all pages implemented, including the app shell, navigation, themes, state management, pane layouts, terminal rendering, Monaco diff views, conflict resolution, PR management, workspace graph (React Flow), files tab, onboarding wizard, and scope-based keyboard shortcuts. Accessibility audit and performance profiling are NOT YET STARTED.

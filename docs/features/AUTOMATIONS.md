@@ -1,6 +1,6 @@
 # Automations — Trigger-Action Workflows
 
-> Last updated: 2026-02-14
+> Last updated: 2026-02-16
 
 ---
 
@@ -23,6 +23,8 @@
   - [Configuration Schema](#configuration-schema)
   - [TypeScript Interfaces](#typescript-interfaces)
 - [Implementation Tracking](#implementation-tracking)
+  - [NL-to-Rule Planner](#nl-to-rule-planner)
+  - [Trust Model Enforcement](#trust-model-enforcement)
 
 ---
 
@@ -143,9 +145,9 @@ editing YAML directly.
 | Status | Succeeded (green) / Failed (red) / Running (blue) / Never Run (gray) |
 | Enabled | Toggle switch |
 
-**Detail View** (click to expand): Editable trigger config, ordered action list
-with drag-to-reorder, condition editor per action, execution history table, and
-"Run Now" button.
+**Detail View** (click to expand): Editable trigger config (type selector, cron
+input, branch filter), ordered action list with add/remove/reorder controls,
+condition editor per action, and "Run Now" / "Delete" buttons.
 
 **Execution History**: Each run logs run ID, timestamps, overall status, per-action
 status, error messages, and duration.
@@ -170,7 +172,8 @@ functionality is always maintained.
 | Service | Status | Role |
 |---------|--------|------|
 | `jobEngine` | Exists | Core pipeline, job queuing, deduplication, coalescing |
-| `automationService` | Exists | Parses rules from config, registers trigger listeners, evaluates conditions, dispatches action chains |
+| `automationService` | Exists | Parses rules from config, registers trigger listeners, evaluates conditions, dispatches action chains, persists run/action records to SQLite |
+| `automationPlannerService` | Exists | NL-to-rule planner. Accepts natural language intent, generates structured automation drafts using Codex CLI (`codex exec -`) or Claude CLI (`claude --print`). Provides draft normalization, fuzzy test suite matching, confirmation requirements, and simulation preview. |
 | `projectConfigService` | Exists | Provides automation definitions from YAML |
 | `sessionService` | Exists | Fires `session-end` events |
 | `gitOperationsService` | Exists | Emits head-change events when ADE performs git operations |
@@ -199,12 +202,22 @@ functionality is always maintained.
 
 ```
 AutomationsPage (route: /automations or embedded in ProjectHome)
-  +-- AutomationList
-  |    +-- AutomationRow (per rule)
-  |         +-- TriggerBadge / ActionsSummary / LastRunIndicator / EnableToggle
-  +-- AutomationDetail (expanded on click)
-  |    +-- TriggerEditor / ActionListEditor / ExecutionHistory / ManualTriggerButton
-  +-- CreateAutomationDialog
+  +-- Rule list with search/filter (inline, not a separate component)
+  |    +-- Per-rule row: name, trigger badge, actions summary, last run, enable toggle
+  +-- RuleEditor (expanded on click, form-based editing)
+  |    +-- Trigger config (type selector, cron input for schedule, branch filter for commit)
+  |    +-- Action list editor (add/remove/reorder actions, condition per action)
+  |    +-- "Run Now" button, "Delete" button
+  +-- HistoryDialog (modal, shows runs + per-action detail for a rule)
+  +-- CreateWithNaturalLanguageDialog (modal)
+  |    +-- Intent text input
+  |    +-- Provider selector (Codex / Claude)
+  |    +-- Draft preview, confirmation checklist, simulation preview
+  +-- ConfirmationsChecklist (inline, shown when NL draft requires confirmations)
+  +-- Trust CTA banner (shown when shared config is untrusted)
+
+SettingsPage > AutomationsSection (embedded summary)
+  +-- Per-rule row with run-now, history, enable/disable toggle
 ```
 
 ### Data Flow
@@ -228,8 +241,24 @@ Main creates a synthetic trigger event dispatched through normal execution flow.
 - **Sequential within a rule**: Actions execute one at a time, in order
 - **Parallel across rules**: Multiple rules matching the same trigger run in parallel
 - **Deduplication**: Re-triggered automations coalesce with running executions
-- **Timeout**: Default 5 minutes per action; configurable via `timeout` field
+- **Timeout**: Default 5 minutes (300,000 ms) per action; configurable via `timeoutMs` field
+- **Retry**: Failed actions can retry with exponential backoff (400ms * 2^attempt); configurable via `retry` field (integer, number of retries)
 - **Error handling**: Failed action stops pipeline unless `continueOnFailure: true`
+- **Trust enforcement**: Automations refuse to execute when shared config is untrusted (requires `projectConfigService.confirmTrust()` first)
+- **Safety checks**: `run-command` actions validate `cwd` is within the project root (`isWithinDir` check) before execution
+
+### Condition Types
+
+Actions support a `condition` field. The following condition strings are evaluated at runtime:
+
+| Condition | Evaluates to `true` when |
+|-----------|-------------------------|
+| `hosted-enabled` | Provider mode is `hosted` and the hosted agent service is connected |
+| `byok-enabled` | Provider mode is `byok` and an API key is configured |
+| `provider-enabled` | Any AI provider (hosted or BYOK) is active |
+| `lane-present` | A lane ID is available in the trigger context |
+| `true` | Always (unconditional) |
+| `false` | Never (effectively disables the action) |
 
 ---
 
@@ -240,6 +269,7 @@ Main creates a synthetic trigger event dispatched through normal execution flow.
 ```sql
 CREATE TABLE automation_runs (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,         -- FK to projects table
     automation_id TEXT NOT NULL,
     trigger_type TEXT NOT NULL,       -- 'session-end' | 'commit' | 'schedule' | 'manual'
     started_at TEXT NOT NULL,         -- ISO 8601
@@ -261,7 +291,7 @@ CREATE TABLE automation_action_results (
     action_type TEXT NOT NULL,
     started_at TEXT NOT NULL,
     ended_at TEXT,
-    status TEXT NOT NULL,             -- 'running' | 'succeeded' | 'failed' | 'skipped'
+    status TEXT NOT NULL,             -- 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
     error_message TEXT,
     output TEXT                       -- Captured stdout/stderr (truncated)
 );
@@ -279,7 +309,7 @@ The `automations` key in `.ade/ade.yaml` or `.ade/local.yaml` accepts an array o
 rules. Each rule requires `id` (lowercase with hyphens), `name`, `trigger` (with
 `type` and optional `cron`/`branch`), `actions` (array of action objects with
 `type` and optional `suiteId`, `command`, `cwd`, `condition`, `continueOnFailure`,
-`timeout`), and `enabled` (boolean).
+`timeoutMs`, `retry`), and `enabled` (boolean).
 
 ### TypeScript Interfaces
 
@@ -306,7 +336,8 @@ interface AutomationAction {
   cwd?: string;
   condition?: string;
   continueOnFailure?: boolean;
-  timeout?: number;
+  timeoutMs?: number;   // Per-action timeout in milliseconds (default: 300000 = 5 min)
+  retry?: number;       // Number of retries on failure (exponential backoff: 400ms * 2^attempt)
 }
 
 interface AutomationRun {
@@ -320,6 +351,13 @@ interface AutomationRun {
   actionsTotal: number;
   errorMessage?: string;
   triggerMetadata?: Record<string, unknown>;
+}
+
+// Extended type returned by automationService.list()
+interface AutomationRuleSummary extends AutomationRule {
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  running: boolean;
 }
 ```
 
@@ -357,6 +395,25 @@ interface AutomationRun {
 | AUTO-019 | Automation run logging | Write run/action records to SQLite | DONE |
 | AUTO-020 | Error handling and retry | Configurable retry and backoff with history surfaced in UI | DONE |
 
+### NL-to-Rule Planner (Phase 8)
+
+| ID | Task | Description | Status |
+|----|------|-------------|--------|
+| AUTO-021 | NL planner service | `automationPlannerService` accepts natural language intent and generates structured automation drafts | DONE |
+| AUTO-022 | Codex CLI provider | Planner uses `codex exec -` to generate automation JSON from intent text | DONE |
+| AUTO-023 | Claude CLI provider | Planner uses `claude --print` (headless) as alternative generation backend | DONE |
+| AUTO-024 | Draft normalization | Normalizes generated drafts: lowercases IDs, validates trigger/action types, fuzzy-matches test suite IDs | DONE |
+| AUTO-025 | Confirmation requirements | Flags dangerous actions (sync-to-mirror, run-command, certain permission flags) for explicit user confirmation | DONE |
+| AUTO-026 | Simulation preview | `ade.automations.simulate(args)` renders a human-readable preview of what an automation would do | DONE |
+| AUTO-027 | NL creation UI | `CreateWithNaturalLanguageDialog` with intent input, provider selector, draft preview, and confirmation checklist | DONE |
+
+### Trust Model Enforcement (Phase 8)
+
+| ID | Task | Description | Status |
+|----|------|-------------|--------|
+| AUTO-028 | Trust gate for automation execution | Automations refuse to run when shared config is untrusted; UI shows trust CTA banner | DONE |
+| AUTO-029 | Safety checks for run-command | `run-command` validates `cwd` is within project root via `isWithinDir` before execution | DONE |
+
 ### Dependency Notes
 
 - AUTO-003 is prerequisite for AUTO-004.
@@ -370,7 +427,8 @@ interface AutomationRun {
 - AUTO-020 depends on AUTO-013.
 - AUTO-009 can use the existing `conflictService` implemented in Phase 5 (no additional dependency).
 - AUTO-010 depends on the hosted agent/mirror service from **Phase 6** (Cloud Infrastructure).
+- AUTO-021 through AUTO-027 (NL planner) depend on AUTO-004 for rule schema and AUTO-015 for UI integration.
 
 ---
 
-*This document describes the Automations feature for ADE. The core job engine pipeline (AUTO-001, AUTO-002) is implemented, and Phase 8 adds user-configurable automation rules, triggers, actions, and UI management.*
+*This document describes the Automations feature for ADE. The core job engine pipeline (AUTO-001, AUTO-002) is implemented, and Phase 8 adds user-configurable automation rules, triggers, actions, NL-to-rule planner, trust enforcement, and UI management.*

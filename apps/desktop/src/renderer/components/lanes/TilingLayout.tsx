@@ -146,7 +146,7 @@ function TileRenderer({
 
   return (
     <Group id={`tiling-group:${node.id}`} orientation={node.direction} className="h-full w-full">
-      <Panel id={`tiling-panel:${first.id}`} defaultSize={firstSize} minSize={10}>
+      <Panel id={`tiling-panel:${first.id}`} defaultSize={`${firstSize}%`} minSize="10%">
         <TileRenderer
           node={first}
           sessions={sessions}
@@ -157,7 +157,7 @@ function TileRenderer({
         />
       </Panel>
       <ResizeGutter orientation={node.direction === "horizontal" ? "vertical" : "horizontal"} />
-      <Panel id={`tiling-panel:${second.id}`} defaultSize={secondSize} minSize={10}>
+      <Panel id={`tiling-panel:${second.id}`} defaultSize={`${secondSize}%`} minSize="10%">
         <TileRenderer
           node={second}
           sessions={sessions}

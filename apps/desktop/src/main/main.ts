@@ -408,11 +408,21 @@ app.whenReady().then(async () => {
     // then routes them through the same onHeadChanged pipeline (packs, automations, restack suggestions).
     let headWatcherTimer: NodeJS.Timeout | null = null;
     let headWatcherRunning = false;
+    let missingBroadcasted = false;
 
     const pollHeads = async () => {
       if (headWatcherRunning) return;
       headWatcherRunning = true;
       try {
+        // Check if the active project root still exists on disk.
+        if (!fs.existsSync(projectRoot)) {
+          if (!missingBroadcasted) {
+            missingBroadcasted = true;
+            broadcast(IPC.projectMissing, { rootPath: projectRoot });
+          }
+        } else {
+          missingBroadcasted = false;
+        }
         const rows = db.all<{ id: string; worktree_path: string }>(
           `
             select id, worktree_path

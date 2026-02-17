@@ -3,6 +3,7 @@ import { runGit, runGitOrThrow } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
+  GitBatchFileActionArgs,
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
@@ -231,6 +232,36 @@ export function createGitOperationsService({
         metadata: { path: filePath },
         fn: async (lane) => {
           await runGitOrThrow(["add", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+        }
+      });
+      return action;
+    },
+
+    async stageAll(args: GitBatchFileActionArgs): Promise<GitActionResult> {
+      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_stage_all",
+        reason: "stage_all",
+        metadata: { count: filePaths.length },
+        fn: async (lane) => {
+          if (filePaths.length === 0) return;
+          await runGitOrThrow(["add", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+        }
+      });
+      return action;
+    },
+
+    async unstageAll(args: GitBatchFileActionArgs): Promise<GitActionResult> {
+      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_unstage_all",
+        reason: "unstage_all",
+        metadata: { count: filePaths.length },
+        fn: async (lane) => {
+          if (filePaths.length === 0) return;
+          await runGitOrThrow(["restore", "--staged", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;

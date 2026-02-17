@@ -1,6 +1,6 @@
 # Data Model & Persistence
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -84,7 +84,7 @@ Several tables use `*_json` TEXT columns to store structured data that varies by
 
 ### Database Schema
 
-The following tables are created by the migration system in `kvDb.ts`:
+The following 21 tables are created by the migration system in `kvDb.ts`:
 
 #### Key-Value Store
 
@@ -116,22 +116,37 @@ One row per git repository that has been opened in ADE. The `root_path` uniquely
 
 ```sql
 CREATE TABLE IF NOT EXISTS lanes (
-  id            TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL,
-  name          TEXT NOT NULL,
-  description   TEXT,
-  base_ref      TEXT NOT NULL,
-  branch_ref    TEXT NOT NULL,
-  worktree_path TEXT NOT NULL,
-  status        TEXT NOT NULL,          -- 'active' | 'archived'
-  created_at    TEXT NOT NULL,
-  archived_at   TEXT,
-  FOREIGN KEY(project_id) REFERENCES projects(id)
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL,
+  name              TEXT NOT NULL,
+  description       TEXT,
+  lane_type         TEXT NOT NULL DEFAULT 'worktree',  -- 'primary' | 'worktree' | 'attached'
+  base_ref          TEXT NOT NULL,
+  branch_ref        TEXT NOT NULL,
+  worktree_path     TEXT NOT NULL,
+  attached_root_path TEXT,              -- For 'attached' lanes: external path
+  is_edit_protected INTEGER NOT NULL DEFAULT 0,
+  parent_lane_id    TEXT,               -- For stacked lanes: parent in the stack
+  color             TEXT,               -- UI color hint
+  icon              TEXT,               -- UI icon hint
+  tags_json         TEXT,               -- JSON array of string tags
+  status            TEXT NOT NULL,      -- 'active' | 'archived'
+  created_at        TEXT NOT NULL,
+  archived_at       TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(parent_lane_id) REFERENCES lanes(id)
 );
-CREATE INDEX IF NOT EXISTS idx_lanes_project_id ON lanes(project_id);
+CREATE INDEX IF NOT EXISTS idx_lanes_project_id     ON lanes(project_id);
+CREATE INDEX IF NOT EXISTS idx_lanes_project_type   ON lanes(project_id, lane_type);
+CREATE INDEX IF NOT EXISTS idx_lanes_project_parent ON lanes(project_id, parent_lane_id);
 ```
 
-Each lane represents a unit of parallel development work, backed by a git worktree. The `branch_ref` follows the `ade/<slug>-<uuid_prefix>` naming convention. The `worktree_path` points to the filesystem location under `.ade/worktrees/`.
+Each lane represents a unit of parallel development work. Lanes have three types:
+- `primary`: The main branch (e.g., `main`), always present.
+- `worktree`: Standard ADE worktree-backed lanes under `.ade/worktrees/`.
+- `attached`: External directories attached as lanes (e.g., existing checkouts).
+
+The `parent_lane_id` enables stacked lane hierarchies. The `color`, `icon`, and `tags_json` fields provide UI customization. `is_edit_protected` prevents accidental modifications to protected lanes (e.g., production branches).
 
 #### Terminal Sessions
 
@@ -140,6 +155,10 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
   id                  TEXT PRIMARY KEY,
   lane_id             TEXT NOT NULL,
   pty_id              TEXT,
+  tracked             INTEGER NOT NULL DEFAULT 1,
+  goal                TEXT,
+  tool_type           TEXT,
+  pinned              INTEGER NOT NULL DEFAULT 0,
   title               TEXT NOT NULL,
   started_at          TEXT NOT NULL,
   ended_at            TEXT,
@@ -149,13 +168,19 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
   head_sha_end        TEXT,
   status              TEXT NOT NULL,     -- 'running' | 'completed' | 'failed' | 'disposed'
   last_output_preview TEXT,
+  summary             TEXT,
   FOREIGN KEY(lane_id) REFERENCES lanes(id)
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_lane_id ON terminal_sessions(lane_id);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status  ON terminal_sessions(status);
 ```
 
-Records every terminal session within a lane. `head_sha_start` and `head_sha_end` capture the git HEAD at session creation and termination, enabling diff computation for what changed during the session. `transcript_path` points to the raw terminal output log file.
+Records every terminal session within a lane. `head_sha_start` and `head_sha_end` capture the git HEAD at session creation and termination, enabling diff computation for what changed during the session. `transcript_path` points to the raw terminal output log file. Additional metadata:
+- `tracked`: Whether the session is included in pack generation (default: yes).
+- `goal`: User-provided or inferred session intent description.
+- `tool_type`: Agent tool identifier (e.g., `claude-code`, `cursor`) when the session was spawned by an agent tool.
+- `pinned`: Whether the session is pinned for retention.
+- `summary`: Post-session AI-generated or user-provided summary.
 
 #### Session Deltas
 
@@ -245,6 +270,7 @@ Stores the resolved process definitions derived from `ade.yaml` and `local.yaml`
 ```sql
 CREATE TABLE IF NOT EXISTS process_runtime (
   project_id   TEXT NOT NULL,
+  lane_id      TEXT NOT NULL DEFAULT '__legacy__',
   process_key  TEXT NOT NULL,
   status       TEXT NOT NULL,            -- 'stopped' | 'starting' | 'running' | etc.
   pid          INTEGER,
@@ -253,12 +279,15 @@ CREATE TABLE IF NOT EXISTS process_runtime (
   exit_code    INTEGER,
   readiness    TEXT NOT NULL,            -- 'unknown' | 'ready' | 'not_ready'
   updated_at   TEXT NOT NULL,
-  PRIMARY KEY(project_id, process_key),
-  FOREIGN KEY(project_id) REFERENCES projects(id)
+  PRIMARY KEY(project_id, lane_id, process_key),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
 );
+CREATE INDEX IF NOT EXISTS idx_process_runtime_project_id   ON process_runtime(project_id);
+CREATE INDEX IF NOT EXISTS idx_process_runtime_project_lane ON process_runtime(project_id, lane_id);
 ```
 
-Tracks the current runtime state of each managed process. Updated in real time as processes start, stop, crash, or change readiness state.
+Tracks the current runtime state of each managed process, scoped per lane. The `lane_id` column was added to support per-lane process isolation. Legacy rows use `'__legacy__'` as the lane_id (migrated automatically from the old schema).
 
 #### Process Runs
 
@@ -360,6 +389,220 @@ CREATE INDEX IF NOT EXISTS idx_packs_index_lane    ON packs_index(lane_id);
 
 Index table for pack files. The `pack_key` is either `"project"` for the project pack or `"lane:<lane_id>"` for lane packs. Tracks when the deterministic and narrative sections were last updated and the HEAD SHA at the time of generation.
 
+#### Conflict Predictions (Phase 5)
+
+```sql
+CREATE TABLE IF NOT EXISTS conflict_predictions (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL,
+  lane_a_id             TEXT NOT NULL,
+  lane_b_id             TEXT,
+  status                TEXT NOT NULL,
+  conflicting_files_json TEXT,
+  overlap_files_json    TEXT,
+  lane_a_sha            TEXT,
+  lane_b_sha            TEXT,
+  predicted_at          TEXT NOT NULL,
+  expires_at            TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_a_id) REFERENCES lanes(id),
+  FOREIGN KEY(lane_b_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_cp_lane_a       ON conflict_predictions(lane_a_id);
+CREATE INDEX IF NOT EXISTS idx_cp_lane_b       ON conflict_predictions(lane_b_id);
+CREATE INDEX IF NOT EXISTS idx_cp_predicted_at ON conflict_predictions(predicted_at);
+```
+
+Stores the results of conflict prediction dry-merge simulations between lane pairs. Each prediction records which files conflict, which files overlap, and the HEAD SHAs at prediction time. Predictions expire after a configurable duration.
+
+#### Conflict Proposals (Phase 5)
+
+```sql
+CREATE TABLE IF NOT EXISTS conflict_proposals (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL,
+  lane_id               TEXT NOT NULL,
+  peer_lane_id          TEXT,
+  prediction_id         TEXT,
+  source                TEXT NOT NULL,     -- 'hosted' | 'byok' | 'manual'
+  confidence            REAL,              -- 0.0 to 1.0
+  explanation           TEXT,
+  diff_patch            TEXT NOT NULL,
+  status                TEXT NOT NULL,     -- 'pending' | 'applied' | 'rejected' | 'undone'
+  job_id                TEXT,
+  artifact_id           TEXT,
+  applied_operation_id  TEXT,
+  metadata_json         TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id),
+  FOREIGN KEY(peer_lane_id) REFERENCES lanes(id),
+  FOREIGN KEY(prediction_id) REFERENCES conflict_predictions(id),
+  FOREIGN KEY(applied_operation_id) REFERENCES operations(id)
+);
+CREATE INDEX IF NOT EXISTS idx_conflict_proposals_lane   ON conflict_proposals(project_id, lane_id);
+CREATE INDEX IF NOT EXISTS idx_conflict_proposals_status ON conflict_proposals(project_id, status);
+```
+
+Stores AI-generated conflict resolution proposals. Each proposal contains a unified diff patch, a confidence score, and an explanation. When applied, the `applied_operation_id` links to the git operation for undo support.
+
+#### Pull Requests (Phase 7)
+
+```sql
+CREATE TABLE IF NOT EXISTS pull_requests (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL,
+  lane_id           TEXT NOT NULL,
+  repo_owner        TEXT NOT NULL,
+  repo_name         TEXT NOT NULL,
+  github_pr_number  INTEGER NOT NULL,
+  github_url        TEXT NOT NULL,
+  github_node_id    TEXT,
+  title             TEXT,
+  state             TEXT NOT NULL,         -- 'open' | 'closed' | 'merged'
+  base_branch       TEXT NOT NULL,
+  head_branch       TEXT NOT NULL,
+  checks_status     TEXT,                  -- 'pending' | 'passing' | 'failing' | null
+  review_status     TEXT,                  -- 'approved' | 'changes_requested' | 'pending' | null
+  additions         INTEGER NOT NULL DEFAULT 0,
+  deletions         INTEGER NOT NULL DEFAULT 0,
+  last_synced_at    TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE(project_id, lane_id),
+  UNIQUE(project_id, repo_owner, repo_name, github_pr_number),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_lane_id    ON pull_requests(lane_id);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_project_id ON pull_requests(project_id);
+```
+
+Maps lanes to GitHub pull requests. Each lane can have at most one linked PR. The PR state and check/review statuses are synced periodically by the PR polling service.
+
+#### Checkpoints (Phase 8)
+
+```sql
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL,
+  lane_id             TEXT NOT NULL,
+  session_id          TEXT,
+  sha                 TEXT NOT NULL,
+  diff_stat_json      TEXT,
+  pack_event_ids_json TEXT,
+  created_at          TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id),
+  FOREIGN KEY(session_id) REFERENCES terminal_sessions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_project_created ON checkpoints(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_lane_created    ON checkpoints(lane_id, created_at);
+```
+
+Immutable execution snapshots recorded at session boundaries. Each checkpoint captures the git SHA, diff statistics, and associated pack event IDs for that point in time.
+
+#### Pack Events (Phase 8)
+
+```sql
+CREATE TABLE IF NOT EXISTS pack_events (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL,
+  pack_key      TEXT NOT NULL,
+  event_type    TEXT NOT NULL,
+  payload_json  TEXT,
+  created_at    TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_pack_events_project_created  ON pack_events(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_pack_events_pack_key_created ON pack_events(project_id, pack_key, created_at);
+```
+
+Append-only event log for pack lifecycle events. Known `event_type` values include: `deterministic_update`, `narrative_update`, `narrative_requested`, `narrative_failed`, `version_created`, `checkpoint_created`. The `payload_json` column stores event-specific details (e.g., provider mode, job IDs, timing telemetry).
+
+#### Pack Versions (Phase 8)
+
+```sql
+CREATE TABLE IF NOT EXISTS pack_versions (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL,
+  pack_key        TEXT NOT NULL,
+  version_number  INTEGER NOT NULL,
+  content_hash    TEXT NOT NULL,
+  rendered_path   TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_pack_versions_project_pack         ON pack_versions(project_id, pack_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pack_versions_project_pack_version
+  ON pack_versions(project_id, pack_key, version_number);
+```
+
+Immutable rendered pack snapshots. Each version is content-addressed by `content_hash` (SHA-256 of the rendered markdown). The `rendered_path` points to the snapshot file on disk. Version numbers are monotonically increasing per `pack_key`.
+
+#### Pack Heads (Phase 8)
+
+```sql
+CREATE TABLE IF NOT EXISTS pack_heads (
+  project_id         TEXT NOT NULL,
+  pack_key           TEXT NOT NULL,
+  current_version_id TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  PRIMARY KEY(project_id, pack_key),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_pack_heads_project ON pack_heads(project_id);
+```
+
+Mutable pointers to the latest pack version for each scope. Updated atomically when a new pack version is created.
+
+#### Automation Runs (Phase 8)
+
+```sql
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL,
+  automation_id     TEXT NOT NULL,
+  trigger_type      TEXT NOT NULL,
+  started_at        TEXT NOT NULL,
+  ended_at          TEXT,
+  status            TEXT NOT NULL,       -- 'running' | 'completed' | 'failed'
+  actions_completed INTEGER NOT NULL DEFAULT 0,
+  actions_total     INTEGER NOT NULL,
+  error_message     TEXT,
+  trigger_metadata  TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_project_started    ON automation_runs(project_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_project_automation ON automation_runs(project_id, automation_id);
+```
+
+Records every automation rule execution. Tracks progress (actions completed vs total) and overall status. `trigger_type` identifies what triggered the run (e.g., `head_change`, `manual`).
+
+#### Automation Action Results (Phase 8)
+
+```sql
+CREATE TABLE IF NOT EXISTS automation_action_results (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL,
+  run_id        TEXT NOT NULL,
+  action_index  INTEGER NOT NULL,
+  action_type   TEXT NOT NULL,
+  started_at    TEXT NOT NULL,
+  ended_at      TEXT,
+  status        TEXT NOT NULL,
+  error_message TEXT,
+  output        TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(run_id) REFERENCES automation_runs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_automation_action_results_project_run
+  ON automation_action_results(project_id, run_id);
+```
+
+Per-action results within an automation run. Each action in a rule's action list gets a separate result row, enabling granular progress tracking and error diagnosis.
+
 ### Database API
 
 The `AdeDb` interface provides a minimal API surface:
@@ -408,9 +651,16 @@ All ADE artifacts live under `.ade/` in the project root:
     │   └── <session-uuid>.log           # Raw terminal output capture
     ├── packs/
     │   ├── project_pack.md              # Project-level context pack
+    │   ├── versions/                    # Immutable pack version snapshots
+    │   │   └── <pack-key>/
+    │   │       └── v<N>.md
+    │   ├── conflicts/
+    │   │   └── predictions/
+    │   │       └── <lane-id>.json       # Deterministic conflict prediction summary
     │   └── lanes/
     │       └── <lane-uuid>/
-    │           └── lane_pack.md         # Lane-level context pack
+    │           ├── lane_pack.md         # Lane-level context pack
+    │           └── plan_pack.md         # Lane plan pack (optional)
     ├── process-logs/
     │   └── <process-key>-<run-uuid>.log # Process stdout/stderr
     └── test-logs/
@@ -443,13 +693,21 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 
 ## Integration Points
 
-- **KV Store** --> Layout persistence, config trust hashes
+- **KV Store** --> Layout persistence, config trust hashes, tiling tree state, graph state
 - **Projects table** --> Lane service (foreign key), operation service (scoping)
-- **Lanes table** --> Session service, pack service, git service, diff service
+- **Lanes table** --> Session service, pack service, git service, diff service, conflict service, PR service
 - **Terminal Sessions** --> Session delta computation, pack generation
 - **Session Deltas** --> Lane pack body, project pack body
-- **Operations** --> History page, undo tracking (future)
-- **Packs Index** --> Pack viewer UI, hosted agent sync (future)
+- **Operations** --> History page, proposal undo tracking
+- **Packs Index** --> Pack viewer UI, hosted agent sync
+- **Conflict Predictions** --> Conflict radar UI, conflict pack generation, risk matrix
+- **Conflict Proposals** --> Conflict resolution UI, proposal apply/undo flow
+- **Pull Requests** --> PR page UI, PR polling service, lane status indicators
+- **Checkpoints** --> Pack checkpoint viewer, session boundary snapshots
+- **Pack Events** --> Pack event timeline, narrative telemetry, delta digest API
+- **Pack Versions** --> Pack version history, diff viewer, head version API
+- **Pack Heads** --> Current version pointer for each pack scope
+- **Automation Runs/Results** --> Automation history UI, run detail viewer
 - **Process/Test tables** --> Process manager UI, test runner UI, pack body generation
 
 ---
@@ -459,24 +717,26 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 ### Completed
 
 - SQLite database initialization with sql.js WASM
-- Complete schema with 12 tables and 16 indexes
+- Complete schema with 21 tables and 30+ indexes
 - Debounced flush strategy (125ms after last write)
 - Parameterized query API (no SQL injection)
 - KV store for layout and settings
 - All core tables (projects, lanes, sessions, session_deltas, operations, packs_index)
 - All process/test tables (process_definitions, process_runtime, process_runs, stack_buttons, test_suites, test_runs)
+- Conflict prediction tables: `conflict_predictions`, `conflict_proposals` (Phase 5)
+- Pull request tracking: `pull_requests` (Phase 7)
+- Pack versioning: `checkpoints`, `pack_events`, `pack_versions`, `pack_heads` (Phase 8)
+- Automation run logging: `automation_runs`, `automation_action_results` (Phase 8)
+- Lanes table extended with: `lane_type`, `attached_root_path`, `is_edit_protected`, `parent_lane_id`, `color`, `icon`, `tags_json`
+- Terminal sessions table extended with: `tracked`, `goal`, `tool_type`, `pinned`, `summary`
+- Process runtime table extended with `lane_id` (per-lane process isolation, with legacy migration)
 - Filesystem artifact directories (transcripts, packs, process-logs, test-logs, worktrees)
 - Global state persistence (recent projects)
-- Idempotent migration system
+- Idempotent migration system with `addColumnIfMissing` and `createIndexIfColumnsExist` helpers
 
 ### Planned (Not Yet Created)
 
-- `stacks` table for parent-child lane relationships
 - `lane_profiles` table for named process/test/env defaults per lane type
 - `lane_overlay_policies` table for workspace-level overrides
-- `checkpoints` table for immutable execution snapshots
-- `pack_events` table for append-only pack change log
-- `pack_versions` table for immutable rendered pack snapshots
-- `pack_heads` table for mutable pointers to latest pack version per scope
 - Schema version tracking for non-idempotent migrations
 - Database compaction / vacuum scheduling

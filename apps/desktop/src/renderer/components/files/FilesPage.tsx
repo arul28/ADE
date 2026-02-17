@@ -32,6 +32,7 @@ import { Button } from "../ui/Button";
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
 import { useAppStore } from "../../state/appStore";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
+import { revealLabel } from "../../lib/platform";
 import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
 
 type OpenTab = {
@@ -1255,6 +1256,12 @@ export function FilesPage() {
             setContextMenu(null);
             navigator.clipboard.writeText(contextMenu.nodePath).catch(() => {});
           }}>Copy Path</button>
+          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+            setContextMenu(null);
+            if (activeWorkspace) {
+              window.ade.app.revealPath(`${activeWorkspace.rootPath}/${contextMenu.nodePath}`).catch(() => {});
+            }
+          }}>{revealLabel}</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => createFileAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))}>New File</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => createDirectoryAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))}>New Folder</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => renamePath(contextMenu.nodePath))}>Rename</button>

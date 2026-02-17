@@ -107,7 +107,7 @@ export function LaneDiffPane({
             orientation="horizontal"
             className="h-full min-h-0"
           >
-            <Panel id="diff-pane-commit-files" minSize={15} defaultSize={26} className="min-w-0 bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
+            <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="26%" className="min-w-0 bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
               <div className="flex h-full min-h-0 flex-col">
                 <div className="flex items-center justify-between bg-card/30 px-2 py-1 shrink-0">
                   <div className="flex items-center gap-2">
@@ -142,7 +142,7 @@ export function LaneDiffPane({
               </div>
             </Panel>
             <ResizeGutter orientation="vertical" />
-            <Panel id="diff-pane-commit-content" minSize={30} defaultSize={74} className="min-w-0">
+            <Panel id="diff-pane-commit-content" minSize="30%" defaultSize="74%" className="min-w-0">
               {!selectedCommitFilePath ? (
                 <div className="flex h-full items-center justify-center p-3">
                   <EmptyState title="No files found" description="This commit may be empty." />

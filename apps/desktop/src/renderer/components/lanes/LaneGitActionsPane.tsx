@@ -214,14 +214,14 @@ export function LaneGitActionsPane({
   const stageAll = () => {
     if (!laneId) return;
     runAction("stage all", async () => {
-      await Promise.all(changes.unstaged.map((f) => window.ade.git.stageFile({ laneId, path: f.path })));
+      await window.ade.git.stageAll({ laneId, paths: changes.unstaged.map((f) => f.path) });
     });
   };
 
   const unstageAll = () => {
     if (!laneId) return;
     runAction("unstage all", async () => {
-      await Promise.all(changes.staged.map((f) => window.ade.git.unstageFile({ laneId, path: f.path })));
+      await window.ade.git.unstageAll({ laneId, paths: changes.staged.map((f) => f.path) });
     });
   };
 

@@ -340,12 +340,12 @@ When creating a new lane, the user can select a profile from a dropdown. The pro
 
 ### Lane Overlay Policies
 
-**Status: NOT YET STARTED (planned)**
+**Status: DONE (Phase 4)**
 
-Lane overlay policies are workspace-level rules that automatically apply configuration overrides to lanes matching certain criteria. This enables organizational policies like "all frontend lanes must use port range 3000-3999" or "all staging lanes get the staging API URL."
+Lane overlay policies are workspace-level rules that automatically apply configuration overrides to lanes matching certain criteria. This is implemented via `laneOverlayMatcher.ts`. This enables organizational policies like "all frontend lanes must use port range 3000-3999" or "all staging lanes get the staging API URL."
 
 ```yaml
-# Planned schema (in ade.yaml)
+# Schema (in ade.yaml)
 laneOverlays:
   - id: "frontend-ports"
     match:
@@ -416,7 +416,7 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | IPC endpoints for config operations | Done | `config:get`, `config:save`, `config:confirmTrust` |
 | `local.yaml` gitignore setup | Done | Added to `.git/info/exclude` on init |
 | Lane profiles | Not started | Schema designed, runtime not implemented |
-| Lane overlay policies | Not started | Schema designed, runtime not implemented |
+| Lane overlay policies | Done | Implemented via `laneOverlayMatcher.ts` (Phase 4) |
 | Config migration (version upgrades) | Not started | Only version 1 exists currently |
 
-**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). Lane profiles and lane overlay policies are NOT YET STARTED.
+**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.

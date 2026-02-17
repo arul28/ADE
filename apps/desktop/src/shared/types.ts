@@ -46,6 +46,7 @@ export type RecentProjectSummary = {
   rootPath: string;
   displayName: string;
   lastOpenedAt: string;
+  exists: boolean;
 };
 
 export type LaneType = "primary" | "worktree" | "attached";
@@ -1632,6 +1633,11 @@ export type GitSyncMode = "merge" | "rebase";
 export type GitFileActionArgs = {
   laneId: string;
   path: string;
+};
+
+export type GitBatchFileActionArgs = {
+  laneId: string;
+  paths: string[];
 };
 
 export type GitCommitArgs = {

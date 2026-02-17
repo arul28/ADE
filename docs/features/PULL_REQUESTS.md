@@ -1,6 +1,6 @@
 # Pull Requests — GitHub Integration & Stacked PRs
 
-> Last updated: 2026-02-14
+> Last updated: 2026-02-16
 
 ---
 
@@ -224,10 +224,13 @@ Workflow for stacked lanes with chained PRs:
 | Service | Status | Responsibility |
 |---------|--------|----------------|
 | `githubService` | Exists | GitHub API integration — PR CRUD, checks, reviews, merge operations. Uses GitHub REST API directly; in hosted mode routes requests via the cloud GitHub App proxy. |
-| `prService` | Exists | PR lifecycle management — creation/linking, status tracking, stack chain logic, land flow orchestration. |
+| `prService` | Exists | PR lifecycle management — creation/linking, status tracking, stack chain logic, land flow orchestration. Supports hosted, BYOK, and guest/CLI modes for description drafting. |
+| `prPollingService` | Exists | Periodic polling of GitHub for PR status updates. Emits `prs-updated` events and `pr-notification` events (checks failing, review requested, changes requested, merge ready). Configurable interval with jitter and exponential backoff on failures; respects GitHub rate limit reset headers. |
 | `packService` | Exists | Provides lane pack content for auto-drafting PR descriptions. |
 | `laneService` | Exists | Lane-PR association, parent-child relationships for stacking. |
 | `operationService` | Exists | Records PR land operations in the history timeline. |
+| `hostedAgentService` | Exists (optional) | In hosted mode, generates AI-drafted PR title and body via the cloud proxy. |
+| `byokLlmService` | Exists (optional) | In BYOK mode, generates AI-drafted PR description body using the user's own LLM key. |
 
 ### Authentication
 
@@ -246,17 +249,20 @@ GitHub authentication is handled securely:
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.prs.createFromLane` | `(args: { laneId: string; title: string; body: string; draft: boolean; base?: string }) => PrSummary` | Create a new GitHub PR from a lane |
-| `ade.prs.linkToLane` | `(args: { laneId: string; prUrl: string }) => PrSummary` | Link an existing GitHub PR to a lane |
+| `ade.prs.createFromLane` | `(args: CreatePrFromLaneArgs) => PrSummary` | Create a new GitHub PR from a lane. Args: `{ laneId, title, body, draft, baseBranch?, labels?, reviewers? }` |
+| `ade.prs.linkToLane` | `(args: { laneId: string; prUrlOrNumber: string }) => PrSummary` | Link an existing GitHub PR to a lane by URL or number |
 | `ade.prs.getForLane` | `(laneId: string) => PrSummary \| null` | Get the PR associated with a lane |
 | `ade.prs.listAll` | `() => PrSummary[]` | List all PRs in the current project |
+| `ade.prs.refresh` | `(args?: { prId?: string }) => PrSummary[]` | Force-refresh PR status from GitHub (single or all) |
 | `ade.prs.getStatus` | `(prId: string) => PrStatus` | Get detailed status for a PR |
 | `ade.prs.getChecks` | `(prId: string) => PrCheck[]` | Get CI check results for a PR |
 | `ade.prs.getReviews` | `(prId: string) => PrReview[]` | Get review status for a PR |
 | `ade.prs.updateDescription` | `(args: { prId: string; body: string }) => void` | Update the PR description on GitHub |
 | `ade.prs.land` | `(args: { prId: string; method: MergeMethod }) => LandResult` | Merge a single PR and clean up |
 | `ade.prs.landStack` | `(args: { rootLaneId: string; method: MergeMethod }) => LandResult[]` | Land an entire stack of PRs in order |
-| `ade.prs.draftDescription` | `(laneId: string) => string` | Generate a PR description from the lane pack |
+| `ade.prs.draftDescription` | `(laneId: string) => { title: string; body: string }` | Generate a PR title and description from the lane pack (uses hosted/BYOK/guest mode) |
+| `ade.prs.openInGitHub` | `(prId: string) => void` | Open the PR page in the external browser |
+| `ade.prs.onEvent` | `(cb: (event: PrEventPayload) => void) => UnsubscribeFn` | Subscribe to polling events (`prs-updated`, `pr-notification`) |
 
 ### Stacked PR Logic
 
@@ -294,6 +300,8 @@ pull_requests (
   id TEXT PRIMARY KEY,             -- ADE-generated UUID
   lane_id TEXT NOT NULL,           -- FK to lanes table
   project_id TEXT NOT NULL,        -- FK to projects
+  repo_owner TEXT NOT NULL,        -- GitHub repository owner (e.g., 'octocat')
+  repo_name TEXT NOT NULL,         -- GitHub repository name (e.g., 'my-repo')
   github_pr_number INTEGER,        -- GitHub PR number (e.g., 101)
   github_url TEXT,                 -- Full URL to the PR on GitHub
   github_node_id TEXT,             -- GitHub GraphQL node ID (for API operations)
@@ -307,7 +315,8 @@ pull_requests (
   deletions INTEGER DEFAULT 0,     -- Total lines deleted
   last_synced_at TEXT,             -- Last time status was fetched from GitHub
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, lane_id)      -- At most one PR per lane per project (upsert target)
 )
 
 -- Index for fast lane lookups
@@ -319,22 +328,26 @@ CREATE INDEX idx_pull_requests_project_id ON pull_requests(project_id);
 
 ```typescript
 type PrState = 'draft' | 'open' | 'merged' | 'closed';
-type ChecksStatus = 'pending' | 'passing' | 'failing' | 'none';
-type ReviewStatus = 'none' | 'requested' | 'approved' | 'changes_requested';
+type PrChecksStatus = 'pending' | 'passing' | 'failing' | 'none';
+type PrReviewStatus = 'none' | 'requested' | 'approved' | 'changes_requested';
 type MergeMethod = 'merge' | 'squash' | 'rebase';
+type PrNotificationKind = 'checks_failing' | 'review_requested' | 'changes_requested' | 'merge_ready';
 
 interface PrSummary {
   id: string;
   laneId: string;
   projectId: string;
+  repoOwner: string;           // GitHub repository owner
+  repoName: string;            // GitHub repository name
   githubPrNumber: number;
   githubUrl: string;
+  githubNodeId: string | null;
   title: string;
   state: PrState;
   baseBranch: string;
   headBranch: string;
-  checksStatus: ChecksStatus;
-  reviewStatus: ReviewStatus;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
   additions: number;
   deletions: number;
   lastSyncedAt: string | null;
@@ -343,9 +356,10 @@ interface PrSummary {
 }
 
 interface PrStatus {
+  prId: string;
   state: PrState;
-  checksStatus: ChecksStatus;
-  reviewStatus: ReviewStatus;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
   isMergeable: boolean;
   mergeConflicts: boolean;
   behindBaseBy: number;        // Number of commits behind base
@@ -377,19 +391,20 @@ interface LandResult {
   error: string | null;
 }
 
-interface StackChain {
-  rootLaneId: string;
-  lanes: Array<{
-    laneId: string;
-    laneName: string;
-    prNumber: number | null;
-    prState: PrState | null;
-    checksStatus: ChecksStatus | null;
-    reviewStatus: ReviewStatus | null;
-    depth: number;               // 0 = root, 1 = first child, etc.
-  }>;
-  isReadyToLand: boolean;        // All PRs approved and checks passing
-}
+// Note: StackChainItem is used by laneService for stack chain resolution.
+// The PR chain view in PRsPage builds on top of lane stack data + PR status.
+type StackChainItem = {
+  laneId: string;
+  laneName: string;
+  branchRef: string;
+  depth: number;                 // 0 = root, 1 = first child, etc.
+  parentLaneId: string | null;
+  status: LaneStatus;
+};
+
+type PrEventPayload =
+  | { type: 'prs-updated'; polledAt: string; prs: PrSummary[] }
+  | { type: 'pr-notification'; prId: string; kind: PrNotificationKind; message: string };
 ```
 
 ---

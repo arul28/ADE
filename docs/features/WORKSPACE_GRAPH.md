@@ -1,6 +1,6 @@
 # Workspace Graph — Visual Topology Canvas
 
-> Last updated: 2026-02-14
+> Last updated: 2026-02-16
 
 ---
 
@@ -207,6 +207,65 @@ When a user clicks an edge, an overlay panel appears with merge simulation detai
    - "Cancel" button (closes panel)
    - "Open in Conflicts Tab" link (navigates to dedicated conflict resolution)
 
+### View Modes
+
+The graph supports four view modes, each applying a different auto-layout algorithm and emphasizing different relationships:
+
+| Mode | Focus | Layout Strategy |
+|------|-------|-----------------|
+| **Stack** | Parent-child stacking relationships | Hierarchical top-down layout. Stack edges are prominent; non-stack edges are dimmed. |
+| **Risk** | Conflict risk between lanes | Force-directed layout grouping lanes with overlapping changes. Risk edges are colored by severity. |
+| **Activity** | Recent commit activity | Nodes are sized and positioned by activity bucket (hot, warm, cold). Active lanes are centered and larger. |
+| **All** | Complete topology | Shows all edge types equally. Default radial/hierarchical layout with primary lane centered. |
+
+Switching view modes preserves per-mode layout positions — dragging a node in "stack" mode does not affect its position in "risk" mode. Positions are stored as a `GraphLayoutPreset` with separate snapshots per view mode.
+
+### Batch Operations
+
+The graph supports batch operations on multiple selected lanes. When multiple nodes are selected (via shift-click or drag-box), a batch toolbar appears with:
+
+| Operation | Description |
+|-----------|-------------|
+| **Restack** | Rebase selected lanes onto their parents (resolve stale stacks) |
+| **Push** | Push all selected lanes to their remotes |
+| **Fetch** | Fetch upstream changes for all selected lanes |
+| **Archive** | Archive all selected lanes |
+| **Delete** | Delete all selected lanes (with confirmation) |
+| **Sync** | Sync all selected lanes (fetch + merge/rebase) |
+
+Batch operations show a step-by-step progress indicator with per-lane status (pending, running, done, failed, skipped).
+
+### Drag-to-Reparent
+
+Dragging a node onto another node triggers a **reparent dialog** (not just repositioning). The dialog offers three action modes:
+
+- **Reparent**: Change the dragged lane's parent to the target lane (with cycle detection to prevent invalid topologies)
+- **Integrate**: Create a new integration lane that merges changes from both lanes
+- **PR**: Open a PR creation dialog targeting the drop target lane
+
+### Conflict Panel
+
+Clicking a risk edge opens an inline **conflict panel** on the graph (rather than navigating away). The panel shows:
+
+- The two conflicting lanes and their overlapping files
+- File-level conflict details as they load from the conflict service
+- An "Open in Conflicts Tab" link for full resolution
+
+### Integration Dialog
+
+The graph includes an **integration dialog** for creating new integration branches directly from the canvas. Users select multiple lanes and create a named integration lane that merges their changes together. The dialog shows progress as the integration is set up.
+
+### Filter Panel
+
+A filter panel allows filtering visible nodes by:
+
+- Lane name (text search)
+- Lane status (active, archived, etc.)
+- Environment mapping
+- Stack membership
+
+Filtered-out nodes are dimmed or hidden based on the filter mode.
+
 ### Interactions
 
 | Action | Input | Result |
@@ -214,12 +273,14 @@ When a user clicks an edge, an overlay panel appears with merge simulation detai
 | Pan canvas | Drag on empty space | Moves viewport |
 | Zoom | Scroll wheel / pinch | Zooms in or out |
 | Select node | Click node | Highlights node, shows detail panel |
-| Select edge | Click edge | Opens merge simulation panel |
-| Multi-select | Shift+click or drag selection box | Selects multiple nodes |
-| Context menu | Right-click node | Shows actions: Open, Archive, Delete, Create Child |
+| Select edge | Click edge | Opens conflict panel / merge simulation |
+| Multi-select | Shift+click or drag selection box | Selects multiple nodes, shows batch toolbar |
+| Drag node onto node | Drag and drop | Opens reparent dialog (reparent / integrate / PR) |
+| Context menu | Right-click node | Shows actions: Open, Archive, Delete, Create Child, Create PR |
 | Navigate minimap | Click on minimap | Moves viewport to clicked area |
 | Zoom to fit | Click zoom-to-fit button | Fits all nodes in viewport |
-| Reset layout | Context menu on canvas | Re-runs auto-layout algorithm |
+| Switch view mode | Click view mode button (Stack / Risk / Activity / All) | Changes layout algorithm and edge emphasis |
+| Reset layout | Context menu on canvas | Re-runs auto-layout algorithm for current view mode |
 
 ---
 
@@ -258,18 +319,20 @@ components handle ADE-specific rendering and interaction.
 
 ```
 WorkspaceGraphPage (route: /graph)
+  +-- View mode toolbar (Stack | Risk | Activity | All)
+  +-- Filter panel (text search, status, environment)
+  +-- Batch toolbar (visible when multi-select active)
   +-- ReactFlowProvider
        +-- ReactFlow (canvas)
-       |    +-- PrimaryLaneNode (custom node)
-       |    +-- WorktreeLaneNode (custom node)
-       |    +-- AttachedLaneNode (custom node)
-       |    +-- TopologyEdge (custom edge)
-       |    +-- StackEdge (custom edge)
-       |    +-- RiskEdge (custom edge)
+       |    +-- LaneNode (unified custom node, adapts by lane type + view mode)
+       |    +-- Custom edge renderers (topology, stack, risk with PR overlays)
        +-- MiniMap
        +-- Controls (zoom buttons, fit-to-view)
-       +-- MergeSimulationPanel (overlay, shown on edge click)
-       +-- NodeContextMenu (shown on right-click)
+  +-- ConflictPanel (inline overlay, shown on risk edge click)
+  +-- ReparentDialog (shown on drag-to-reparent)
+  +-- IntegrationDialog (shown for integration lane creation)
+  +-- NodeContextMenu (shown on right-click)
+  +-- BatchProgressPanel (shown during batch operations)
 ```
 
 ### Data Flow
@@ -293,20 +356,29 @@ WorkspaceGraphPage (route: /graph)
 
 ### Layout Persistence
 
-Node positions are stored in the existing `kvDb` key-value store under a
-project-scoped key:
+Node positions are stored in the existing `kvDb` key-value store as a `GraphLayoutPreset` with **separate snapshots per view mode**. This means dragging a node in "stack" mode does not affect its position in "risk" mode.
 
-```
-Key:    layout:<projectId>
-Value:  JSON object mapping node IDs to {x, y} coordinates
+```typescript
+type GraphLayoutSnapshot = {
+  viewMode: GraphViewMode;
+  positions: Record<string, { x: number; y: number }>;
+  zoom: number;
+  panX: number;
+  panY: number;
+};
 
-Example:
-{
-  "lane-abc123": { "x": 400, "y": 200 },
-  "lane-def456": { "x": 100, "y": 350 },
-  "lane-ghi789": { "x": 700, "y": 350 }
-}
+type GraphLayoutPreset = {
+  name: string;
+  byViewMode: {
+    stack: GraphLayoutSnapshot;
+    risk: GraphLayoutSnapshot;
+    activity: GraphLayoutSnapshot;
+    all: GraphLayoutSnapshot;
+  };
+};
 ```
+
+Stored under a project-scoped key in `kvDb`.
 
 ### Risk Matrix Cache
 
@@ -366,6 +438,16 @@ Workspace Graph is **implemented** (Phase 7). The checklist below is retained fo
 | GRAPH-026 | PR edge overlays (PR icon badge, state color, check status dot) | DONE |
 | GRAPH-027 | PR + risk edge coexistence (both visible simultaneously on same lane pair) | DONE |
 | GRAPH-028 | Environment legend (color key panel in canvas corner) | DONE |
+| GRAPH-029 | View modes (Stack / Risk / Activity / All) with per-mode auto-layout | DONE |
+| GRAPH-030 | Per-view-mode layout persistence (GraphLayoutPreset with byViewMode) | DONE |
+| GRAPH-031 | Drag-to-reparent with cycle detection and reparent dialog | DONE |
+| GRAPH-032 | Batch operations toolbar (restack, push, fetch, archive, delete, sync) | DONE |
+| GRAPH-033 | Batch progress indicator (per-lane step status) | DONE |
+| GRAPH-034 | Integration dialog (create integration lane from canvas) | DONE |
+| GRAPH-035 | Inline conflict panel on risk edge click | DONE |
+| GRAPH-036 | Filter panel (text search, status, environment) | DONE |
+| GRAPH-037 | Restack failure indication (node border pulse on restack failure) | DONE |
+| GRAPH-038 | Activity bucket sizing (hot/warm/cold node dimensions) | DONE |
 
 ### Dependency Notes
 

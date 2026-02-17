@@ -39,6 +39,7 @@ export function FloatingPane({
   onDragEnd,
   onDrop,
   onDragLeave,
+  minimizeBehavior = "css",
   className,
   bodyClassName,
   children
@@ -60,6 +61,7 @@ export function FloatingPane({
   onDragEnd?: () => void;
   onDrop?: () => void;
   onDragLeave?: () => void;
+  minimizeBehavior?: "css" | "native";
   className?: string;
   bodyClassName?: string;
   children: React.ReactNode;
@@ -92,13 +94,15 @@ export function FloatingPane({
   };
 
   const dropZoneStyle = dropEdge ? getDropZoneStyle(dropEdge) : null;
+  const usesCssMinimize = minimizeBehavior === "css";
+  const hideBody = usesCssMinimize && minimized;
 
   return (
     <div
       data-pane-id={id}
       className={cn(
         "ade-floating-pane relative",
-        minimized && "minimized",
+        usesCssMinimize && minimized && "minimized",
         isDragging && "dragging",
         isDropTarget && !dropZoneStyle && "drop-target",
         className
@@ -108,7 +112,7 @@ export function FloatingPane({
       onDragLeave={isDraggable ? handleDragLeave : undefined}
     >
       <div
-        className="ade-floating-pane-header"
+        className={cn("ade-floating-pane-header", minimized && "ade-floating-pane-header-minimized")}
         draggable={isDraggable}
         onDragStart={isDraggable ? handleDragStart : undefined}
         onDragEnd={isDraggable ? handleDragEnd : undefined}
@@ -120,32 +124,44 @@ export function FloatingPane({
           {minimizable ? (
             <button
               type="button"
-              className="flex h-4 w-4 items-center justify-center rounded text-muted-fg/70 hover:text-fg transition-colors"
-              onClick={onMinimizeToggle}
+              className={cn(
+                "flex h-5 w-5 items-center justify-center rounded transition-colors",
+                minimized
+                  ? "text-accent hover:text-accent/80 bg-accent/10"
+                  : "text-muted-fg/70 hover:text-fg"
+              )}
+              onClick={(event) => {
+                event.stopPropagation();
+                onMinimizeToggle?.();
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
               title={minimized ? "Expand pane" : "Minimize pane"}
             >
               {minimized ? (
-                <ChevronRight className="h-3 w-3" />
+                <ChevronRight className="h-3.5 w-3.5" />
               ) : (
-                <ChevronDown className="h-3 w-3" />
+                <ChevronDown className="h-3.5 w-3.5" />
               )}
             </button>
           ) : null}
-          {Icon ? <Icon className="h-3.5 w-3.5 text-muted-fg/70 shrink-0" /> : null}
-          <span className="ade-pane-title truncate">{title}</span>
-          {meta ? <span className="text-[10px] text-muted-fg/60 truncate">{meta}</span> : null}
+          {Icon ? (
+            <Icon className={cn(
+              "shrink-0",
+              minimized ? "h-4 w-4 text-fg/80" : "h-3.5 w-3.5 text-muted-fg/70"
+            )} />
+          ) : null}
+          <span className={cn("ade-pane-title truncate", minimized && "text-fg/90")}>{title}</span>
+          {meta && !minimized ? <span className="text-[10px] text-muted-fg/60 truncate">{meta}</span> : null}
         </div>
         {headerActions ? (
-          <div className="flex items-center gap-1 shrink-0 ml-2">
+          <div className={cn("flex items-center gap-1 shrink-0 ml-2", minimized && "opacity-70")}>
             {headerActions}
           </div>
         ) : null}
       </div>
-      {!minimized ? (
-        <div className={cn("flex-1 min-h-0 overflow-auto", bodyClassName)}>
-          {children}
-        </div>
-      ) : null}
+      <div className={cn("flex-1 min-h-0 overflow-auto", hideBody && "hidden", bodyClassName)}>
+        {children}
+      </div>
       {/* Drop zone overlay */}
       {dropZoneStyle ? (
         <div className="ade-drop-zone-overlay" style={dropZoneStyle} />

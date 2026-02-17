@@ -91,6 +91,7 @@ import type {
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitBatchFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -187,6 +188,7 @@ declare global {
         getInfo: () => Promise<AppInfo>;
         getProject: () => Promise<ProjectInfo>;
         openExternal: (url: string) => Promise<void>;
+        revealPath: (path: string) => Promise<void>;
       };
       project: {
         openRepo: () => Promise<ProjectInfo>;
@@ -196,6 +198,7 @@ declare global {
         listRecent: () => Promise<RecentProjectSummary[]>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
         forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
+        onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
@@ -288,7 +291,9 @@ declare global {
       };
       git: {
         stageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        stageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
         unstageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        unstageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
         discardFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         restoreStagedFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;

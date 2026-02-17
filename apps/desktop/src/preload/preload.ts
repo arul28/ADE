@@ -62,6 +62,7 @@ import type {
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitBatchFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -184,7 +185,8 @@ contextBridge.exposeInMainWorld("ade", {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject),
-    openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url })
+    openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url }),
+    revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path })
   },
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
@@ -194,7 +196,12 @@ contextBridge.exposeInMainWorld("ade", {
     exportConfig: async (): Promise<ExportConfigBundleResult> => ipcRenderer.invoke(IPC.projectExportConfig),
     listRecent: async (): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectListRecent),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
-    forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath })
+    forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
+    onMissing: (cb: (data: { rootPath: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { rootPath: string }) => cb(payload);
+      ipcRenderer.on(IPC.projectMissing, listener);
+      return () => ipcRenderer.removeListener(IPC.projectMissing, listener);
+    }
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> => ipcRenderer.invoke(IPC.keybindingsGet),
@@ -331,7 +338,9 @@ contextBridge.exposeInMainWorld("ade", {
   },
   git: {
     stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStageFile, args),
+    stageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStageAll, args),
     unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitUnstageFile, args),
+    unstageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitUnstageAll, args),
     discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitDiscardFile, args),
     restoreStagedFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitRestoreStagedFile, args),

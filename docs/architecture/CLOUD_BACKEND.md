@@ -1,6 +1,6 @@
 # Cloud Backend Architecture (AWS)
 
-> Last updated: 2026-02-12
+> Last updated: 2026-02-16
 
 The ADE cloud backend is a fully serverless AWS stack for hosted mirror sync and async job processing.
 
@@ -95,6 +95,7 @@ All protected routes require `Authorization: Bearer <token>` with Clerk-issued J
 | `POST` | `/projects/:id/jobs` | Submit hosted job |
 | `GET` | `/projects/:id/jobs/:jid` | Poll job status |
 | `GET` | `/projects/:id/artifacts/:aid` | Fetch artifact content |
+| `POST` | `/projects/:id/mirror/cleanup` | Run reachability-based mirror cleanup |
 | `DELETE` | `/projects/:id` | Delete hosted project data |
 
 ### DynamoDB Tables

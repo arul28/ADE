@@ -2,11 +2,15 @@ import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   GitBranch,
+  Grid3x3,
+  Layers,
   RefreshCw,
   Sparkles,
-  Wand2
+  Wand2,
+  Wrench
 } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import type {
@@ -24,6 +28,7 @@ import type {
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
+import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { RiskMatrix } from "./RiskMatrix";
 import { ConflictSummary } from "./ConflictSummary";
 import { MergeSimulationPanel } from "./MergeSimulationPanel";
@@ -78,6 +83,14 @@ function statusDotClass(status: ConflictStatus["status"] | null): string {
   return "bg-muted-fg";
 }
 
+function statusBorderClass(status: ConflictStatus["status"] | null): string {
+  if (status === "conflict-active") return "border-l-red-500";
+  if (status === "conflict-predicted") return "border-l-orange-500";
+  if (status === "behind-base") return "border-l-amber-500";
+  if (status === "merge-ready") return "border-l-emerald-500";
+  return "border-l-muted-fg/40";
+}
+
 function classifyStatus(status: ConflictStatus["status"] | undefined): Exclude<LaneStatusFilter, null> {
   if (status === "conflict-active" || status === "conflict-predicted") return "conflict";
   if (status === "behind-base") return "at-risk";
@@ -119,6 +132,29 @@ function sortMergeSources(lanes: LaneSummary[], sourceLaneIds: string[]): string
       return laneA.name.localeCompare(laneB.name);
     });
 }
+
+/* ---- Default tiling layout ---- */
+
+const CONFLICTS_TILING_TREE: PaneSplit = {
+  type: "split",
+  direction: "horizontal",
+  children: [
+    { node: { type: "pane", id: "lanes" }, defaultSize: 22, minSize: 12 },
+    {
+      node: {
+        type: "split",
+        direction: "vertical",
+        children: [
+          { node: { type: "pane", id: "conflict-detail" }, defaultSize: 55, minSize: 25 },
+          { node: { type: "pane", id: "resolution" }, defaultSize: 45, minSize: 20 }
+        ]
+      },
+      defaultSize: 48,
+      minSize: 25
+    },
+    { node: { type: "pane", id: "risk-matrix" }, defaultSize: 30, minSize: 15 }
+  ]
+};
 
 export function ConflictsPage() {
   const lanes = useAppStore((s) => s.lanes);
@@ -780,73 +816,63 @@ export function ConflictsPage() {
 
   const aiEnabled = providerMode === "hosted" || providerMode === "byok";
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b border-border/15 px-3 py-2">
-        <div className="text-sm font-semibold text-fg">Conflicts</div>
-        <div className="text-xs text-muted-fg">
-          lanes: {lanes.length} · conflicts: {batch?.lanes.filter((entry) => entry.status === "conflict-predicted" || entry.status === "conflict-active").length ?? 0}
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant={viewMode === "summary" ? "primary" : "outline"} onClick={() => setViewMode("summary")}>
-            Summary
-          </Button>
-          <Button size="sm" variant={viewMode === "matrix" ? "primary" : "outline"} onClick={() => setViewMode("matrix")}>
-            Matrix
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              void window.ade.conflicts
-                .runPrediction({})
-                .then((next) => {
-                  setBatch(next);
-                  setProgress(next.progress ?? null);
-                })
-                .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-            }
-          >
-            Run Prediction
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => void loadBatch()} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
-          </Button>
-        </div>
-      </div>
+  /* ---- Pane configs ---- */
 
-      {error ? <div className="bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
-
-      <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr_380px]">
-        <aside className="min-h-0 overflow-auto bg-[--color-surface-recessed] shadow-inset ade-surface-recessed p-2">
-          <div className="mb-2 flex flex-wrap gap-1">
+  const paneConfigs: Record<string, PaneConfig> = React.useMemo(() => ({
+    "lanes": {
+      title: "Lanes",
+      icon: Layers,
+      meta: <span className="text-[10px] text-muted-fg">{filteredLanes.length}/{lanes.length}</span>,
+      children: (
+        <div className="h-full overflow-auto p-2">
+          <div className="mb-3 flex flex-wrap gap-1.5">
             <Chip
               role="button"
               onClick={() => toggleStatusFilter("conflict")}
-              className={cn("cursor-pointer border-red-500/50 text-red-300", statusFilter === "conflict" && "bg-red-500/30")}
+              className={cn(
+                "cursor-pointer px-3 py-1 transition-all",
+                statusFilter === "conflict"
+                  ? "bg-red-500/25 text-red-200 ring-1 ring-inset ring-red-500/50 shadow-sm"
+                  : "text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
+              )}
             >
-              ●{laneSummaryCounts.conflict} conflict
+              {laneSummaryCounts.conflict} conflict
             </Chip>
             <Chip
               role="button"
               onClick={() => toggleStatusFilter("at-risk")}
-              className={cn("cursor-pointer border-amber-500/50 text-amber-300", statusFilter === "at-risk" && "bg-amber-500/30")}
+              className={cn(
+                "cursor-pointer px-3 py-1 transition-all",
+                statusFilter === "at-risk"
+                  ? "bg-amber-500/25 text-amber-200 ring-1 ring-inset ring-amber-500/50 shadow-sm"
+                  : "text-amber-300/80 hover:bg-amber-500/10 hover:text-amber-200"
+              )}
             >
-              ●{laneSummaryCounts["at-risk"]} at-risk
+              {laneSummaryCounts["at-risk"]} at-risk
             </Chip>
             <Chip
               role="button"
               onClick={() => toggleStatusFilter("clean")}
-              className={cn("cursor-pointer border-emerald-500/50 text-emerald-300", statusFilter === "clean" && "bg-emerald-500/30")}
+              className={cn(
+                "cursor-pointer px-3 py-1 transition-all",
+                statusFilter === "clean"
+                  ? "bg-emerald-500/25 text-emerald-200 ring-1 ring-inset ring-emerald-500/50 shadow-sm"
+                  : "text-emerald-300/80 hover:bg-emerald-500/10 hover:text-emerald-200"
+              )}
             >
-              ●{laneSummaryCounts.clean} clean
+              {laneSummaryCounts.clean} clean
             </Chip>
             <Chip
               role="button"
               onClick={() => toggleStatusFilter("unknown")}
-              className={cn("cursor-pointer border-border text-muted-fg", statusFilter === "unknown" && "bg-muted/70 text-fg")}
+              className={cn(
+                "cursor-pointer px-3 py-1 transition-all",
+                statusFilter === "unknown"
+                  ? "bg-muted/60 text-fg ring-1 ring-inset ring-muted-fg/30 shadow-sm"
+                  : "text-muted-fg hover:bg-muted/40 hover:text-fg/80"
+              )}
             >
-              ●{laneSummaryCounts.unknown} unknown
+              {laneSummaryCounts.unknown} unknown
             </Chip>
           </div>
 
@@ -863,48 +889,61 @@ export function ConflictsPage() {
                   setViewMode("summary");
                 }}
                 className={cn(
-                  "mb-2 block w-full rounded-xl px-2 py-2 text-left transition-all",
-                  selected ? "shadow-card-hover bg-card/80" : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70"
+                  "mb-2 block w-full rounded-xl border-l-[3px] px-2.5 py-2.5 text-left transition-all",
+                  statusBorderClass(status?.status ?? null),
+                  selected
+                    ? "shadow-card-hover bg-accent/10 ring-1 ring-accent/20"
+                    : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70"
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <span className={cn("inline-block h-2.5 w-2.5 rounded-full", statusDotClass(status?.status ?? null))} />
+                  <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full ring-2 ring-black/20", statusDotClass(status?.status ?? null))} />
                   <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
                   {restack ? (
                     <span
-                      className="ml-auto rounded-lg bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200"
+                      className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-200 ring-1 ring-inset ring-amber-500/30"
                       title={`Parent advanced; behind ${restack.behindCount} commit(s).`}
                     >
+                      <RefreshCw className="h-2.5 w-2.5" />
                       restack
                     </span>
                   ) : null}
                 </div>
-                <div className="mt-1 text-[11px] text-muted-fg">
+                <div className="mt-1.5 pl-4 text-[11px] text-muted-fg">
                   {(status?.status ?? "unknown")} · overlaps {status?.overlappingFileCount ?? 0}
                 </div>
               </button>
             );
           })}
-        </aside>
-
-        <main className="min-h-0 overflow-auto p-3">
+        </div>
+      )
+    },
+    "conflict-detail": {
+      title: "Conflict Detail",
+      icon: AlertTriangle,
+      bodyClassName: "overflow-hidden",
+      children: (
+        <div className="h-full overflow-auto p-3">
           {selectedLane ? (
             <div className="space-y-3">
               <div className="rounded-xl shadow-card bg-card/30 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <GitBranch className="h-4 w-4 text-muted-fg" />
+                      <GitBranch className="h-4 w-4 text-accent" />
                       <div className="truncate text-sm font-semibold text-fg">{selectedLane.name}</div>
+                      {selectedLane.laneType === "primary" ? <span className="rounded-full bg-muted/40 px-2 py-0.5 text-[10px] text-muted-fg ring-1 ring-inset ring-muted-fg/20">(edit-protected)</span> : null}
                     </div>
-                    <div className="mt-1 text-xs text-muted-fg">
-                      branch: <span className="text-fg">{selectedLane.branchRef}</span> · base: {selectedLane.baseRef}
+                    <div className="mt-2 rounded-lg bg-muted/20 px-3 py-2 font-mono text-[11px] text-muted-fg">
+                      <span className="text-muted-fg/60">branch</span> <span className="text-fg">{selectedLane.branchRef}</span>
+                      <span className="mx-2 text-muted-fg/30">|</span>
+                      <span className="text-muted-fg/60">base</span> <span className="text-fg/80">{selectedLane.baseRef}</span>
                       {selectedLane.parentLaneId ? (
                         <>
-                          {" "}· parent: {lanes.find((l) => l.id === selectedLane.parentLaneId)?.name ?? selectedLane.parentLaneId}
+                          <span className="mx-2 text-muted-fg/30">|</span>
+                          <span className="text-muted-fg/60">parent</span> <span className="text-fg/80">{lanes.find((l) => l.id === selectedLane.parentLaneId)?.name ?? selectedLane.parentLaneId}</span>
                         </>
                       ) : null}
-                      {selectedLane.laneType === "primary" ? <span className="ml-2 text-[11px] text-muted-fg">(edit-protected)</span> : null}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -955,15 +994,24 @@ export function ConflictsPage() {
                 </div>
               ) : null}
 
-              <div className="rounded-xl shadow-card bg-card/30 p-3">
+              <div className={cn(
+                "rounded-xl shadow-card p-3 transition-colors",
+                gitConflict?.inProgress
+                  ? "bg-red-500/8 ring-1 ring-inset ring-red-500/20"
+                  : "bg-card/30"
+              )}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div className="text-[13px] font-semibold text-fg/70">Active Merge/Rebase</div>
+                    <div className={cn(
+                      "text-[13px] font-semibold",
+                      gitConflict?.inProgress ? "text-red-200" : "text-fg/70"
+                    )}>Active Merge/Rebase</div>
                     <div className="mt-1 text-xs text-muted-fg">
                       {gitConflictError ? (
                         <span className="text-red-200">{gitConflictError}</span>
                       ) : gitConflict?.inProgress ? (
-                        <span className="text-fg">
+                        <span className="inline-flex items-center gap-1.5 text-fg">
+                          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
                           {gitConflict.kind === "merge" ? "MERGE" : "REBASE"} in progress · conflicted files: {gitConflict.conflictedFiles.length}
                         </span>
                       ) : (
@@ -1003,15 +1051,20 @@ export function ConflictsPage() {
 
                 {gitConflict?.inProgress && gitConflict.conflictedFiles.length > 0 ? (
                   <div className="mt-3">
-                    <div className="text-[11px] font-semibold text-fg">Conflicted files</div>
-                    <div className="mt-1 grid gap-1 md:grid-cols-2">
+                    <div className="flex items-center gap-2 text-[11px] font-semibold text-fg">
+                      <AlertCircle className="h-3.5 w-3.5 text-red-400" />
+                      Conflicted files
+                      <span className="rounded-full bg-red-500/20 px-1.5 py-0.5 text-[10px] font-medium text-red-300">{gitConflict.conflictedFiles.length}</span>
+                    </div>
+                    <div className="mt-2 grid gap-1 md:grid-cols-2">
                       {gitConflict.conflictedFiles.slice(0, 24).map((p) => (
-                        <div key={p} className="truncate rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg" title={p}>
-                          {p}
+                        <div key={p} className="flex items-center gap-2 truncate rounded-lg border border-red-500/10 bg-muted/15 px-2.5 py-1.5 text-[11px] font-mono text-muted-fg transition-colors hover:bg-muted/25" title={p}>
+                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-400/70" />
+                          <span className="truncate">{p}</span>
                         </div>
                       ))}
                       {gitConflict.conflictedFiles.length > 24 ? (
-                        <div className="text-[11px] text-muted-fg">… ({gitConflict.conflictedFiles.length - 24} more)</div>
+                        <div className="px-2.5 text-[11px] text-muted-fg">... ({gitConflict.conflictedFiles.length - 24} more)</div>
                       ) : null}
                     </div>
                   </div>
@@ -1061,271 +1114,311 @@ export function ConflictsPage() {
                     initialLaneAId={selectedLaneId}
                     initialLaneBId={selectedPair && selectedPair.laneAId !== selectedPair.laneBId ? selectedPair.laneBId : null}
                   />
-
-                  <div className="rounded-xl shadow-card bg-card/30 p-3">
-                    <div className="text-[13px] font-semibold text-fg/70">Workflows</div>
-                    <div className="mt-2 grid gap-3 lg:grid-cols-2">
-                      <div className="rounded-lg bg-muted/15 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-xs font-semibold text-fg">Merge one-by-one</div>
-                            <div className="mt-1 text-[11px] text-muted-fg">
-                              Merge selected lanes into a target lane, sequentially. Conflicts pause the plan.
-                            </div>
-                          </div>
-                          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={initMergePlan}>
-                            {mergePlan ? "Reset" : "Set up"}
-                          </Button>
-                        </div>
-
-                        {mergePlan ? (
-                          <div className="mt-3 space-y-2">
-                            {previewLines("What ADE will do", [
-                              "For each selected lane: run git fetch --prune in the target lane.",
-                              "Run git merge --no-edit <source-branch> in the target lane.",
-                              "If conflicts occur, you resolve them and click Continue."
-                            ])}
-
-                            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                              <span className="text-muted-fg">Target</span>
-                              <select
-                                className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
-                                value={mergePlan.targetLaneId}
-                                onChange={(e) => setMergePlan((prev) => (prev ? { ...prev, targetLaneId: e.target.value } : prev))}
-                              >
-                                {lanes.map((lane) => (
-                                  <option key={lane.id} value={lane.id}>
-                                    {lane.name}
-                                  </option>
-                                ))}
-                              </select>
-                              {mergeTargetLane?.laneType === "primary" ? (
-                                <span className="rounded-lg bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
-                                  merging into primary modifies your base branch
-                                </span>
-                              ) : null}
-                            </div>
-
-                            <div className="max-h-32 overflow-auto rounded-lg bg-muted/15 p-2 text-[11px]">
-                              {lanes
-                                .filter((lane) => lane.id !== mergePlan.targetLaneId && lane.laneType !== "primary")
-                                .map((lane) => {
-                                  const checked = mergePlan.sourceLaneIds.includes(lane.id);
-                                  return (
-                                    <label key={lane.id} className="flex items-center gap-2 py-0.5">
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={(e) =>
-                                          setMergePlan((prev) => {
-                                            if (!prev) return prev;
-                                            const next = new Set(prev.sourceLaneIds);
-                                            if (e.target.checked) next.add(lane.id);
-                                            else next.delete(lane.id);
-                                            return { ...prev, sourceLaneIds: Array.from(next), cursor: 0, activeMerge: null };
-                                          })
-                                        }
-                                      />
-                                      <span className="truncate text-fg" title={lane.branchRef}>
-                                        {lane.name}
-                                      </span>
-                                      <span className="ml-auto text-muted-fg">depth {lane.stackDepth}</span>
-                                    </label>
-                                  );
-                                })}
-                            </div>
-
-                            <div className="flex items-center justify-between gap-2 text-[11px] text-muted-fg">
-                              <span>
-                                order: {orderedMergeSources.length} lane(s)
-                              </span>
-                              <span>
-                                step: {mergePlan.cursor + 1}/{Math.max(1, orderedMergeSources.length)}
-                              </span>
-                            </div>
-
-                            {mergePlanError ? (
-                              <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{mergePlanError}</div>
-                            ) : null}
-
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="primary"
-                                disabled={mergePlanBusy || orderedMergeSources.length === 0 || mergePlan.cursor >= orderedMergeSources.length || !!mergePlan.activeMerge}
-                                onClick={startNextMerge}
-                              >
-                                {mergePlanBusy ? "Working..." : "Merge next"}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={!mergePlan.activeMerge}
-                                onClick={() => setMergePlan((prev) => (prev ? { ...prev, activeMerge: null } : prev))}
-                                title="Only use this if you handled the merge outside ADE and want to advance the plan."
-                              >
-                                Mark merge unblocked
-                              </Button>
-                            </div>
-
-                            {mergePlan.activeMerge ? (
-                              <div className="mt-2 text-[11px] text-amber-200/90">
-                                Merge is blocked on conflicts. Use the Active Merge/Rebase section above.
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="mt-3 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
-                            Set up a merge plan to merge lanes sequentially.
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="rounded-lg bg-muted/15 p-3">
-                        <div className="text-xs font-semibold text-fg">Integration lane</div>
-                        <div className="mt-1 text-[11px] text-muted-fg">
-                          Create a fresh lane from a base (usually Primary), merge lanes into it, resolve conflicts once, then merge it back.
-                        </div>
-
-                        {previewLines("What ADE will do", [
-                          "Create a new child lane from the base lane's current HEAD.",
-                          "You then merge lanes into that integration lane using the merge plan workflow.",
-                          "This avoids editing Primary until you're ready."
-                        ])}
-
-                        <div className="mt-3 space-y-2">
-                          <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                            <span className="text-muted-fg">Base</span>
-                            <select
-                              className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
-                              value={integrationBaseLaneId}
-                              onChange={(e) => setIntegrationBaseLaneId(e.target.value)}
-                            >
-                              {lanes.map((lane) => (
-                                <option key={lane.id} value={lane.id}>
-                                  {lane.name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <input
-                              className="h-7 flex-1 rounded-lg bg-muted/30 px-2 text-[11px] text-fg"
-                              value={integrationName}
-                              onChange={(e) => setIntegrationName(e.target.value)}
-                              placeholder="Integration lane name"
-                            />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 px-2 text-[11px]"
-                              onClick={() => void createIntegrationLane()}
-                              disabled={integrationBusy}
-                            >
-                              {integrationBusy ? "Creating..." : "Create"}
-                            </Button>
-                          </div>
-
-                          {integrationError ? (
-                            <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{integrationError}</div>
-                          ) : null}
-
-                          {integrationLaneId ? (
-                            <div className="rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-200">
-                              <div className="flex items-center gap-2">
-                                <CheckCircle2 className="h-4 w-4" />
-                                Integration lane created.
-                              </div>
-                              <div className="mt-1 text-[11px] text-emerald-200/80">Target lane is now set to that integration lane.</div>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="rounded-lg bg-muted/15 p-3 lg:col-span-2">
-                        <div className="text-xs font-semibold text-fg">Pre-align lanes</div>
-                        <div className="mt-1 text-[11px] text-muted-fg">When parents advance, restack children early to reduce conflicts.</div>
-                        {restackSuggestions.length === 0 ? (
-                          <div className="mt-2 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
-                            No restack suggestions right now.
-                          </div>
-                        ) : (
-                          <div className="mt-2 space-y-2">
-                            {restackSuggestions.slice(0, 8).map((s) => {
-                              const lane = lanes.find((l) => l.id === s.laneId);
-                              const parent = lanes.find((l) => l.id === s.parentLaneId);
-                              return (
-                                <div key={s.laneId} className="rounded-lg bg-muted/20 p-2 text-xs">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div className="min-w-0">
-                                      <div className="truncate text-fg font-semibold">{lane?.name ?? s.laneId}</div>
-                                      <div className="mt-0.5 text-[11px] text-muted-fg">
-                                        behind <span className="text-fg">{s.behindCount}</span> · parent {parent?.name ?? s.parentLaneId}
-                                        {s.hasPr ? <span className="ml-2 rounded-lg bg-muted/30 px-1.5 py-0.5 text-[10px]">PR</span> : null}
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runRestack(s.laneId)}>
-                                        Restack
-                                      </Button>
-                                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void deferRestackSuggestion(s.laneId, 60)}>
-                                        Defer 1h
-                                      </Button>
-                                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void dismissRestackSuggestion(s.laneId)}>
-                                        Dismiss
-                                      </Button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
                 </div>
               )}
             </div>
           ) : (
-            <div className="rounded-lg bg-muted/10 p-4 text-xs text-muted-fg">
-              Select a lane to inspect conflicts.
+            <div className="flex flex-col items-center justify-center rounded-xl bg-muted/8 p-8 text-center">
+              <Layers className="mb-3 h-8 w-8 text-muted-fg/30" />
+              <div className="text-sm font-medium text-muted-fg/60">No lane selected</div>
+              <div className="mt-1 text-xs text-muted-fg/40">Select a lane from the sidebar to inspect conflicts.</div>
             </div>
           )}
-        </main>
-
-        <aside className="min-h-0 overflow-auto bg-[--color-surface-recessed] shadow-inset ade-surface-recessed p-3">
-          <div className="rounded-xl shadow-card bg-card/30 p-3">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <div className="text-[13px] font-semibold text-fg/70">AI Conflict Assistant</div>
-                <div className="mt-1 text-xs text-muted-fg">
-                  {aiEnabled ? (
-                    <span>
-                      provider: <span className="text-fg">{providerMode}</span>
-                    </span>
-                  ) : (
-                    <span>Hosted/BYOK is optional. External Codex/Claude resolver actions are always available if configured.</span>
-                  )}
+        </div>
+      )
+    },
+    "resolution": {
+      title: "Resolution",
+      icon: Wrench,
+      children: (
+        <div className="h-full overflow-auto p-3">
+          <div className="space-y-4">
+            <div className="rounded-xl bg-muted/12 p-3 ring-1 ring-inset ring-muted-fg/5">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-semibold text-fg">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-accent/15 text-[10px] font-bold text-accent">1</span>
+                    Merge one-by-one
+                  </div>
+                  <div className="mt-1 pl-7 text-[11px] text-muted-fg">
+                    Merge selected lanes into a target lane, sequentially. Conflicts pause the plan.
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-[11px]"
-                  disabled={!selectedLaneId}
-                  onClick={() => {
-                    setProposalPreview(null);
-                    setPrepareError(null);
-                    setSendError(null);
-                  }}
-                  title="Clear preview"
-                >
-                  Clear
+                <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={initMergePlan}>
+                  {mergePlan ? "Reset" : "Set up"}
                 </Button>
               </div>
+
+              {mergePlan ? (
+                <div className="mt-3 space-y-2">
+                  {previewLines("What ADE will do", [
+                    "For each selected lane: run git fetch --prune in the target lane.",
+                    "Run git merge --no-edit <source-branch> in the target lane.",
+                    "If conflicts occur, you resolve them and click Continue."
+                  ])}
+
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className="text-muted-fg">Target</span>
+                    <select
+                      className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
+                      value={mergePlan.targetLaneId}
+                      onChange={(e) => setMergePlan((prev) => (prev ? { ...prev, targetLaneId: e.target.value } : prev))}
+                    >
+                      {lanes.map((lane) => (
+                        <option key={lane.id} value={lane.id}>
+                          {lane.name}
+                        </option>
+                      ))}
+                    </select>
+                    {mergeTargetLane?.laneType === "primary" ? (
+                      <span className="rounded-lg bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+                        merging into primary modifies your base branch
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="max-h-32 overflow-auto rounded-lg bg-muted/15 p-2 text-[11px]">
+                    {lanes
+                      .filter((lane) => lane.id !== mergePlan.targetLaneId && lane.laneType !== "primary")
+                      .map((lane) => {
+                        const checked = mergePlan.sourceLaneIds.includes(lane.id);
+                        return (
+                          <label key={lane.id} className="flex items-center gap-2 py-0.5">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setMergePlan((prev) => {
+                                  if (!prev) return prev;
+                                  const next = new Set(prev.sourceLaneIds);
+                                  if (e.target.checked) next.add(lane.id);
+                                  else next.delete(lane.id);
+                                  return { ...prev, sourceLaneIds: Array.from(next), cursor: 0, activeMerge: null };
+                                })
+                              }
+                            />
+                            <span className="truncate text-fg" title={lane.branchRef}>
+                              {lane.name}
+                            </span>
+                            <span className="ml-auto text-muted-fg">depth {lane.stackDepth}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 py-1">
+                    {orderedMergeSources.map((srcId, idx) => {
+                      const srcLane = lanes.find((l) => l.id === srcId);
+                      const isDone = idx < mergePlan.cursor;
+                      const isCurrent = idx === mergePlan.cursor;
+                      return (
+                        <div key={srcId} className="flex items-center gap-1.5">
+                          {idx > 0 ? <div className={cn("h-px w-3", isDone ? "bg-emerald-500/50" : "bg-muted-fg/20")} /> : null}
+                          <div
+                            className={cn(
+                              "flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition-all",
+                              isDone
+                                ? "bg-emerald-500/25 text-emerald-300 ring-1 ring-emerald-500/40"
+                                : isCurrent
+                                  ? "bg-accent/20 text-accent ring-1 ring-accent/50"
+                                  : "bg-muted/30 text-muted-fg ring-1 ring-muted-fg/20"
+                            )}
+                            title={srcLane?.name ?? srcId}
+                          >
+                            {isDone ? "\u2713" : idx + 1}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {orderedMergeSources.length === 0 ? (
+                      <span className="text-[11px] text-muted-fg">no lanes selected</span>
+                    ) : null}
+                  </div>
+
+                  {mergePlanError ? (
+                    <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{mergePlanError}</div>
+                  ) : null}
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={mergePlanBusy || orderedMergeSources.length === 0 || mergePlan.cursor >= orderedMergeSources.length || !!mergePlan.activeMerge}
+                      onClick={startNextMerge}
+                    >
+                      {mergePlanBusy ? "Working..." : "Merge next"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!mergePlan.activeMerge}
+                      onClick={() => setMergePlan((prev) => (prev ? { ...prev, activeMerge: null } : prev))}
+                      title="Only use this if you handled the merge outside ADE and want to advance the plan."
+                    >
+                      Mark merge unblocked
+                    </Button>
+                  </div>
+
+                  {mergePlan.activeMerge ? (
+                    <div className="mt-2 text-[11px] text-amber-200/90">
+                      Merge is blocked on conflicts. Use the Active Merge/Rebase section above.
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
+                  Set up a merge plan to merge lanes sequentially.
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl bg-muted/12 p-3 ring-1 ring-inset ring-muted-fg/5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-fg">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-accent/15 text-[10px] font-bold text-accent">2</span>
+                Integration lane
+              </div>
+              <div className="mt-1 pl-7 text-[11px] text-muted-fg">
+                Create a fresh lane from a base (usually Primary), merge lanes into it, resolve conflicts once, then merge it back.
+              </div>
+
+              {previewLines("What ADE will do", [
+                "Create a new child lane from the base lane's current HEAD.",
+                "You then merge lanes into that integration lane using the merge plan workflow.",
+                "This avoids editing Primary until you're ready."
+              ])}
+
+              <div className="mt-3 space-y-2">
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="text-muted-fg">Base</span>
+                  <select
+                    className="h-7 rounded-lg bg-muted/30 px-2 text-[11px]"
+                    value={integrationBaseLaneId}
+                    onChange={(e) => setIntegrationBaseLaneId(e.target.value)}
+                  >
+                    {lanes.map((lane) => (
+                      <option key={lane.id} value={lane.id}>
+                        {lane.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    className="h-7 flex-1 rounded-lg bg-muted/30 px-2 text-[11px] text-fg"
+                    value={integrationName}
+                    onChange={(e) => setIntegrationName(e.target.value)}
+                    placeholder="Integration lane name"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() => void createIntegrationLane()}
+                    disabled={integrationBusy}
+                  >
+                    {integrationBusy ? "Creating..." : "Create"}
+                  </Button>
+                </div>
+
+                {integrationError ? (
+                  <div className="rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{integrationError}</div>
+                ) : null}
+
+                {integrationLaneId ? (
+                  <div className="rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-200">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4" />
+                      Integration lane created.
+                    </div>
+                    <div className="mt-1 text-[11px] text-emerald-200/80">Target lane is now set to that integration lane.</div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-muted/12 p-3 ring-1 ring-inset ring-muted-fg/5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-fg">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-accent/15 text-[10px] font-bold text-accent">3</span>
+                Pre-align lanes
+              </div>
+              <div className="mt-1 pl-7 text-[11px] text-muted-fg">When parents advance, restack children early to reduce conflicts.</div>
+              {restackSuggestions.length === 0 ? (
+                <div className="mt-2 rounded-lg bg-muted/10 p-3 text-xs text-muted-fg">
+                  No restack suggestions right now.
+                </div>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {restackSuggestions.slice(0, 8).map((s) => {
+                    const lane = lanes.find((l) => l.id === s.laneId);
+                    const parent = lanes.find((l) => l.id === s.parentLaneId);
+                    const restackStatus = statusByLane.get(s.laneId)?.status ?? null;
+                    return (
+                      <div key={s.laneId} className={cn("rounded-lg border-l-[3px] bg-muted/15 p-2.5 text-xs", statusBorderClass(restackStatus))}>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-fg font-semibold">{lane?.name ?? s.laneId}</div>
+                            <div className="mt-0.5 text-[11px] text-muted-fg">
+                              behind <span className="font-medium text-amber-200">{s.behindCount}</span> · parent {parent?.name ?? s.parentLaneId}
+                              {s.hasPr ? <span className="ml-2 rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent ring-1 ring-inset ring-accent/20">PR</span> : null}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runRestack(s.laneId)}>
+                              Restack
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void deferRestackSuggestion(s.laneId, 60)}>
+                              Defer 1h
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void dismissRestackSuggestion(s.laneId)}>
+                              Dismiss
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )
+    },
+    "risk-matrix": {
+      title: "AI Assistant",
+      icon: Grid3x3,
+      headerActions: (
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-[11px]"
+          disabled={!selectedLaneId}
+          onClick={() => {
+            setProposalPreview(null);
+            setPrepareError(null);
+            setSendError(null);
+          }}
+          title="Clear preview"
+        >
+          Clear
+        </Button>
+      ),
+      children: (
+        <div className="h-full overflow-auto p-3">
+          <div className="rounded-xl shadow-card bg-gradient-to-br from-card/40 to-card/20 p-3 ring-1 ring-inset ring-accent/10">
+            <div className="flex items-center gap-2 text-[13px] font-semibold text-fg">
+              <Sparkles className="h-4 w-4 text-accent" />
+              AI Conflict Assistant
+            </div>
+            <div className="mt-1 text-xs text-muted-fg">
+              {aiEnabled ? (
+                <span>
+                  provider: <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">{providerMode}</span>
+                </span>
+              ) : (
+                <span>Hosted/BYOK is optional. External Codex/Claude resolver actions are always available if configured.</span>
+              )}
             </div>
 
             {!selectedLaneId ? (
@@ -1366,17 +1459,21 @@ export function ConflictsPage() {
                   <Button
                     size="sm"
                     variant="primary"
+                    className="bg-gradient-to-r from-emerald-600 to-teal-600 shadow-md shadow-emerald-900/30 transition-all hover:shadow-lg hover:shadow-emerald-900/40 hover:brightness-110"
                     disabled={!selectedLaneId || externalBusy != null}
                     onClick={() => void runExternalResolver("codex")}
                   >
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                     {externalBusy === "codex" ? "Resolving..." : "Resolve with Codex"}
                   </Button>
                   <Button
                     size="sm"
                     variant="primary"
+                    className="bg-gradient-to-r from-violet-600 to-purple-600 shadow-md shadow-violet-900/30 transition-all hover:shadow-lg hover:shadow-violet-900/40 hover:brightness-110"
                     disabled={!selectedLaneId || externalBusy != null}
                     onClick={() => void runExternalResolver("claude")}
                   >
+                    <Wand2 className="mr-1.5 h-3.5 w-3.5" />
                     {externalBusy === "claude" ? "Resolving..." : "Resolve with Claude"}
                   </Button>
                   <Button
@@ -1493,9 +1590,12 @@ export function ConflictsPage() {
                   </div>
                 ) : null}
 
-                <div className="rounded-lg bg-muted/15 p-2 text-xs">
+                <div className="rounded-xl bg-muted/12 p-3 text-xs ring-1 ring-inset ring-muted-fg/5">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-fg font-semibold">External Resolver Runs</div>
+                    <div className="flex items-center gap-2 text-fg font-semibold">
+                      <Wrench className="h-3.5 w-3.5 text-muted-fg" />
+                      External Resolver Runs
+                    </div>
                     <Button
                       size="sm"
                       variant="outline"
@@ -1522,9 +1622,18 @@ export function ConflictsPage() {
                   ) : (
                     <div className="mt-2 space-y-2">
                       {externalRuns.map((run) => (
-                        <div key={run.runId} className="rounded-lg bg-muted/20 p-2">
-                          <div className="text-[11px] text-fg">
-                            {run.provider} · {run.status} · {run.sourceLaneIds.join(", ")} → {run.targetLaneId}
+                        <div key={run.runId} className={cn(
+                          "rounded-lg border-l-[3px] bg-muted/15 p-2.5",
+                          run.status === "completed" ? "border-l-emerald-500" : run.status === "failed" ? "border-l-red-500" : "border-l-amber-500"
+                        )}>
+                          <div className="flex items-center gap-2 text-[11px] text-fg">
+                            <span className={cn(
+                              "inline-block h-1.5 w-1.5 rounded-full",
+                              run.status === "completed" ? "bg-emerald-500" : run.status === "failed" ? "bg-red-500" : "bg-amber-500 animate-pulse"
+                            )} />
+                            <span className="font-medium">{run.provider}</span>
+                            <span className="text-muted-fg">{run.status}</span>
+                            <span className="ml-auto text-muted-fg/60">{run.sourceLaneIds.join(", ")} → {run.targetLaneId}</span>
                           </div>
                           <div className="mt-1 text-[11px] text-muted-fg">
                             summary: {run.summary ?? "none"} · patch: {run.patchPath ?? "none"}
@@ -1567,9 +1676,12 @@ export function ConflictsPage() {
                   )}
                 </div>
 
-                <div className="rounded-lg bg-muted/15 p-2 text-xs">
+                <div className="rounded-xl bg-muted/12 p-3 text-xs ring-1 ring-inset ring-muted-fg/5">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-fg font-semibold">Proposals</div>
+                    <div className="flex items-center gap-2 text-fg font-semibold">
+                      <Sparkles className="h-3.5 w-3.5 text-muted-fg" />
+                      Proposals
+                    </div>
                     <Button
                       size="sm"
                       variant="outline"
@@ -1590,14 +1702,22 @@ export function ConflictsPage() {
                   ) : (
                     <div className="mt-2 space-y-2">
                       {proposals.map((proposal) => (
-                        <div key={proposal.id} className="rounded-lg shadow-card bg-card/30 p-2">
+                        <div key={proposal.id} className={cn(
+                          "rounded-xl border-l-[3px] shadow-card p-3",
+                          proposal.status === "applied" ? "border-l-emerald-500 bg-card/40" : proposal.status === "rejected" ? "border-l-red-500 bg-card/30" : "border-l-accent bg-card/30"
+                        )}>
                           <div className="flex items-center justify-between gap-2 text-[11px]">
-                            <span className="text-fg">{proposal.source}</span>
-                            <span className="text-muted-fg">
-                              {proposal.confidence != null ? `confidence ${Math.round(proposal.confidence * 100)}%` : "confidence n/a"}
-                            </span>
+                            <span className="font-medium text-fg">{proposal.source}</span>
+                            <div className="flex items-center gap-2">
+                              <span className={cn(
+                                "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                                proposal.status === "applied" ? "bg-emerald-500/15 text-emerald-300" : proposal.status === "rejected" ? "bg-red-500/15 text-red-300" : "bg-accent/15 text-accent"
+                              )}>{proposal.status}</span>
+                              <span className="text-muted-fg">
+                                {proposal.confidence != null ? `${Math.round(proposal.confidence * 100)}%` : "n/a"}
+                              </span>
+                            </div>
                           </div>
-                          <div className="mt-1 text-[11px] text-muted-fg">status: {proposal.status}</div>
 
                           {proposal.explanation.trim().length ? (
                             <div className="mt-1 whitespace-pre-wrap text-xs text-fg">
@@ -1606,8 +1726,8 @@ export function ConflictsPage() {
                             </div>
                           ) : null}
 
-                          <div className="mt-2 rounded-lg bg-muted/20 p-2">
-                            <div className="mb-1 text-[11px] font-semibold text-fg">Apply options</div>
+                          <div className="mt-3 rounded-lg bg-muted/20 p-2.5 ring-1 ring-inset ring-muted-fg/8">
+                            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-fg/70">Apply options</div>
                             <div className="flex flex-wrap gap-2 text-[11px] text-muted-fg">
                               {(["unstaged", "staged", "commit"] as const)
                                 .filter((mode) => !(gitConflict?.inProgress && mode === "commit"))
@@ -1682,116 +1802,206 @@ export function ConflictsPage() {
               </div>
             )}
           </div>
+        </div>
+      )
+    }
+  }), [
+    filteredLanes, lanes, statusByLane, statusFilter, laneSummaryCounts, selectedLaneId,
+    restackByLaneId, selectedLane, selectedRestackSuggestion, gitConflict, gitConflictBusy,
+    gitConflictError, continueBusy, continueError, mergeActive, mergeActiveSource,
+    mergeTargetLane, viewMode, sortedLanes, batch, selectedPair, selectedPairEntry,
+    loading, progress, selectedStatus, overlaps, mergePlan, mergePlanBusy, mergePlanError,
+    orderedMergeSources, integrationBaseLaneId, integrationName, integrationBusy,
+    integrationError, integrationLaneId, restackSuggestions, aiEnabled, providerMode,
+    proposalPeerLaneId, suggestedPeerEntries, externalBusy, prepareBusy, proposalPreview,
+    sendBusy, prepareError, sendError, externalError, lastExternalRun, externalCommitInfo,
+    externalCommitError, externalRuns, externalCommitBusyRunId, proposalBusy, proposalError,
+    proposals, applyMode, commitMessage, selectedLaneId
+  ]);
 
-          <Dialog.Root open={abortOpen} onOpenChange={(open) => { setAbortOpen(open); setAbortError(null); }}>
-            <Dialog.Portal>
-              <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-[--color-surface-overlay] backdrop-blur-xl p-5 shadow-float focus:outline-none">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <Dialog.Title className="text-sm font-semibold text-fg">Abort merge/rebase</Dialog.Title>
-                  <Dialog.Close asChild>
-                    <Button variant="ghost" size="sm" disabled={abortBusy}>
-                      Close
-                    </Button>
-                  </Dialog.Close>
-                </div>
-
-                <div className="rounded-lg bg-red-500/10 p-2 text-xs text-red-200">
-                  Aborting discards the in-progress merge/rebase state for the selected lane.
-                </div>
-
-                {previewLines("What ADE will do", [
-                  gitConflict?.kind === "rebase" ? "Run: git rebase --abort" : "Run: git merge --abort",
-                  "Leave your branch HEAD unchanged, but drop the in-progress operation."
-                ])}
-
-                <div className="mt-3 rounded-lg bg-muted/20 p-2 text-xs">
-                  <div className="text-muted-fg">Type <span className="text-fg font-semibold">ABORT</span> to confirm.</div>
-                  <input
-                    className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs text-fg"
-                    value={abortConfirm}
-                    onChange={(e) => setAbortConfirm(e.target.value)}
-                    placeholder="ABORT"
-                  />
-                </div>
-
-                {abortError ? (
-                  <div className="mt-3 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{abortError}</div>
-                ) : null}
-
-                <div className="mt-3 flex items-center justify-end gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={abortBusy}
-                    onClick={() => {
-                      setAbortOpen(false);
-                      setAbortConfirm("");
-                      setAbortError(null);
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="border-red-700/60 text-red-200 hover:bg-red-900/20"
-                    disabled={abortBusy}
-                    onClick={() => void runAbort()}
-                  >
-                    {abortBusy ? "Aborting..." : "Abort"}
-                  </Button>
-                </div>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
-
-          <Dialog.Root open={mergeConfirmOpen} onOpenChange={(open) => { setMergeConfirmOpen(open); }}>
-            <Dialog.Portal>
-              <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-[--color-surface-overlay] backdrop-blur-xl p-5 shadow-float focus:outline-none">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <Dialog.Title className="text-sm font-semibold text-fg">Confirm merge</Dialog.Title>
-                  <Dialog.Close asChild>
-                    <Button variant="ghost" size="sm" disabled={mergePlanBusy}>
-                      Close
-                    </Button>
-                  </Dialog.Close>
-                </div>
-
-                {pendingMerge ? (
-                  (() => {
-                    const byId = lanesById(lanes);
-                    const target = byId.get(pendingMerge.targetLaneId);
-                    const source = byId.get(pendingMerge.sourceLaneId);
-                    const bullets = [
-                      `Target lane: ${target?.name ?? pendingMerge.targetLaneId}`,
-                      `Run: git fetch --prune`,
-                      `Run: git merge --no-edit ${source?.branchRef ?? pendingMerge.sourceLaneId}`,
-                      "If conflicts occur, ADE will keep the merge in progress and surface conflicted files."
-                    ];
-                    return (
-                      <div className="space-y-3">
-                        {previewLines("What ADE will do", bullets)}
-                        <div className="flex items-center justify-end gap-2">
-                          <Button size="sm" variant="outline" disabled={mergePlanBusy} onClick={() => setMergeConfirmOpen(false)}>
-                            Cancel
-                          </Button>
-                          <Button size="sm" variant="primary" disabled={mergePlanBusy} onClick={() => void runPendingMerge()}>
-                            {mergePlanBusy ? "Merging..." : "Run merge"}
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  })()
-                ) : (
-                  <div className="text-xs text-muted-fg">No pending merge.</div>
-                )}
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
-        </aside>
+  return (
+    <div className="flex h-full min-w-0 flex-col bg-bg">
+      {/* Toolbar / header bar */}
+      <div className="flex items-center gap-3 border-b border-border/15 px-4 py-2.5">
+        <div className="text-sm font-semibold text-fg">Conflicts</div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-fg">
+          <span>{lanes.length} lanes</span>
+          <span className="text-muted-fg/30">/</span>
+          <span className={cn(
+            (batch?.lanes.filter((entry) => entry.status === "conflict-predicted" || entry.status === "conflict-active").length ?? 0) > 0
+              ? "text-red-300"
+              : "text-muted-fg"
+          )}>
+            {batch?.lanes.filter((entry) => entry.status === "conflict-predicted" || entry.status === "conflict-active").length ?? 0} conflicts
+          </span>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="flex items-center rounded-lg bg-muted/30 p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode("summary")}
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-medium transition-all",
+                viewMode === "summary"
+                  ? "bg-accent text-accent-fg shadow-sm"
+                  : "text-muted-fg hover:text-fg"
+              )}
+            >
+              Summary
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("matrix")}
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-medium transition-all",
+                viewMode === "matrix"
+                  ? "bg-accent text-accent-fg shadow-sm"
+                  : "text-muted-fg hover:text-fg"
+              )}
+            >
+              Matrix
+            </button>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              void window.ade.conflicts
+                .runPrediction({})
+                .then((next) => {
+                  setBatch(next);
+                  setProgress(next.progress ?? null);
+                })
+                .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+            }
+          >
+            Run Prediction
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => void loadBatch()} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
       </div>
+
+      {error ? <div className="bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
+
+      {/* Pane tiling layout */}
+      <PaneTilingLayout
+        layoutId="conflicts:tiling:v1"
+        tree={CONFLICTS_TILING_TREE}
+        panes={paneConfigs}
+        className="flex-1 min-h-0"
+      />
+
+      {/* Abort dialog */}
+      <Dialog.Root open={abortOpen} onOpenChange={(open) => { setAbortOpen(open); setAbortError(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-[--color-surface-overlay] backdrop-blur-xl p-5 shadow-float focus:outline-none">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <Dialog.Title className="text-sm font-semibold text-fg">Abort merge/rebase</Dialog.Title>
+              <Dialog.Close asChild>
+                <Button variant="ghost" size="sm" disabled={abortBusy}>
+                  Close
+                </Button>
+              </Dialog.Close>
+            </div>
+
+            <div className="rounded-lg bg-red-500/10 p-2 text-xs text-red-200">
+              Aborting discards the in-progress merge/rebase state for the selected lane.
+            </div>
+
+            {previewLines("What ADE will do", [
+              gitConflict?.kind === "rebase" ? "Run: git rebase --abort" : "Run: git merge --abort",
+              "Leave your branch HEAD unchanged, but drop the in-progress operation."
+            ])}
+
+            <div className="mt-3 rounded-lg bg-muted/20 p-2 text-xs">
+              <div className="text-muted-fg">Type <span className="text-fg font-semibold">ABORT</span> to confirm.</div>
+              <input
+                className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs text-fg"
+                value={abortConfirm}
+                onChange={(e) => setAbortConfirm(e.target.value)}
+                placeholder="ABORT"
+              />
+            </div>
+
+            {abortError ? (
+              <div className="mt-3 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-200">{abortError}</div>
+            ) : null}
+
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={abortBusy}
+                onClick={() => {
+                  setAbortOpen(false);
+                  setAbortConfirm("");
+                  setAbortError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-red-700/60 text-red-200 hover:bg-red-900/20"
+                disabled={abortBusy}
+                onClick={() => void runAbort()}
+              >
+                {abortBusy ? "Aborting..." : "Abort"}
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {/* Merge confirm dialog */}
+      <Dialog.Root open={mergeConfirmOpen} onOpenChange={(open) => { setMergeConfirmOpen(open); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-[--color-surface-overlay] backdrop-blur-xl p-5 shadow-float focus:outline-none">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <Dialog.Title className="text-sm font-semibold text-fg">Confirm merge</Dialog.Title>
+              <Dialog.Close asChild>
+                <Button variant="ghost" size="sm" disabled={mergePlanBusy}>
+                  Close
+                </Button>
+              </Dialog.Close>
+            </div>
+
+            {pendingMerge ? (
+              (() => {
+                const byId = lanesById(lanes);
+                const target = byId.get(pendingMerge.targetLaneId);
+                const source = byId.get(pendingMerge.sourceLaneId);
+                const bullets = [
+                  `Target lane: ${target?.name ?? pendingMerge.targetLaneId}`,
+                  `Run: git fetch --prune`,
+                  `Run: git merge --no-edit ${source?.branchRef ?? pendingMerge.sourceLaneId}`,
+                  "If conflicts occur, ADE will keep the merge in progress and surface conflicted files."
+                ];
+                return (
+                  <div className="space-y-3">
+                    {previewLines("What ADE will do", bullets)}
+                    <div className="flex items-center justify-end gap-2">
+                      <Button size="sm" variant="outline" disabled={mergePlanBusy} onClick={() => setMergeConfirmOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button size="sm" variant="primary" disabled={mergePlanBusy} onClick={() => void runPendingMerge()}>
+                        {mergePlanBusy ? "Merging..." : "Run merge"}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="text-xs text-muted-fg">No pending merge.</div>
+            )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

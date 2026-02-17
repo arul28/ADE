@@ -1,6 +1,6 @@
 # Packs — Context, History & Narratives
 
-> Last updated: 2026-02-14
+> Last updated: 2026-02-16
 
 ---
 
@@ -354,6 +354,8 @@ AI narrative not yet generated.
 Notes:
 - The `ADE_INTENT_*`, `ADE_TASK_SPEC_*`, `ADE_TODOS_*`, and `ADE_NARRATIVE_*` markers are preserved so users (and orchestrators) can edit intent/task spec/todos/narrative without ADE losing those sections on deterministic refresh.
 - Any transcript-derived lines (errors, session output previews) are ANSI-stripped and de-duplicated before inclusion.
+- The Sessions section includes "Recent summaries" when `sessionHighlights` are available. Each highlight includes `summarySource` (explicit_final_block or heuristic_tail), `summaryConfidence` (high or medium), and optional `summaryOmissionTags` for clipped extractions.
+- The lane pack header JSON fence includes `graph` (dependency graph envelope), `dependencyState` (dependency freshness), and `conflictState` (conflict prediction state) when available.
 
 ### Update Pipeline
 
@@ -420,7 +422,8 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `packService` | **Exists, implemented** | Generates deterministic pack content (diff stats, file lists). Reads/writes pack markdown files to `.ade/packs/`. Manages pack index in SQLite. Provides bounded exports via `getLaneExport`, `getProjectExport`, `getConflictExport`. |
 | `packExports` | **Exists, implemented** | Token-budgeted export engine. Builds Lite/Standard/Deep exports for lanes, projects, and conflicts. Enforces token budgets (~4 chars/token heuristic), extracts marker-based sections, and includes conflict risk summaries. See `docs/architecture/CONTEXT_CONTRACT.md`. |
 | `packSections` | **Exists, implemented** | Stable marker-based section manipulation. Functions: `extractBetweenMarkers`, `replaceBetweenMarkers`, `upsertSectionByHeading`. Enables non-truncating narrative updates and backward-compatible legacy pack upgrades. |
-| `lanePackTemplate` | **Exists, implemented** | Renders deterministic lane pack markdown from raw data. Produces structured markdown with machine-readable header, all marker-bounded sections (intent, task spec, todos, narrative), sessions table, validation, errors, key files, and audit footer. |
+| `lanePackTemplate` | **Exists, implemented** | Renders deterministic lane pack markdown from raw data. Produces structured markdown with machine-readable header, all marker-bounded sections (intent, task spec, todos, narrative), sessions table with session highlights (summarySource, summaryConfidence, omission tags), validation, errors, key files, and audit footer. |
+| `transcriptInsights` | **Exists, implemented** | Parses high-signal terminal output for structured summaries. Returns `summarySource` (`explicit_final_block` or `heuristic_tail`), `summaryConfidence` (`high` or `medium`), and deterministic omission tags for clipped extractions. |
 | `redaction` | **Exists, implemented** | Secret redaction for exports. `redactSecrets()` strips API keys, tokens, private keys, GitHub PATs. `redactSecretsDeep()` recursively scans complex objects. Applied to all outbound AI payloads. |
 | `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. After deterministic refresh, automatically generates AI narratives when Hosted/BYOK is configured. |
 | `sessionService` | Exists | Provides session delta data (commands, exit codes, failure lines) for pack generation. |
