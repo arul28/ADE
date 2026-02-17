@@ -722,13 +722,16 @@ export function createPrService({
   };
 
   const createFromLane = async (args: CreatePrFromLaneArgs): Promise<PrSummary> => {
-    const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === args.laneId);
+    const allLanes = await laneService.list({ includeArchived: true });
+    const lane = allLanes.find((entry) => entry.id === args.laneId);
     if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
 
     const repo = await githubService.getRepoOrThrow();
     const headBranch = branchNameFromRef(lane.branchRef);
-    const parentLane = lane.parentLaneId ? (await laneService.list({ includeArchived: true })).find((entry) => entry.id === lane.parentLaneId) ?? null : null;
-    const baseBranch = (args.baseBranch ?? branchNameFromRef(parentLane?.branchRef ?? lane.baseRef)).trim();
+    const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
+    const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
+    const inferredBaseRef = parentLane?.branchRef ?? (lane.parentLaneId ? lane.baseRef : (primaryLane?.branchRef ?? lane.baseRef));
+    const baseBranch = (args.baseBranch ?? branchNameFromRef(inferredBaseRef)).trim();
 
     const createdAt = nowIso();
     const created = await githubService.apiRequest<any>({

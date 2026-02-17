@@ -318,6 +318,8 @@ declare global {
         rebaseAbort: (laneId: string) => Promise<GitActionResult>;
         mergeContinue: (laneId: string) => Promise<GitActionResult>;
         mergeAbort: (laneId: string) => Promise<GitActionResult>;
+        listBranches: (args: import("../shared/types").GitListBranchesArgs) => Promise<import("../shared/types").GitBranchSummary[]>;
+        checkoutBranch: (args: import("../shared/types").GitCheckoutBranchArgs) => Promise<GitActionResult>;
       };
       conflicts: {
         getLaneStatus: (args: GetLaneConflictStatusArgs) => Promise<ConflictStatus>;

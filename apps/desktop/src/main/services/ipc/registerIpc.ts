@@ -57,6 +57,9 @@ import type {
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
+  GitBranchSummary,
+  GitListBranchesArgs,
+  GitCheckoutBranchArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -964,6 +967,16 @@ export function registerIpc({
   ipcMain.handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = getCtx();
     return await ctx.gitService.mergeAbort({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitListBranches, async (_event, arg: GitListBranchesArgs): Promise<GitBranchSummary[]> => {
+    const ctx = getCtx();
+    return await ctx.gitService.listBranches(arg);
+  });
+
+  ipcMain.handle(IPC.gitCheckoutBranch, async (_event, arg: GitCheckoutBranchArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.checkoutBranch(arg);
   });
 
   ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {

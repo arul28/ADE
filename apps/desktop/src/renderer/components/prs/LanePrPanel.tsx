@@ -57,6 +57,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const lane = React.useMemo(() => (laneId ? lanes.find((l) => l.id === laneId) ?? null : null), [laneId, lanes]);
+  const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
   const parentLane = React.useMemo(
     () => (lane?.parentLaneId ? lanes.find((l) => l.id === lane.parentLaneId) ?? null : null),
     [lane, lanes]
@@ -73,7 +74,12 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   const [labelsDraft, setLabelsDraft] = React.useState("");
   const [reviewersDraft, setReviewersDraft] = React.useState("");
 
-  const defaultBaseBranch = lane ? branchNameFromRef(parentLane?.branchRef ?? lane.baseRef) : "main";
+  const defaultBaseBranch = React.useMemo(() => {
+    if (!lane) return branchNameFromRef(primaryLane?.branchRef ?? "main");
+    if (parentLane) return branchNameFromRef(parentLane.branchRef);
+    const primaryBranch = primaryLane?.branchRef ?? lane.baseRef;
+    return branchNameFromRef(primaryBranch);
+  }, [lane, parentLane, primaryLane?.branchRef]);
   const defaultHeadBranch = lane ? branchNameFromRef(lane.branchRef) : "";
 
   const [createDraft, setCreateDraft] = React.useState<CreatePrFromLaneArgs>(() => ({
@@ -135,10 +141,26 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
       title: titleFromBranch(branchNameFromRef(lane.branchRef)),
       body: "",
       draft: false,
-      baseBranch: branchNameFromRef(parentLane?.branchRef ?? lane.baseRef)
+      baseBranch: defaultBaseBranch
     });
     void refresh();
-  }, [laneId, lane, parentLane, refresh]);
+  }, [laneId, lane, parentLane, defaultBaseBranch, refresh]);
+
+  // Subscribe to PR events for real-time sync
+  React.useEffect(() => {
+    const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type === "prs-updated") {
+        // Update PR summary directly from event payload if our lane's PR is in it
+        if (pr) {
+          const updated = event.prs.find((p) => p.id === pr.id);
+          if (updated) setPr(updated);
+        }
+      } else if (event.type === "pr-notification" && event.laneId === laneId) {
+        void refresh();
+      }
+    });
+    return unsub;
+  }, [laneId, pr?.id, refresh]);
 
   if (!laneId || !lane) {
     return <EmptyState title="No lane selected" description="Select a lane to create or view its PR." />;
@@ -289,6 +311,13 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     placeholder={defaultBaseBranch}
                   />
                 </label>
+                <div className="text-[11px] text-muted-fg">
+                  Head branch: <span className="font-medium text-fg">{defaultHeadBranch}</span>
+                </div>
+                <div className="rounded bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">
+                  PR will be: <span className="font-medium text-fg">{defaultHeadBranch}</span>{" "}
+                  → <span className="font-medium text-fg">{createDraft.baseBranch || defaultBaseBranch}</span>
+                </div>
                 <label className="text-[11px] text-muted-fg">
                   Body (markdown)
                   <textarea

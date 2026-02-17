@@ -258,8 +258,40 @@ export function createLaneService({
     );
   };
 
+  const syncPrimaryLaneBranchRef = async (): Promise<void> => {
+    const primary = db.get<{
+      id: string;
+      worktree_path: string;
+      base_ref: string;
+      branch_ref: string;
+    }>(
+      `
+        select id, worktree_path, base_ref, branch_ref
+        from lanes
+        where project_id = ? and lane_type = 'primary' and status != 'archived'
+        limit 1
+      `,
+      [projectId]
+    );
+    if (!primary) return;
+
+    const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: primary.worktree_path,
+      timeoutMs: 8_000
+    });
+    if (branchRes.exitCode !== 0) return;
+    const detectedBranchRef = branchRes.stdout.trim();
+    if (!detectedBranchRef || detectedBranchRef === "HEAD" || detectedBranchRef === primary.branch_ref) return;
+
+    db.run(
+      "update lanes set branch_ref = ? where id = ? and project_id = ?",
+      [detectedBranchRef, primary.id, projectId]
+    );
+  };
+
   const listLanes = async ({ includeArchived = false }: { includeArchived?: boolean } = {}): Promise<LaneSummary[]> => {
     await ensurePrimaryLane();
+    await syncPrimaryLaneBranchRef();
 
     const rows = getAllLaneRows(includeArchived);
     const contextRows = getAllLaneRows(true);
@@ -280,7 +312,30 @@ export function createLaneService({
       const row = rowsById.get(laneId);
       if (!row) return { dirty: false, ahead: 0, behind: 0 };
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-      const baseRef = parent?.branch_ref ?? row.base_ref;
+      let baseRef = parent?.branch_ref ?? row.base_ref;
+
+      // For primary lanes with no parent, compare against the upstream tracking ref
+      // instead of base_ref (which equals branchRef, giving 0 behind).
+      if (!parent && row.lane_type === "primary") {
+        const upstreamRes = await runGit(
+          ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
+          { cwd: row.worktree_path, timeoutMs: 5_000 }
+        );
+        if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+          baseRef = upstreamRes.stdout.trim();
+        } else {
+          // Fallback: try origin/<branch>
+          const originRes = await runGit(
+            ["rev-parse", "--verify", `origin/${row.branch_ref}`],
+            { cwd: row.worktree_path, timeoutMs: 5_000 }
+          );
+          if (originRes.exitCode === 0 && originRes.stdout.trim()) {
+            baseRef = originRes.stdout.trim();
+          }
+          // else: keep row.base_ref as final fallback
+        }
+      }
+
       const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref);
       statusCache.set(laneId, status);
       return status;
@@ -992,10 +1047,14 @@ export function createLaneService({
       return row.worktree_path;
     },
 
-    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string } {
+    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType } {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
-      return { baseRef: row.base_ref, branchRef: row.branch_ref, worktreePath: row.worktree_path };
+      return { baseRef: row.base_ref, branchRef: row.branch_ref, worktreePath: row.worktree_path, laneType: row.lane_type };
+    },
+
+    updateBranchRef(laneId: string, branchRef: string): void {
+      db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [branchRef, laneId, projectId]);
     },
 
     getFilesWorkspaces(): Array<{

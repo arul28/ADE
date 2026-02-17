@@ -4,6 +4,7 @@ import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
+  GitBranchSummary,
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
@@ -17,7 +18,8 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
-  GitSyncMode
+  GitSyncMode,
+  LaneType
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
@@ -27,7 +29,18 @@ type LaneInfo = {
   baseRef: string;
   branchRef: string;
   worktreePath: string;
+  laneType: LaneType;
 };
+
+function localBranchNameFromRemoteRef(ref: string): string {
+  const normalized = ref.trim();
+  const slashIndex = normalized.indexOf("/");
+  return slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
+}
+
+function isUnsupportedIgnoreOtherWorktreesError(message: string): boolean {
+  return /unknown option.*ignore-other-worktrees|usage:\s*git\s+checkout\b/i.test(message);
+}
 
 function ensureRelativeRepoPath(relPath: string): string {
   const normalized = relPath.trim().replace(/\\/g, "/");
@@ -686,6 +699,110 @@ export function createGitOperationsService({
         reason: "merge_abort",
         fn: async (lane) => {
           await runGitOrThrow(["merge", "--abort"], { cwd: lane.worktreePath, timeoutMs: 300_000 });
+        }
+      });
+      return action;
+    },
+
+    async listBranches(args: { laneId: string }): Promise<GitBranchSummary[]> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const out = await runGitOrThrow(
+        ["for-each-ref", "--sort=refname", "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream:short)", "refs/heads", "refs/remotes"],
+        { cwd: lane.worktreePath, timeoutMs: 15_000 }
+      );
+
+      const localBranches = new Map<string, GitBranchSummary>();
+      const remoteBranches: GitBranchSummary[] = [];
+
+      out
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean)
+        .forEach((line) => {
+          const parts = line.split("\t");
+          const fullRef = parts[0]?.trim() ?? "";
+          const shortRef = parts[1]?.trim() ?? "";
+          if (!fullRef || !shortRef) return;
+
+          if (fullRef.startsWith("refs/heads/")) {
+            const isCurrent = (parts[2]?.trim() ?? "") === "*";
+            const upstream = parts[3]?.trim() || null;
+            localBranches.set(shortRef, { name: shortRef, isCurrent, isRemote: false, upstream });
+            return;
+          }
+
+          if (fullRef.startsWith("refs/remotes/")) {
+            if (shortRef.endsWith("/HEAD")) return;
+            remoteBranches.push({
+              name: shortRef,
+              isCurrent: false,
+              isRemote: true,
+              upstream: null
+            });
+          }
+        });
+
+      const localNames = new Set(localBranches.keys());
+      const dedupedRemotes = remoteBranches.filter((branch) => {
+        const localCandidate = localBranchNameFromRemoteRef(branch.name);
+        return !localNames.has(localCandidate);
+      });
+
+      const sortedLocals = Array.from(localBranches.values()).sort((a, b) => {
+        if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      const sortedRemotes = dedupedRemotes.sort((a, b) => a.name.localeCompare(b.name));
+
+      return [...sortedLocals, ...sortedRemotes];
+    },
+
+    async checkoutBranch(args: { laneId: string; branchName: string }): Promise<GitActionResult> {
+      const branchName = args.branchName.trim();
+      if (!branchName.length) throw new Error("Branch name is required");
+
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      if (lane.laneType !== "primary") {
+        throw new Error("Branch checkout is only supported on the primary lane");
+      }
+
+      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
+        cwd: lane.worktreePath,
+        timeoutMs: 8_000
+      }).then((res) => res.exitCode === 0);
+      const remoteExists = !localExists
+        ? await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${branchName}`], {
+          cwd: lane.worktreePath,
+          timeoutMs: 8_000
+        }).then((res) => res.exitCode === 0)
+        : false;
+
+      const trackRemoteBranch = !localExists && remoteExists;
+      const resolvedBranchRef = trackRemoteBranch ? localBranchNameFromRemoteRef(branchName) : branchName;
+
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_checkout_branch",
+        reason: "checkout_branch",
+        metadata: { branchName, trackRemoteBranch },
+        fn: async (l) => {
+          const preferredCmd = trackRemoteBranch
+            ? ["checkout", "--track", "--ignore-other-worktrees", branchName]
+            : ["checkout", "--ignore-other-worktrees", branchName];
+          const fallbackCmd = trackRemoteBranch
+            ? ["checkout", "--track", branchName]
+            : ["checkout", branchName];
+
+          const preferredRes = await runGit(preferredCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
+          if (preferredRes.exitCode !== 0) {
+            const combined = `${preferredRes.stderr ?? ""}\n${preferredRes.stdout ?? ""}`.trim();
+            if (isUnsupportedIgnoreOtherWorktreesError(combined)) {
+              await runGitOrThrow(fallbackCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
+            } else {
+              throw new Error(combined || `Failed to checkout branch '${branchName}'`);
+            }
+          }
+          laneService.updateBranchRef(args.laneId, resolvedBranchRef);
         }
       });
       return action;

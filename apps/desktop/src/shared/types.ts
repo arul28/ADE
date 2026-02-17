@@ -2538,6 +2538,22 @@ export type MultiMergeLaneEntry = {
   overlapFileCount: number;
 };
 
+export type GitBranchSummary = {
+  name: string;
+  isCurrent: boolean;
+  isRemote: boolean;
+  upstream: string | null;
+};
+
+export type GitListBranchesArgs = {
+  laneId: string;
+};
+
+export type GitCheckoutBranchArgs = {
+  laneId: string;
+  branchName: string;
+};
+
 export type ListOperationsArgs = {
   laneId?: string;
   kind?: string;

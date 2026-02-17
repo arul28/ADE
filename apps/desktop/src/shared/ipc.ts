@@ -88,6 +88,8 @@ export const IPC = {
   gitRebaseAbort: "ade.git.rebaseAbort",
   gitMergeContinue: "ade.git.mergeContinue",
   gitMergeAbort: "ade.git.mergeAbort",
+  gitListBranches: "ade.git.listBranches",
+  gitCheckoutBranch: "ade.git.checkoutBranch",
   conflictsGetLaneStatus: "ade.conflicts.getLaneStatus",
   conflictsListOverlaps: "ade.conflicts.listOverlaps",
   conflictsGetRiskMatrix: "ade.conflicts.getRiskMatrix",

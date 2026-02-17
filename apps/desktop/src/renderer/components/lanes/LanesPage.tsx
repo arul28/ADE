@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Group, Panel } from "react-resizable-panels";
-import { FileCode2, Home, Layers3, Link2, Maximize2, Pin, Play, Plus, Search, Terminal, X } from "lucide-react";
+import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Pin, Play, Plus, Search, Terminal, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -201,6 +201,32 @@ type LanePaneDetailSelection = {
   selectedCommit: GitCommitSummary | null;
 };
 
+type LaneBranchOption = {
+  name: string;
+  isCurrent: boolean;
+  isRemote: boolean;
+  upstream: string | null;
+};
+
+function formatBranchCheckoutError(input: string): string {
+  const message = input.trim();
+  const lowered = message.toLowerCase();
+  const dirtyCheckout =
+    lowered.includes("would be overwritten by checkout") ||
+    lowered.includes("please commit your changes or stash them before you switch branches");
+  if (!dirtyCheckout) return message;
+
+  const touchedFiles = message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("/") && !line.toLowerCase().startsWith("error:"));
+  const fileCount = touchedFiles.length;
+  if (fileCount > 0) {
+    return `Cannot switch branches: you have uncommitted primary-lane changes in ${fileCount} file${fileCount === 1 ? "" : "s"}. Commit, stash, or discard changes first.`;
+  }
+  return "Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.";
+}
+
 const EMPTY_LANE_PANE_DETAIL: LanePaneDetailSelection = {
   selectedFilePath: null,
   selectedFileMode: null,
@@ -229,6 +255,9 @@ export function LanesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createLaneName, setCreateLaneName] = useState("");
   const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
+  const [createAsChild, setCreateAsChild] = useState(false);
+  const [createBaseBranch, setCreateBaseBranch] = useState("");
+  const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
@@ -245,6 +274,12 @@ export function LanesPage() {
   const [restackSuggestions, setRestackSuggestions] = useState<RestackSuggestion[]>([]);
   const [restackBusyLaneId, setRestackBusyLaneId] = useState<string | null>(null);
   const [restackSuggestionError, setRestackSuggestionError] = useState<string | null>(null);
+
+  const [primaryBranches, setPrimaryBranches] = useState<LaneBranchOption[]>([]);
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
+  const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
+  const branchDropdownRef = useRef<HTMLDivElement>(null);
 
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
@@ -281,6 +316,33 @@ export function LanesPage() {
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const canManageLane = Boolean(managedLane && managedLane.laneType !== "primary");
   const deletePhrase = managedLane ? `delete ${managedLane.name}` : "";
+
+  const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+
+  useEffect(() => {
+    if (!primaryLane) return;
+    window.ade.git.listBranches({ laneId: primaryLane.id })
+      .then(setPrimaryBranches)
+      .catch(() => {});
+  }, [primaryLane?.id, primaryLane?.branchRef]);
+
+  useEffect(() => {
+    if (!primaryLane) return;
+    const current = primaryBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
+    if (!current || current === primaryLane.branchRef) return;
+    refreshLanes().catch(() => {});
+  }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
+
+  useEffect(() => {
+    if (!branchDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [branchDropdownOpen]);
 
   /* ---- Conflict loading ---- */
 
@@ -494,6 +556,19 @@ export function LanesPage() {
     return new Set(laneFilter.trim().toLowerCase().split(/\s+/).filter(Boolean));
   }, [laneFilter]);
 
+  const currentPrimaryBranch = useMemo(
+    () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
+    [primaryBranches, primaryLane?.branchRef]
+  );
+  const localPrimaryBranches = useMemo(
+    () => primaryBranches.filter((branch) => !branch.isRemote),
+    [primaryBranches]
+  );
+  const remotePrimaryBranches = useMemo(
+    () => primaryBranches.filter((branch) => branch.isRemote),
+    [primaryBranches]
+  );
+
   const runLaneAction = async (fn: () => Promise<void>) => {
     setLaneActionBusy(true);
     setLaneActionError(null);
@@ -507,6 +582,32 @@ export function LanesPage() {
       setLaneActionBusy(false);
     }
   };
+
+  const checkoutPrimaryBranch = useCallback(async (branchName: string) => {
+    if (!primaryLane) return;
+    if (primaryLane.status.dirty) {
+      setBranchCheckoutError("Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.");
+      return;
+    }
+    setBranchCheckoutBusy(true);
+    setBranchCheckoutError(null);
+    let succeeded = false;
+    try {
+      await window.ade.git.checkoutBranch({ laneId: primaryLane.id, branchName });
+      await refreshLanes();
+      const updated = await window.ade.git.listBranches({ laneId: primaryLane.id });
+      setPrimaryBranches(updated);
+      succeeded = true;
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      setBranchCheckoutError(formatBranchCheckoutError(raw));
+    } finally {
+      setBranchCheckoutBusy(false);
+      if (succeeded) {
+        setBranchDropdownOpen(false);
+      }
+    }
+  }, [primaryLane, refreshLanes]);
 
   const archiveManagedLane = async () => {
     if (!managedLane || managedLane.laneType === "primary") return;
@@ -729,6 +830,84 @@ export function LanesPage() {
       <div className="border-b border-border/15 px-2 py-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-xs font-semibold text-muted-fg">Lanes</div>
+          {primaryLane && selectedLaneId === primaryLane.id ? (
+            <div className="relative" ref={branchDropdownRef}>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-[--color-surface-overlay] px-2.5 py-1 text-xs font-medium text-fg shadow-card transition-colors hover:bg-emerald-500/12"
+                onClick={() => setBranchDropdownOpen((prev) => !prev)}
+                disabled={branchCheckoutBusy}
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+                <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {branchDropdownOpen ? (
+                <div className="absolute left-0 top-full z-50 mt-1 w-72 max-h-80 overflow-auto rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Local branches</div>
+                  {localPrimaryBranches.map((branch) => (
+                    <button
+                      key={`local:${branch.name}`}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50",
+                        branch.isCurrent && "font-medium text-emerald-700"
+                      )}
+                      disabled={branchCheckoutBusy || branch.isCurrent}
+                      onClick={async () => {
+                        if (branch.isCurrent) return;
+                        await checkoutPrimaryBranch(branch.name);
+                      }}
+                    >
+                      {branch.isCurrent ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                      <span className="truncate">{branch.name}</span>
+                      {branch.upstream ? <span className="ml-auto shrink-0 text-[10px] text-muted-fg">tracked</span> : null}
+                    </button>
+                  ))}
+                  {remotePrimaryBranches.length > 0 ? (
+                    <>
+                      <div className="my-1 h-px bg-border/20" />
+                      <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Remote branches</div>
+                      {remotePrimaryBranches.map((branch) => (
+                        <button
+                          key={`remote:${branch.name}`}
+                          type="button"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+                          disabled={branchCheckoutBusy}
+                          onClick={async () => {
+                            await checkoutPrimaryBranch(branch.name);
+                          }}
+                        >
+                          <span className="w-3 shrink-0" />
+                          <span className="truncate">{branch.name}</span>
+                          <span className="ml-auto shrink-0 text-[10px] text-sky-700">remote</span>
+                        </button>
+                      ))}
+                    </>
+                  ) : null}
+                  {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
+                    <div className="px-3 py-1.5 text-[11px] text-muted-fg">No branches found.</div>
+                  ) : null}
+                  {branchCheckoutError ? (
+                    <div className="px-3 py-1.5 text-[10px] text-red-400">{branchCheckoutError}</div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
+            <div className="inline-flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-800">
+              <span>{branchCheckoutError}</span>
+              <button
+                type="button"
+                className="rounded px-1 text-red-900/70 transition-colors hover:bg-red-500/15 hover:text-red-900"
+                onClick={() => setBranchCheckoutError(null)}
+                title="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           <div className="relative">
             <input
               id="lanes-filter-input"
@@ -792,7 +971,23 @@ export function LanesPage() {
 
           <div className="h-4 w-px bg-border/20" />
 
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => { setCreateLaneName(""); setCreateParentLaneId(""); setCreateOpen(true); }}>
+          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => {
+            setCreateLaneName("");
+            setCreateParentLaneId("");
+            setCreateAsChild(false);
+            setCreateBaseBranch("");
+            const primary = lanes.find((l) => l.laneType === "primary");
+            if (primary) {
+              window.ade.git.listBranches({ laneId: primary.id })
+                .then((branches) => {
+                  setCreateBranches(branches);
+                  const current = branches.find((b) => b.isCurrent && !b.isRemote);
+                  if (current) setCreateBaseBranch(current.name);
+                })
+                .catch(() => {});
+            }
+            setCreateOpen(true);
+          }}>
             <Plus className="h-3 w-3 mr-0.5" /> Lane
           </Button>
           <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => { setAttachName(""); setAttachPath(""); setAttachOpen(true); }}>
@@ -865,7 +1060,7 @@ export function LanesPage() {
               )}
               <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
               <span className="truncate">{lane.name}</span>
-              {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">HOME</span> : null}
+              {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">{lane.branchRef}</span> : null}
               {!isPrimary && isPinned ? <span className="rounded-lg bg-amber-500/15 px-1 text-[10px] text-amber-800">PINNED</span> : null}
               {restackSuggestion ? (
                 <span className="rounded-lg bg-amber-500/10 px-1 text-[10px] text-amber-800" title={`Behind parent by ${restackSuggestion.behindCount} commit(s)`}>
@@ -1137,38 +1332,102 @@ export function LanesPage() {
               <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
               <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
             </div>
-            <div className="mt-3 space-y-2">
-              <div className="text-xs text-muted-fg">Name</div>
-              <input value={createLaneName} onChange={(e) => setCreateLaneName(e.target.value)} placeholder="e.g. feature/auth-refresh" className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg" autoFocus />
-              <div className="space-y-1">
-                <div className="text-xs text-muted-fg">Parent lane (optional)</div>
-                <select value={createParentLaneId} onChange={(event) => setCreateParentLaneId(event.target.value)} className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none">
-                  <option value="">None (base: {baseRef ?? "main"})</option>
-                  {lanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>{lane.name} ({lane.branchRef})</option>
-                  ))}
-                </select>
+            <div className="mt-3 space-y-3">
+              {/* Lane name */}
+              <div>
+                <div className="text-xs text-muted-fg">Name</div>
+                <input
+                  value={createLaneName}
+                  onChange={(e) => setCreateLaneName(e.target.value)}
+                  placeholder="e.g. feature/auth-refresh"
+                  className="mt-1 h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
+                  autoFocus
+                />
               </div>
+
+              {/* Child lane toggle */}
+              <label className="flex items-center gap-2 rounded-xl bg-muted/20 px-3 py-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={createAsChild}
+                  onChange={(e) => {
+                    setCreateAsChild(e.target.checked);
+                    if (!e.target.checked) setCreateParentLaneId("");
+                  }}
+                />
+                <span className="text-muted-fg">Create as child of another lane</span>
+              </label>
+
+              {/* Conditional: Child lane parent selector OR branch selector */}
+              {createAsChild ? (
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-fg">Parent lane</div>
+                  <select
+                    value={createParentLaneId}
+                    onChange={(event) => setCreateParentLaneId(event.target.value)}
+                    className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
+                  >
+                    <option value="">Select a parent lane...</option>
+                    {lanes.map((lane) => (
+                      <option key={lane.id} value={lane.id}>{lane.name} ({lane.branchRef})</option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-fg">Base branch on primary</div>
+                  <select
+                    value={createBaseBranch}
+                    onChange={(event) => setCreateBaseBranch(event.target.value)}
+                    className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
+                  >
+                    {createBranches.filter((b) => !b.isRemote).map((branch) => (
+                      <option key={branch.name} value={branch.name}>
+                        {branch.name}{branch.isCurrent ? " (current)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-[10px] text-muted-fg/70 px-1">
+                    Lane will be created from primary/{createBaseBranch || "..."}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
-              <Button variant="outline" onClick={() => { setCreateOpen(false); setCreateLaneName(""); setCreateParentLaneId(""); }}>Cancel</Button>
+              <Button variant="outline" onClick={() => { setCreateOpen(false); setCreateLaneName(""); setCreateParentLaneId(""); setCreateAsChild(false); setCreateBaseBranch(""); }}>Cancel</Button>
               <Button
                 variant="primary"
-                disabled={!createLaneName.trim().length}
+                disabled={!createLaneName.trim().length || (createAsChild && !createParentLaneId)}
                 onClick={() => {
                   const name = createLaneName.trim();
-                  const parentId = createParentLaneId || null;
-                  const promise = parentId ? window.ade.lanes.createChild({ name, parentLaneId: parentId }) : window.ade.lanes.create({ name });
-                  promise.then(async (lane) => {
-                    await refreshLanes();
-                    setCreateOpen(false);
-                    setCreateLaneName("");
-                    setCreateParentLaneId("");
-                    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
-                  }).catch(() => {});
+                  if (createAsChild && createParentLaneId) {
+                    window.ade.lanes.createChild({ name, parentLaneId: createParentLaneId })
+                      .then(async (lane) => {
+                        await refreshLanes();
+                        setCreateOpen(false);
+                        setCreateLaneName("");
+                        setCreateParentLaneId("");
+                        setCreateAsChild(false);
+                        navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                      }).catch(() => {});
+                  } else {
+                    const primaryLane = lanes.find((l) => l.laneType === "primary");
+                    const promise = primaryLane
+                      ? window.ade.lanes.create({ name, parentLaneId: primaryLane.id })
+                      : window.ade.lanes.create({ name });
+                    promise.then(async (lane) => {
+                      await refreshLanes();
+                      setCreateOpen(false);
+                      setCreateLaneName("");
+                      setCreateParentLaneId("");
+                      setCreateAsChild(false);
+                      setCreateBaseBranch("");
+                      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                    }).catch(() => {});
+                  }
                 }}
               >
-                {createParentLaneId ? "Create child lane" : "Create"}
+                {createAsChild && createParentLaneId ? "Create child lane" : `Create from ${createBaseBranch || "primary"}`}
               </Button>
             </div>
           </Dialog.Content>

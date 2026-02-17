@@ -66,6 +66,9 @@ import type {
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitBatchFileActionArgs,
+  GitBranchSummary,
+  GitListBranchesArgs,
+  GitCheckoutBranchArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -386,7 +389,11 @@ contextBridge.exposeInMainWorld("ade", {
     mergeContinue: async (laneId: string): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitMergeContinue, { laneId }),
     mergeAbort: async (laneId: string): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitMergeAbort, { laneId })
+      ipcRenderer.invoke(IPC.gitMergeAbort, { laneId }),
+    listBranches: async (args: GitListBranchesArgs): Promise<GitBranchSummary[]> =>
+      ipcRenderer.invoke(IPC.gitListBranches, args),
+    checkoutBranch: async (args: GitCheckoutBranchArgs): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitCheckoutBranch, args)
   },
   conflicts: {
     getLaneStatus: async (args: GetLaneConflictStatusArgs): Promise<ConflictStatus> =>

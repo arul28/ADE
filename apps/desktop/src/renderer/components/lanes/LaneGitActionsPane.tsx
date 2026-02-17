@@ -31,6 +31,21 @@ type LaneTextPromptState = {
   resolve: (value: string | null) => void;
 };
 
+function formatRelativeTime(ts: string | null): string {
+  if (!ts) return "unknown time";
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return ts;
+  const diffMs = Date.now() - date.getTime();
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return date.toLocaleDateString();
+}
+
 export function LaneGitActionsPane({
   laneId,
   onSelectFile,
@@ -49,6 +64,18 @@ export function LaneGitActionsPane({
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
 
+  const parentLane = useMemo(() => {
+    if (!lane?.parentLaneId) return null;
+    return lanes.find((l) => l.id === lane.parentLaneId) ?? null;
+  }, [lanes, lane]);
+
+  const originLabel = useMemo(() => {
+    if (!lane) return null;
+    if (lane.laneType === "primary") return null;
+    if (parentLane) return `from ${parentLane.name}/${parentLane.branchRef}`;
+    return `from primary/${lane.baseRef}`;
+  }, [lane, parentLane]);
+
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>({ unstaged: [], staged: [] });
   const [commitMessage, setCommitMessage] = useState("");
@@ -63,6 +90,7 @@ export function LaneGitActionsPane({
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [pullDropdownOpen, setPullDropdownOpen] = useState(false);
   const [moreDropdownOpen, setMoreDropdownOpen] = useState(false);
+  const [showStashes, setShowStashes] = useState(true);
   const pullDropdownRef = useRef<HTMLDivElement>(null);
   const moreDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -183,7 +211,7 @@ export function LaneGitActionsPane({
     setError(null);
     if (!laneId) return;
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [laneId]);
+  }, [laneId, lane?.branchRef]);
 
   const unifiedFiles = useMemo(() => {
     const files: Array<FileChange & { staged: boolean }> = [];
@@ -239,7 +267,12 @@ export function LaneGitActionsPane({
           <span className="text-[11px] font-semibold truncate max-w-[100px]">{lane?.name ?? "No lane"}</span>
           {lane ? (
             <span className="text-[10px] text-muted-fg font-mono shrink-0">
-              {lane.branchRef} · \u2191{lane.status.ahead} \u2193{lane.status.behind}
+              {lane.laneType === "primary" ? (
+                <>Primary · <span className="text-emerald-600">{lane.branchRef}</span></>
+              ) : (
+                <>{originLabel} · </>
+              )}
+              {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}
             </span>
           ) : null}
 
@@ -276,10 +309,10 @@ export function LaneGitActionsPane({
               </Button>
             </div>
             {pullDropdownOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-xl bg-bg shadow-float py-1">
+              <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
                 <button
                   type="button"
-                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left", syncMode === "merge" && "text-accent")}
+                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", syncMode === "merge" && "text-accent")}
                   onClick={() => { setSyncMode("merge"); setPullDropdownOpen(false); if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: "merge" }); }); }}
                 >
                   {syncMode === "merge" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
@@ -289,7 +322,7 @@ export function LaneGitActionsPane({
                 </button>
                 <button
                   type="button"
-                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left", syncMode === "rebase" && "text-accent")}
+                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", syncMode === "rebase" && "text-accent")}
                   onClick={() => { setSyncMode("rebase"); setPullDropdownOpen(false); if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: "rebase" }); }); }}
                 >
                   {syncMode === "rebase" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
@@ -300,7 +333,7 @@ export function LaneGitActionsPane({
                 <div className="my-1 h-px bg-border/15" />
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
                   onClick={() => { setPullDropdownOpen(false); if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }); }}
                 >
                   <span className="w-3 shrink-0" />
@@ -354,10 +387,10 @@ export function LaneGitActionsPane({
               <MoreHorizontal className="h-3 w-3" />
             </Button>
             {moreDropdownOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-xl bg-bg shadow-float py-1">
+              <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
                   onClick={() => {
                     setMoreDropdownOpen(false);
                     if (!laneId) return;
@@ -372,7 +405,7 @@ export function LaneGitActionsPane({
                 </button>
                 <button
                   type="button"
-                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left", stashes.length === 0 && "opacity-40 pointer-events-none")}
+                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", stashes.length === 0 && "opacity-40 pointer-events-none")}
                   onClick={() => {
                     setMoreDropdownOpen(false);
                     if (!laneId || stashes.length === 0) return;
@@ -386,7 +419,7 @@ export function LaneGitActionsPane({
                 <div className="my-1 h-px bg-border/15" />
                 <button
                   type="button"
-                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left", recentCommits.length === 0 && "opacity-40 pointer-events-none")}
+                  className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", recentCommits.length === 0 && "opacity-40 pointer-events-none")}
                   onClick={() => {
                     setMoreDropdownOpen(false);
                     if (!laneId || recentCommits.length === 0) return;
@@ -405,7 +438,7 @@ export function LaneGitActionsPane({
                 </button>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 text-left"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
                   onClick={() => {
                     setMoreDropdownOpen(false);
                     if (!laneId) return;
@@ -474,6 +507,13 @@ export function LaneGitActionsPane({
               ) : null}
             </div>
             <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="text-[10px] px-1 text-muted-fg hover:text-fg"
+                onClick={() => setShowStashes((prev) => !prev)}
+              >
+                {showStashes ? "Hide stashes" : `Show stashes (${stashes.length})`}
+              </button>
               {changes.unstaged.length > 0 ? (
                 <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={stageAll}>
                   Stage All
@@ -486,6 +526,88 @@ export function LaneGitActionsPane({
               ) : null}
             </div>
           </div>
+          {showStashes ? (
+            <div className="shrink-0 border-b border-border/10 bg-card/20 px-2 py-1.5">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-fg">Stashes</span>
+                  <Chip className="h-4 px-1 text-[10px]">{stashes.length}</Chip>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-5 px-1.5 text-[10px]"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    runAction("stash push", async () => {
+                      const msg = await requestTextInput({ title: "Stash message", placeholder: "optional" });
+                      if (msg == null) throw new Error("__ade_cancelled__");
+                      await window.ade.git.stashPush({ laneId, message: msg || undefined });
+                    });
+                  }}
+                >
+                  Stash now
+                </Button>
+              </div>
+              {stashes.length === 0 ? (
+                <div className="rounded-lg bg-muted/20 px-2 py-1 text-[10px] text-muted-fg">No stashes in this lane.</div>
+              ) : (
+                <div className="space-y-1">
+                  {stashes.slice(0, 4).map((stash) => (
+                    <div key={stash.ref} className="flex items-center gap-2 rounded-lg bg-muted/20 px-2 py-1">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] text-fg">{stash.subject || stash.ref}</div>
+                        <div className="truncate text-[10px] text-muted-fg">{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded px-1 py-0.5 text-[10px] text-sky-700 hover:bg-sky-500/10"
+                        disabled={!laneId || busyAction != null}
+                        onClick={() => {
+                          if (!laneId) return;
+                          runAction("stash apply", async () => {
+                            await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
+                          });
+                        }}
+                      >
+                        apply
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded px-1 py-0.5 text-[10px] text-amber-700 hover:bg-amber-500/10"
+                        disabled={!laneId || busyAction != null}
+                        onClick={() => {
+                          if (!laneId) return;
+                          runAction("stash pop", async () => {
+                            await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                          });
+                        }}
+                      >
+                        pop
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded px-1 py-0.5 text-[10px] text-red-700 hover:bg-red-500/10"
+                        disabled={!laneId || busyAction != null}
+                        onClick={() => {
+                          if (!laneId) return;
+                          runAction("stash drop", async () => {
+                            await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                          });
+                        }}
+                      >
+                        drop
+                      </button>
+                    </div>
+                  ))}
+                  {stashes.length > 4 ? (
+                    <div className="text-[10px] text-muted-fg">+{stashes.length - 4} more stash entries.</div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
           <div className="flex-1 overflow-auto p-1 space-y-0.5">
             {unifiedFiles.map((file) => (
               <div
