@@ -202,6 +202,7 @@ function migrate(db: Database) {
       status text not null,
       last_output_preview text,
       summary text,
+      resume_command text,
       foreign key(lane_id) references lanes(id)
     )
   `);
@@ -210,6 +211,7 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "terminal_sessions", "tool_type text", "tool_type");
   addColumnIfMissing(db, "terminal_sessions", "pinned integer not null default 0", "pinned");
   addColumnIfMissing(db, "terminal_sessions", "summary text", "summary");
+  addColumnIfMissing(db, "terminal_sessions", "resume_command text", "resume_command");
   createIndexIfColumnsExist(
     db,
     "create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)",

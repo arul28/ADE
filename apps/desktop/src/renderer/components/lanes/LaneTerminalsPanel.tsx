@@ -3,7 +3,12 @@ import * as Tabs from "@radix-ui/react-tabs";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ExternalLink, Grid, LayoutList, Plus, Settings, Trash2, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
-import type { TerminalLaunchProfile, TerminalProfilesSnapshot, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  TerminalLaunchProfile,
+  TerminalProfilesSnapshot,
+  TerminalSessionSummary,
+  TerminalToolType
+} from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
@@ -68,7 +73,7 @@ function persistLaunchTracked(value: boolean) {
   }
 }
 
-function toolTypeFromProfileId(profileId: string): string | null {
+function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
   const id = profileId.trim().toLowerCase();
   if (id === "claude") return "claude";
   if (id === "codex") return "codex";
@@ -213,7 +218,14 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
     setSessions((prev) =>
       prev.map((entry) =>
         entry.id === session.id
-          ? { ...entry, ptyId: null, status: "disposed", endedAt: new Date().toISOString(), exitCode: null }
+          ? {
+              ...entry,
+              ptyId: null,
+              status: "disposed",
+              runtimeState: "killed",
+              endedAt: new Date().toISOString(),
+              exitCode: null
+            }
           : entry
       )
     );
@@ -290,21 +302,21 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
       const title = profile.name || "Shell";
       const tracked = launchTracked;
       const initialCommand = (profile.command ?? "").trim();
+      const toolType = toolTypeFromProfileId(profile.id);
 
       window.ade.pty
-        .create({ laneId, cols: 100, rows: 30, title, tracked })
-        .then(async ({ sessionId, ptyId }) => {
+        .create({
+          laneId,
+          cols: 100,
+          rows: 30,
+          title,
+          tracked,
+          toolType,
+          startupCommand: initialCommand || undefined
+        })
+        .then(async ({ sessionId }) => {
           focusSession(sessionId);
           refresh().catch(() => {});
-
-          const toolType = toolTypeFromProfileId(profile.id);
-          if (toolType) {
-            window.ade.sessions.updateMeta({ sessionId, toolType }).catch(() => {});
-          }
-
-          if (initialCommand.length) {
-            window.ade.pty.write({ ptyId, data: `${initialCommand}\r` }).catch(() => {});
-          }
         })
         .catch(() => {});
     },
@@ -429,7 +441,8 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               const profileColor = s.toolType ? profileColorMap.get(s.toolType) : undefined;
               const indicator = sessionIndicatorState({
                 status: s.status,
-                lastOutputPreview: s.lastOutputPreview
+                lastOutputPreview: s.lastOutputPreview,
+                runtimeState: s.runtimeState
               });
               const dotClass = indicator === "running-needs-attention"
                 ? "border-2 border-amber-400 border-t-transparent bg-transparent"
@@ -487,8 +500,26 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
             ) : null}
 
             <div className="min-h-0 min-w-0 flex-1">
-              {current && current.status === "running" && current.ptyId ? (
-                <TerminalView ptyId={current.ptyId} sessionId={current.id} className="h-full w-full" />
+              {runningSessions.length > 0 ? (
+                <div className="relative h-full w-full">
+                  {runningSessions.map((session) =>
+                    session.ptyId ? (
+                      <TerminalView
+                        key={session.id}
+                        ptyId={session.ptyId}
+                        sessionId={session.id}
+                        className={`absolute inset-0 h-full w-full ${
+                          current?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+                        }`}
+                      />
+                    ) : null
+                  )}
+                  {current && current.status === "running" && current.ptyId ? null : (
+                    <div className="absolute inset-0 flex items-center justify-center rounded border border-border bg-card/20 p-3">
+                      <EmptyState title="Session not running" description="Pick a running session tab to view its terminal." />
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center rounded border border-border bg-card/20 p-3">
                   <EmptyState title="Session not running" description="Pick a running session tab to view its terminal." />

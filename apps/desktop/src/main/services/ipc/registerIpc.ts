@@ -724,12 +724,17 @@ export function registerIpc({
 
   ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
     const ctx = getCtx();
-    return ctx.sessionService.list(arg);
+    return ctx.ptyService.enrichSessions(ctx.sessionService.list(arg));
   });
 
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = getCtx();
-    return ctx.sessionService.get(arg.sessionId);
+    const session = ctx.sessionService.get(arg.sessionId);
+    if (!session) return null;
+    return {
+      ...session,
+      runtimeState: ctx.ptyService.getRuntimeState(session.id, session.status)
+    };
   });
 
   ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {

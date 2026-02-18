@@ -1,4 +1,4 @@
-import type { TerminalSessionStatus, TerminalSessionSummary } from "../../shared/types";
+import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary } from "../../shared/types";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
 
@@ -66,8 +66,10 @@ function indicatorFromCounts(runningCount: number, needsAttentionCount: number):
 export function sessionIndicatorState(args: {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
+  runtimeState?: TerminalRuntimeState;
 }): "running-active" | "running-needs-attention" | "completed" | "failed" | "disposed" {
   if (args.status === "running") {
+    if (args.runtimeState === "waiting-input") return "running-needs-attention";
     return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
   }
   if (args.status === "failed") return "failed";
@@ -86,7 +88,9 @@ export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): 
     const lane = byLane[session.laneId] ?? { runningCount: 0, activeCount: 0, needsAttentionCount: 0 };
     lane.runningCount += 1;
     runningCount += 1;
-    if (runningSessionNeedsAttention(session.lastOutputPreview)) {
+    const needsAttention =
+      session.runtimeState === "waiting-input" || runningSessionNeedsAttention(session.lastOutputPreview);
+    if (needsAttention) {
       lane.needsAttentionCount += 1;
       needsAttentionCount += 1;
     } else {

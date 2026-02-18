@@ -287,7 +287,8 @@ export function GenerateDocsModal({
         cols: 100,
         rows: 30,
         title: `Generate Docs (${provider})`,
-        tracked: false
+        tracked: false,
+        toolType: provider
       });
       setPtyId(pty.ptyId);
       setSessionId(pty.sessionId);

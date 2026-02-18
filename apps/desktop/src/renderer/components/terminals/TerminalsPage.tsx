@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Info, LayoutList, Monitor, RefreshCw, Square, Terminal, FileText } from "lucide-react";
+import { Clipboard, FileText, Info, LayoutList, Monitor, Play, RefreshCw, Square, Terminal } from "lucide-react";
 import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
-import { TerminalView } from "./TerminalView";
+import { TerminalView, getTerminalRuntimeHealth } from "./TerminalView";
 import { sanitizeTerminalInlineText, sessionIndicatorState } from "../../lib/terminalAttention";
 
 /* ---- Default tiling layout ---- */
@@ -31,6 +31,18 @@ const TERMINALS_TILING_TREE: PaneSplit = {
   ]
 };
 
+function inferToolFromResumeCommand(command: string): "claude" | "codex" | null {
+  const normalized = command.trim().toLowerCase();
+  if (normalized.startsWith("claude ")) return "claude";
+  if (normalized.startsWith("codex ")) return "codex";
+  return null;
+}
+
+function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
+  if (state === "waiting-input") return "waiting input";
+  return state;
+}
+
 /* ---- Component ---- */
 
 export function TerminalsPage() {
@@ -47,6 +59,7 @@ export function TerminalsPage() {
   const [filterStatus, setFilterStatus] = useState<TerminalSessionStatus | "all">("all");
   const [q, setQ] = useState("");
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
+  const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   const refresh = async () => {
@@ -118,7 +131,8 @@ export function TerminalsPage() {
         s.laneName.toLowerCase().includes(needle) ||
         (s.toolType ?? "").toLowerCase().includes(needle) ||
         (s.lastOutputPreview ?? "").toLowerCase().includes(needle) ||
-        (s.summary ?? "").toLowerCase().includes(needle)
+        (s.summary ?? "").toLowerCase().includes(needle) ||
+        (s.resumeCommand ?? "").toLowerCase().includes(needle)
       );
     });
   }, [sessions, filterLaneId, filterStatus, q]);
@@ -132,6 +146,7 @@ export function TerminalsPage() {
     () => (selectedSessionId ? sessions.find((s) => s.id === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const selectedHealth = selectedSession ? getTerminalRuntimeHealth(selectedSession.id) : null;
 
   // Auto-select the first running session if nothing is selected
   useEffect(() => {
@@ -144,7 +159,14 @@ export function TerminalsPage() {
     setSessions((prev) =>
       prev.map((session) =>
         session.ptyId === ptyId
-          ? { ...session, ptyId: null, status: "disposed", endedAt: new Date().toISOString(), exitCode: null }
+          ? {
+              ...session,
+              ptyId: null,
+              status: "disposed",
+              runtimeState: "killed",
+              endedAt: new Date().toISOString(),
+              exitCode: null
+            }
           : session
       )
     );
@@ -178,10 +200,43 @@ export function TerminalsPage() {
     await Promise.allSettled(ptyIds.map((ptyId) => closeSession(ptyId)));
   };
 
+  const resumeSession = useCallback(
+    async (session: TerminalSessionSummary) => {
+      const command = (session.resumeCommand ?? "").trim();
+      if (!command || resumingSessionId) return;
+      setResumingSessionId(session.id);
+      try {
+        const toolType =
+          session.toolType ??
+          inferToolFromResumeCommand(command) ??
+          null;
+        const started = await window.ade.pty.create({
+          laneId: session.laneId,
+          cols: 100,
+          rows: 30,
+          title: session.goal?.trim() || session.title || "Terminal",
+          tracked: session.tracked,
+          toolType,
+          startupCommand: command
+        });
+        selectLane(session.laneId);
+        focusSession(started.sessionId);
+        setSelectedSessionId(started.sessionId);
+        navigate(
+          `/lanes?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(started.sessionId)}`
+        );
+      } finally {
+        setResumingSessionId(null);
+      }
+    },
+    [focusSession, navigate, resumingSessionId, selectLane]
+  );
+
   const sessionDot = useCallback((session: TerminalSessionSummary): { className: string; spinning: boolean; title: string } => {
     const indicator = sessionIndicatorState({
       status: session.status,
-      lastOutputPreview: session.lastOutputPreview
+      lastOutputPreview: session.lastOutputPreview,
+      runtimeState: session.runtimeState
     });
     if (indicator === "running-active") {
       return {
@@ -294,30 +349,47 @@ export function TerminalsPage() {
                     return (
                       <React.Fragment key={s.id}>
                         {idx > 0 && <div className="mx-2 border-b border-border/10" />}
-                        <button
-                          type="button"
-                          className={`w-full rounded-lg p-2.5 text-left transition-all duration-150 ${
-                            isSelected
-                              ? "border-l-2 border-l-accent bg-accent/10 shadow-sm ring-1 ring-accent/20"
-                              : "border-l-2 border-l-transparent hover:bg-muted/30 hover:shadow-sm"
-                          }`}
-                          onClick={() => setSelectedSessionId(s.id)}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              title={dot.title}
-                              className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot.className} ${dot.spinning ? "animate-spin" : ""}`}
-                            />
-                            <span className={`truncate text-xs font-semibold ${isSelected ? "text-accent" : ""}`}>
-                              {(s.goal ?? s.title).trim()}
-                            </span>
-                          </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-[18px] text-[11px] text-muted-fg">
-                            <span className="truncate">{s.laneName}</span>
-                            <Chip className="text-[10px]">{s.status}</Chip>
-                            {s.toolType ? <Chip className="text-[10px]">{s.toolType}</Chip> : null}
-                          </div>
-                        </button>
+                        <div className="group relative">
+                          <button
+                            type="button"
+                            className={`w-full rounded-lg p-2.5 pr-8 text-left transition-all duration-150 ${
+                              isSelected
+                                ? "border-l-2 border-l-accent bg-accent/10 shadow-sm ring-1 ring-accent/20"
+                                : "border-l-2 border-l-transparent hover:bg-muted/30 hover:shadow-sm"
+                            }`}
+                            onClick={() => setSelectedSessionId(s.id)}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                title={dot.title}
+                                className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot.className} ${dot.spinning ? "animate-spin" : ""}`}
+                              />
+                              <span className={`truncate text-xs font-semibold ${isSelected ? "text-accent" : ""}`}>
+                                {(s.goal ?? s.title).trim()}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-[18px] text-[11px] text-muted-fg">
+                              <span className="truncate">{s.laneName}</span>
+                              <Chip className="text-[10px]">{s.status}</Chip>
+                              {s.toolType ? <Chip className="text-[10px]">{s.toolType}</Chip> : null}
+                            </div>
+                          </button>
+                          {s.status !== "running" && s.resumeCommand ? (
+                            <button
+                              type="button"
+                              className="absolute right-2 top-2 inline-flex items-center gap-1 rounded border border-border/40 bg-card/90 px-1.5 py-0.5 text-[10px] text-muted-fg opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+                              title={`Resume in lane ${s.laneName}`}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                resumeSession(s).catch(() => {});
+                              }}
+                            >
+                              <Play className="h-3 w-3" />
+                              Resume
+                            </button>
+                          ) : null}
+                        </div>
                       </React.Fragment>
                     );
                   })}
@@ -338,12 +410,28 @@ export function TerminalsPage() {
           : undefined,
         children: (
           <div className="h-full w-full">
-            {selectedSession && selectedSession.ptyId && selectedSession.status === "running" ? (
-              <TerminalView
-                ptyId={selectedSession.ptyId}
-                sessionId={selectedSession.id}
-                className="h-full w-full"
-              />
+            {runningSessions.length > 0 ? (
+              <div className="relative h-full w-full">
+                {runningSessions.map((session) =>
+                  session.ptyId ? (
+                    <TerminalView
+                      key={session.id}
+                      ptyId={session.ptyId}
+                      sessionId={session.id}
+                      className={`absolute inset-0 h-full w-full ${
+                        selectedSession?.id === session.id ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+                      }`}
+                    />
+                  ) : null
+                )}
+                {selectedSession?.status === "running" && selectedSession.ptyId ? null : (
+                  <div className="absolute inset-0 flex items-center justify-center bg-bg/70 backdrop-blur-[1px]">
+                    <div className="rounded-lg border border-border/20 bg-card/90 px-3 py-2 text-xs text-muted-fg">
+                      Select a running session to interact.
+                    </div>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="flex h-full flex-col items-center justify-center px-6">
                 <div className="mb-3 rounded-xl bg-muted/20 p-3.5">
@@ -390,6 +478,10 @@ export function TerminalsPage() {
                     <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/20">
                       <span className="text-muted-fg/80">Status</span>
                       <Chip className="text-[10px]">{selectedSession.status}</Chip>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/20">
+                      <span className="text-muted-fg/80">Runtime</span>
+                      <Chip className="text-[10px]">{runtimeStateLabel(selectedSession.runtimeState)}</Chip>
                     </div>
                     {selectedSession.toolType ? (
                       <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/20">
@@ -448,6 +540,36 @@ export function TerminalsPage() {
                   </div>
                 ) : null}
 
+                {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
+                  <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                    <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
+                      <Play className="h-3 w-3 text-accent/60" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Resume command</span>
+                    </div>
+                    <div className="rounded-lg border border-border/10 bg-[--color-surface-recessed] px-3 py-2 font-mono text-[11px] text-fg/80">
+                      {selectedSession.resumeCommand}
+                    </div>
+                    <div className="mt-2 text-[11px] text-muted-fg">
+                      Click resume to launch a new terminal in this lane and run this command automatically.
+                    </div>
+                  </div>
+                ) : null}
+
+                {selectedHealth ? (
+                  <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                    <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
+                      <Info className="h-3 w-3 text-accent/60" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Terminal health</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-fg">
+                      <div>fit_failures: {selectedHealth.fitFailures}</div>
+                      <div>zero_dim_fits: {selectedHealth.zeroDimFits}</div>
+                      <div>renderer_fallbacks: {selectedHealth.rendererFallbacks}</div>
+                      <div>dropped_chunks: {selectedHealth.droppedChunks}</div>
+                    </div>
+                  </div>
+                ) : null}
+
                 {/* Actions */}
                 <div className="flex flex-wrap items-center gap-2 pt-1">
                   {selectedSession.status === "running" && selectedSession.ptyId ? (
@@ -465,6 +587,31 @@ export function TerminalsPage() {
                       <Square className="h-3.5 w-3.5" />
                       {closingPtyIds.has(selectedSession.ptyId) ? "Closing..." : "Close"}
                     </Button>
+                  ) : null}
+                  {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={resumingSessionId != null}
+                        onClick={() => resumeSession(selectedSession).catch(() => {})}
+                        title="Resume in this lane"
+                      >
+                        <Play className="h-3.5 w-3.5" />
+                        {resumingSessionId === selectedSession.id ? "Resuming..." : "Resume"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          navigator.clipboard.writeText(selectedSession.resumeCommand ?? "").catch(() => {});
+                        }}
+                        title="Copy resume command"
+                      >
+                        <Clipboard className="h-3.5 w-3.5" />
+                        Copy
+                      </Button>
+                    </>
                   ) : null}
                   <Button
                     variant="outline"
@@ -515,12 +662,15 @@ export function TerminalsPage() {
       lanes,
       selectedSessionId,
       selectedSession,
+      selectedHealth,
       closingPtyIds,
       sessionDot,
       selectLane,
       focusSession,
       navigate,
-      closeSession
+      closeSession,
+      resumeSession,
+      resumingSessionId
     ]
   );
 

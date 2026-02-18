@@ -8,10 +8,24 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import { runGit } from "../git/git";
-import type { PtyDataEvent, PtyExitEvent, PtyCreateArgs, PtyCreateResult, TerminalSessionStatus } from "../../../shared/types";
+import type {
+  PtyDataEvent,
+  PtyExitEvent,
+  PtyCreateArgs,
+  PtyCreateResult,
+  TerminalRuntimeState,
+  TerminalSessionStatus,
+  TerminalSessionSummary,
+  TerminalToolType
+} from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
+import {
+  defaultResumeCommandForTool,
+  extractResumeCommandFromOutput,
+  runtimeStateFromOsc133Chunk
+} from "../../utils/terminalSessionSignals";
 
 type PtyEntry = {
   pty: IPty;
@@ -24,7 +38,18 @@ type PtyEntry = {
   previewCurrentLine: string;
   latestPreviewLine: string | null;
   lastPreviewWritten: string | null;
+  toolTypeHint: TerminalToolType | null;
+  resumeCommand: string | null;
+  resumeCommandIsFallback: boolean;
+  resumeScanBuffer: string;
   disposed: boolean;
+};
+
+type RuntimeStateEntry = {
+  state: TerminalRuntimeState;
+  updatedAt: number;
+  lastActivityAt: number;
+  idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type ShellSpec = { file: string; args: string[] };
@@ -56,6 +81,19 @@ function statusFromExit(exitCode: number | null): TerminalSessionStatus {
   return "failed";
 }
 
+function runtimeFromStatus(status: TerminalSessionStatus): TerminalRuntimeState {
+  if (status === "running") return "running";
+  if (status === "disposed") return "killed";
+  return "exited";
+}
+
+function normalizeToolType(raw: unknown): TerminalToolType | null {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!value) return null;
+  const allowed: TerminalToolType[] = ["shell", "claude", "codex", "cursor", "aider", "continue", "other"];
+  return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
+}
+
 export function createPtyService({
   projectRoot,
   transcriptsDir,
@@ -80,6 +118,49 @@ export function createPtyService({
   loadPty: () => typeof ptyNs;
 }) {
   const ptys = new Map<string, PtyEntry>();
+  const runtimeStates = new Map<string, RuntimeStateEntry>();
+
+  const clearIdleTimer = (sessionId: string) => {
+    const state = runtimeStates.get(sessionId);
+    if (!state?.idleTimer) return;
+    clearTimeout(state.idleTimer);
+    state.idleTimer = null;
+  };
+
+  const setRuntimeState = (sessionId: string, nextState: TerminalRuntimeState, opts?: { touch?: boolean }) => {
+    const now = Date.now();
+    const prev = runtimeStates.get(sessionId);
+    if (prev) {
+      prev.state = nextState;
+      prev.updatedAt = now;
+      if (opts?.touch ?? true) {
+        prev.lastActivityAt = now;
+      }
+      runtimeStates.set(sessionId, prev);
+      return;
+    }
+    runtimeStates.set(sessionId, {
+      state: nextState,
+      updatedAt: now,
+      lastActivityAt: now,
+      idleTimer: null
+    });
+  };
+
+  const scheduleIdleTransition = (sessionId: string) => {
+    const state = runtimeStates.get(sessionId);
+    if (!state) return;
+    clearIdleTimer(sessionId);
+    state.idleTimer = setTimeout(() => {
+      const current = runtimeStates.get(sessionId);
+      if (!current) return;
+      if (current.state !== "running") return;
+      if (Date.now() - current.lastActivityAt < 12_000) return;
+      current.state = "idle";
+      current.updatedAt = Date.now();
+      current.idleTimer = null;
+    }, 12_500);
+  };
 
   const safeTranscriptPathFor = (sessionId: string) => path.join(transcriptsDir, `${sessionId}.log`);
 
@@ -131,6 +212,9 @@ export function createPtyService({
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
     sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
+    clearIdleTimer(entry.sessionId);
+    setRuntimeState(entry.sessionId, runtimeFromStatus(status), { touch: false });
+    runtimeStates.delete(entry.sessionId);
     summarizeSessionBestEffort(entry.sessionId);
 
     // Best-effort head SHA at end; never block exit.
@@ -201,6 +285,9 @@ export function createPtyService({
       const sessionId = randomUUID();
       const startedAt = new Date().toISOString();
       const tracked = args.tracked !== false;
+      const toolTypeHint = normalizeToolType(args.toolType);
+      const startupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
+      const initialResumeCommand = defaultResumeCommandForTool(toolTypeHint);
       const transcriptPath = safeTranscriptPathFor(sessionId);
 
       let transcriptStream: fs.WriteStream | null = null;
@@ -209,7 +296,18 @@ export function createPtyService({
         transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
       }
 
-      sessionService.create({ sessionId, laneId, ptyId, tracked, title, startedAt, transcriptPath: tracked ? transcriptPath : "" });
+      sessionService.create({
+        sessionId,
+        laneId,
+        ptyId,
+        tracked,
+        title,
+        startedAt,
+        transcriptPath: tracked ? transcriptPath : "",
+        toolType: toolTypeHint,
+        resumeCommand: initialResumeCommand
+      });
+      setRuntimeState(sessionId, "running");
 
       // Best-effort head SHA at start; do not block terminal creation.
       Promise.resolve()
@@ -255,6 +353,9 @@ export function createPtyService({
           // ignore
         }
         sessionService.end({ sessionId, endedAt: new Date().toISOString(), exitCode: null, status: "failed" });
+        clearIdleTimer(sessionId);
+        setRuntimeState(sessionId, "exited", { touch: false });
+        runtimeStates.delete(sessionId);
         summarizeSessionBestEffort(sessionId);
         broadcastExit({ ptyId, sessionId, exitCode: null });
         throw err;
@@ -271,6 +372,10 @@ export function createPtyService({
         previewCurrentLine: "",
         latestPreviewLine: null,
         lastPreviewWritten: null,
+        toolTypeHint,
+        resumeCommand: initialResumeCommand,
+        resumeCommandIsFallback: Boolean(initialResumeCommand),
+        resumeScanBuffer: "",
         disposed: false
       };
       ptys.set(ptyId, entry);
@@ -283,6 +388,24 @@ export function createPtyService({
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
         broadcastData({ ptyId, sessionId, data });
+
+        const runtimeState = runtimeStateFromOsc133Chunk(data, runtimeStates.get(sessionId)?.state ?? "running");
+        setRuntimeState(sessionId, runtimeState);
+        if (runtimeState === "running") {
+          scheduleIdleTransition(sessionId);
+        } else {
+          clearIdleTimer(sessionId);
+        }
+
+        if (!entry.resumeCommand || entry.resumeCommandIsFallback) {
+          entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-12_000);
+          const detected = extractResumeCommandFromOutput(entry.resumeScanBuffer, entry.toolTypeHint);
+          if (detected && detected !== entry.resumeCommand) {
+            entry.resumeCommand = detected;
+            entry.resumeCommandIsFallback = false;
+            sessionService.setResumeCommand(sessionId, detected);
+          }
+        }
 
         // Accumulate initial output for session title generation
         if (!titleBufferFull) {
@@ -297,6 +420,16 @@ export function createPtyService({
         logger.info("pty.exit", { ptyId, sessionId, exitCode });
         closeEntry(ptyId, exitCode ?? null);
       });
+
+      if (startupCommand) {
+        try {
+          pty.write(`${startupCommand}\r`);
+          setRuntimeState(sessionId, "running");
+          scheduleIdleTransition(sessionId);
+        } catch (err) {
+          logger.warn("pty.startup_command_failed", { ptyId, sessionId, err: String(err) });
+        }
+      }
 
       // Fire-and-forget: after 4s, attempt AI title generation for non-shell sessions
       if (hostedAgentService) {
@@ -342,6 +475,8 @@ export function createPtyService({
       if (!entry) return;
       try {
         entry.pty.write(data);
+        setRuntimeState(entry.sessionId, "running");
+        scheduleIdleTransition(entry.sessionId);
       } catch (err) {
         logger.warn("pty.write_failed", { ptyId, err: String(err) });
       }
@@ -358,6 +493,19 @@ export function createPtyService({
       }
     },
 
+    getRuntimeState(sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState {
+      const runtime = runtimeStates.get(sessionId);
+      if (runtime) return runtime.state;
+      return runtimeFromStatus(fallbackStatus);
+    },
+
+    enrichSessions<T extends TerminalSessionSummary>(rows: T[]): T[] {
+      return rows.map((row) => ({
+        ...row,
+        runtimeState: this.getRuntimeState(row.id, row.status)
+      }));
+    },
+
     dispose({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): void {
       const entry = ptys.get(ptyId);
       if (!entry) {
@@ -368,6 +516,9 @@ export function createPtyService({
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
+        clearIdleTimer(sessionId);
+        setRuntimeState(sessionId, "killed", { touch: false });
+        runtimeStates.delete(sessionId);
         summarizeSessionBestEffort(sessionId);
         broadcastExit({ ptyId, sessionId, exitCode: null });
         if (session.tracked) {
@@ -394,6 +545,9 @@ export function createPtyService({
       }
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      clearIdleTimer(entry.sessionId);
+      setRuntimeState(entry.sessionId, "killed", { touch: false });
+      runtimeStates.delete(entry.sessionId);
       summarizeSessionBestEffort(entry.sessionId);
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);

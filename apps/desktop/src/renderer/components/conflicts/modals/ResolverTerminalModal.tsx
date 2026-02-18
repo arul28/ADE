@@ -189,6 +189,7 @@ export function ResolverTerminalModal({
         rows: 30,
         title: `Resolve Conflicts (${provider})`,
         tracked: false,
+        toolType: provider,
       });
       setPtyId(pty.ptyId);
       setSessionId(pty.sessionId);

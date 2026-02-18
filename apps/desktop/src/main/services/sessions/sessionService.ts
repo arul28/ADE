@@ -2,14 +2,22 @@ import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import type {
   TerminalSessionDetail,
+  TerminalRuntimeState,
   TerminalSessionStatus,
   TerminalSessionSummary,
   TerminalToolType,
   UpdateSessionMetaArgs
 } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
+import { defaultResumeCommandForTool } from "../../utils/terminalSessionSignals";
 
 export function createSessionService({ db }: { db: AdeDb }) {
+  const runtimeStateFromStatus = (status: TerminalSessionStatus): TerminalRuntimeState => {
+    if (status === "running") return "running";
+    if (status === "disposed") return "killed";
+    return "exited";
+  };
+
   const normalizeToolType = (raw: unknown): TerminalToolType | null => {
     const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
     if (!value) return null;
@@ -53,6 +61,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       headShaEnd: string | null;
       lastOutputPreview: string | null;
       summary: string | null;
+      resumeCommand: string | null;
     }>(
       `
         select
@@ -73,7 +82,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
           s.head_sha_start as headShaStart,
           s.head_sha_end as headShaEnd,
           s.last_output_preview as lastOutputPreview,
-          s.summary as summary
+          s.summary as summary,
+          s.resume_command as resumeCommand
         from terminal_sessions s
         join lanes l on l.id = s.lane_id
         ${whereSql}
@@ -89,7 +99,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
       pinned: row.pinned === 1,
       goal: row.goal ?? null,
       toolType: normalizeToolType(row.toolType),
-      summary: row.summary ?? null
+      summary: row.summary ?? null,
+      runtimeState: runtimeStateFromStatus(row.status),
+      resumeCommand: row.resumeCommand ?? null
     })) as TerminalSessionSummary[];
   };
 
@@ -138,7 +150,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
             s.head_sha_start as headShaStart,
             s.head_sha_end as headShaEnd,
             s.last_output_preview as lastOutputPreview,
-            s.summary as summary
+            s.summary as summary,
+            s.resume_command as resumeCommand
           from terminal_sessions s
           join lanes l on l.id = s.lane_id
           where s.id = ?
@@ -152,7 +165,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
             tracked: (row as any).tracked === 1,
             pinned: (row as any).pinned === 1,
             goal: (row as any).goal ?? null,
-            toolType: normalizeToolType((row as any).toolType)
+            toolType: normalizeToolType((row as any).toolType),
+            runtimeState: runtimeStateFromStatus((row as any).status),
+            resumeCommand: (row as any).resumeCommand ?? null
           } as TerminalSessionDetail)
         : null;
     },
@@ -180,12 +195,30 @@ export function createSessionService({ db }: { db: AdeDb }) {
         params.push(normalized);
       }
 
+      if (args.resumeCommand !== undefined) {
+        const next = typeof args.resumeCommand === "string" ? args.resumeCommand.trim() : "";
+        sets.push("resume_command = ?");
+        params.push(next ? next : null);
+      }
+
       if (sets.length) {
         params.push(sessionId);
         db.run(`update terminal_sessions set ${sets.join(", ")} where id = ?`, params);
       }
 
-      return this.get(sessionId);
+      const updated = this.get(sessionId);
+      if (!updated) return null;
+      if (args.resumeCommand !== undefined) return updated;
+
+      if (args.toolType !== undefined && !updated.resumeCommand) {
+        const fallback = defaultResumeCommandForTool(updated.toolType);
+        if (fallback) {
+          db.run("update terminal_sessions set resume_command = ? where id = ? and resume_command is null", [fallback, sessionId]);
+          const withResume = this.get(sessionId);
+          return withResume ?? updated;
+        }
+      }
+      return updated;
     },
 
     create({
@@ -196,6 +229,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       startedAt,
       transcriptPath,
       tracked,
+      toolType,
+      resumeCommand
     }: {
       sessionId: string;
       laneId: string;
@@ -204,15 +239,32 @@ export function createSessionService({ db }: { db: AdeDb }) {
       title: string;
       startedAt: string;
       transcriptPath: string;
+      toolType?: TerminalToolType | null;
+      resumeCommand?: string | null;
     }): void {
+      const normalizedToolType = normalizeToolType(toolType);
+      const normalizedResumeCommand =
+        typeof resumeCommand === "string" && resumeCommand.trim().length
+          ? resumeCommand.trim()
+          : defaultResumeCommandForTool(normalizedToolType);
       db.run(
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, summary
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null)
+            head_sha_start, head_sha_end, status, last_output_preview, summary, tool_type, resume_command
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, ?, ?)
         `,
-        [sessionId, laneId, ptyId, tracked ? 1 : 0, title, startedAt, transcriptPath]
+        [
+          sessionId,
+          laneId,
+          ptyId,
+          tracked ? 1 : 0,
+          title,
+          startedAt,
+          transcriptPath,
+          normalizedToolType,
+          normalizedResumeCommand ?? null
+        ]
       );
     },
 
@@ -230,6 +282,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     setSummary(sessionId: string, summary: string | null): void {
       db.run("update terminal_sessions set summary = ? where id = ?", [summary, sessionId]);
+    },
+
+    setResumeCommand(sessionId: string, resumeCommand: string | null): void {
+      const next = typeof resumeCommand === "string" ? resumeCommand.trim() : "";
+      db.run("update terminal_sessions set resume_command = ? where id = ?", [next ? next : null, sessionId]);
     },
 
     end({

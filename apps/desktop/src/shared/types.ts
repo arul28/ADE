@@ -900,6 +900,8 @@ export type TerminalSessionStatus = "running" | "completed" | "failed" | "dispos
 
 export type TerminalToolType = "shell" | "claude" | "codex" | "cursor" | "aider" | "continue" | "other";
 
+export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
+
 export type TerminalSessionSummary = {
   id: string;
   laneId: string;
@@ -919,6 +921,8 @@ export type TerminalSessionSummary = {
   headShaEnd: string | null;
   lastOutputPreview: string | null;
   summary: string | null;
+  runtimeState: TerminalRuntimeState;
+  resumeCommand: string | null;
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {
@@ -932,6 +936,8 @@ export type PtyCreateArgs = {
   rows: number;
   title: string;
   tracked?: boolean;
+  toolType?: TerminalToolType | null;
+  startupCommand?: string;
 };
 
 export type PtyCreateResult = {
@@ -962,6 +968,7 @@ export type UpdateSessionMetaArgs = {
   pinned?: boolean;
   goal?: string | null;
   toolType?: TerminalToolType | null;
+  resumeCommand?: string | null;
 };
 
 export type TranscriptSearchMatch = {
