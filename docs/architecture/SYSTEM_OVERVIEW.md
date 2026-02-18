@@ -78,14 +78,17 @@ Key UI subsystems:
 
 | Subsystem | Purpose |
 |-----------|---------|
-| Lanes | Create, rename, archive, delete worktree-backed development lanes |
-| Terminals | Embedded terminal emulators backed by node-pty sessions |
-| Diffs | Side-by-side file diff viewer with staging/unstaging controls |
-| Processes | Start, stop, restart managed dev server processes |
-| Tests | Run test suites, view results and log output |
-| Packs | View deterministic context packs (project-level and lane-level) |
-| History | Browse operation timeline with SHA tracking |
-| Config | Edit project configuration (processes, tests, stack buttons) |
+| Play | Run processes/tests, lane-scoped execution controls, CI import, agent tool launch points |
+| Lanes | Create, rename, archive, delete, and stack worktree-backed development lanes |
+| Files | IDE-style workspace browser/editor with search and quick-open |
+| Terminals | Embedded terminal sessions backed by node-pty |
+| Conflicts | Risk matrix, merge simulation, proposal/reconciliation workflows |
+| Context/Packs | Deterministic pack views, exports, and docs-generation actions |
+| Graph | Workspace topology and risk overlays |
+| PRs | PR creation/linking, checks/reviews, stacked + integration flows |
+| History | Operation/checkpoint/pack event timeline |
+| Automations | Trigger-action workflows and planner-driven draft flows |
+| Settings | Provider, trust, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
 
@@ -112,7 +115,7 @@ All services are instantiated in `main.ts` and wired together through dependency
 
 ### 3. Hosted ADE Agent
 
-**Technology**: Cloud-hosted service (planned), LLM integration
+**Technology**: Cloud-hosted serverless backend (`infra`) with LLM gateway integration
 
 The Hosted ADE Agent is a read-only cloud mirror that receives snapshots of lane state and uses large language models to generate higher-order context:
 
@@ -136,8 +139,8 @@ User creates lane
   --> Runs terminal session in lane worktree
     --> Session end triggers checkpoint computation
       --> Checkpoint triggers pack update (lane pack + project pack)
-        --> Pack triggers conflict prediction (future)
-          --> Results sync to hosted mirror (future)
+        --> Pack triggers conflict prediction
+          --> Results can sync to hosted mirror (if enabled)
             --> Hosted agent generates narratives/proposals
               --> Proposals sent back to desktop for user review
 ```
@@ -146,24 +149,16 @@ Each step in this pipeline is triggered by events rather than polling. The job e
 
 ### IPC Architecture
 
-Communication between the renderer and main process is organized into a broad typed IPC contract (currently ~225 channels in `shared/ipc.ts`) spanning app, lanes, sessions, PTY, files, git, conflicts, context/packs, automations, PRs, hosted, processes/tests, and settings/config domains:
+Communication between the renderer and main process is organized into a broad typed IPC contract (`225` channels in `apps/desktop/src/shared/ipc.ts` as of 2026-02-18). Major domains include:
 
-| Subsystem | Channel Prefix | Count | Pattern |
-|-----------|---------------|-------|---------|
-| App | `ade.app.*` | 3 | invoke/handle |
-| Project | `ade.project.*` | 2 | invoke/handle |
-| Lanes | `ade.lanes.*` | 6 | invoke/handle |
-| Sessions | `ade.sessions.*` | 4 | invoke/handle |
-| PTY | `ade.pty.*` | 6 | invoke/handle + push events |
-| Diff | `ade.diff.*` | 2 | invoke/handle |
-| Files | `ade.files.*` | 12 | invoke/handle + push events |
-| Git | `ade.git.*` | 13 | invoke/handle |
-| Packs | `ade.packs.*` | 3 | invoke/handle |
-| History | `ade.history.*` | 1 | invoke/handle |
-| Layout | `ade.layout.*` | 2 | invoke/handle |
-| Processes | `ade.processes.*` | 12 | invoke/handle + push events |
-| Tests | `ade.tests.*` | 6 | invoke/handle + push events |
-| Config | `ade.projectConfig.*` | 5 | invoke/handle |
+| Domain | Prefix examples | Pattern |
+|-----------|---------------|---------|
+| App / Project / Onboarding / CI | `ade.app.*`, `ade.project.*`, `ade.onboarding.*`, `ade.ci.*` | invoke/handle + selected events |
+| Lanes / Git / Conflicts / PRs | `ade.lanes.*`, `ade.git.*`, `ade.conflicts.*`, `ade.prs.*` | invoke/handle + selected events |
+| Terminals / Sessions / Files | `ade.pty.*`, `ade.sessions.*`, `ade.files.*` | invoke/handle + high-frequency stream events |
+| Context / Packs / History / Graph | `ade.context.*`, `ade.packs.*`, `ade.history.*`, `ade.graph.*` | invoke/handle + pack events |
+| Processes / Tests / Automations | `ade.processes.*`, `ade.tests.*`, `ade.automations.*` | invoke/handle + runtime events |
+| Config / Settings surfaces | `ade.projectConfig.*`, `ade.keybindings.*`, `ade.terminalProfiles.*`, `ade.agentTools.*`, `ade.hosted.*`, `ade.github.*` | invoke/handle + provider/state events |
 
 These per-subsystem counts are illustrative and can drift; `apps/desktop/src/shared/ipc.ts` is the canonical live channel inventory.
 

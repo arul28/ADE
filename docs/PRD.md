@@ -479,9 +479,9 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| **PTY stability across platforms** | Terminal sessions are the primary user interaction; instability blocks all workflows | Phase 0 gates all subsequent work on stable PTY. Cross-platform testing required before advancing. |
+| **PTY stability across platforms** | Terminal sessions are the primary user interaction; instability blocks all workflows | Maintain a standing platform reliability gate (macOS/Windows/Linux smoke coverage) before advancing runtime-heavy roadmap phases. |
 | **Conflict prediction accuracy** | False positives erode trust; false negatives defeat the purpose | Start with conservative git merge-tree analysis. Mark uncertain predictions as "unknown" rather than "clean." Iterate with user feedback. |
-| **Pack system complexity** | Five pack types with immutable versioning and materialization could be over-engineered for MVP | Implement all pack types in a single phase (Phase 3) to avoid partial systems. Keep materializers incremental and fast. Provide rebuild/recovery commands. |
+| **Pack system complexity** | Five pack types with immutable versioning and materialization could be over-engineered for MVP | Keep deterministic pack materialization incremental, with explicit rebuild/recovery commands and strict schema/version contracts. |
 | **Hosted mirror security** | Uploading repository content to the cloud carries inherent risk | Hosted sync is opt-in. Default exclude list covers secrets and build artifacts. Encryption at rest and in transit. Strict tenant isolation. Bounded retention with user controls. |
 | **LLM cost control** | Narrative and proposal jobs could incur unexpected costs | Per-job token and file-read budgets. Content-hash caching. Execution tied to session boundaries, not keystrokes. Coalesced sync with configurable thresholds. |
 | **Electron performance at scale** | Many concurrent terminals, file watchers, and git operations could degrade performance | Lazy xterm rendering (only focused sessions get full rendering). Coalesced event processing. Incremental materializers keyed by checkpoint IDs. Git-native operations preferred over filesystem walks. |
@@ -489,4 +489,4 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 
 ---
 
-*This document is the authoritative product requirements reference for ADE. For implementation details, consult the linked feature and architecture documents. For UI-specific decisions, the [UI Spec (Locked)](features/UI_SPEC_LOCKED.md) takes precedence in case of conflict.*
+*This document is the authoritative product requirements reference for ADE. For implementation details, consult the linked feature and architecture documents; roadmap sequencing is maintained in `docs/final-plan.md`.*

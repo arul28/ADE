@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-18
 
 ---
 
@@ -45,7 +45,7 @@ The **Terminals tab** provides a global view of all terminal sessions across lan
 
 This feature matters because terminals are the primary interface for interacting with code. Developers spend most of their time in terminals running commands, debugging, and iterating. ADE elevates terminals from disposable shell tabs to tracked, contextualized sessions. Every terminal session is associated with a lane, its output is captured as a transcript, and when it ends, ADE computes what changed — files modified, lines added and removed, potential failures. This transforms terminal activity from an opaque black box into structured development history.
 
-The combination of session tracking and delta computation is a foundational capability that feeds into other ADE features: the History tab uses sessions as nodes in the development timeline, Packs are refreshed when sessions end, and future checkpoint creation will be triggered by session boundaries.
+The combination of session tracking and delta computation is a foundational capability that feeds into other ADE features: the History tab uses sessions as nodes in the development timeline, Packs are refreshed when sessions end, and checkpoint creation is already triggered by tracked session boundaries.
 
 ---
 
@@ -105,7 +105,7 @@ Delta computation works by comparing the git state at session start (captured HE
 
 ### Checkpoint
 
-A **checkpoint** is an immutable snapshot created at a session boundary. This is a future feature that will capture the complete state of a lane at the moment a session ends, enabling rollback and time-travel debugging. Checkpoints are described in the History feature documentation.
+A **checkpoint** is an immutable snapshot created at a tracked session boundary. On session end, ADE records checkpoint metadata (including SHA anchors and delta context) through the pack pipeline, enabling durable history, replay context, and rollback-oriented workflows described in the History/Packs docs.
 
 ### Untracked Session
 
