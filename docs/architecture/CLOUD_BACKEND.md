@@ -1,5 +1,7 @@
 # Cloud Backend Architecture (AWS)
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 The ADE cloud backend is a fully serverless AWS stack for hosted mirror sync and async job processing.

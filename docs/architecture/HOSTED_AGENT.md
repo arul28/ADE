@@ -1,5 +1,7 @@
 # Hosted Agent Architecture
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 The hosted ADE agent is a cloud-based service that receives read-only snapshots of lane state and uses large language models to generate useful artifacts. It is designed as a stateless, event-driven processing layer that never directly interacts with the user's repository.

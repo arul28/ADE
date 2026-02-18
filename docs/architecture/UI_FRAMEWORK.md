@@ -1,5 +1,7 @@
 # UI Framework Architecture
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-11
 
 This document describes the renderer application architecture, including the technology stack, component organization, state management, theming system, and layout patterns used in the ADE desktop interface.

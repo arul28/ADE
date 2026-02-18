@@ -1,5 +1,7 @@
 # Automations — Trigger-Action Workflows
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 ---
@@ -41,6 +43,16 @@ Automations generalize this into a user-configurable system where any supported
 trigger can invoke any supported action, with conditional execution and chaining.
 
 Automations are implemented and working as part of **Phase 8** (Automations + Onboarding + Packs V2).
+
+### Roadmap Alignment (Final Plan)
+
+Per `docs/final-plan.md`, Automations owns recurring/background execution policy, including:
+
+- Night Shift presets (scheduled off-hours mission batches).
+- Budget/time guardrails for unattended runs.
+- Morning digest summaries and review queues.
+
+Missions are ad-hoc goal objects and are documented in the Final Plan. Automations is not replaced by Missions; it remains the recurring trigger layer that can launch mission/orchestrator work.
 
 ---
 

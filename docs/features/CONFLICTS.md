@@ -1,5 +1,7 @@
 # Conflicts — Radar, Prediction & Resolution
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 ---
@@ -37,6 +39,14 @@ merge, which ones are drifting from the base branch, and which pairs of lanes ar
 on a collision course.
 
 **Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via hosted agent (diff preview, apply, undo) are **implemented** (Phase 6). External CLI resolution (Codex/Claude), active merge/rebase conflict management, restack suggestion integration, merge-plan workflows, and integration lane creation are **implemented** (Phase 8).
+
+### Roadmap Alignment (Final Plan)
+
+Per `docs/final-plan.md`, Conflicts owns merge-risk intelligence and resolution workflows, including integration-lane planning. Planned coordination points:
+
+- Integration Sandbox handoff to Run/Play for combined-lane verification before merge.
+- Explicit links from conflict merge plans to PR readiness/landing gates.
+- Mission/Orchestrator consumption of conflict APIs without bypassing conflict policy checks.
 
 ---
 
@@ -640,4 +650,3 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 
 - If context is insufficient, ADE blocks speculative patch generation (`status=blocked`) and records explicit gap messages.
 - Hosted/BYOK proposal APIs remain for compatibility, but they are deprecated as the primary resolution UX path.
-

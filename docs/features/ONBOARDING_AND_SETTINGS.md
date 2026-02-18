@@ -1,5 +1,7 @@
 # Onboarding & Settings — Setup, Trust & Preferences
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 ---

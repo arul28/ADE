@@ -1,6 +1,8 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-02-11
+Last updated: 2026-02-18
+
+Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
 ---
 
@@ -18,9 +20,12 @@ Last updated: 2026-02-11
    - 7.3 [Files](#73-files)
    - 7.4 [Terminals](#74-terminals)
    - 7.5 [Conflicts](#75-conflicts)
-   - 7.6 [PRs](#76-prs)
-   - 7.7 [History](#77-history)
-   - 7.8 [Settings](#78-settings)
+   - 7.6 [Context](#76-context)
+   - 7.7 [Graph](#77-graph)
+   - 7.8 [PRs](#78-prs)
+   - 7.9 [History](#79-history)
+   - 7.10 [Automations](#710-automations)
+   - 7.11 [Settings](#711-settings)
 8. [Feature Documentation](#8-feature-documentation)
 9. [Architecture Documentation](#9-architecture-documentation)
 10. [Cross-Cutting Concerns](#10-cross-cutting-concerns)
@@ -61,7 +66,7 @@ Software teams increasingly use AI coding agents (Claude Code, Codex, Cursor, an
 
 ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Think of it as "mission control for agentic development."
 
-ADE does not replace the IDE or the git CLI. It does not run AI agents. It observes, orchestrates, and provides the operational dashboard that makes parallel agentic development manageable.
+ADE does not replace the IDE or the git CLI. ADE already integrates deeply with external agent CLIs via tracked sessions and automation flows, and is evolving toward first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
 
 ---
 
@@ -202,7 +207,22 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 
 ## 7. Application Structure (Tabs)
 
-ADE uses an 8-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, and Files tabs to default-filter to the active lane context. The app can be used in Guest Mode (no account required) with context tracking disabled.
+ADE currently uses an 11-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, and Files tabs to default-filter to the active lane context. The app can be used in Guest Mode (no account required) with context tracking disabled.
+
+Current tab routes:
+- `/project` (Play)
+- `/lanes`
+- `/files`
+- `/terminals`
+- `/conflicts`
+- `/context`
+- `/graph`
+- `/prs`
+- `/history`
+- `/automations`
+- `/settings`
+
+The detailed ownership model for future additions (including Missions and Machines) is maintained in `docs/final-plan.md`.
 
 ### 7.1 Run (▶)
 
@@ -234,19 +254,37 @@ The Conflicts tab is the project-wide conflict radar. It aggregates predicted an
 
 See: [features/CONFLICTS.md](features/CONFLICTS.md)
 
-### 7.6 PRs
+### 7.6 Context
+
+The Context tab is the documentation and pack context surface. It shows project/lane context health, supports context docs generation workflows, and provides access to pack-derived narrative and export artifacts that are used in handoffs and orchestration flows.
+
+See: [features/PACKS.md](features/PACKS.md)
+
+### 7.7 Graph
+
+The Graph tab visualizes lane topology, stack relationships, activity/risk overlays, and PR linkage on a canvas. It is optimized for quickly understanding cross-lane dependencies and integration risk across a large workspace.
+
+See: [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md)
+
+### 7.8 PRs
 
 The PRs tab manages GitHub pull request workflows. It displays stacked PR chains aligned to the lane stack graph on the left, and parallel (non-stacked) PRs in a separate list. The right side shows selected PR detail including checks, review status, and description. Per-lane PR operations (create, link, push, update description from packs) are available in the lane inspector PR sub-tab. The tab supports the "land stack" guided flow for merging stacked PRs in dependency order with checks gating.
 
 See: [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md)
 
-### 7.7 History
+### 7.9 History
 
 The History tab provides an ADE-native operations timeline (distinct from `git log`). It shows a chronological event stream covering terminal sessions ended, checkpoints created, lane sync operations, conflict predictions, plan version changes, proposal applications, and PR events. Events are filterable by lane, feature key, and event type. Each event detail panel shows links to affected lanes, packs, checkpoints, plan versions, and proposals, with "replay context" and "undo" actions where applicable. A feature history view aggregates all sessions, checkpoints, and plan revisions for a given issue or feature key.
 
 See: [features/HISTORY.md](features/HISTORY.md)
 
-### 7.8 Settings
+### 7.10 Automations
+
+The Automations tab manages trigger-action workflows, manual runs, execution history, and natural-language drafting of automation rules. It is the foundation for recurring/background workflows (including planned Night Shift behavior in `docs/final-plan.md`).
+
+See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
+
+### 7.11 Settings
 
 The Settings tab provides application preferences including hosted agent enable/disable, mirror exclude pattern editing, process/test configuration export/import, keyboard shortcuts reference, provider configuration (hosted/BYOK/CLI), theme selection (Clean Paper light or Bloomberg Terminal dark), and automation enable/disable with last-run status.
 
@@ -406,8 +444,8 @@ Arrays of objects merge by stable `id`. Unresolved references (such as stack but
 
 - **ADE is not an IDE replacement.** It does not provide code intelligence, language servers, autocompletion, or debugging. The Monaco editor is intentionally scoped to focused edits and diff review, not full development.
 - **ADE does not replace the git CLI.** It provides a UI for common git workflows (stage, commit, push, branch, stash, sync) but does not aim to cover every git operation. Power users can always drop to an external terminal.
-- **ADE does not run AI agents.** It observes and orchestrates them. ADE provides terminals where agents run, tracks what they do through session monitoring and checkpoint capture, and predicts the consequences of their changes. It does not execute agent logic itself.
-- **No mobile or web version.** ADE is desktop-only (Electron). The hosted cloud component provides backend services but no web UI.
+- **ADE is not a closed agent runtime.** ADE supports external agent CLIs and orchestration workflows but does not lock execution to a proprietary agent implementation.
+- **Mobile/relay support is roadmap scope, not a non-goal.** Desktop is the current primary runtime, while relay + iOS capabilities are planned in `docs/final-plan.md`.
 - **No multi-repo support in V1.** Each ADE instance manages a single git repository. Multi-repo orchestration may be considered post-V1.
 - **No real-time collaboration.** ADE is a single-user tool per desktop instance. Team features are limited to shared config and stacked PR workflows.
 
@@ -429,24 +467,11 @@ Arrays of objects merge by stable `id`. Unresolved references (such as stack but
 
 ## 15. Implementation Phases
 
-The implementation plan is divided into phases with explicit exit criteria. Each phase references the relevant feature and architecture documents.
+Implementation sequencing, future phases, and dependency ordering are now maintained in:
 
-| Phase | Name | Status | Key Deliverables |
-|-------|------|--------|-----------------|
-| -1 | Repo + Desktop Scaffold | Done | Electron skeleton, preload bridge, app shell with tab routing, resizable 3-pane layout, local DB bootstrap |
-| 0 | Terminals + Session Tracking | Done | PTY service, session metadata capture, transcript storage, global terminal list, lane-scoped session tabs |
-| 1 | Project Onboarding + Lanes + Diffs | Done | Project service, lane creation (worktree), lane list with status badges, diff viewer with quick edit, lane inspector |
-| 1.5 | Workspace Topology + Lane Modes | Not Started | Primary/worktree/attached lane types, workspace service, workspace canvas MVP, lane type badges |
-| 1.6 | Files Workbench Tab | Not Started | Files tab with workspace scope selector, file explorer tree, Monaco editor, diff panes, stage/unstage controls |
-| 2 | Project Home (Processes + Tests) | Done | Process service, stack buttons, test service with run history, config editor, trust confirmation, theme toggle |
-| 2.5 | In-App Git Operations | Not Started | Stage/unstage, commit/amend, stash, push, revert, cherry-pick, branch management with safety checks |
-| 3 | Packs + Checkpoints + Plan Versioning | Not Started | Full packs system: checkpoints, pack events, pack versions, pack heads, all materializers, plan versioning, history foundation |
-| 4 | Conflict Radar + Guided Sync | Not Started | Conflict prediction (lane vs base, pairwise), merge simulation, staged/dirty watchers, sync with undo, conflict packs |
-| 5 | Hosted Agent + Auth + Mirror Sync | Not Started | AWS backend (SST), Clerk auth, S3 mirror sync, job queue, proposal flow |
-| 6 | GitHub PR Integration | Not Started | PR create/link per lane, checks/review status, pack-drafted descriptions |
-| 7 | Stacks + Restack + Land Stack | Not Started | Stack model persistence, restack operation, stacked PR chain view, land stack guided flow |
-| 8 | Automations + Actions | Not Started | Trigger-action engine, scheduler, action runner, `.ade/actions.yaml` schema |
-| 9 | History Graph V1 | Not Started | Advanced graph visualization, cross-artifact search, context replay from checkpoints |
+- `docs/final-plan.md`
+
+This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 
 ---
 

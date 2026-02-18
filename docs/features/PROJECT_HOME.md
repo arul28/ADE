@@ -1,5 +1,7 @@
 # Run — Command Center
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 ---
@@ -45,6 +47,17 @@ The **Run tab** (denoted by a ▶ play/pause icon in the nav rail) serves as the
 This feature matters because modern projects depend on a constellation of background services — dev servers, databases, API gateways, watchers, compilers — that must be started, monitored, and stopped in concert. Without a centralized control plane, developers resort to scattered terminal tabs, manual startup scripts, and guesswork about which services are running. Project Home eliminates this friction by making every managed process, test suite, and configuration knob visible and controllable from one surface.
 
 **Current status**: Core process management (Phases 1-4) is **fully implemented** — process spawning, lifecycle management, readiness checks, dependency resolution, stack buttons, test suites, config editor, keyboard shortcuts, and real-time streaming. Phase 5 (Advanced Features) is **partially complete** — restart policies, health monitoring, test suite tags, and config diff/export are done; environment variable editor and test result diff remain. Phase 6 (Run Tab Enhancements) is **partially complete** — the Run tab rename, lane selector, CI/CD scan/import/sync, and agent tools detection are done; AI-suggested run prompts, agent commands viewer/editor, and quick-launch are still TODO.
+
+### Roadmap Alignment (Final Plan)
+
+Per `docs/final-plan.md`, the Run/Play surface is the owner for execution-focused future work:
+
+- Per-lane runtime isolation (deterministic ports, host routing, preview launch).
+- Integration Sandbox flows for pre-merge combined-lane testing.
+- Browser profile launch and runtime diagnostics.
+- Execution entry points used by Missions/Orchestrator flows.
+
+PR orchestration and stack landing remain owned by `PULL_REQUESTS.md`; conflict analysis and merge plans remain owned by `CONFLICTS.md`. Run owns the runtime/test execution substrate those flows depend on.
 
 ---
 

@@ -1,6 +1,10 @@
 # ADE System Architecture Overview
 
-> Last updated: 2026-02-11
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
+> Last updated: 2026-02-18
+>
+> Roadmap note: future sequencing and planned architecture expansion (missions, orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
 
 ---
 
@@ -142,7 +146,7 @@ Each step in this pipeline is triggered by events rather than polling. The job e
 
 ### IPC Architecture
 
-Communication between the renderer and main process is organized into 82+ IPC channels spanning 13 subsystems:
+Communication between the renderer and main process is organized into a broad typed IPC contract (currently ~225 channels in `shared/ipc.ts`) spanning app, lanes, sessions, PTY, files, git, conflicts, context/packs, automations, PRs, hosted, processes/tests, and settings/config domains:
 
 | Subsystem | Channel Prefix | Count | Pattern |
 |-----------|---------------|-------|---------|
@@ -160,6 +164,8 @@ Communication between the renderer and main process is organized into 82+ IPC ch
 | Processes | `ade.processes.*` | 12 | invoke/handle + push events |
 | Tests | `ade.tests.*` | 6 | invoke/handle + push events |
 | Config | `ade.projectConfig.*` | 5 | invoke/handle |
+
+These per-subsystem counts are illustrative and can drift; `apps/desktop/src/shared/ipc.ts` is the canonical live channel inventory.
 
 All channels use the `ipcMain.handle` / `ipcRenderer.invoke` request-response pattern except for real-time data streams (PTY output, process logs, test logs), which use `webContents.send` for push-based delivery.
 
@@ -194,63 +200,8 @@ Real-time events (PTY data, process status changes, test run updates) are broadc
 
 ## Implementation Status
 
-### Completed (Phase -1 through Phase 2)
+Current codebase status is feature-rich across lanes, files, terminals, conflicts, packs/context, PRs, automations, and hosted/BYOK provider flows.
 
-- Electron application shell with main/renderer/preload architecture
-- Full IPC layer with 71+ typed channels
-- SQLite persistence with sql.js (WASM) and migration system
-- Lane management with git worktree backing
-- Terminal sessions with PTY management and transcript capture
-- Git operations service (stage, unstage, discard, commit, amend, revert, cherry-pick, stash, fetch, sync, push)
-- Operation history tracking with pre/post HEAD SHA recording
-- Diff service (staged and unstaged changes, file-level diffs)
-- File service (atomic writes within lane worktrees)
-- Process management service (start, stop, restart, kill, stack operations)
-- Test execution service (run, stop, result tracking)
-- Project configuration service (YAML, validation, trust model)
-- Pack service (lane packs, project packs, session deltas)
-- Job engine (queue, deduplication, sequential processing)
-- Layout persistence (panel sizes via KV store)
+For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
-### Completed (Phase 3 — Files Tab & UI Polish)
-
-- Files tab with full workspace file tree, Monaco editor, multi-tab editing, quick-open, text search
-- File service expanded: listWorkspaces, listTree, readFile, writeText, create, rename, delete, watchWorkspace, quickOpen, searchText
-- File watcher service (chokidar-based, debounced change events)
-- File search index service (in-memory cooperative indexing with fuzzy path scoring)
-- Extension-aware file icons and color-coded change status indicators
-- Zed-inspired file tree styling (indentation guides, accent highlights, refined hover states)
-- Protected branch warnings with lane workspace switch suggestion
-- Lane search/filter with token-based queries (is:dirty, is:pinned, type:worktree)
-- Lane keyboard navigation (j/k, arrows, Enter, Escape, Cmd+F)
-- Terminal theme sync (dark/light xterm.js themes without PTY recreation)
-- Guest mode (no-account usage with local features only)
-- Guest mode banner (persistent amber bar with provider setup link)
-- Untracked terminal sessions (tracked: false support)
-- Run tab rename (Play icon, "Run" label)
-- Lane selector on Run tab (execution context dropdown)
-- Renderer error boundary (graceful crash recovery)
-
-### Completed (Phase 4 — Stacks)
-
-- Stack operations: parent-child lane relationships, restack propagation, primary/attached lane types
-
-### Completed (Phase 5 — Conflict Prediction)
-
-- Conflict prediction via dry-merge simulation, pairwise lane comparison, conflict radar UI
-
-### Completed (Phase 6 — Hosted Agent)
-
-- Hosted ADE Agent integration: cloud sync, LLM narratives (hosted + BYOK), proposal pipeline
-
-### Completed (Phase 7 — GitHub & Workspace Graph)
-
-- GitHub PR integration (create, track, check/review status), workspace graph (React Flow), advanced pack types
-
-### Completed (Phase 8 — Automations, Packs V2, Onboarding)
-
-- Automation service (user-defined triggers and handlers), checkpoint system, pack versioning, onboarding wizard, scope-based keyboard shortcuts
-
-### Planned
-
-- **Phase 9**: TBD (not yet started)
+- `docs/final-plan.md`

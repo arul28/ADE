@@ -1,5 +1,7 @@
 # Context Contract v2 (backward compatible) — Packs, Exports, Markers, Graphs, Manifests, And Deltas
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-15
 
 This document is the **authoritative contract** for ADE context artifacts used by:

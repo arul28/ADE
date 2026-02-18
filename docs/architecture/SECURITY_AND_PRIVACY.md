@@ -1,5 +1,7 @@
 # Security & Privacy Architecture
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 This document describes how ADE protects user data, source code, and development workflows across both the local desktop application and the optional hosted cloud services.

@@ -1,5 +1,7 @@
 # Pull Requests — GitHub Integration & Stacked PRs
 
+> Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
+
 > Last updated: 2026-02-16
 
 ---
@@ -44,6 +46,14 @@ order and retargeting child PRs automatically.
 **Phase 6 prerequisite**: Phase 6 (Cloud Infrastructure + Auth + LLM Gateway) is complete and provides the hosted auth + job APIs used for hosted PR description drafting and conflict proposals.
 
 **Cross-feature note**: CONF-022 (stack-aware conflict resolution) is also in Phase 7's scope, bridging the conflict detection system (Phase 5) with the stacked PR workflow.
+
+### Roadmap Alignment (Final Plan)
+
+Per `docs/final-plan.md`, PRs remains the owner of stacked/integration PR lifecycle and landing policy. Planned integration points:
+
+- Optional gating on Integration Sandbox test passes before land-stack/land-enhanced.
+- Stronger handoff from Conflicts merge-plan output to PR readiness state.
+- Mission/Orchestrator-triggered PR actions routed through existing PR services, not a parallel PR subsystem.
 
 ---
 
