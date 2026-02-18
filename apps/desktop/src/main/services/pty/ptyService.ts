@@ -11,6 +11,7 @@ import { runGit } from "../git/git";
 import type { PtyDataEvent, PtyExitEvent, PtyCreateArgs, PtyCreateResult, TerminalSessionStatus } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
+import { derivePreviewFromChunk } from "../../utils/terminalPreview";
 
 type PtyEntry = {
   pty: IPty;
@@ -20,6 +21,9 @@ type PtyEntry = {
   transcriptPath: string;
   transcriptStream: fs.WriteStream | null;
   lastPreviewWriteAt: number;
+  previewCurrentLine: string;
+  latestPreviewLine: string | null;
+  lastPreviewWritten: string | null;
   disposed: boolean;
 };
 
@@ -122,6 +126,7 @@ export function createPtyService({
     } catch {
       // ignore
     }
+    flushPreview(entry);
 
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
@@ -158,14 +163,28 @@ export function createPtyService({
     }
   };
 
+  const flushPreview = (entry: PtyEntry) => {
+    const candidate = (entry.latestPreviewLine ?? "").trim();
+    if (!candidate) return;
+    if (candidate === entry.lastPreviewWritten) return;
+    entry.lastPreviewWritten = candidate;
+    sessionService.setLastOutputPreview(entry.sessionId, candidate);
+  };
+
   const updatePreviewThrottled = (entry: PtyEntry, chunk: string) => {
+    const next = derivePreviewFromChunk({
+      previousLine: entry.previewCurrentLine,
+      previousPreview: entry.latestPreviewLine,
+      chunk,
+      maxChars: 220
+    });
+    entry.previewCurrentLine = next.nextLine;
+    entry.latestPreviewLine = next.preview;
+
     const now = Date.now();
     if (now - entry.lastPreviewWriteAt < 900) return;
     entry.lastPreviewWriteAt = now;
-    const trimmed = chunk.replace(/\r/g, "").split("\n").filter((l) => l.trim().length > 0);
-    const last = trimmed[trimmed.length - 1];
-    if (!last) return;
-    sessionService.setLastOutputPreview(entry.sessionId, stripAnsi(last).trim().slice(0, 220));
+    flushPreview(entry);
   };
 
   return {
@@ -249,6 +268,9 @@ export function createPtyService({
         transcriptPath,
         transcriptStream,
         lastPreviewWriteAt: 0,
+        previewCurrentLine: "",
+        latestPreviewLine: null,
+        lastPreviewWritten: null,
         disposed: false
       };
       ptys.set(ptyId, entry);

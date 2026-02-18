@@ -13,6 +13,7 @@ export function TopBar({
   commandHint: React.ReactNode;
 }) {
   const project = useAppStore((s) => s.project);
+  const terminalAttention = useAppStore((s) => s.terminalAttention);
   const openRepo = useAppStore((s) => s.openRepo);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
@@ -116,6 +117,19 @@ export function TopBar({
                   title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                 >
                   <Folder className={cn("h-3 w-3 shrink-0", isMissing && "text-red-400")} />
+                  {isCurrent && terminalAttention.indicator !== "none" ? (
+                    <span
+                      title={
+                        terminalAttention.indicator === "running-needs-attention"
+                          ? `${terminalAttention.needsAttentionCount} running terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                          : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
+                      }
+                      className={cn(
+                        "h-2.5 w-2.5 shrink-0 rounded-full border-2 border-t-transparent animate-spin",
+                        terminalAttention.indicator === "running-needs-attention" ? "border-amber-400" : "border-emerald-500"
+                      )}
+                    />
+                  ) : null}
                   <span className={cn("truncate", isMissing && "line-through")}>{rp.displayName}</span>
                   {isMissing ? (
                     <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">

@@ -5,8 +5,9 @@ import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { ContextStatus, HostedStatus, PackEvent, PrEventPayload } from "../../../shared/types";
+import type { ContextStatus, HostedStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 
 type PrToast = {
   id: string;
@@ -36,9 +37,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
   const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
+  const setTerminalAttention = useAppStore((s) => s.setTerminalAttention);
   const providerMode = useAppStore((s) => s.providerMode);
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
+  const project = useAppStore((s) => s.project);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -77,6 +80,53 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setProject, refreshLanes, refreshProviderMode, refreshKeybindings, navigate]);
 
   useEffect(() => {
+    let refreshTimer: number | null = null;
+    const refreshTerminalAttention = async () => {
+      try {
+        const sessions: TerminalSessionSummary[] = await window.ade.sessions.list({ limit: 500 });
+        setTerminalAttention(summarizeTerminalAttention(sessions));
+      } catch {
+        // best effort
+      }
+    };
+    const scheduleRefresh = () => {
+      if (refreshTimer != null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshTerminalAttention();
+      }, 850);
+    };
+
+    void refreshTerminalAttention();
+
+    const unsubData = window.ade.pty.onData(() => scheduleRefresh());
+    const unsubExit = window.ade.pty.onExit(() => scheduleRefresh());
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      scheduleRefresh();
+    }, 2600);
+    const onFocus = () => scheduleRefresh();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") scheduleRefresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      try {
+        unsubData();
+        unsubExit();
+      } catch {
+        // ignore
+      }
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [project?.rootPath, setTerminalAttention]);
+
+  useEffect(() => {
     let cancelled = false;
     void window.ade.onboarding
       .getStatus()
@@ -99,7 +149,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Reset projectMissing when the project changes (e.g. after relocate).
-  const project = useAppStore((s) => s.project);
   useEffect(() => {
     setProjectMissing(false);
   }, [project?.rootPath]);

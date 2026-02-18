@@ -11,6 +11,7 @@ import { cn } from "../ui/cn";
 import { TerminalView } from "../terminals/TerminalView";
 import { TilingLayout } from "./TilingLayout";
 import { useNavigate } from "react-router-dom";
+import { sessionIndicatorState } from "../../lib/terminalAttention";
 
 const tabTrigger =
   "flex items-center gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-muted-fg data-[state=active]:text-fg data-[state=active]:bg-accent/10 data-[state=active]:ring-1 data-[state=active]:ring-accent/50";
@@ -31,9 +32,9 @@ const PROFILE_COLORS = [
 ] as const;
 
 function statusDot(status: string) {
-  if (status === "running") return "bg-accent";
+  if (status === "running") return "border-2 border-emerald-500 border-t-transparent bg-transparent";
   if (status === "failed") return "bg-red-700";
-  if (status === "disposed") return "bg-muted-fg";
+  if (status === "disposed") return "bg-red-400/80";
   return "bg-border";
 }
 
@@ -421,15 +422,23 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
         <Tabs.Root
           value={current?.id ?? ""}
           onValueChange={(v) => focusSession(v)}
-          className="flex min-h-0 flex-1 flex-col"
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
           <Tabs.List className="flex flex-wrap gap-1 rounded-lg border border-border bg-card/60 p-1">
             {tabSessions.map((s) => {
               const profileColor = s.toolType ? profileColorMap.get(s.toolType) : undefined;
+              const indicator = sessionIndicatorState({
+                status: s.status,
+                lastOutputPreview: s.lastOutputPreview
+              });
+              const dotClass = indicator === "running-needs-attention"
+                ? "border-2 border-amber-400 border-t-transparent bg-transparent"
+                : statusDot(s.status);
+              const dotSpin = !profileColor && (indicator === "running-active" || indicator === "running-needs-attention");
               return (
               <Tabs.Trigger key={s.id} className={cn(tabTrigger)} value={s.id}>
                 <span
-                  className={cn("h-2 w-2 rounded-full", !profileColor && statusDot(s.status))}
+                  className={cn("h-2 w-2 rounded-full", !profileColor && dotClass, dotSpin && "animate-spin")}
                   style={profileColor ? { backgroundColor: profileColor } : undefined}
                 />
                 <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
@@ -464,7 +473,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
             })}
           </Tabs.List>
 
-          <div className="mt-2 min-h-0 flex-1 relative">
+          <div className="mt-2 flex min-h-0 min-w-0 flex-1 flex-col">
             {/* Render a header for the current running session */}
             {current && current.status === "running" && current.ptyId ? (
               <div className="flex items-center justify-between gap-2 rounded border border-border bg-card/50 px-2 py-1 mb-2 shrink-0">
@@ -477,13 +486,14 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               </div>
             ) : null}
 
-            {/* All running terminals rendered simultaneously, only active one visible */}
-            <div className="flex-1 min-h-0 relative" style={{ height: 'calc(100% - 40px)' }}>
-              {tabSessions.filter(s => s.status === "running" && s.ptyId).map(s => (
-                <div key={s.id} className={cn("absolute inset-0", s.id !== current?.id && "invisible pointer-events-none")}>
-                  <TerminalView ptyId={s.ptyId!} sessionId={s.id} className="h-full" />
+            <div className="min-h-0 min-w-0 flex-1">
+              {current && current.status === "running" && current.ptyId ? (
+                <TerminalView ptyId={current.ptyId} sessionId={current.id} className="h-full w-full" />
+              ) : (
+                <div className="flex h-full items-center justify-center rounded border border-border bg-card/20 p-3">
+                  <EmptyState title="Session not running" description="Pick a running session tab to view its terminal." />
                 </div>
-              ))}
+              )}
             </div>
 
           </div>

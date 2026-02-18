@@ -1,23 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Terminal } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
-import "xterm/css/xterm.css";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
 import { useAppStore, type ThemeId } from "../../state/appStore";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
-type XtermCoreLike = {
-  _core?: {
-    _coreBrowserService?: { window?: Window };
-    _viewport?: {
-      _innerRefresh?: () => void;
-      syncScrollArea?: (immediate?: boolean) => void;
-      _refreshAnimationFrame?: number | null;
-      __adeSafeRefreshPatched?: boolean;
-      __adeSafeSyncPatched?: boolean;
-    };
-  };
-};
+
+const HYDRATE_TAIL_BYTES = 240_000;
+const MAX_PENDING_PTY_BYTES = 400_000;
 
 const terminalThemes: Record<"light" | "dark", XtermTheme> = {
   light: {
@@ -38,64 +29,6 @@ const terminalThemes: Record<"light" | "dark", XtermTheme> = {
 
 function isDarkTheme(theme: ThemeId): boolean {
   return theme === "bloomberg" || theme === "github" || theme === "rainbow" || theme === "pats";
-}
-
-function patchViewportRefresh(term: Terminal): void {
-  // xterm can throw in Viewport._innerRefresh when a pane is mounted/unmounted quickly.
-  try {
-    const core = (term as unknown as XtermCoreLike)._core;
-    const viewport = core?._viewport;
-    if (!viewport || typeof viewport._innerRefresh !== "function" || viewport.__adeSafeRefreshPatched) return;
-    const original = viewport._innerRefresh.bind(viewport);
-    viewport._innerRefresh = () => {
-      try {
-        original();
-      } catch {
-        // Ignore transient teardown races inside xterm internals.
-      }
-    };
-    viewport.__adeSafeRefreshPatched = true;
-    if (typeof viewport.syncScrollArea === "function" && !viewport.__adeSafeSyncPatched) {
-      const originalSync = viewport.syncScrollArea.bind(viewport);
-      viewport.syncScrollArea = (immediate?: boolean) => {
-        try {
-          originalSync(immediate);
-        } catch {
-          // Ignore transient teardown races inside xterm internals.
-        }
-      };
-      viewport.__adeSafeSyncPatched = true;
-    }
-  } catch {
-    // Ignore internal access failures across xterm versions.
-  }
-}
-
-function cancelViewportRaf(term: Terminal): void {
-  try {
-    const core = (term as unknown as XtermCoreLike)._core;
-    const viewport = core?._viewport;
-    if (!viewport) return;
-    const rafId = viewport._refreshAnimationFrame;
-    const rafWindow = core?._coreBrowserService?.window ?? window;
-    if (typeof rafId === "number") {
-      rafWindow.cancelAnimationFrame(rafId);
-      viewport._refreshAnimationFrame = null;
-    }
-  } catch {
-    // Ignore internal access failures across xterm versions.
-  }
-}
-
-function forceSyncScrollArea(term: Terminal): void {
-  try {
-    const core = (term as unknown as XtermCoreLike)._core;
-    const viewport = core?._viewport;
-    if (!viewport) return;
-    viewport.syncScrollArea?.(true);
-  } catch {
-    // Ignore internal access failures across xterm versions.
-  }
 }
 
 function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
@@ -128,8 +61,6 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   const appTheme = useAppStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const resizeObsRef = useRef<ResizeObserver | null>(null);
   const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null);
   const [exited, setExited] = useState<number | null>(null);
 
@@ -138,7 +69,8 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    let cancelled = false;
+    setExited(null);
+    let disposed = false;
 
     const term = new Terminal({
       convertEol: true,
@@ -152,11 +84,17 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     const fit = new FitAddon();
     term.loadAddon(fit);
+    termRef.current = term;
+
     let fitRafId: number | null = null;
-    let initialRafId: number | null = null;
+    let settleTimer1: ReturnType<typeof setTimeout> | null = null;
+    let settleTimer2: ReturnType<typeof setTimeout> | null = null;
+    let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingForceResize = false;
+    let teardownDprListener: (() => void) | null = null;
 
     const ensureOpen = () => {
-      if (cancelled) return false;
+      if (disposed) return false;
       if (term.element) return true;
       if (!el.isConnected) return false;
       if (el.clientWidth === 0 || el.clientHeight === 0) return false;
@@ -165,32 +103,18 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       } catch {
         return false;
       }
-      patchViewportRefresh(term);
       return true;
     };
 
     let hasFittedOnce = false;
     let hydrationCompleted = false;
-    let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
     const pendingPtyChunks: string[] = [];
     let pendingPtyBytes = 0;
-    let syncRafId: number | null = null;
 
-    const scheduleViewportSync = () => {
-      if (cancelled) return;
-      if (syncRafId != null) return;
-      syncRafId = requestAnimationFrame(() => {
-        syncRafId = null;
-        forceSyncScrollArea(term);
-      });
-    };
-
-    const doFit = (options?: { forcePtyResize?: boolean }) => {
-      if (cancelled) return;
+    const doFit = (forcePtyResize = false) => {
+      if (disposed) return;
       if (!ensureOpen()) return;
-      if (!el.isConnected) return;
-      // xterm can misbehave if we try to fit while hidden/zero-sized.
-      if (el.clientWidth === 0 || el.clientHeight === 0) return;
+      if (!el.isConnected || el.clientWidth <= 0 || el.clientHeight <= 0) return;
       try {
         fit.fit();
       } catch {
@@ -200,43 +124,38 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       if (!Number.isFinite(next.cols) || !Number.isFinite(next.rows) || next.cols <= 0 || next.rows <= 0) return;
       hasFittedOnce = true;
       const prev = lastDimsRef.current;
-      const forcePtyResize = options?.forcePtyResize === true;
       if (!prev || prev.cols !== next.cols || prev.rows !== next.rows || forcePtyResize) {
         lastDimsRef.current = next;
         window.ade.pty.resize({ ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
       }
-      // Force xterm to redraw all visible rows to prevent stale/garbled content.
       try {
-        term.refresh(0, term.rows - 1);
+        term.refresh(0, Math.max(0, term.rows - 1));
       } catch {
         // Ignore if terminal was disposed.
       }
-      scheduleViewportSync();
     };
 
-    const scheduleFit = () => {
-      if (cancelled) return;
-      if (fitRafId != null) cancelAnimationFrame(fitRafId);
+    const scheduleFit = (forcePtyResize = false) => {
+      if (disposed) return;
+      pendingForceResize = pendingForceResize || forcePtyResize;
+      if (fitRafId != null) return;
       fitRafId = requestAnimationFrame(() => {
         fitRafId = null;
-        doFit();
+        const shouldForceResize = pendingForceResize;
+        pendingForceResize = false;
+        doFit(shouldForceResize);
       });
     };
 
-    // Allow layout to settle before first fit. Use staggered delays to
-    // handle complex layouts (PaneTilingLayout, route transitions) that
-    // may not have final dimensions on the first animation frame.
-    let settleTimer1: ReturnType<typeof setTimeout> | null = null;
-    let settleTimer2: ReturnType<typeof setTimeout> | null = null;
-    initialRafId = requestAnimationFrame(() => {
-      initialRafId = null;
-      requestAnimationFrame(() => {
-        doFit();
-        // Additional delayed fits to catch late layout settling after route changes.
-        settleTimer1 = setTimeout(() => { settleTimer1 = null; doFit(); }, 120);
-        settleTimer2 = setTimeout(() => { settleTimer2 = null; doFit(); }, 350);
-      });
-    });
+    scheduleFit(true);
+    settleTimer1 = setTimeout(() => {
+      settleTimer1 = null;
+      scheduleFit(true);
+    }, 120);
+    settleTimer2 = setTimeout(() => {
+      settleTimer2 = null;
+      scheduleFit(true);
+    }, 320);
 
     const flushHydrationData = (tail: string) => {
       const stabilizedTail = trimToLikelyTerminalFrameBoundary(tail);
@@ -257,11 +176,11 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         term.write(merged);
         requestAnimationFrame(() => {
           try {
-            term.refresh(0, term.rows - 1);
+            term.refresh(0, Math.max(0, term.rows - 1));
+            term.scrollToBottom();
           } catch {
             // Ignore if terminal was disposed.
           }
-          scheduleViewportSync();
         });
       } catch {
         // Ignore writes after disposal/unmount.
@@ -270,21 +189,23 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     const hydrateTranscript = () => {
       window.ade.sessions
-        .readTranscriptTail({ sessionId, maxBytes: 80_000, raw: true })
+        .readTranscriptTail({ sessionId, maxBytes: HYDRATE_TAIL_BYTES, raw: true })
         .then((text) => {
-          if (cancelled) return;
+          if (disposed) return;
           flushHydrationData(text);
           hydrationCompleted = true;
+          scheduleFit(true);
         })
         .catch(() => {
-          if (cancelled) return;
+          if (disposed) return;
           flushHydrationData("");
           hydrationCompleted = true;
+          scheduleFit(true);
         });
     };
 
     const waitForFirstFitThenHydrate = (attempt: number) => {
-      if (cancelled) return;
+      if (disposed) return;
       if (hasFittedOnce || attempt >= 20) {
         hydrateTranscript();
         return;
@@ -296,12 +217,12 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     };
     // Wait for the first successful fit so line wrapping remains stable.
     const hydrateTimer = setTimeout(() => {
-      if (cancelled) return;
+      if (disposed) return;
       waitForFirstFitThenHydrate(0);
     }, 120);
 
     const dataSub = term.onData((data) => {
-      if (cancelled) return;
+      if (disposed) return;
       window.ade.pty.write({ ptyId, data }).catch(() => {});
     });
 
@@ -317,7 +238,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         navigator.clipboard
           .readText()
           .then((text) => {
-            if (cancelled) return;
+            if (disposed) return;
             return window.ade.pty.write({ ptyId, data: text });
           })
           .catch(() => {});
@@ -362,11 +283,11 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     const unsubData = window.ade.pty.onData((ev) => {
       if (ev.ptyId !== ptyId) return;
-      if (cancelled) return;
+      if (disposed) return;
       if (!hydrationCompleted) {
         pendingPtyChunks.push(ev.data);
         pendingPtyBytes += ev.data.length;
-        while (pendingPtyBytes > 300_000 && pendingPtyChunks.length > 1) {
+        while (pendingPtyBytes > MAX_PENDING_PTY_BYTES && pendingPtyChunks.length > 1) {
           const dropped = pendingPtyChunks.shift();
           pendingPtyBytes -= dropped?.length ?? 0;
         }
@@ -377,23 +298,21 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       } catch {
         // Ignore writes after disposal/unmount.
       }
-      scheduleViewportSync();
     });
 
     const unsubExit = window.ade.pty.onExit((ev) => {
       if (ev.ptyId !== ptyId) return;
-      if (cancelled) return;
+      if (disposed) return;
       setExited(ev.exitCode ?? 0);
     });
 
     const obs = new ResizeObserver(() => {
-      // Throttle to animation frame to avoid spamming.
       scheduleFit();
     });
     obs.observe(el);
 
     const onWheel = (ev: WheelEvent) => {
-      if (cancelled) return;
+      if (disposed) return;
       if (!(ev.target instanceof Node)) return;
       if (!term.element || !term.element.contains(ev.target)) return;
       const viewport = term.element.querySelector<HTMLElement>(".xterm-viewport");
@@ -409,96 +328,99 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       } catch {
         // ignore
       }
-      scheduleViewportSync();
     };
     el.addEventListener("wheel", onWheel, { passive: false });
 
     const intObs = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) {
-          // Double-RAF to let layout fully settle before refitting.
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
-          });
+          requestAnimationFrame(() => scheduleFit(true));
         }
       }
     });
     intObs.observe(el);
 
-    // Re-fit when app regains focus or document becomes visible again
-    // (handles navigating away from the tab and coming back).
     const onVisibilityChange = () => {
-      if (cancelled || document.hidden) return;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
-      });
+      if (disposed || document.hidden) return;
+      requestAnimationFrame(() => scheduleFit(true));
     };
     const onWindowFocus = () => {
-      if (cancelled) return;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
-      });
+      if (disposed) return;
+      requestAnimationFrame(() => scheduleFit(true));
+    };
+    const onWindowResize = () => {
+      if (disposed) return;
+      requestAnimationFrame(() => scheduleFit(true));
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("resize", onWindowResize);
+    window.visualViewport?.addEventListener("resize", onWindowResize);
 
-    // Watch for visibility changes via CSS class toggling (invisible/pointer-events-none).
-    // Walk up to 4 ancestor levels to catch visibility toggling at any wrapper level
-    // (e.g. PaneTilingLayout panels, tab content wrappers, route containers).
     const mutObs = new MutationObserver(() => {
-      if (cancelled) return;
-      // Check if our container is currently visible (no ancestor has 'invisible')
-      let ancestor: HTMLElement | null = el.parentElement;
-      while (ancestor) {
-        if (ancestor.classList.contains('invisible')) return; // still hidden
-        ancestor = ancestor.parentElement;
-        // Only walk a few levels to avoid perf cost
-        if (ancestor && ancestor === document.body) break;
-      }
-      if (el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) {
-        // Terminal just became visible - schedule a staggered fit
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
-        });
-      }
+      if (disposed) return;
+      requestAnimationFrame(() => scheduleFit(true));
     });
 
-    // Observe up to 4 ancestor elements for class changes to catch visibility toggling
-    // at any wrapper level in the component hierarchy.
-    const observedAncestors: HTMLElement[] = [];
     let ancestor: HTMLElement | null = el.parentElement;
     for (let depth = 0; depth < 4 && ancestor; depth++) {
-      observedAncestors.push(ancestor);
-      mutObs.observe(ancestor, { attributes: true, attributeFilter: ['class', 'style'] });
+      mutObs.observe(ancestor, { attributes: true, attributeFilter: ["class", "style"] });
       ancestor = ancestor.parentElement;
     }
 
-    termRef.current = term;
-    fitRef.current = fit;
-    resizeObsRef.current = obs;
+    const setupDprListener = () => {
+      teardownDprListener?.();
+      const query = `(resolution: ${window.devicePixelRatio}dppx)`;
+      const media = window.matchMedia(query);
+      const onDprChange = () => {
+        if (disposed) return;
+        setupDprListener();
+        scheduleFit(true);
+      };
+      if (typeof media.addEventListener === "function") {
+        media.addEventListener("change", onDprChange);
+        teardownDprListener = () => media.removeEventListener("change", onDprChange);
+        return;
+      }
+      const legacyMedia = media as MediaQueryList & {
+        addListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+        removeListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+      };
+      legacyMedia.addListener?.(onDprChange);
+      teardownDprListener = () => legacyMedia.removeListener?.(onDprChange);
+    };
+    setupDprListener();
+
+    const fontsReady = document.fonts?.ready;
+    if (fontsReady) {
+      fontsReady
+        .then(() => {
+          if (disposed) return;
+          requestAnimationFrame(() => scheduleFit(true));
+        })
+        .catch(() => {});
+    }
 
     return () => {
-      cancelled = true;
-      if (initialRafId != null) cancelAnimationFrame(initialRafId);
+      disposed = true;
       if (fitRafId != null) cancelAnimationFrame(fitRafId);
       if (settleTimer1 != null) clearTimeout(settleTimer1);
       if (settleTimer2 != null) clearTimeout(settleTimer2);
       clearTimeout(hydrateTimer);
       if (hydrateRetryTimer != null) clearTimeout(hydrateRetryTimer);
-      if (syncRafId != null) cancelAnimationFrame(syncRafId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("resize", onWindowResize);
+      window.visualViewport?.removeEventListener("resize", onWindowResize);
       el.removeEventListener("wheel", onWheel);
       try { unsubData(); unsubExit(); } catch { /* ignore */ }
       try { dataSub.dispose(); } catch { /* ignore */ }
       try { obs.disconnect(); } catch { /* ignore */ }
       try { intObs.disconnect(); } catch { /* ignore */ }
       try { mutObs.disconnect(); } catch { /* ignore */ }
-      cancelViewportRaf(term);
+      teardownDprListener?.();
       try { term.dispose(); } catch { /* ignore */ }
       termRef.current = null;
-      fitRef.current = null;
-      resizeObsRef.current = null;
     };
   }, [ptyId, sessionId]);
 
@@ -521,11 +443,11 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   return (
     <div
       className={cn(
-        "relative h-full min-h-0 w-full overflow-hidden rounded-xl bg-muted/70 shadow-card",
+        "relative h-full min-h-0 min-w-0 w-full overflow-hidden rounded-xl bg-muted/70 shadow-card",
         className
       )}
     >
-      <div ref={containerRef} className="h-full w-full p-2" />
+      <div ref={containerRef} className="ade-terminal-host h-full w-full" />
       {exited != null ? (
         <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg bg-bg/90 shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}

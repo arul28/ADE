@@ -245,6 +245,7 @@ export function LanesPage() {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
+  const terminalAttention = useAppStore((s) => s.terminalAttention);
   const baseRef = project?.baseRef;
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
@@ -1103,6 +1104,7 @@ export function LanesPage() {
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const conflictStatus = conflictStatusByLane[lane.id];
           const chips = conflictChipsByLane[lane.id] ?? [];
+          const laneTerminalAttention = terminalAttention.byLaneId[lane.id];
           const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
           const autoRebaseStatus = autoRebaseByLaneId.get(lane.id) ?? null;
 
@@ -1133,6 +1135,19 @@ export function LanesPage() {
                 <Home className="h-3.5 w-3.5 text-emerald-700" />
               ) : null}
               <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
+              {laneTerminalAttention?.indicator && laneTerminalAttention.indicator !== "none" ? (
+                <span
+                  title={
+                    laneTerminalAttention.indicator === "running-needs-attention"
+                      ? `${laneTerminalAttention.needsAttentionCount} running terminal${laneTerminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                      : `${laneTerminalAttention.runningCount} running terminal${laneTerminalAttention.runningCount === 1 ? "" : "s"}`
+                  }
+                  className={cn(
+                    "h-2.5 w-2.5 rounded-full border-2 border-t-transparent animate-spin",
+                    laneTerminalAttention.indicator === "running-needs-attention" ? "border-amber-400" : "border-emerald-500"
+                  )}
+                />
+              ) : null}
               <span className="truncate">{lane.name}</span>
               {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">{lane.branchRef}</span> : null}
               {!isPrimary && isPinned ? <span className="rounded-lg bg-amber-500/15 px-1 text-[10px] text-amber-800">PINNED</span> : null}

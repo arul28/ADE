@@ -21,17 +21,26 @@ function applyBackspaces(text: string): string {
 }
 
 export function stripAnsi(text: string): string {
+  return stripAnsiWithOptions(text);
+}
+
+export function stripAnsiWithOptions(
+  text: string,
+  options?: {
+    preserveCarriageReturns?: boolean;
+  }
+): string {
   const input = typeof text === "string" ? text : String(text ?? "");
   if (!input) return "";
 
   // Order matters: strip complex sequences before stripping generic ESC prefixes.
-  const stripped = input
+  const strippedEscapes = input
     .replace(OSC_REGEX, "")
     .replace(CSI_REGEX, "")
     .replace(CHARSET_REGEX, "")
-    .replace(TWO_CHAR_ESC_REGEX, "")
-    .replace(/\r/g, ""); // carriage returns are typically progress updates
+    .replace(TWO_CHAR_ESC_REGEX, "");
+
+  const stripped = options?.preserveCarriageReturns ? strippedEscapes : strippedEscapes.replace(/\r/g, "");
 
   return applyBackspaces(stripped);
 }
-

@@ -7,6 +7,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { TerminalView } from "./TerminalView";
+import { sanitizeTerminalInlineText, sessionIndicatorState } from "../../lib/terminalAttention";
 
 /* ---- Default tiling layout ---- */
 
@@ -177,19 +178,44 @@ export function TerminalsPage() {
     await Promise.allSettled(ptyIds.map((ptyId) => closeSession(ptyId)));
   };
 
-  const statusDotColor = useCallback((status: TerminalSessionStatus) => {
-    switch (status) {
-      case "running":
-        return "bg-emerald-500";
-      case "completed":
-        return "bg-sky-500";
-      case "failed":
-        return "bg-red-500";
-      case "disposed":
-        return "bg-muted-fg/40";
-      default:
-        return "bg-muted-fg/40";
+  const sessionDot = useCallback((session: TerminalSessionSummary): { className: string; spinning: boolean; title: string } => {
+    const indicator = sessionIndicatorState({
+      status: session.status,
+      lastOutputPreview: session.lastOutputPreview
+    });
+    if (indicator === "running-active") {
+      return {
+        className: "border-2 border-emerald-500 border-t-transparent bg-transparent",
+        spinning: true,
+        title: "Running"
+      };
     }
+    if (indicator === "running-needs-attention") {
+      return {
+        className: "border-2 border-amber-400 border-t-transparent bg-transparent",
+        spinning: true,
+        title: "Running (needs input)"
+      };
+    }
+    if (indicator === "failed") {
+      return {
+        className: "bg-red-500",
+        spinning: false,
+        title: "Failed"
+      };
+    }
+    if (indicator === "disposed") {
+      return {
+        className: "bg-red-400/80",
+        spinning: false,
+        title: "Stopped"
+      };
+    }
+    return {
+      className: "bg-sky-500",
+      spinning: false,
+      title: "Completed"
+    };
   }, []);
 
   /* ---- Pane configs ---- */
@@ -264,6 +290,7 @@ export function TerminalsPage() {
                 <div className="flex flex-col gap-px">
                   {filtered.map((s, idx) => {
                     const isSelected = selectedSessionId === s.id;
+                    const dot = sessionDot(s);
                     return (
                       <React.Fragment key={s.id}>
                         {idx > 0 && <div className="mx-2 border-b border-border/10" />}
@@ -277,7 +304,10 @@ export function TerminalsPage() {
                           onClick={() => setSelectedSessionId(s.id)}
                         >
                           <div className="flex items-center gap-2">
-                            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${statusDotColor(s.status)} ${s.status === "running" ? "ade-status-pulse" : ""}`} />
+                            <span
+                              title={dot.title}
+                              className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot.className} ${dot.spinning ? "animate-spin" : ""}`}
+                            />
                             <span className={`truncate text-xs font-semibold ${isSelected ? "text-accent" : ""}`}>
                               {(s.goal ?? s.title).trim()}
                             </span>
@@ -393,14 +423,14 @@ export function TerminalsPage() {
                 </div>
 
                 {/* Output preview */}
-                {selectedSession.lastOutputPreview ? (
+                {sanitizeTerminalInlineText(selectedSession.lastOutputPreview, 420) ? (
                   <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
                     <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
                       <Monitor className="h-3 w-3 text-accent/60" />
                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Last output</span>
                     </div>
-                    <div className="whitespace-pre-wrap break-all rounded-lg border border-border/10 bg-[--color-surface-recessed] px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-fg/90 shadow-inset">
-                      {selectedSession.lastOutputPreview}
+                    <div className="whitespace-pre-wrap break-words rounded-lg border border-border/10 bg-[--color-surface-recessed] px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-fg/90 shadow-inset">
+                      {sanitizeTerminalInlineText(selectedSession.lastOutputPreview, 420)}
                     </div>
                   </div>
                 ) : null}
@@ -486,7 +516,7 @@ export function TerminalsPage() {
       selectedSessionId,
       selectedSession,
       closingPtyIds,
-      statusDotColor,
+      sessionDot,
       selectLane,
       focusSession,
       navigate,

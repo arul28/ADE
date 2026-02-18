@@ -21,6 +21,7 @@ const items = [
 
 export function TabNav() {
   const project = useAppStore((s) => s.project);
+  const terminalAttention = useAppStore((s) => s.terminalAttention);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -53,7 +54,22 @@ export function TabNav() {
               )
             }
           >
-            <it.icon className="h-[18px] w-[18px]" />
+            <span className="relative inline-flex items-center justify-center">
+              <it.icon className="h-[18px] w-[18px]" />
+              {it.to === "/terminals" && terminalAttention.indicator !== "none" ? (
+                <span
+                  title={
+                    terminalAttention.indicator === "running-needs-attention"
+                      ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                      : "All active terminals running"
+                  }
+                  className={cn(
+                    "absolute -right-1.5 -top-1.5 h-2.5 w-2.5 rounded-full border-2 border-t-transparent animate-spin",
+                    terminalAttention.indicator === "running-needs-attention" ? "border-amber-400" : "border-emerald-500"
+                  )}
+                />
+              ) : null}
+            </span>
           </NavLink>
         ))}
       </nav>

@@ -276,6 +276,16 @@ body {
   font-kerning: none;
 }
 
+.ade-terminal-host,
+.ade-terminal-host .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+.ade-terminal-host .xterm-viewport {
+  overscroll-behavior: contain;
+}
+
 h1,
 h2,
 h3,

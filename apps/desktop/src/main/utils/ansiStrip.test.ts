@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripAnsi } from "./ansiStrip";
+import { stripAnsi, stripAnsiWithOptions } from "./ansiStrip";
 
 describe("stripAnsi", () => {
   it("removes SGR sequences", () => {
@@ -21,5 +21,8 @@ describe("stripAnsi", () => {
   it("applies backspaces", () => {
     expect(stripAnsi("abc\b\bde")).toBe("ade");
   });
-});
 
+  it("can preserve carriage returns when requested", () => {
+    expect(stripAnsiWithOptions("a\rb", { preserveCarriageReturns: true })).toBe("a\rb");
+  });
+});

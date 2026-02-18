@@ -3,6 +3,27 @@ import type { KeybindingsSnapshot, LaneSummary, ProjectInfo, ProviderMode } from
 
 export type ThemeId = "e-paper" | "bloomberg" | "github" | "rainbow" | "sky" | "pats";
 export const THEME_IDS: ThemeId[] = ["e-paper", "bloomberg", "github", "rainbow", "sky", "pats"];
+export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
+export type TerminalAttentionSnapshot = {
+  runningCount: number;
+  activeCount: number;
+  needsAttentionCount: number;
+  indicator: TerminalAttentionIndicator;
+  byLaneId: Record<string, {
+    runningCount: number;
+    activeCount: number;
+    needsAttentionCount: number;
+    indicator: TerminalAttentionIndicator;
+  }>;
+};
+
+const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
+  runningCount: 0,
+  activeCount: 0,
+  needsAttentionCount: 0,
+  indicator: "none",
+  byLaneId: {}
+};
 
 function readInitialTheme(): ThemeId {
   try {
@@ -32,6 +53,7 @@ type AppState = {
   providerMode: ProviderMode;
   laneInspectorTabs: Record<string, LaneInspectorTab>;
   keybindings: KeybindingsSnapshot | null;
+  terminalAttention: TerminalAttentionSnapshot;
 
   setProject: (project: ProjectInfo) => void;
   setLanes: (lanes: LaneSummary[]) => void;
@@ -40,6 +62,7 @@ type AppState = {
   selectRunLane: (laneId: string | null) => void;
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
+  setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
 
@@ -61,6 +84,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   providerMode: "guest",
   laneInspectorTabs: {},
   keybindings: null,
+  terminalAttention: EMPTY_TERMINAL_ATTENTION,
 
   setProject: (project) => set({ project }),
   setLanes: (lanes) => set({ lanes }),
@@ -78,6 +102,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistTheme(theme);
     set({ theme });
   },
+  setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
 
   refreshProject: async () => {
     const project = await window.ade.app.getProject();
@@ -112,7 +137,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   openRepo: async () => {
     const project = await window.ade.project.openRepo();
-    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {}, keybindings: null });
+    set({
+      project,
+      lanes: [],
+      selectedLaneId: null,
+      runLaneId: null,
+      focusedSessionId: null,
+      laneInspectorTabs: {},
+      keybindings: null,
+      terminalAttention: EMPTY_TERMINAL_ATTENTION
+    });
     // Refresh lanes for the newly opened project.
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });
@@ -121,7 +155,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   switchProjectToPath: async (rootPath: string) => {
     const project = await window.ade.project.switchToPath(rootPath);
-    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {}, keybindings: null });
+    set({
+      project,
+      lanes: [],
+      selectedLaneId: null,
+      runLaneId: null,
+      focusedSessionId: null,
+      laneInspectorTabs: {},
+      keybindings: null,
+      terminalAttention: EMPTY_TERMINAL_ATTENTION
+    });
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });
     await get().refreshKeybindings().catch(() => { });
