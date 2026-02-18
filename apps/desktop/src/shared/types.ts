@@ -1069,6 +1069,7 @@ export type StackChainItem = {
 export type RestackArgs = {
   laneId: string;
   recursive?: boolean;
+  reason?: string;
 };
 
 export type RestackResult = {
@@ -1092,6 +1093,24 @@ export type RestackSuggestionsEventPayload = {
   type: "restack-suggestions-updated";
   computedAt: string;
   suggestions: RestackSuggestion[];
+};
+
+export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict";
+
+export type AutoRebaseLaneStatus = {
+  laneId: string;
+  parentLaneId: string | null;
+  parentHeadSha: string | null;
+  state: AutoRebaseLaneState;
+  updatedAt: string;
+  conflictCount: number;
+  message: string | null;
+};
+
+export type AutoRebaseEventPayload = {
+  type: "auto-rebase-updated";
+  computedAt: string;
+  statuses: AutoRebaseLaneStatus[];
 };
 
 export type OpenLaneFolderArgs = {
@@ -1411,7 +1430,6 @@ export type ConfigLaneOverlayPolicy = {
 export type AutomationTriggerType = "session-end" | "commit" | "schedule" | "manual";
 export type AutomationActionType =
   | "update-packs"
-  | "sync-to-mirror"
   | "predict-conflicts"
   | "run-tests"
   | "run-command";
@@ -1469,6 +1487,9 @@ export type ProjectConfigFile = {
   github?: {
     prPollingIntervalSeconds?: number;
   };
+  git?: {
+    autoRebaseOnHeadChange?: boolean;
+  };
   providers?: Record<string, unknown>;
 };
 
@@ -1487,6 +1508,9 @@ export type EffectiveProjectConfig = {
   environments?: EnvironmentMapping[];
   github?: {
     prPollingIntervalSeconds?: number;
+  };
+  git: {
+    autoRebaseOnHeadChange: boolean;
   };
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
@@ -2167,7 +2191,6 @@ export type AutomationDraftActionBase = {
 export type AutomationDraftAction =
   | (AutomationDraftActionBase & { type: "update-packs" })
   | (AutomationDraftActionBase & { type: "predict-conflicts" })
-  | (AutomationDraftActionBase & { type: "sync-to-mirror" })
   | (AutomationDraftActionBase & { type: "run-tests"; suite: string })
   | (AutomationDraftActionBase & { type: "run-command"; command: string; cwd?: string });
 
@@ -2584,3 +2607,19 @@ export type OperationRecord = {
   postHeadSha: string | null;
   metadataJson: string | null;
 };
+
+export type ExportHistoryArgs = ListOperationsArgs & {
+  status?: OperationRecord["status"] | "all";
+  format: "csv" | "json";
+};
+
+export type ExportHistoryResult =
+  | { cancelled: true }
+  | {
+      cancelled: false;
+      savedPath: string;
+      bytesWritten: number;
+      exportedAt: string;
+      rowCount: number;
+      format: "csv" | "json";
+    };

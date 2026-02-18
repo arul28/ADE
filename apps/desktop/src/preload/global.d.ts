@@ -48,6 +48,8 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportHistoryArgs,
+  ExportHistoryResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
   HostedGitHubAppStatus,
@@ -57,10 +59,7 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
-  HostedMirrorCleanupSummaryV1,
   HostedMirrorDeleteResult,
-  HostedMirrorSyncArgs,
-  HostedMirrorSyncResult,
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
@@ -159,6 +158,8 @@ import type {
   RestackResult,
   RestackSuggestion,
   RestackSuggestionsEventPayload,
+  AutoRebaseLaneStatus,
+  AutoRebaseEventPayload,
   RiskMatrixEntry,
   RunTestSuiteArgs,
   PrepareConflictProposalArgs,
@@ -256,6 +257,8 @@ declare global {
         dismissRestackSuggestion: (args: { laneId: string }) => Promise<void>;
         deferRestackSuggestion: (args: { laneId: string; minutes: number }) => Promise<void>;
         onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => () => void;
+        listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
+        onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
@@ -408,8 +411,6 @@ declare global {
         applyBootstrapConfig: () => Promise<HostedBootstrapConfig>;
         signIn: (args?: HostedSignInArgs) => Promise<HostedSignInResult>;
         signOut: () => Promise<void>;
-        syncMirror: (args?: HostedMirrorSyncArgs) => Promise<HostedMirrorSyncResult>;
-        cleanMirrorData: () => Promise<HostedMirrorCleanupSummaryV1>;
         deleteMirrorData: () => Promise<HostedMirrorDeleteResult>;
         submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
         getJob: (jobId: string) => Promise<HostedJobStatusResult>;
@@ -423,6 +424,7 @@ declare global {
       };
       history: {
         listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;
+        exportOperations: (args: ExportHistoryArgs) => Promise<ExportHistoryResult>;
       };
       layout: {
         get: (layoutId: string) => Promise<DockLayout | null>;

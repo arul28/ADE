@@ -302,8 +302,6 @@ function RuleEditor({
   acceptedConfirmations: Set<string>;
   setAcceptedConfirmations: (next: Set<string>) => void;
 }) {
-  const hasMirrorSync = draft.actions.some((a: any) => a?.type === "sync-to-mirror");
-
   const updateAction = (idx: number, patch: Record<string, unknown>) => {
     const nextActions = [...draft.actions];
     nextActions[idx] = { ...(nextActions[idx] as any), ...patch } as any;
@@ -321,9 +319,6 @@ function RuleEditor({
       nextActions.push({ type: "run-tests", suite: suites[0]?.id ?? "" } as any);
     } else if (type === "run-command") {
       nextActions.push({ type: "run-command", command: "" } as any);
-    } else if (type === "sync-to-mirror") {
-      // Default to a safe condition so guest/BYOK users don't accidentally run hosted syncs.
-      nextActions.push({ type: "sync-to-mirror", condition: "hosted-enabled" } as any);
     } else if (type === "update-packs" || type === "predict-conflicts") {
       nextActions.push({ type } as any);
     }
@@ -332,38 +327,6 @@ function RuleEditor({
 
   return (
     <div className="space-y-3">
-      {hasMirrorSync ? (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
-          <div className="font-semibold">Mirror sync action detected</div>
-          <div className="mt-1 text-muted-fg">
-            <span className="font-mono">sync-to-mirror</span> uploads pack data to the hosted mirror when hosted mode is enabled. For safety, guard it with{" "}
-            <span className="font-mono">condition=hosted-enabled</span>.
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                const next = draft.actions.map((a: any) => (a?.type === "sync-to-mirror" && !a?.condition ? { ...a, condition: "hosted-enabled" } : a));
-                setDraft({ ...draft, actions: next });
-              }}
-            >
-              Add hosted-enabled condition
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                const nextActions = draft.actions.filter((a: any) => a?.type !== "sync-to-mirror");
-                setDraft({ ...draft, actions: nextActions, enabled: nextActions.length ? draft.enabled : false });
-              }}
-            >
-              Remove sync-to-mirror
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <label className="space-y-1">
           <div className="text-[11px] text-muted-fg">Name</div>
@@ -437,7 +400,6 @@ function RuleEditor({
             <option value="">Add action…</option>
             <option value="update-packs">update-packs</option>
             <option value="predict-conflicts">predict-conflicts</option>
-            <option value="sync-to-mirror">sync-to-mirror</option>
             <option value="run-tests">run-tests</option>
             <option value="run-command">run-command</option>
           </select>
@@ -453,7 +415,6 @@ function RuleEditor({
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <div className="text-xs font-semibold">{action.type}</div>
-                      {action.type === "sync-to-mirror" ? <Chip className="text-[10px]">hosted</Chip> : null}
                     </div>
                     {action.type === "run-tests" ? (
                       <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -505,7 +466,7 @@ function RuleEditor({
                             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                             value={action.condition ?? ""}
                             onChange={(e) => updateAction(idx, { condition: e.target.value })}
-                            placeholder={action.type === "sync-to-mirror" ? "hosted-enabled" : "provider-enabled"}
+                            placeholder="provider-enabled"
                           />
                         </label>
                         <label className="space-y-1">
@@ -1255,7 +1216,6 @@ export function AutomationsPage() {
               <div className="space-y-2">
               {filtered.map((rule) => {
                 const selected = rule.id === selectedRuleId;
-                const hasMirrorSync = rule.actions.some((a) => a.type === "sync-to-mirror");
                 return (
                   <button
                     key={rule.id}
@@ -1273,9 +1233,6 @@ export function AutomationsPage() {
                           <Chip className={cn("text-[10px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
                             {rule.running ? "running" : rule.lastRunStatus ?? "never"}
                           </Chip>
-                          {hasMirrorSync ? (
-                            <Chip className="text-[10px]">mirror</Chip>
-                          ) : null}
                         </div>
                         <div className="mt-0.5 text-[11px] text-muted-fg truncate">
                           trigger: <span className="font-mono">{rule.trigger.type}</span>

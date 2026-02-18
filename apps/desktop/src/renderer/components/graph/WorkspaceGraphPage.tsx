@@ -36,6 +36,8 @@ import type {
   GraphStatusFilter,
   GraphViewMode,
   GitSyncMode,
+  GitUpstreamSyncStatus,
+  AutoRebaseLaneStatus,
   LaneIcon,
   LaneSummary,
   MergeMethod,
@@ -57,6 +59,8 @@ import { cn } from "../ui/cn";
 type GraphNodeData = {
   lane: LaneSummary;
   status: ConflictStatus["status"] | "unknown";
+  remoteSync: GitUpstreamSyncStatus | null;
+  autoRebaseStatus: AutoRebaseLaneStatus | null;
   activeSessions: number;
   collapsedChildCount: number;
   dimmed: boolean;
@@ -70,6 +74,10 @@ type GraphNodeData = {
   mergeInProgress: boolean;
   mergeDisappearing: boolean;
 };
+
+type RestackPublishOutcome =
+  | { status: "done"; message?: string }
+  | { status: "skipped"; message: string };
 
 type GraphPrOverlay = {
   prId: string;
@@ -171,6 +179,7 @@ const COLOR_PALETTE = ["#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#2563eb", "#
 const DEFAULT_PRESET = "__default__";
 const BATCH_OPERATION_LABELS: Record<string, string> = {
   restack: "Rebase",
+  restack_publish: "Restack + Publish",
   push: "Push",
   fetch: "Fetch",
   archive: "Archive",
@@ -468,6 +477,12 @@ function collectDescendants(lanes: LaneSummary[], rootId: string): Set<string> {
 function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
   const lane = data.lane;
   const dimensions = nodeDimensions(lane, data.activityBucket, data.viewMode);
+  const remoteSync = data.remoteSync;
+  const autoRebase = data.autoRebaseStatus;
+  const stackStale = Boolean(lane.parentLaneId && lane.status.behind > 0);
+  const remoteDiverged = Boolean(remoteSync?.diverged);
+  const remoteNeedsPublish = Boolean(remoteSync && ((remoteSync.hasUpstream === false) || remoteSync.ahead > 0));
+  const remoteNeedsPull = Boolean(remoteSync?.hasUpstream && remoteSync.recommendedAction === "pull");
   const statusColor =
     data.status === "conflict-active" || data.status === "conflict-predicted"
       ? "text-red-300"
@@ -505,8 +520,30 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
       <div className="truncate text-[10px] text-muted-fg">{lane.branchRef}</div>
       <div className="mt-1 flex flex-wrap items-center gap-1">
         <Chip className="px-1 py-0 text-[10px]">{lane.status.dirty ? "dirty" : "clean"}</Chip>
-        <Chip className="px-1 py-0 text-[10px]">{lane.status.ahead}↑/{lane.status.behind}↓</Chip>
+        <Chip className="px-1 py-0 text-[10px]" title={`Compared to base ${lane.baseRef}`}>
+          base {lane.status.ahead}↑/{lane.status.behind}↓
+        </Chip>
+        {remoteSync ? (
+          remoteSync.hasUpstream ? (
+            <Chip className="px-1 py-0 text-[10px]" title={`Compared to ${remoteSync.upstreamRef ?? "upstream"}`}>
+              remote {remoteSync.ahead}↑/{remoteSync.behind}↓
+            </Chip>
+          ) : (
+            <Chip className="px-1 py-0 text-[10px] text-amber-700" title="No upstream branch configured. Push once to publish this lane.">
+              unpublished
+            </Chip>
+          )
+        ) : (
+          <Chip className="px-1 py-0 text-[10px] text-muted-fg">remote ?</Chip>
+        )}
         <Chip className={cn("px-1 py-0 text-[10px]", statusColor)}>{data.status}</Chip>
+        {stackStale ? <Chip className="px-1 py-0 text-[10px] text-amber-700">stack stale</Chip> : null}
+        {autoRebase?.state === "autoRebased" ? <Chip className="px-1 py-0 text-[10px] text-emerald-300">auto rebased</Chip> : null}
+        {autoRebase?.state === "rebasePending" ? <Chip className="px-1 py-0 text-[10px] text-amber-700">rebase pending</Chip> : null}
+        {autoRebase?.state === "rebaseConflict" ? <Chip className="px-1 py-0 text-[10px] text-red-300">rebase conflict</Chip> : null}
+        {remoteDiverged ? <Chip className="px-1 py-0 text-[10px] text-red-300">diverged</Chip> : null}
+        {!remoteDiverged && remoteNeedsPublish ? <Chip className="px-1 py-0 text-[10px] text-emerald-300">push</Chip> : null}
+        {!remoteDiverged && !remoteNeedsPublish && remoteNeedsPull ? <Chip className="px-1 py-0 text-[10px] text-sky-300">pull</Chip> : null}
         {data.environment ? (
           <span
             className="rounded border px-1 py-0 text-[10px] uppercase tracking-wide"
@@ -644,6 +681,8 @@ function GraphInner() {
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrSummary[]>([]);
   const [loadingPrs, setLoadingPrs] = React.useState(true);
+  const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
+  const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
 
   const refreshEnvironmentMappings = React.useCallback(async () => {
     try {
@@ -658,6 +697,44 @@ function GraphInner() {
     const next = await window.ade.prs.refresh();
     setPrs(next);
   }, []);
+
+  const refreshLaneSyncStatuses = React.useCallback(async () => {
+    if (lanes.length === 0) {
+      setSyncByLaneId({});
+      return;
+    }
+    const results = await Promise.all(
+      lanes.map(async (lane) => {
+        try {
+          const status = await window.ade.git.getSyncStatus({ laneId: lane.id });
+          return [lane.id, status] as const;
+        } catch {
+          return [lane.id, null] as const;
+        }
+      })
+    );
+    const next: Record<string, GitUpstreamSyncStatus | null> = {};
+    for (const [laneId, status] of results) {
+      next[laneId] = status;
+    }
+    setSyncByLaneId(next);
+  }, [lanes]);
+
+  const refreshAutoRebaseStatuses = React.useCallback(async () => {
+    if (lanes.length === 0) {
+      setAutoRebaseByLaneId({});
+      return;
+    }
+    try {
+      const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+      const next: Record<string, AutoRebaseLaneStatus | null> = {};
+      for (const lane of lanes) next[lane.id] = null;
+      for (const status of statuses) next[status.laneId] = status;
+      setAutoRebaseByLaneId(next);
+    } catch {
+      setAutoRebaseByLaneId({});
+    }
+  }, [lanes]);
 
   const [viewMode, setViewMode] = React.useState<GraphViewMode>("all");
   const [graphState, setGraphState] = React.useState<GraphPersistedState>(createDefaultState());
@@ -1063,7 +1140,9 @@ function GraphInner() {
       .finally(() => setLoadingTopology(false));
     void refreshRiskBatch();
     void refreshActivity();
-  }, [refreshLanes, refreshRiskBatch, refreshActivity]);
+    void refreshLaneSyncStatuses();
+    void refreshAutoRebaseStatuses();
+  }, [refreshActivity, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1197,21 +1276,40 @@ function GraphInner() {
     const unsubPtyExit = window.ade.pty.onExit(() => {
       void refreshActivity();
     });
+    const unsubAutoRebase = window.ade.lanes.onAutoRebaseEvent((event) => {
+      if (event.type !== "auto-rebase-updated") return;
+      const next: Record<string, AutoRebaseLaneStatus | null> = {};
+      for (const lane of lanes) next[lane.id] = null;
+      for (const status of event.statuses) next[status.laneId] = status;
+      setAutoRebaseByLaneId(next);
+    });
     const interval = window.setInterval(() => {
       void refreshLanes().catch(() => {});
       void refreshActivity();
     }, 5000);
+    const syncInterval = window.setInterval(() => {
+      void refreshLaneSyncStatuses();
+      void refreshAutoRebaseStatuses();
+    }, 15000);
+    const onFocus = () => {
+      void refreshLaneSyncStatuses();
+      void refreshAutoRebaseStatuses();
+    };
+    window.addEventListener("focus", onFocus);
 
     return () => {
       unsubConflict();
       unsubPtyData();
       unsubPtyExit();
+      unsubAutoRebase();
       window.clearInterval(interval);
+      window.clearInterval(syncInterval);
+      window.removeEventListener("focus", onFocus);
       if (riskRefreshTimerRef.current != null) {
         window.clearTimeout(riskRefreshTimerRef.current);
       }
     };
-  }, [refreshActivity, refreshLanes, refreshRiskBatch]);
+  }, [refreshActivity, refreshLaneSyncStatuses, refreshLanes, refreshRiskBatch, refreshAutoRebaseStatuses, lanes]);
 
   React.useEffect(() => {
     if (!loadedGraphState) return;
@@ -1240,6 +1338,8 @@ function GraphInner() {
             ? { ...lane, color: appearanceEditor.color, icon: appearanceEditor.icon, tags: appearanceEditor.tags }
             : lane,
           status: statusByLane.get(lane.id) ?? "unknown",
+          remoteSync: syncByLaneId[lane.id] ?? null,
+          autoRebaseStatus: autoRebaseByLaneId[lane.id] ?? null,
           activeSessions: activeSessionsByLaneId[lane.id] ?? 0,
           collapsedChildCount,
           dimmed: !visible || dimmedByHover,
@@ -1372,6 +1472,8 @@ function GraphInner() {
     riskByPair,
     prOverlayByPair,
     selectedLaneIds,
+    syncByLaneId,
+    autoRebaseByLaneId,
     statusByLane,
     viewMode,
     hoveredEdgeId,
@@ -1815,10 +1917,78 @@ function GraphInner() {
     await refreshLanes().catch(() => {});
   }, [laneById, openPrDialogForLane, refreshLanes, reparentDialog]);
 
+  const runPullFromUpstream = React.useCallback(
+    async (laneId: string, mode: GitSyncMode = "rebase") => {
+      const latest = await window.ade.git.getSyncStatus({ laneId }).catch(() => null);
+      const lane = laneById.get(laneId) ?? null;
+      const targetBaseRef = latest?.hasUpstream && latest.upstreamRef
+        ? latest.upstreamRef
+        : (lane?.baseRef ?? undefined);
+      await window.ade.git.sync({ laneId, mode, baseRef: targetBaseRef });
+    },
+    [laneById]
+  );
+
+  const runRestackAndPublishLane = React.useCallback(
+    async (laneId: string, args?: { confirmPublish?: boolean; recursive?: boolean }): Promise<RestackPublishOutcome> => {
+      const lane = laneById.get(laneId);
+      if (!lane) {
+        return { status: "skipped", message: "lane not found" };
+      }
+      if (!lane.parentLaneId) {
+        return { status: "skipped", message: "no parent lane" };
+      }
+
+      const result = await window.ade.lanes.restack({ laneId, recursive: Boolean(args?.recursive) });
+      if (result.error) throw new Error(result.error);
+
+      await window.ade.git.fetch({ laneId }).catch(() => {});
+      const sync = await window.ade.git.getSyncStatus({ laneId });
+
+      const confirmPublish = Boolean(args?.confirmPublish);
+      if (!sync.hasUpstream) {
+        if (confirmPublish) {
+          const ok = window.confirm(`Publish lane '${lane.name}' to origin/${lane.branchRef}?`);
+          if (!ok) return { status: "skipped", message: "publish skipped" };
+        }
+        await window.ade.git.push({ laneId });
+        return { status: "done", message: "published new remote branch" };
+      }
+
+      if (sync.diverged && sync.ahead > 0) {
+        if (confirmPublish) {
+          const ok = window.confirm(
+            `Lane '${lane.name}' diverged from remote (${sync.ahead} local ahead, ${sync.behind} remote ahead). Force push with lease now?`
+          );
+          if (!ok) return { status: "skipped", message: "force push skipped" };
+        }
+        await window.ade.git.push({ laneId, forceWithLease: true });
+        return { status: "done", message: "force-pushed with lease" };
+      }
+
+      if (sync.ahead > 0) {
+        if (confirmPublish) {
+          const ok = window.confirm(`Push ${sync.ahead} commit${sync.ahead === 1 ? "" : "s"} for lane '${lane.name}' now?`);
+          if (!ok) return { status: "skipped", message: "push skipped" };
+        }
+        await window.ade.git.push({ laneId });
+        return { status: "done", message: "pushed updates" };
+      }
+
+      if (sync.behind > 0) {
+        return { status: "skipped", message: `behind remote by ${sync.behind} commit${sync.behind === 1 ? "" : "s"}` };
+      }
+
+      return { status: "done", message: "restacked and already synced" };
+    },
+    [laneById]
+  );
+
   const runBatchOperation = React.useCallback(
-    async (operation: "restack" | "push" | "fetch" | "archive" | "delete") => {
+    async (operation: "restack" | "restack_publish" | "push" | "fetch" | "archive" | "delete") => {
       if (selectedLaneIds.length < 2) return;
-      if (operation === "restack") {
+      const isRestackLike = operation === "restack" || operation === "restack_publish";
+      if (isRestackLike) {
         setRestackFailedLaneId(null);
         setRestackFailedPulse(false);
       }
@@ -1837,7 +2007,7 @@ function GraphInner() {
       const descendantsCache = new Map<string, Set<string>>();
       for (const laneId of selectedLaneIds) descendantsCache.set(laneId, collectDescendants(lanes, laneId));
       const blocked = new Set<string>();
-      const ordered = operation === "restack"
+      const ordered = isRestackLike
         ? [...selectedLaneIds].sort((a, b) => (laneById.get(a)?.stackDepth ?? 0) - (laneById.get(b)?.stackDepth ?? 0))
         : [...selectedLaneIds];
 
@@ -1865,9 +2035,15 @@ function GraphInner() {
         }
 
         try {
+          let skippedReason: string | null = null;
           if (operation === "restack") {
             const result = await window.ade.lanes.restack({ laneId, recursive: false });
             if (result.error) throw new Error(result.error);
+          } else if (operation === "restack_publish") {
+            const outcome = await runRestackAndPublishLane(laneId, { confirmPublish: true, recursive: false });
+            if (outcome.status === "skipped") {
+              skippedReason = outcome.message;
+            }
           } else if (operation === "push") {
             await window.ade.git.push({ laneId });
           } else if (operation === "fetch") {
@@ -1877,12 +2053,23 @@ function GraphInner() {
           } else {
             await window.ade.lanes.delete({ laneId, force: true, deleteBranch: false });
           }
-          doneCount += 1;
-          setBatchStatus((prev) => {
-            if (!prev) return prev;
-            const nextSteps = prev.steps.map((step) => step.laneId === laneId ? { ...step, status: "done" as const } : step);
-            return { ...prev, steps: nextSteps };
-          });
+          if (skippedReason) {
+            skippedCount += 1;
+            setBatchStatus((prev) => {
+              if (!prev) return prev;
+              const nextSteps = prev.steps.map((step) =>
+                step.laneId === laneId ? { ...step, status: "skipped" as const, error: skippedReason } : step
+              );
+              return { ...prev, steps: nextSteps };
+            });
+          } else {
+            doneCount += 1;
+            setBatchStatus((prev) => {
+              if (!prev) return prev;
+              const nextSteps = prev.steps.map((step) => step.laneId === laneId ? { ...step, status: "done" as const } : step);
+              return { ...prev, steps: nextSteps };
+            });
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const missingLane = /lane not found|no longer exists/i.test(message);
@@ -1906,13 +2093,14 @@ function GraphInner() {
             );
             return { ...prev, steps: nextSteps };
           });
-          if (operation === "restack") {
+          if (isRestackLike) {
             const descendants = descendantsCache.get(laneId);
             for (const childId of descendants ?? []) blocked.add(childId);
             setRestackFailedLaneId(laneId);
             setRestackFailedPulse(true);
             window.setTimeout(() => setRestackFailedPulse(false), 1650);
-            setErrorBanner(`Rebase paused: conflict on '${laneById.get(laneId)?.name ?? laneId}'. ${doneCount}/${ordered.length} lanes rebased.`);
+            const label = operation === "restack_publish" ? "Restack + publish" : "Rebase";
+            setErrorBanner(`${label} paused: conflict on '${laneById.get(laneId)?.name ?? laneId}'. ${doneCount}/${ordered.length} lanes completed.`);
           }
         }
       }
@@ -1925,8 +2113,9 @@ function GraphInner() {
         };
       });
       await refreshLanes().catch(() => {});
+      await refreshLaneSyncStatuses().catch(() => {});
     },
-    [laneById, lanes, refreshLanes, selectedLaneIds]
+    [laneById, lanes, refreshLaneSyncStatuses, refreshLanes, runRestackAndPublishLane, selectedLaneIds]
   );
 
   const openContextForSelected = React.useCallback(() => {
@@ -1972,6 +2161,7 @@ function GraphInner() {
       if (!lane) return;
 
       try {
+        let shouldRefreshSync = false;
         if (action === "open") {
           await window.ade.lanes.openFolder({ laneId: lane.id });
         } else if (action === "create-child") {
@@ -1997,13 +2187,24 @@ function GraphInner() {
           const result = await window.ade.lanes.restack({ laneId: lane.id, recursive: false });
           if (result.error) throw new Error(result.error);
           await refreshLanes();
+          shouldRefreshSync = true;
+        } else if (action === "restack-publish") {
+          const outcome = await runRestackAndPublishLane(lane.id, { confirmPublish: true, recursive: false });
+          if (outcome.status === "skipped") {
+            setErrorBanner(`Restack + publish skipped for '${lane.name}': ${outcome.message}`);
+          }
+          await refreshLanes();
+          shouldRefreshSync = true;
         } else if (action === "push") {
           await window.ade.git.push({ laneId: lane.id });
+          shouldRefreshSync = true;
         } else if (action === "fetch") {
           await window.ade.git.fetch({ laneId: lane.id });
+          shouldRefreshSync = true;
         } else if (action === "sync") {
-          await window.ade.git.sync({ laneId: lane.id, mode: "rebase" });
+          await runPullFromUpstream(lane.id, "rebase");
           await refreshLanes();
+          shouldRefreshSync = true;
         } else if (action === "reparent") {
           const options = lanes.filter((entry) => entry.id !== lane.id).map((entry) => `${entry.id}:${entry.name}`).join("\n");
           const picked = await requestTextInput({
@@ -2045,13 +2246,27 @@ function GraphInner() {
             collapsedLaneIds: snapshot.collapsedLaneIds.filter((id) => id !== lane.id)
           }));
         }
+        if (shouldRefreshSync) {
+          await refreshLaneSyncStatuses().catch(() => {});
+        }
       } catch (error) {
         setErrorBanner(error instanceof Error ? error.message : String(error));
       } finally {
         setContextMenu(null);
       }
     },
-    [contextMenu, laneById, lanes, openReparentDialog, refreshLanes, requestTextInput, updateGraphSnapshot]
+    [
+      contextMenu,
+      laneById,
+      lanes,
+      openReparentDialog,
+      refreshLaneSyncStatuses,
+      refreshLanes,
+      requestTextInput,
+      runPullFromUpstream,
+      runRestackAndPublishLane,
+      updateGraphSnapshot
+    ]
   );
 
   const lanesForLegend = React.useMemo(() => {
@@ -2707,6 +2922,15 @@ function GraphInner() {
                 </div>
               )}
               <div className="my-2 h-px bg-border/60" />
+              <div className="mb-1 font-semibold text-fg">Sync cues</div>
+              <div className="space-y-1 text-[10px] text-muted-fg">
+                <div><span className="text-amber-300">stack stale</span> = lane is behind parent/base.</div>
+                <div><span className="text-red-300">diverged</span> = local and remote both changed.</div>
+                <div><span className="text-emerald-300">push</span> = local commits are ready to publish.</div>
+                <div><span className="text-sky-300">pull</span> = remote has commits not in lane.</div>
+                <div>unpublished = lane has no upstream branch yet.</div>
+              </div>
+              <div className="my-2 h-px bg-border/60" />
               <div className="mb-1 font-semibold text-fg">Lane colors</div>
               {lanesForLegend.length === 0 ? (
                 <div className="text-muted-fg">No custom node colors yet.</div>
@@ -2757,6 +2981,12 @@ function GraphInner() {
               { key: "archive", label: "Archive", disabled: isPrimary, reason: "Primary lane cannot be archived." },
               { key: "delete", label: "Delete", disabled: isPrimary, reason: "Primary lane cannot be deleted." },
               { key: "restack", label: "Rebase", disabled: !hasParent, reason: "Rebase is only available for child lanes." },
+              {
+                key: "restack-publish",
+                label: "Restack + Publish",
+                disabled: !hasParent,
+                reason: "Restack + publish is only available for child lanes."
+              },
               { key: "push", label: "Push" },
               { key: "fetch", label: "Fetch" },
               { key: "sync", label: "Pull" },
@@ -3403,6 +3633,9 @@ function GraphInner() {
             <div className="flex items-center gap-1">
               <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack")}>
                 Batch Rebase
+              </Button>
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack_publish")}>
+                Batch Restack + Publish
               </Button>
               <Button
                 size="sm"

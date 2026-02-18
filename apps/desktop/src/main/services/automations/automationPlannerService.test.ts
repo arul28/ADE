@@ -73,27 +73,6 @@ describe("automationPlannerService.validateDraft", () => {
     expect(withConfirm.ok).toBe(true);
   });
 
-  it("requires explicit confirmation for sync-to-mirror when enabled", () => {
-    const planner = createPlannerForTests({ suites: [] });
-
-    const enabledDraft: AutomationRuleDraft = {
-      name: "Mirror",
-      enabled: true,
-      trigger: { type: "manual" },
-      actions: [{ type: "sync-to-mirror" }]
-    };
-    expect(planner.validateDraft({ draft: enabledDraft, confirmations: [] }).ok).toBe(false);
-    expect(planner.validateDraft({ draft: enabledDraft, confirmations: ["confirm.sync-to-mirror"] }).ok).toBe(true);
-
-    const disabledDraft: AutomationRuleDraft = {
-      name: "Mirror",
-      enabled: false,
-      trigger: { type: "manual" },
-      actions: [{ type: "sync-to-mirror" }]
-    };
-    expect(planner.validateDraft({ draft: disabledDraft, confirmations: [] }).ok).toBe(true);
-  });
-
   it("validates schedule cron", () => {
     const planner = createPlannerForTests({ suites: [] });
 

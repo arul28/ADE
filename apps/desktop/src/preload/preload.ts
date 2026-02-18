@@ -93,6 +93,8 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportHistoryArgs,
+  ExportHistoryResult,
   ExportConfigBundleResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
@@ -104,9 +106,6 @@ import type {
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
   HostedMirrorDeleteResult,
-  HostedMirrorCleanupSummaryV1,
-  HostedMirrorSyncArgs,
-  HostedMirrorSyncResult,
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
@@ -185,6 +184,8 @@ import type {
   RestackResult,
   RestackSuggestion,
   RestackSuggestionsEventPayload,
+  AutoRebaseLaneStatus,
+  AutoRebaseEventPayload,
   UpdateLaneAppearanceArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
@@ -297,6 +298,12 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: RestackSuggestionsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.lanesRestackSuggestionsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.lanesRestackSuggestionsEvent, listener);
+    },
+    listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> => ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
+    onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: AutoRebaseEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.lanesAutoRebaseEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesAutoRebaseEvent, listener);
     },
     openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
   },
@@ -537,10 +544,6 @@ contextBridge.exposeInMainWorld("ade", {
     applyBootstrapConfig: async (): Promise<HostedBootstrapConfig> => ipcRenderer.invoke(IPC.hostedApplyBootstrapConfig),
     signIn: async (args: HostedSignInArgs = {}): Promise<HostedSignInResult> => ipcRenderer.invoke(IPC.hostedSignIn, args),
     signOut: async (): Promise<void> => ipcRenderer.invoke(IPC.hostedSignOut),
-    syncMirror: async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> =>
-      ipcRenderer.invoke(IPC.hostedSyncMirror, args),
-    cleanMirrorData: async (): Promise<HostedMirrorCleanupSummaryV1> =>
-      ipcRenderer.invoke(IPC.hostedCleanMirrorData),
     deleteMirrorData: async (): Promise<HostedMirrorDeleteResult> => ipcRenderer.invoke(IPC.hostedDeleteMirrorData),
     submitJob: async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> =>
       ipcRenderer.invoke(IPC.hostedSubmitJob, args),
@@ -557,7 +560,9 @@ contextBridge.exposeInMainWorld("ade", {
   },
   history: {
     listOperations: async (args: ListOperationsArgs = {}): Promise<OperationRecord[]> =>
-      ipcRenderer.invoke(IPC.historyListOperations, args)
+      ipcRenderer.invoke(IPC.historyListOperations, args),
+    exportOperations: async (args: ExportHistoryArgs): Promise<ExportHistoryResult> =>
+      ipcRenderer.invoke(IPC.historyExportOperations, args)
   },
   layout: {
     get: async (layoutId: string): Promise<DockLayout | null> => ipcRenderer.invoke(IPC.layoutGet, { layoutId }),

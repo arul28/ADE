@@ -22,10 +22,7 @@ import type {
   HostedContextDeliveryMode,
   HostedManifestRefsV1,
   HostedMirrorDeleteResult,
-  HostedMirrorCleanupResult,
   HostedMirrorCleanupSummaryV1,
-  HostedMirrorSyncArgs,
-  HostedMirrorSyncResult,
   HostedMirrorSyncSummaryV1,
   HostedNarrativeTimingV1,
   HostedSignInResult,
@@ -37,15 +34,12 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import { runGit } from "../git/git";
 import { redactSecrets, redactSecretsDeep } from "../../utils/redaction";
 import {
   ADE_HANDOFF_SCHEMA_V1,
   ADE_HOSTED_MIRROR_CLEANUP_SUMMARY_SCHEMA_V1,
   ADE_JOB_CONTEXT_INLINE_META_SCHEMA_V1,
-  ADE_JOB_CONTEXT_REF_SCHEMA_V1,
-  ADE_MIRROR_PACKS_MANIFEST_SCHEMA_V1,
-  ADE_MIRROR_TRANSCRIPTS_MANIFEST_SCHEMA_V1
+  ADE_JOB_CONTEXT_REF_SCHEMA_V1
 } from "../../../shared/contextContract";
 import { buildInlineFallbackParams, decideHostedContextDelivery, estimateUtf8Bytes, stableJsonStringify } from "./hostedContextPolicy";
 
@@ -101,60 +95,11 @@ type HostedConfig = {
   auth: HostedAuthTokens;
 };
 
-type BlobUpload = {
-  path: string;
-  sha256: string;
-  contentBase64: string;
-  contentType: string;
-};
-
-type ManifestEntry = {
-  path: string;
-  sha256: string;
-  size: number;
-};
-
-type MirrorFileEntry = {
-  path: string;
-  sha256: string;
-  size: number;
-  contentType: string;
-};
-
 const CALLBACK_PORT = 42420;
 const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/callback";
-const MAX_FILE_BYTES = 400 * 1024;
-const MAX_FILES_PER_LANE = 400;
-const MAX_BATCH_BLOBS = 40;
 const AUTH_STORE_FILE_NAME = "hosted-auth.v1.bin";
 const BOOTSTRAP_FILE_NAME = "bootstrap.json";
-
-const DEFAULT_EXCLUDE_PATTERNS = [
-  "node_modules/",
-  "vendor/",
-  ".venv/",
-  "__pycache__/",
-  "dist/",
-  "build/",
-  ".next/",
-  ".nuxt/",
-  "target/",
-  ".env",
-  ".env.*",
-  ".env.local",
-  ".env.production",
-  ".env.development",
-  "*.pem",
-  "*.key",
-  "*.cert",
-  "credentials.json",
-  "secrets.*",
-  ".aws/credentials",
-  "id_rsa",
-  "id_ed25519",
-  ".git/"
-];
 
 const HOSTED_FETCH_TIMEOUT_MS = 20_000;
 const POLL_INITIAL_DELAY_MS = 700;
@@ -162,34 +107,6 @@ const POLL_MAX_DELAY_MS = 4_000;
 const POLL_TIMEOUT_FLOOR_MS = 60_000;
 const POLL_STALL_TIMEOUT_MS = 180_000;
 const CONTEXT_POLICY_TTL_MS = 20 * 60_000;
-const MIRROR_CLEANUP_INTERVAL_MS = 6 * 60 * 60_000;
-
-const TEXT_EXTENSIONS = new Set([
-  ".md",
-  ".txt",
-  ".json",
-  ".yml",
-  ".yaml",
-  ".toml",
-  ".js",
-  ".ts",
-  ".tsx",
-  ".jsx",
-  ".css",
-  ".html",
-  ".cjs",
-  ".mjs",
-  ".sh",
-  ".py",
-  ".rs",
-  ".go",
-  ".java",
-  ".kt",
-  ".swift",
-  ".rb",
-  ".php",
-  ".sql"
-]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -223,31 +140,6 @@ function base64Url(input: Buffer): string {
 
 function sha256Hex(input: Buffer | string): string {
   return createHash("sha256").update(input).digest("hex");
-}
-
-function isProbablyText(filePath: string, bytes: Buffer): boolean {
-  const ext = path.extname(filePath).toLowerCase();
-  if (TEXT_EXTENSIONS.has(ext)) return true;
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] === 0) return false;
-  }
-  return true;
-}
-
-function globLikeMatch(inputPath: string, pattern: string): boolean {
-  const normalizedPath = inputPath.replace(/\\/g, "/").toLowerCase();
-  const normalizedPattern = pattern.trim().replace(/\\/g, "/").toLowerCase();
-  if (!normalizedPattern.length) return false;
-
-  const escaped = normalizedPattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*")
-    .replace(/\?/g, ".");
-
-  const regex = new RegExp(`^${escaped}$`);
-  if (regex.test(normalizedPath)) return true;
-
-  return normalizedPath.includes(normalizedPattern);
 }
 
 function nowIso(): string {
@@ -1045,263 +937,6 @@ export function createHostedAgentService({
     return created.projectId;
   };
 
-  const listRepoFiles = async (worktreePath: string): Promise<string[]> => {
-    const tracked = await runGit(["ls-files"], { cwd: worktreePath, timeoutMs: 20_000 });
-    const untracked = await runGit(["ls-files", "--others", "--exclude-standard"], {
-      cwd: worktreePath,
-      timeoutMs: 20_000
-    });
-
-    const out = new Set<string>();
-    for (const source of [tracked.stdout, untracked.stdout]) {
-      for (const line of source.split(/\r?\n/)) {
-        const rel = line.trim();
-        if (!rel) continue;
-        out.add(rel);
-      }
-    }
-    return Array.from(out).sort((a, b) => a.localeCompare(b));
-  };
-
-  const buildBlobUploads = (args: {
-    rootPath: string;
-    relPaths: string[];
-    excludePatterns: string[];
-  }): {
-    uploads: BlobUpload[];
-    manifest: ManifestEntry[];
-    excludedCount: number;
-  } => {
-    const uploads: BlobUpload[] = [];
-    const manifest: ManifestEntry[] = [];
-    let excludedCount = 0;
-
-    const fullExcludePatterns = [...DEFAULT_EXCLUDE_PATTERNS, ...args.excludePatterns];
-
-    for (const relPath of args.relPaths.slice(0, MAX_FILES_PER_LANE)) {
-      if (fullExcludePatterns.some((pattern) => globLikeMatch(relPath, pattern))) {
-        excludedCount += 1;
-        continue;
-      }
-
-      const absPath = path.join(args.rootPath, relPath);
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(absPath);
-      } catch {
-        continue;
-      }
-      if (!stat.isFile()) continue;
-      if (stat.size > MAX_FILE_BYTES) {
-        excludedCount += 1;
-        continue;
-      }
-
-      let bytes: Buffer;
-      try {
-        bytes = fs.readFileSync(absPath);
-      } catch {
-        continue;
-      }
-
-      if (isProbablyText(relPath, bytes)) {
-        bytes = Buffer.from(redactSecrets(bytes.toString("utf8")), "utf8");
-      }
-
-      const sha256 = sha256Hex(bytes);
-      manifest.push({
-        path: relPath,
-        sha256,
-        size: bytes.length
-      });
-
-      uploads.push({
-        path: relPath,
-        sha256,
-        contentBase64: bytes.toString("base64"),
-        contentType: isProbablyText(relPath, bytes) ? "text/plain" : "application/octet-stream"
-      });
-    }
-
-    return {
-      uploads,
-      manifest,
-      excludedCount
-    };
-  };
-
-  const uploadBlobsInBatches = async (args: {
-    remoteProjectId: string;
-    uploads: BlobUpload[];
-    excludePatterns: string[];
-  }): Promise<{ uploaded: number; deduplicated: number; excluded: number }> => {
-    let uploaded = 0;
-    let deduplicated = 0;
-    let excluded = 0;
-
-    for (let i = 0; i < args.uploads.length; i += MAX_BATCH_BLOBS) {
-      const batch = args.uploads.slice(i, i + MAX_BATCH_BLOBS);
-      const response = await apiRequest<{ uploaded: number; deduplicated: number; excluded: number }>({
-        method: "POST",
-        path: `/projects/${args.remoteProjectId}/upload`,
-        body: {
-          blobs: batch,
-          excludePatterns: args.excludePatterns
-        }
-      });
-
-      uploaded += Number(response.uploaded ?? 0);
-      deduplicated += Number(response.deduplicated ?? 0);
-      excluded += Number(response.excluded ?? 0);
-    }
-
-    return { uploaded, deduplicated, excluded };
-  };
-
-  const syncLaneMirror = async (args: {
-    laneId: string;
-    remoteProjectId: string;
-    excludePatterns: string[];
-  }): Promise<{ uploaded: number; deduplicated: number; excluded: number; manifestCount: number }> => {
-    const lane = laneService.getLaneBaseAndBranch(args.laneId);
-    const filePaths = await listRepoFiles(lane.worktreePath);
-
-    const { uploads, manifest, excludedCount } = buildBlobUploads({
-      rootPath: lane.worktreePath,
-      relPaths: filePaths,
-      excludePatterns: args.excludePatterns
-    });
-
-    const uploadSummary = await uploadBlobsInBatches({
-      remoteProjectId: args.remoteProjectId,
-      uploads,
-      excludePatterns: args.excludePatterns
-    });
-
-    const headSha = (await runGit(["rev-parse", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 })).stdout.trim();
-
-    await apiRequest<{ manifestId: string; timestamp: string }>({
-      method: "POST",
-      path: `/projects/${args.remoteProjectId}/lanes/${args.laneId}/manifest`,
-      body: {
-        laneId: args.laneId,
-        branchRef: lane.branchRef,
-        headSha,
-        fileCount: manifest.length,
-        files: manifest,
-        generatedAt: nowIso()
-      }
-    });
-
-    return {
-      uploaded: uploadSummary.uploaded,
-      deduplicated: uploadSummary.deduplicated,
-      excluded: uploadSummary.excluded + excludedCount,
-      manifestCount: 1
-    };
-  };
-
-  const syncPacks = async (remoteProjectId: string, excludePatterns: string[]): Promise<{ uploaded: number; deduplicated: number; excluded: number; packCount: number; entries: MirrorFileEntry[] }> => {
-    if (!fs.existsSync(packsDir)) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, packCount: 0, entries: [] };
-    }
-
-    const packPaths: string[] = [];
-    const walk = (currentPath: string) => {
-      const entries = fs.readdirSync(currentPath, { withFileTypes: true });
-      for (const entry of entries) {
-        const child = path.join(currentPath, entry.name);
-        if (entry.isDirectory()) {
-          walk(child);
-          continue;
-        }
-        if (entry.isFile() && child.endsWith(".md")) {
-          packPaths.push(child);
-        }
-      }
-    };
-
-    walk(packsDir);
-
-    const uploads: BlobUpload[] = [];
-    const entries: MirrorFileEntry[] = [];
-    for (const absPath of packPaths) {
-      const relPath = path.relative(projectRoot, absPath).replace(/\\/g, "/");
-      if (!relPath || excludePatterns.some((pattern) => globLikeMatch(relPath, pattern))) continue;
-      const text = redactSecrets(fs.readFileSync(absPath, "utf8"));
-      const bytes = Buffer.from(text, "utf8");
-      const sha256 = sha256Hex(bytes);
-      uploads.push({
-        path: relPath,
-        sha256,
-        contentBase64: bytes.toString("base64"),
-        contentType: "text/markdown"
-      });
-      entries.push({ path: relPath, sha256, size: bytes.length, contentType: "text/markdown" });
-    }
-
-    if (!uploads.length) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, packCount: 0, entries: [] };
-    }
-
-    const summary = await uploadBlobsInBatches({
-      remoteProjectId,
-      uploads,
-      excludePatterns
-    });
-
-    return {
-      ...summary,
-      packCount: uploads.length,
-      entries
-    };
-  };
-
-  const syncTranscripts = async (remoteProjectId: string, excludePatterns: string[]): Promise<{ uploaded: number; deduplicated: number; excluded: number; transcriptCount: number; entries: MirrorFileEntry[] }> => {
-    if (!fs.existsSync(transcriptsDir)) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, transcriptCount: 0, entries: [] };
-    }
-
-    const files = fs
-      .readdirSync(transcriptsDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".log"))
-      .map((entry) => path.join(transcriptsDir, entry.name))
-      .slice(-20);
-
-    const uploads: BlobUpload[] = [];
-    const entries: MirrorFileEntry[] = [];
-    for (const absPath of files) {
-      const relPath = path.relative(projectRoot, absPath).replace(/\\/g, "/");
-      if (!relPath || excludePatterns.some((pattern) => globLikeMatch(relPath, pattern))) continue;
-      const text = redactSecrets(fs.readFileSync(absPath, "utf8"));
-      const bytes = Buffer.from(text, "utf8");
-      const sha256 = sha256Hex(bytes);
-      uploads.push({
-        path: relPath,
-        sha256,
-        contentBase64: bytes.toString("base64"),
-        contentType: "text/plain"
-      });
-      entries.push({ path: relPath, sha256, size: bytes.length, contentType: "text/plain" });
-    }
-
-    if (!uploads.length) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, transcriptCount: 0, entries: [] };
-    }
-
-    const summary = await uploadBlobsInBatches({
-      remoteProjectId,
-      uploads,
-      excludePatterns
-    });
-
-    return {
-      ...summary,
-      transcriptCount: uploads.length,
-      entries
-    };
-  };
-
   const parseDiffFromContent = (content: string): { explanation: string; diffPatch: string; confidence: number | null } => {
     const diffMatch = content.match(/```diff\n([\s\S]*?)```/i);
     const diffPatch = diffMatch ? diffMatch[1].trim() : "";
@@ -1686,11 +1321,6 @@ export function createHostedAgentService({
       ? ((redactedParams as Record<string, unknown>).projectContextRefs as Record<string, unknown>)
       : {};
     const manifestRefs: HostedManifestRefsV1 = {
-      lane: `${remoteProjectId}/${args.laneId}/manifest.json`,
-      packs: `${remoteProjectId}/packs/manifest.json`,
-      transcripts: `${remoteProjectId}/transcripts/manifest.json`,
-      project: `${remoteProjectId}/project/manifest.json`,
-      conflict: `${remoteProjectId}/conflicts/${args.laneId}/manifest.json`,
       ...(typeof incomingManifestRefs.project === "string" ? { project: incomingManifestRefs.project } : {}),
       ...(typeof incomingManifestRefs.packs === "string" ? { packs: incomingManifestRefs.packs } : {}),
       ...(typeof incomingManifestRefs.transcripts === "string" ? { transcripts: incomingManifestRefs.transcripts } : {}),
@@ -2038,208 +1668,6 @@ export function createHostedAgentService({
     return response.data;
   };
 
-  const syncMirror = async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
-    const config = ensureHostedConfigured();
-    const remoteProjectId = await ensureRemoteProject();
-    const attemptAt = nowIso();
-    updateHostedConfig({
-      mirrorLastAttemptAt: attemptAt,
-      mirrorLastError: null
-    });
-
-    const lanes = await laneService.list({ includeArchived: false });
-    const targetLaneIds = args.laneId ? [args.laneId] : lanes.map((lane) => lane.id);
-
-    const excludePatterns = [...DEFAULT_EXCLUDE_PATTERNS, ...config.mirrorExcludePatterns];
-
-    let uploaded = 0;
-    let deduplicated = 0;
-    let excluded = 0;
-    let manifestCount = 0;
-    let packCount = 0;
-    let transcriptCount = 0;
-    const warnings: string[] = [];
-    let cleanup: HostedMirrorCleanupSummaryV1 | null = null;
-    let packsManifestKey: string | null = null;
-    let transcriptsManifestKey: string | null = null;
-
-    try {
-      for (const laneId of targetLaneIds) {
-        const laneResult = await syncLaneMirror({
-          laneId,
-          remoteProjectId,
-          excludePatterns
-        });
-        uploaded += laneResult.uploaded;
-        deduplicated += laneResult.deduplicated;
-        excluded += laneResult.excluded;
-        manifestCount += laneResult.manifestCount;
-      }
-
-      const packResult = await syncPacks(remoteProjectId, excludePatterns);
-      uploaded += packResult.uploaded;
-      deduplicated += packResult.deduplicated;
-      excluded += packResult.excluded;
-      packCount += packResult.packCount;
-
-      if (packResult.entries.length) {
-        try {
-          const res = await apiRequest<{ manifestKey: string; timestamp: string; packCount: number }>({
-            method: "POST",
-            path: `/projects/${remoteProjectId}/packs/manifest`,
-            body: {
-              schema: ADE_MIRROR_PACKS_MANIFEST_SCHEMA_V1,
-              generatedAt: nowIso(),
-              packs: packResult.entries
-            }
-          });
-          packsManifestKey = res.manifestKey;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warnings.push(`Failed to write packs manifest: ${message}`);
-        }
-      }
-
-      if (config.uploadTranscripts && args.includeTranscripts) {
-        const transcriptResult = await syncTranscripts(remoteProjectId, excludePatterns);
-        uploaded += transcriptResult.uploaded;
-        deduplicated += transcriptResult.deduplicated;
-        excluded += transcriptResult.excluded;
-        transcriptCount += transcriptResult.transcriptCount;
-
-        if (transcriptResult.entries.length) {
-          try {
-            const res = await apiRequest<{ manifestKey: string; timestamp: string; transcriptCount: number }>({
-              method: "POST",
-              path: `/projects/${remoteProjectId}/transcripts/manifest`,
-              body: {
-                schema: ADE_MIRROR_TRANSCRIPTS_MANIFEST_SCHEMA_V1,
-                generatedAt: nowIso(),
-                transcripts: transcriptResult.entries
-              }
-            });
-            transcriptsManifestKey = res.manifestKey;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            warnings.push(`Failed to write transcripts manifest: ${message}`);
-          }
-        }
-      }
-
-      const syncedAt = nowIso();
-      const maybeRunCleanup = async () => {
-        const lastCleanupAt = config.mirrorCleanupLastSuccessAt ? Date.parse(config.mirrorCleanupLastSuccessAt) : NaN;
-        const shouldRun = !Number.isFinite(lastCleanupAt) || Date.now() - lastCleanupAt > MIRROR_CLEANUP_INTERVAL_MS;
-        if (!shouldRun) return null;
-        try {
-          return await cleanMirrorDataInternal(remoteProjectId);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          warnings.push(`Mirror cleanup failed: ${message}`);
-          return null;
-        }
-      };
-      cleanup = await maybeRunCleanup();
-
-      const summary: HostedMirrorSyncSummaryV1 = {
-        schema: "ade.hostedMirrorSyncSummary.v1",
-        remoteProjectId,
-        lanesSyncedCount: targetLaneIds.length,
-        uploaded,
-        deduplicated,
-        excluded,
-        manifestCount,
-        transcriptCount,
-        packCount,
-        syncedAt,
-        warnings,
-        cleanup
-      };
-
-      updateHostedConfig({
-        mirrorLastSuccessAt: syncedAt,
-        mirrorLastError: null,
-        mirrorLastResult: summary
-      });
-
-      return {
-        remoteProjectId,
-        lanesSynced: targetLaneIds,
-        uploaded,
-        deduplicated,
-        excluded,
-        manifestCount,
-        transcriptCount,
-        packCount,
-        syncedAt,
-        packsManifestKey,
-        transcriptsManifestKey,
-        warnings,
-        cleanup
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      updateHostedConfig({
-        mirrorLastError: message
-      });
-      throw error;
-    }
-  };
-
-  const cleanMirrorDataInternal = async (remoteProjectId: string): Promise<HostedMirrorCleanupSummaryV1> => {
-    const attemptAt = nowIso();
-    updateHostedConfig({
-      mirrorCleanupLastAttemptAt: attemptAt,
-      mirrorCleanupLastError: null
-    });
-
-    try {
-      const result = await apiRequest<HostedMirrorCleanupResult>({
-        method: "POST",
-        path: `/projects/${remoteProjectId}/mirror/cleanup`,
-        body: {}
-      });
-      const finishedAt = nowIso();
-      const summary: HostedMirrorCleanupSummaryV1 = {
-        schema: ADE_HOSTED_MIRROR_CLEANUP_SUMMARY_SCHEMA_V1,
-        remoteProjectId: result.remoteProjectId,
-        startedAt: attemptAt,
-        finishedAt,
-        reachableBlobs: result.reachableBlobs,
-        orphanedBlobs: result.orphanedBlobs,
-        deletedBlobs: result.deletedBlobs,
-        reclaimedBytes: result.reclaimedBytes,
-        policy: {
-          staleGraceMs: 10 * 60_000,
-          maxObjectsScanned: 5000,
-          maxDelete: 1000,
-          maxBytesScanned: 500 * 1024 * 1024
-        },
-        warnings: result.warnings ?? []
-      };
-      updateHostedConfig({
-        mirrorCleanupLastSuccessAt: finishedAt,
-        mirrorCleanupLastError: null,
-        mirrorCleanupLastResult: summary
-      });
-      return summary;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      updateHostedConfig({
-        mirrorCleanupLastError: message
-      });
-      throw error;
-    }
-  };
-
-  const cleanMirrorData = async (): Promise<HostedMirrorCleanupSummaryV1> => {
-    const config = ensureHostedConfigured();
-    if (!config.remoteProjectId) {
-      throw new Error("No hosted remote project is configured for this repo yet.");
-    }
-    return await cleanMirrorDataInternal(config.remoteProjectId);
-  };
-
   const deleteMirrorData = async (): Promise<HostedMirrorDeleteResult> => {
     const config = ensureHostedConfigured();
     const remoteProjectId = config.remoteProjectId;
@@ -2287,14 +1715,6 @@ export function createHostedAgentService({
     },
 
     signOut,
-
-    async syncMirror(args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> {
-      return await syncMirror(args);
-    },
-
-    async cleanMirrorData(): Promise<HostedMirrorCleanupSummaryV1> {
-      return await cleanMirrorData();
-    },
 
     async deleteMirrorData(): Promise<HostedMirrorDeleteResult> {
       return await deleteMirrorData();

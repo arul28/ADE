@@ -22,7 +22,8 @@ import type {
   GitRecommendedAction,
   GitStashSummary,
   GitSyncMode,
-  GitUpstreamSyncStatus
+  GitUpstreamSyncStatus,
+  AutoRebaseLaneStatus
 } from "../../../shared/types";
 
 type LaneTextPromptState = {
@@ -36,7 +37,7 @@ type LaneTextPromptState = {
 };
 
 type NextActionHint = {
-  action: GitRecommendedAction;
+  action: GitRecommendedAction | "restack_publish";
   label: string;
   detail: string;
 };
@@ -58,6 +59,9 @@ function formatRelativeTime(ts: string | null): string {
 
 export function LaneGitActionsPane({
   laneId,
+  autoRebaseEnabled,
+  onOpenSettings,
+  onResolveRebaseConflict,
   onSelectFile,
   onSelectCommit,
   selectedPath,
@@ -65,6 +69,9 @@ export function LaneGitActionsPane({
   selectedCommitSha
 }: {
   laneId: string | null;
+  autoRebaseEnabled: boolean;
+  onOpenSettings: () => void;
+  onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
   onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   selectedPath: string | null;
@@ -106,6 +113,8 @@ export function LaneGitActionsPane({
   const [pushDropdownOpen, setPushDropdownOpen] = useState(false);
   const [moreDropdownOpen, setMoreDropdownOpen] = useState(false);
   const [showStashes, setShowStashes] = useState(true);
+  const [amendCommit, setAmendCommit] = useState(false);
+  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
   const pullDropdownRef = useRef<HTMLDivElement>(null);
   const pushDropdownRef = useRef<HTMLDivElement>(null);
   const moreDropdownRef = useRef<HTMLDivElement>(null);
@@ -187,17 +196,22 @@ export function LaneGitActionsPane({
 
   const refreshGitMeta = async () => {
     if (!laneId) return;
-    try {
-      const [nextStashes, nextCommits, nextSyncStatus] = await Promise.all([
-        window.ade.git.stashList({ laneId }),
-        window.ade.git.listRecentCommits({ laneId, limit: 20 }),
-        window.ade.git.getSyncStatus({ laneId })
-      ]);
-      setStashes(nextStashes);
-      setRecentCommits(nextCommits);
-      setSyncStatus(nextSyncStatus);
-    } catch {
-      // best effort
+    const [stashesResult, commitsResult, syncStatusResult] = await Promise.allSettled([
+      window.ade.git.stashList({ laneId }),
+      window.ade.git.listRecentCommits({ laneId, limit: 20 }),
+      window.ade.git.getSyncStatus({ laneId })
+    ]);
+    if (stashesResult.status === "fulfilled") {
+      setStashes(stashesResult.value);
+    }
+    if (commitsResult.status === "fulfilled") {
+      setRecentCommits(commitsResult.value);
+    }
+    if (syncStatusResult.status === "fulfilled") {
+      setSyncStatus(syncStatusResult.value);
+    } else {
+      // Avoid leaving stale "next action" guidance visible when sync refresh fails.
+      setSyncStatus(null);
     }
   };
 
@@ -212,6 +226,19 @@ export function LaneGitActionsPane({
     await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
     setCommitTimelineKey((prev) => prev + 1);
   };
+
+  const refreshAutoRebaseStatus = useCallback(async () => {
+    if (!laneId) {
+      setAutoRebaseStatus(null);
+      return;
+    }
+    try {
+      const statuses = await window.ade.lanes.listAutoRebaseStatuses();
+      setAutoRebaseStatus(statuses.find((entry) => entry.laneId === laneId) ?? null);
+    } catch {
+      setAutoRebaseStatus(null);
+    }
+  }, [laneId]);
 
   const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
     const lower = rawMessage.toLowerCase();
@@ -231,8 +258,22 @@ export function LaneGitActionsPane({
     setError(null);
     try {
       await fn();
-      await refreshAll();
-      if (actionName === "push" || actionName === "force push" || actionName === "pull" || actionName === "fetch" || actionName === "rebase") {
+      const shouldFetchRemote =
+        actionName === "pull" ||
+        actionName === "fetch" ||
+        actionName === "push" ||
+        actionName === "force push" ||
+        actionName === "rebase" ||
+        actionName === "restack + publish";
+      await refreshAll({ fetchRemote: shouldFetchRemote });
+      if (
+        actionName === "push" ||
+        actionName === "force push" ||
+        actionName === "pull" ||
+        actionName === "fetch" ||
+        actionName === "rebase" ||
+        actionName === "restack + publish"
+      ) {
         setForcePushSuggested(false);
       }
       setNotice(`${actionName} completed`);
@@ -260,9 +301,47 @@ export function LaneGitActionsPane({
     setPullDropdownOpen(false);
     setPushDropdownOpen(false);
     setMoreDropdownOpen(false);
+    setAmendCommit(false);
+    setAutoRebaseStatus(null);
     if (!laneId) return;
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [laneId, lane?.branchRef]);
+    void refreshAutoRebaseStatus();
+  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus]);
+
+  useEffect(() => {
+    if (!laneId) return;
+    const refreshSyncStatus = () => {
+      void window.ade.git
+        .getSyncStatus({ laneId })
+        .then((nextStatus) => setSyncStatus(nextStatus))
+        .catch(() => setSyncStatus(null));
+      void refreshLanes().catch(() => {});
+    };
+    const intervalId = window.setInterval(refreshSyncStatus, 15_000);
+    const onFocus = () => refreshSyncStatus();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshSyncStatus();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [laneId, refreshLanes]);
+
+  useEffect(() => {
+    const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
+      if (event.type !== "auto-rebase-updated") return;
+      if (!laneId) {
+        setAutoRebaseStatus(null);
+        return;
+      }
+      setAutoRebaseStatus(event.statuses.find((entry) => entry.laneId === laneId) ?? null);
+    });
+    return unsubscribe;
+  }, [laneId]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -308,8 +387,72 @@ export function LaneGitActionsPane({
     });
   };
 
+  const runPull = (mode: GitSyncMode) => {
+    if (!laneId) return;
+    setPullDropdownOpen(false);
+    runAction("pull", async () => {
+      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }).catch(() => null);
+      if (latestSyncStatus) setSyncStatus(latestSyncStatus);
+      const targetBaseRef = latestSyncStatus?.hasUpstream && latestSyncStatus.upstreamRef
+        ? latestSyncStatus.upstreamRef
+        : (lane?.baseRef ?? undefined);
+      await window.ade.git.sync({ laneId, mode, baseRef: targetBaseRef });
+    });
+  };
+
+  const runRestackAndPublishFlow = (confirmPublish = true) => {
+    if (!laneId) return;
+    runAction("restack + publish", async () => {
+      const result = await window.ade.lanes.restack({ laneId, recursive: true });
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      await window.ade.git.fetch({ laneId }).catch(() => {});
+      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId });
+      setSyncStatus(latestSyncStatus);
+
+      if (!latestSyncStatus.hasUpstream) {
+        if (confirmPublish) {
+          const ok = window.confirm(`Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`);
+          if (!ok) throw new Error("__ade_cancelled__");
+        }
+        await window.ade.git.push({ laneId });
+        return;
+      }
+
+      if (latestSyncStatus.diverged && latestSyncStatus.ahead > 0) {
+        if (confirmPublish) {
+          const ok = window.confirm(
+            `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead). Force push with lease now?`
+          );
+          if (!ok) throw new Error("__ade_cancelled__");
+        }
+        await window.ade.git.push({ laneId, forceWithLease: true });
+        return;
+      }
+
+      if (latestSyncStatus.ahead > 0) {
+        if (confirmPublish) {
+          const ok = window.confirm(
+            `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`
+          );
+          if (!ok) throw new Error("__ade_cancelled__");
+        }
+        await window.ade.git.push({ laneId });
+      }
+    });
+  };
+
   const nextActionHint = useMemo<NextActionHint | null>(() => {
     if (!laneId) return null;
+    if (lane?.parentLaneId && lane.status.behind > 0) {
+      return {
+        action: "restack_publish",
+        label: "Restack + Publish",
+        detail: `Behind parent by ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"}. Rebase on parent, then publish rewritten history.`
+      };
+    }
     if (forcePushSuggested) {
       return {
         action: "force_push_lease",
@@ -321,23 +464,23 @@ export function LaneGitActionsPane({
     if (!syncStatus.hasUpstream) {
       return {
         action: "push",
-        label: "Push",
-        detail: "No upstream branch is configured yet. Push to publish this lane."
+        label: "Publish lane",
+        detail: "No remote branch exists yet. Push once to publish this lane."
       };
     }
     if (syncStatus.recommendedAction === "push") {
       return {
         action: "push",
         label: "Push",
-        detail: `${syncStatus.ahead} local commit${syncStatus.ahead === 1 ? "" : "s"} ready to publish.`
+        detail: `${syncStatus.ahead} commit${syncStatus.ahead === 1 ? "" : "s"} ready to push to remote.`
       };
     }
     if (syncStatus.recommendedAction === "pull") {
       if (syncStatus.diverged) {
         return {
           action: "pull",
-          label: "Pull",
-          detail: "Branch has diverged from upstream. Pull (rebase) first, or use force push if you intentionally rewrote history."
+          label: "Resolve divergence",
+          detail: "Local and remote both changed. Pull (rebase) keeps remote commits; Force Push (lease) publishes your rewritten local history."
         };
       }
       return {
@@ -347,11 +490,15 @@ export function LaneGitActionsPane({
       };
     }
     return null;
-  }, [forcePushSuggested, laneId, syncStatus]);
+  }, [forcePushSuggested, lane, laneId, syncStatus]);
 
+  const divergedSync = Boolean(syncStatus?.diverged);
   const pullHighlighted = nextActionHint?.action === "pull";
-  const pushHighlighted = nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease";
-  const forcePushHighlighted = nextActionHint?.action === "force_push_lease";
+  const pushHighlighted = nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease" || divergedSync;
+  const forcePushHighlighted = nextActionHint?.action === "force_push_lease" || divergedSync;
+  const restackPublishHighlighted = nextActionHint?.action === "restack_publish";
+  const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane (first push)" : "Push to remote";
+  const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
 
   const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
@@ -411,7 +558,19 @@ export function LaneGitActionsPane({
               ) : (
                 <>{originLabel} · </>
               )}
-              {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}
+              <span title={`Compared to base ${lane.baseRef}`}>base {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}</span>
+              {syncStatus ? (
+                <>
+                  {" · "}
+                  {syncStatus.hasUpstream ? (
+                    <span title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}>
+                      remote {"\u2191"}{syncStatus.ahead} {"\u2193"}{syncStatus.behind}
+                    </span>
+                  ) : (
+                    <span>remote unpublished</span>
+                  )}
+                </>
+              ) : null}
             </span>
           ) : null}
 
@@ -434,8 +593,7 @@ export function LaneGitActionsPane({
                 disabled={!laneId || busyAction != null}
                 onClick={() => {
                   if (!laneId) return;
-                  setPullDropdownOpen(false);
-                  runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: syncMode }); });
+                  runPull(syncMode);
                 }}
                 title={`Pull (${syncMode})`}
               >
@@ -455,7 +613,10 @@ export function LaneGitActionsPane({
                 <button
                   type="button"
                   className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", syncMode === "merge" && "text-accent")}
-                  onClick={() => { setSyncMode("merge"); setPullDropdownOpen(false); if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: "merge" }); }); }}
+                  onClick={() => {
+                    setSyncMode("merge");
+                    if (laneId) runPull("merge");
+                  }}
                 >
                   {syncMode === "merge" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
                   <div>
@@ -465,7 +626,10 @@ export function LaneGitActionsPane({
                 <button
                   type="button"
                   className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", syncMode === "rebase" && "text-accent")}
-                  onClick={() => { setSyncMode("rebase"); setPullDropdownOpen(false); if (laneId) runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: "rebase" }); }); }}
+                  onClick={() => {
+                    setSyncMode("rebase");
+                    if (laneId) runPull("rebase");
+                  }}
                 >
                   {syncMode === "rebase" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
                   <div>
@@ -496,7 +660,7 @@ export function LaneGitActionsPane({
                 )}
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(false)}
-                title="Push"
+                title={pushButtonTitle}
               >
                 <Upload className="h-3 w-3" />
               </Button>
@@ -522,7 +686,7 @@ export function LaneGitActionsPane({
                   onClick={() => runPush(false)}
                 >
                   <span className="w-3 shrink-0" />
-                  <div className="font-medium">Push</div>
+                  <div className="font-medium">{syncStatus?.hasUpstream === false ? "Publish lane" : "Push updates"}</div>
                 </button>
                 <button
                   type="button"
@@ -559,6 +723,18 @@ export function LaneGitActionsPane({
               }}
             >
               <Layers3 className="h-3 w-3" />
+            </Button>
+          ) : null}
+          {lane?.parentLaneId ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn("h-6 px-1.5 text-[11px]", restackPublishHighlighted && "ring-2 ring-amber-500/60 bg-amber-500/10 text-amber-800")}
+              title="Restack onto parent, then publish with confirmation"
+              disabled={!laneId || busyAction != null}
+              onClick={() => runRestackAndPublishFlow(true)}
+            >
+              Sync
             </Button>
           ) : null}
 
@@ -654,29 +830,41 @@ export function LaneGitActionsPane({
             onChange={(e) => setCommitMessage(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                if (laneId && commitMessage.trim() && hasStaged) {
-                  runAction("commit", async () => {
-                    await window.ade.git.commit({ laneId, message: commitMessage.trim() });
+                if (laneId && commitMessage.trim() && (hasStaged || amendCommit)) {
+                  runAction(amendCommit ? "amend commit" : "commit", async () => {
+                    await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
                     setCommitMessage("");
+                    setAmendCommit(false);
                   });
                 }
               }
             }}
           />
           <Button
+            variant="outline"
+            size="sm"
+            className={cn("h-6 px-1.5 text-[11px]", amendCommit && "bg-amber-500/10 border-amber-500/40 text-amber-800")}
+            title="Amend the latest commit using this message"
+            disabled={busyAction != null}
+            onClick={() => setAmendCommit((prev) => !prev)}
+          >
+            Amend
+          </Button>
+          <Button
             variant="primary"
             size="sm"
             className="h-6 px-1.5 text-[11px]"
-            disabled={!commitMessage.trim() || !hasStaged || busyAction != null}
+            disabled={!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null}
             onClick={() => {
               if (laneId)
-                runAction("commit", async () => {
-                  await window.ade.git.commit({ laneId, message: commitMessage.trim() });
+                runAction(amendCommit ? "amend commit" : "commit", async () => {
+                  await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
                   setCommitMessage("");
+                  setAmendCommit(false);
                 });
             }}
           >
-            Commit
+            {amendCommit ? "Amend" : "Commit"}
           </Button>
         </div>
       </div>
@@ -684,9 +872,11 @@ export function LaneGitActionsPane({
       {nextActionHint ? (
         <div className={cn(
           "shrink-0 border-b border-border/15 px-2 py-1 text-[10px] flex items-center gap-2",
-          nextActionHint.action === "pull" && "bg-sky-500/8 text-sky-700",
+          nextActionHint.action === "restack_publish" && "bg-amber-500/12 text-amber-800",
+          nextActionHint.action === "pull" && !divergedSync && "bg-sky-500/8 text-sky-700",
           nextActionHint.action === "push" && "bg-emerald-500/8 text-emerald-700",
-          nextActionHint.action === "force_push_lease" && "bg-amber-500/12 text-amber-800"
+          nextActionHint.action === "force_push_lease" && "bg-amber-500/12 text-amber-800",
+          divergedSync && "bg-amber-500/12 text-amber-800"
         )}>
           <span className="font-semibold uppercase tracking-wide">Next: {nextActionHint.label}</span>
           <span className="truncate text-muted-fg">{nextActionHint.detail}</span>
@@ -698,10 +888,30 @@ export function LaneGitActionsPane({
                 disabled={!laneId || busyAction != null}
                 onClick={() => {
                   if (!laneId) return;
-                  runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: syncMode }); });
+                  runPull(syncMode);
                 }}
               >
-                Pull now
+                Pull ({syncMode}) now
+              </button>
+            ) : null}
+            {nextActionHint.action === "restack_publish" ? (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                disabled={!laneId || busyAction != null}
+                onClick={() => runRestackAndPublishFlow(true)}
+              >
+                Restack + publish
+              </button>
+            ) : null}
+            {nextActionHint.action === "pull" && divergedSync ? (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                disabled={!laneId || busyAction != null}
+                onClick={() => runPush(true)}
+              >
+                Force push (lease)
               </button>
             ) : null}
             {nextActionHint.action === "push" ? (
@@ -711,7 +921,7 @@ export function LaneGitActionsPane({
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(false)}
               >
-                Push now
+                {syncStatus?.hasUpstream === false ? "Publish now" : "Push now"}
               </button>
             ) : null}
             {nextActionHint.action === "force_push_lease" ? (
@@ -725,6 +935,70 @@ export function LaneGitActionsPane({
               </button>
             ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {nextActionHint?.action === "restack_publish" && !autoRebaseEnabled ? (
+        <div className="shrink-0 border-b border-border/15 bg-sky-500/8 px-2 py-1 text-[10px] text-sky-700">
+          <div className="flex items-center gap-2">
+            <span className="truncate">Auto-rebase is off. Enable it in Settings to auto-sync child lanes when parent/main advances.</span>
+            <button
+              type="button"
+              className="ml-auto rounded px-1.5 py-0.5 text-[10px] border border-sky-500/30 hover:bg-sky-500/15"
+              onClick={onOpenSettings}
+            >
+              Open settings
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {autoRebaseStatus ? (
+        <div
+          className={cn(
+            "shrink-0 border-b border-border/15 px-2 py-1 text-[10px] flex items-center gap-2",
+            autoRebaseStatus.state === "autoRebased" && "bg-emerald-500/8 text-emerald-700",
+            autoRebaseStatus.state === "rebasePending" && "bg-amber-500/12 text-amber-800",
+            autoRebaseStatus.state === "rebaseConflict" && "bg-red-500/12 text-red-200"
+          )}
+        >
+          <span className="font-semibold uppercase tracking-wide">
+            {autoRebaseStatus.state === "autoRebased" ? "Auto rebased" : autoRebaseStatus.state === "rebaseConflict" ? "Auto rebase blocked" : "Auto rebase pending"}
+          </span>
+          <span className="truncate text-muted-fg">
+            {autoRebaseStatus.message ??
+              (autoRebaseStatus.state === "autoRebased"
+                ? "Lane was rebased automatically."
+                : autoRebaseStatus.state === "rebaseConflict"
+                  ? "Conflicts are expected. Resolve manually, then publish."
+                  : "Waiting for manual sync.")}
+          </span>
+          {autoRebaseStatus.state !== "autoRebased" ? (
+            <div className="ml-auto">
+              {autoRebaseStatus.state === "rebaseConflict" ? (
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-[10px] border border-red-500/35 hover:bg-red-500/20"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId);
+                  }}
+                >
+                  Resolve in Conflicts
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => runRestackAndPublishFlow(true)}
+                >
+                  Restack + publish
+                </button>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -896,6 +1170,7 @@ export function LaneGitActionsPane({
               laneId={laneId ?? null}
               selectedSha={selectedCommitSha}
               refreshTrigger={commitTimelineKey}
+              hasUpstream={syncStatus?.hasUpstream ?? null}
               onSelectCommit={(commit) => {
                 onSelectCommit(commit);
               }}

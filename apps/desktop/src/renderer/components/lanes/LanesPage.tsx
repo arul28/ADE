@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Pin, Plus, Search, Terminal, X } from "lucide-react";
+import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Minimize2, Pin, Plus, Search, Terminal, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -20,7 +20,8 @@ import type {
   DeleteLaneArgs,
   GitCommitSummary,
   LaneSummary,
-  RestackSuggestion
+  RestackSuggestion,
+  AutoRebaseLaneStatus
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { revealLabel } from "../../lib/platform";
@@ -183,6 +184,14 @@ const LANES_TILING_TREE: PaneSplit = {
   ]
 };
 
+const GIT_ACTIONS_FULLSCREEN_TREE: PaneSplit = {
+  type: "split",
+  direction: "vertical",
+  children: [
+    { node: { type: "pane", id: "git-actions" }, defaultSize: 100, minSize: 15 }
+  ]
+};
+
 const RESIZE_TARGET_MINIMUM_SIZE = { coarse: 37, fine: 27 } as const;
 
 type LanePaneDetailSelection = {
@@ -262,6 +271,8 @@ export function LanesPage() {
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
   const [restackSuggestions, setRestackSuggestions] = useState<RestackSuggestion[]>([]);
+  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
+  const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [restackBusyLaneId, setRestackBusyLaneId] = useState<string | null>(null);
   const [restackSuggestionError, setRestackSuggestionError] = useState<string | null>(null);
 
@@ -277,12 +288,17 @@ export function LanesPage() {
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
+  const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
   const restackByLaneId = useMemo(
     () => new Map(restackSuggestions.map((s) => [s.laneId, s] as const)),
     [restackSuggestions]
+  );
+  const autoRebaseByLaneId = useMemo(
+    () => new Map(autoRebaseStatuses.map((s) => [s.laneId, s] as const)),
+    [autoRebaseStatuses]
   );
 
   const filteredLanes = useMemo(() => {
@@ -296,6 +312,11 @@ export function LanesPage() {
     const laneIdSet = new Set(filteredLaneIds);
     return restackSuggestions.filter((s) => laneIdSet.has(s.laneId));
   }, [restackSuggestions, filteredLaneIds]);
+  const visibleAutoRebaseNeedsAttention = useMemo(() => {
+    const laneIdSet = new Set(filteredLaneIds);
+    return autoRebaseStatuses.filter((s) => laneIdSet.has(s.laneId) && s.state !== "autoRebased");
+  }, [autoRebaseStatuses, filteredLaneIds]);
+  const showAutoRebaseSettingsHint = !autoRebaseEnabled && (visibleRestackSuggestions.length > 0 || visibleAutoRebaseNeedsAttention.length > 0);
 
   const activeWithPins = useMemo(
     () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
@@ -366,6 +387,26 @@ export function LanesPage() {
     } catch { /* best effort */ }
   }, []);
 
+  const refreshAutoRebaseStatuses = useCallback(async () => {
+    try {
+      const next = await window.ade.lanes.listAutoRebaseStatuses();
+      setAutoRebaseStatuses(next);
+    } catch { /* best effort */ }
+  }, []);
+
+  const refreshAutoRebaseEnabled = useCallback(async () => {
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const enabled =
+        typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean"
+          ? snapshot.effective.git.autoRebaseOnHeadChange
+          : false;
+      setAutoRebaseEnabled(enabled);
+    } catch {
+      setAutoRebaseEnabled(false);
+    }
+  }, []);
+
   const pushConflictChips = useCallback((chips: ConflictChip[]) => {
     if (chips.length === 0) return;
     setConflictChipsByLane((prev) => {
@@ -434,6 +475,36 @@ export function LanesPage() {
     });
     return unsubscribe;
   }, [refreshRestackSuggestions]);
+
+  useEffect(() => {
+    void refreshAutoRebaseStatuses();
+    const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
+      if (event.type !== "auto-rebase-updated") return;
+      setAutoRebaseStatuses(event.statuses);
+    });
+    return unsubscribe;
+  }, [refreshAutoRebaseStatuses]);
+
+  useEffect(() => {
+    void refreshAutoRebaseEnabled();
+  }, [refreshAutoRebaseEnabled]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshAutoRebaseEnabled();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refreshAutoRebaseEnabled();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [refreshAutoRebaseEnabled]);
 
   useEffect(() => {
     return () => {
@@ -507,6 +578,12 @@ export function LanesPage() {
   const kbConfirm = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.confirm", "Enter"), [keybindings]);
 
   useEffect(() => {
+    if (expandedGitActionsLaneId && !lanesById.has(expandedGitActionsLaneId)) {
+      setExpandedGitActionsLaneId(null);
+    }
+  }, [expandedGitActionsLaneId, lanesById]);
+
+  useEffect(() => {
     const isTypingTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
       return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
@@ -517,6 +594,11 @@ export function LanesPage() {
         event.preventDefault();
         const input = document.getElementById("lanes-filter-input");
         if (input instanceof HTMLInputElement) { input.focus(); input.select(); }
+        return;
+      }
+      if (event.key === "Escape" && expandedGitActionsLaneId) {
+        event.preventDefault();
+        setExpandedGitActionsLaneId(null);
         return;
       }
       if (event.key === "Escape" && expandedLaneId) {
@@ -552,7 +634,7 @@ export function LanesPage() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId]);
+  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId, expandedGitActionsLaneId]);
 
   /* ---- Lane management actions ---- */
 
@@ -727,6 +809,16 @@ export function LanesPage() {
     }
   };
 
+  const openAutoRebaseSettings = useCallback(() => {
+    navigate("/settings");
+  }, [navigate]);
+
+  const openRebaseConflictResolver = useCallback((laneId: string, parentLaneId: string | null) => {
+    const search = new URLSearchParams({ tab: "merge-one", laneAId: laneId });
+    if (parentLaneId) search.set("laneBId", parentLaneId);
+    navigate(`/conflicts?${search.toString()}`);
+  }, [navigate]);
+
   /* ---- Detail handlers ---- */
 
   const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged") => {
@@ -777,10 +869,28 @@ export function LanesPage() {
       "git-actions": {
         title: "Git Actions",
         icon: FileCode2,
+        headerActions: laneId ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-5 w-5 p-0"
+            title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpandedLaneId(null);
+              setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
+            }}
+          >
+            {expandedGitActionsLaneId === laneId ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
+          </Button>
+        ) : null,
         bodyClassName: "overflow-hidden",
         children: (
           <LaneGitActionsPane
             laneId={laneId}
+            autoRebaseEnabled={autoRebaseEnabled}
+            onOpenSettings={openAutoRebaseSettings}
+            onResolveRebaseConflict={openRebaseConflictResolver}
             selectedPath={laneDetail.selectedFilePath}
             selectedMode={laneDetail.selectedFileMode}
             selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
@@ -821,7 +931,7 @@ export function LanesPage() {
         children: <LaneInspectorPane laneId={laneId} />
       }
     };
-  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit]);
+  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit, expandedGitActionsLaneId, autoRebaseEnabled, openAutoRebaseSettings, openRebaseConflictResolver]);
 
   /* ---- Render ---- */
 
@@ -994,6 +1104,7 @@ export function LanesPage() {
           const conflictStatus = conflictStatusByLane[lane.id];
           const chips = conflictChipsByLane[lane.id] ?? [];
           const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
+          const autoRebaseStatus = autoRebaseByLaneId.get(lane.id) ?? null;
 
           return (
             <button
@@ -1030,6 +1141,24 @@ export function LanesPage() {
                   RESTACK {restackSuggestion.behindCount}
                 </span>
               ) : null}
+              {autoRebaseStatus?.state === "autoRebased" ? (
+                <span className="rounded-lg bg-emerald-500/12 px-1 text-[10px] text-emerald-700" title={autoRebaseStatus.message ?? "Lane was rebased automatically."}>
+                  AUTO REBASED
+                </span>
+              ) : null}
+              {autoRebaseStatus?.state === "rebasePending" ? (
+                <span className="rounded-lg bg-amber-500/12 px-1 text-[10px] text-amber-800" title={autoRebaseStatus.message ?? "Auto-rebase is pending manual action."}>
+                  REBASE PENDING
+                </span>
+              ) : null}
+              {autoRebaseStatus?.state === "rebaseConflict" ? (
+                <span
+                  className="rounded-lg bg-red-500/12 px-1 text-[10px] text-red-200"
+                  title={autoRebaseStatus.message ?? "Auto-rebase stopped due to conflicts."}
+                >
+                  REBASE CONFLICT{autoRebaseStatus.conflictCount > 0 ? ` ${autoRebaseStatus.conflictCount}` : ""}
+                </span>
+              ) : null}
               {chips.slice(0, 1).map((chip, index) => (
                 <span
                   key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
@@ -1055,15 +1184,16 @@ export function LanesPage() {
                   <Pin className="h-2.5 w-2.5" />
                 </span>
               ) : null}
-              <span
-                className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setExpandedLaneId(lane.id === expandedLaneId ? null : lane.id);
-                }}
-                title="Expand lane fullscreen"
-              >
-                <Maximize2 className="h-2.5 w-2.5" />
+                <span
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setExpandedGitActionsLaneId(null);
+                    setExpandedLaneId(lane.id === expandedLaneId ? null : lane.id);
+                  }}
+                  title="Expand lane fullscreen"
+                >
+                  <Maximize2 className="h-2.5 w-2.5" />
               </span>
               {closable ? (
                 <span
@@ -1089,6 +1219,16 @@ export function LanesPage() {
             <div className="text-xs text-muted-fg/70">Restack suggested</div>
             <div className="text-[11px] text-muted-fg">{visibleRestackSuggestions.length} lane(s) behind parent</div>
           </div>
+          {showAutoRebaseSettingsHint ? (
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/25 bg-sky-500/8 px-2 py-1.5">
+              <div className="text-[11px] text-sky-700">
+                Auto-rebase is off. Enable it in Settings to auto-restack child lanes after parent updates.
+              </div>
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={openAutoRebaseSettings}>
+                Open settings
+              </Button>
+            </div>
+          ) : null}
           <div className="mt-2 space-y-2">
             {visibleRestackSuggestions.slice(0, 3).map((s) => {
               const lane = lanesById.get(s.laneId) ?? null;
@@ -1124,6 +1264,71 @@ export function LanesPage() {
             ) : null}
             {restackSuggestionError ? (
               <div className="rounded-xl bg-red-500/10 p-2 text-[11px] text-red-200">{restackSuggestionError}</div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {showAutoRebaseSettingsHint && visibleRestackSuggestions.length === 0 ? (
+        <div className="border-b border-border/15 bg-sky-500/8 px-2 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/25 bg-card/30 px-2 py-1.5">
+            <div className="text-[11px] text-sky-700">
+              Auto-rebase is off. Enable it in Settings to auto-restack child lanes after parent updates.
+            </div>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={openAutoRebaseSettings}>
+              Open settings
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {visibleAutoRebaseNeedsAttention.length > 0 ? (
+        <div className="border-b border-border/15 bg-amber-500/5 px-2 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-muted-fg/70">Auto-rebase needs attention</div>
+            <div className="text-[11px] text-muted-fg">{visibleAutoRebaseNeedsAttention.length} lane(s)</div>
+          </div>
+          <div className="mt-2 space-y-2">
+            {visibleAutoRebaseNeedsAttention.slice(0, 3).map((status) => {
+              const lane = lanesById.get(status.laneId) ?? null;
+              if (!lane) return null;
+              return (
+                <div key={`auto-rebase:${status.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded-xl bg-card/40 p-2 shadow-card">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
+                      {status.state === "rebaseConflict" ? (
+                        <span className="rounded-lg bg-red-500/12 px-1 text-[10px] text-red-200">conflict</span>
+                      ) : (
+                        <span className="rounded-lg bg-amber-500/12 px-1 text-[10px] text-amber-800">pending</span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-muted-fg">
+                      {status.message ?? "Manual rebase and publish may be required for this lane."}
+                    </div>
+                  </div>
+                  <div className="shrink-0">
+                    {status.state === "rebaseConflict" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => openRebaseConflictResolver(status.laneId, status.parentLaneId ?? lane.parentLaneId ?? null)}
+                      >
+                        Resolve in Conflicts
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="primary" className="h-7 px-2 text-[11px]" onClick={() => void restackNow(status.laneId)}>
+                        <Layers3 className="mr-1 h-3 w-3" />
+                        Restack now
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {visibleAutoRebaseNeedsAttention.length > 3 ? (
+              <div className="text-[11px] text-muted-fg">+ {visibleAutoRebaseNeedsAttention.length - 3} more lanes.</div>
             ) : null}
           </div>
         </div>
@@ -1170,6 +1375,18 @@ export function LanesPage() {
           })}
         </Group>
       )}
+
+      {/* Fullscreen Git Actions pane overlay */}
+      {expandedGitActionsLaneId && lanesById.has(expandedGitActionsLaneId) ? (
+        <div className="fixed inset-0 z-[110] bg-bg flex flex-col">
+          <PaneTilingLayout
+            layoutId={`lanes:git-actions:fullscreen:v1:${expandedGitActionsLaneId}`}
+            tree={GIT_ACTIONS_FULLSCREEN_TREE}
+            panes={getPaneConfigs(expandedGitActionsLaneId)}
+            className="flex-1 min-h-0"
+          />
+        </div>
+      ) : null}
 
       {/* Fullscreen lane overlay */}
       {expandedLaneId && lanesById.has(expandedLaneId) ? (

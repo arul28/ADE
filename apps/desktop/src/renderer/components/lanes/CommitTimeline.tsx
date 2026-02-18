@@ -33,12 +33,14 @@ export function CommitTimeline({
   laneId,
   selectedSha,
   onSelectCommit,
-  refreshTrigger
+  refreshTrigger,
+  hasUpstream
 }: {
   laneId: string | null;
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary) => void;
   refreshTrigger?: number;
+  hasUpstream?: boolean | null;
 }) {
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -125,6 +127,9 @@ export function CommitTimeline({
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Commits</span>
           <span className="text-[10px] text-muted-fg">{loading ? "loading..." : `${commits.length}`}</span>
+          <span className="text-[10px] text-muted-fg/80" title="Blue timeline node means merge commit (multiple parents).">
+            blue dot = merge
+          </span>
         </div>
         <button
           type="button"
@@ -153,6 +158,7 @@ export function CommitTimeline({
               <React.Fragment key={commit.sha}>
                 <button
                   type="button"
+                  title={isMerge ? "Merge commit (multiple parents)." : "Commit"}
                   className={cn(
                     "group relative flex w-full items-start gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors",
                     isSelected ? "bg-accent/10 text-fg" : "text-muted-fg hover:bg-muted/40 hover:text-fg"
@@ -201,9 +207,20 @@ export function CommitTimeline({
                         {commit.shortSha}
                       </span>
                       {isNewest ? <span className="rounded bg-emerald-900/30 border border-emerald-700/60 px-1 text-[9px] text-emerald-300 uppercase tracking-wider">HEAD</span> : null}
-                      {commit.pushed
-                        ? <span className="rounded px-1 text-[9px] bg-sky-500/15 text-sky-600">pushed</span>
-                        : <span className="rounded px-1 text-[9px] bg-amber-500/15 text-amber-700">local</span>}
+                      {isMerge ? <span className="rounded px-1 text-[9px] bg-sky-500/15 text-sky-700">merge</span> : null}
+                      {hasUpstream === false ? (
+                        <span className="rounded px-1 text-[9px] bg-slate-500/15 text-slate-700" title="No upstream branch yet. Push once to publish this lane.">
+                          unpublished
+                        </span>
+                      ) : commit.pushed ? (
+                        <span className="rounded px-1 text-[9px] bg-sky-500/15 text-sky-600" title="This commit exists on the remote branch.">
+                          remote
+                        </span>
+                      ) : (
+                        <span className="rounded px-1 text-[9px] bg-amber-500/15 text-amber-700" title="This commit is local only and will be published on push.">
+                          needs push
+                        </span>
+                      )}
                       <span className="ml-auto text-[10px] text-muted-fg/60 shrink-0">{formatRelative(commit.authoredAt)}</span>
                     </div>
                     <div className="truncate text-fg leading-tight">{commit.subject}</div>

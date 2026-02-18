@@ -37,8 +37,6 @@ type ProviderDraft = {
     clerkOauthRevocationUrl: string;
     clerkOauthUserInfoUrl: string;
     clerkOauthScopes: string;
-    uploadTranscripts: boolean;
-    mirrorExcludePatternsText: string;
   };
   byok: {
     provider: "openai" | "anthropic" | "gemini";
@@ -60,18 +58,6 @@ function asString(value: unknown): string {
 
 function asBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false;
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string");
-}
-
-function toPatternsFromTextarea(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
@@ -109,9 +95,7 @@ function readProviderDraft(snapshot: ProjectConfigSnapshot): ProviderDraft {
       clerkOauthTokenUrl: asString(hosted.clerkOauthTokenUrl),
       clerkOauthRevocationUrl: asString(hosted.clerkOauthRevocationUrl),
       clerkOauthUserInfoUrl: asString(hosted.clerkOauthUserInfoUrl),
-      clerkOauthScopes: asString(hosted.clerkOauthScopes) || "openid profile email offline_access",
-      uploadTranscripts: asBoolean(hosted.uploadTranscripts),
-      mirrorExcludePatternsText: asStringArray(hosted.mirrorExcludePatterns).join("\n")
+      clerkOauthScopes: asString(hosted.clerkOauthScopes) || "openid profile email offline_access"
     },
     byok: {
       provider: (() => {
@@ -295,7 +279,6 @@ export function SettingsPage() {
   const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
   const [hostedBootstrapConfig, setHostedBootstrapConfig] = useState<HostedBootstrapConfig | null>(null);
   const [hostedBusy, setHostedBusy] = useState(false);
-  const [hostedCleanupBusy, setHostedCleanupBusy] = useState(false);
   const [contextGenerateBusy, setContextGenerateBusy] = useState<"codex" | "claude" | null>(null);
   const [showAdvancedHostedFields, setShowAdvancedHostedFields] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
@@ -303,6 +286,8 @@ export function SettingsPage() {
   const [githubBusy, setGithubBusy] = useState(false);
   const [prPollingIntervalDraft, setPrPollingIntervalDraft] = useState("25");
   const [prPollingBusy, setPrPollingBusy] = useState(false);
+  const [autoRebaseDraft, setAutoRebaseDraft] = useState(false);
+  const [autoRebaseBusy, setAutoRebaseBusy] = useState(false);
   const [hostedGithubStatus, setHostedGithubStatus] = useState<HostedGitHubAppStatus | null>(null);
   const [hostedGithubEvents, setHostedGithubEvents] = useState<HostedGitHubEvent[]>([]);
   const [hostedGithubBusy, setHostedGithubBusy] = useState(false);
@@ -334,6 +319,10 @@ export function SettingsPage() {
             typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
           const seconds = localSeconds ?? effectiveSeconds ?? 25;
           setPrPollingIntervalDraft(String(seconds));
+          const localAutoRebase = typeof snapshot.local.git?.autoRebaseOnHeadChange === "boolean" ? snapshot.local.git.autoRebaseOnHeadChange : null;
+          const effectiveAutoRebase =
+            typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean" ? snapshot.effective.git.autoRebaseOnHeadChange : null;
+          setAutoRebaseDraft(localAutoRebase ?? effectiveAutoRebase ?? false);
         }
       })
       .catch((e) => {
@@ -476,6 +465,10 @@ export function SettingsPage() {
     const effectiveSeconds =
       typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
     setPrPollingIntervalDraft(String(localSeconds ?? effectiveSeconds ?? 25));
+    const localAutoRebase = typeof snapshot.local.git?.autoRebaseOnHeadChange === "boolean" ? snapshot.local.git.autoRebaseOnHeadChange : null;
+    const effectiveAutoRebase =
+      typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean" ? snapshot.effective.git.autoRebaseOnHeadChange : null;
+    setAutoRebaseDraft(localAutoRebase ?? effectiveAutoRebase ?? false);
     const [status, bootstrap] = await Promise.all([
       window.ade.hosted.getStatus().catch(() => null),
       window.ade.hosted.getBootstrapConfig().catch(() => null)
@@ -516,9 +509,7 @@ export function SettingsPage() {
           clerkOauthTokenUrl: providerDraft.hosted.clerkOauthTokenUrl.trim(),
           clerkOauthRevocationUrl: providerDraft.hosted.clerkOauthRevocationUrl.trim(),
           clerkOauthUserInfoUrl: providerDraft.hosted.clerkOauthUserInfoUrl.trim(),
-          clerkOauthScopes: providerDraft.hosted.clerkOauthScopes.trim() || "openid profile email offline_access",
-          uploadTranscripts: providerDraft.hosted.uploadTranscripts,
-          mirrorExcludePatterns: toPatternsFromTextarea(providerDraft.hosted.mirrorExcludePatternsText)
+          clerkOauthScopes: providerDraft.hosted.clerkOauthScopes.trim() || "openid profile email offline_access"
         },
         byok: {
           provider: providerDraft.byok.provider,
@@ -591,6 +582,34 @@ export function SettingsPage() {
     }
   };
 
+  const saveAutoRebaseSettings = async () => {
+    setActionError(null);
+    setSaveNotice(null);
+    setAutoRebaseBusy(true);
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const currentGit = isRecord(snapshot.local.git) ? snapshot.local.git : {};
+      const nextGit: Record<string, unknown> = {
+        ...currentGit,
+        autoRebaseOnHeadChange: autoRebaseDraft
+      };
+      const nextLocal = {
+        ...snapshot.local,
+        git: nextGit
+      };
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: nextLocal
+      });
+      await refreshProviderDraftAndHostedState();
+      setSaveNotice("Auto-rebase settings saved to .ade/local.yaml.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAutoRebaseBusy(false);
+    }
+  };
+
   const applyHostedBootstrap = async () => {
     setActionError(null);
     setSaveNotice(null);
@@ -611,16 +630,6 @@ export function SettingsPage() {
     ? hostedStatus.auth.email || hostedStatus.auth.displayName || hostedStatus.auth.userId || "Signed in"
     : "signed out";
   const contextTelemetry = hostedStatus?.contextTelemetry;
-  const mirrorSync = hostedStatus?.mirrorSync;
-  const mirrorCleanup = hostedStatus?.mirrorCleanup;
-  const mirrorStalenessReason = (() => {
-    const last = mirrorSync?.lastSuccessAt;
-    if (!last) return "mirror_not_synced";
-    const ts = Date.parse(last);
-    if (!Number.isFinite(ts)) return "mirror_sync_timestamp_invalid";
-    const ageMs = Math.max(0, Date.now() - ts);
-    return ageMs > 20 * 60_000 ? `mirror_stale ageMs=${ageMs}` : null;
-  })();
 
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-card/60 p-4 backdrop-blur">
@@ -694,7 +703,7 @@ export function SettingsPage() {
           <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
             <div className="text-xs text-muted-fg">Hosted Agent (Clerk + GitHub/Google)</div>
             <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              Hosted mode uploads redacted mirror data and job payloads to ADE cloud. You can authenticate through Clerk with
+              Hosted mode uploads redacted job payloads to ADE cloud. You can authenticate through Clerk with
               GitHub or Google. Repo linking is consent-only in Phase 6; full GitHub repo connection lands in Phase 7.
             </div>
 
@@ -716,7 +725,7 @@ export function SettingsPage() {
                   )
                 }
               />
-              <span>I accept hosted processing and cloud mirror sync for this project.</span>
+              <span>I accept hosted processing for this project.</span>
             </label>
 
             <label className="mt-2 flex items-start gap-2 text-xs">
@@ -738,27 +747,6 @@ export function SettingsPage() {
                 }
               />
               <span>I allow ADE to connect to my repositories for hosted features (connection flow is stubbed in Phase 6).</span>
-            </label>
-
-            <label className="mt-2 flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={providerDraft.hosted.uploadTranscripts}
-                onChange={(e) =>
-                  setProviderDraft((prev) =>
-                    prev
-                      ? {
-                        ...prev,
-                        hosted: {
-                          ...prev.hosted,
-                          uploadTranscripts: e.target.checked
-                        }
-                      }
-                      : prev
-                  )
-                }
-              />
-              Upload transcript logs during hosted mirror sync.
             </label>
 
             <div className="mt-3 rounded border border-border bg-card/30 p-2 text-xs">
@@ -871,70 +859,10 @@ export function SettingsPage() {
               >
                 Sign Out
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={hostedBusy}
-                onClick={() => {
-                  setHostedBusy(true);
-                  setActionError(null);
-                  window.ade.hosted
-                    .syncMirror({ includeTranscripts: providerDraft.hosted.uploadTranscripts })
-                    .then((result) => {
-                      void window.ade.hosted.getStatus().then((status) => setHostedStatus(status)).catch(() => null);
-                      setSaveNotice(
-                        `Mirror sync complete. Uploaded ${result.uploaded} blobs (${result.deduplicated} deduplicated, ${result.excluded} excluded).`
-                      );
-                    })
-                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-                    .finally(() => setHostedBusy(false));
-                }}
-              >
-                Sync Mirror
-              </Button>
               <div className="text-xs text-muted-fg">
                 Auth: {authSummary}
                 {hostedStatus?.auth.expiresAt ? ` · access token exp ${hostedStatus.auth.expiresAt}` : ""}
               </div>
-            </div>
-
-            {hostedStatus?.mirrorSync?.lastResult ? (
-              <div className="mt-3 rounded border border-border bg-card/30 p-2 text-xs">
-                <div className="font-medium text-fg">Mirror Sync Status</div>
-                <div className="mt-1 text-muted-fg">
-                  last success: {hostedStatus.mirrorSync.lastSuccessAt ?? "(none)"} · uploaded {hostedStatus.mirrorSync.lastResult.uploaded} · packs {hostedStatus.mirrorSync.lastResult.packCount}
-                  {hostedStatus.mirrorSync.lastError ? ` · error: ${hostedStatus.mirrorSync.lastError}` : ""}
-                </div>
-                {hostedStatus.mirrorSync.lastResult.warnings?.length ? (
-                  <div className="mt-1 text-muted-fg">warnings: {hostedStatus.mirrorSync.lastResult.warnings.join(" | ")}</div>
-                ) : null}
-              </div>
-            ) : hostedStatus?.mirrorSync?.lastError ? (
-              <div className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
-                Mirror sync error: {hostedStatus.mirrorSync.lastError}
-              </div>
-            ) : null}
-
-            <div className="mt-3">
-              <div className="mb-1 text-xs text-muted-fg">Mirror exclude patterns (one per line)</div>
-              <textarea
-                className="min-h-[90px] w-full rounded border border-border bg-bg px-3 py-2 text-xs"
-                value={providerDraft.hosted.mirrorExcludePatternsText}
-                onChange={(e) =>
-                  setProviderDraft((prev) =>
-                    prev
-                      ? {
-                        ...prev,
-                        hosted: {
-                          ...prev.hosted,
-                          mirrorExcludePatternsText: e.target.value
-                        }
-                      }
-                      : prev
-                  )
-                }
-                placeholder=".env\nsecrets/\n*.pem"
-              />
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1172,49 +1100,8 @@ export function SettingsPage() {
 
         {providerDraft.mode === "hosted" ? (
           <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
-            <div className="text-xs text-muted-fg">Hosted Context Delivery + Mirror Lifecycle</div>
+            <div className="text-xs text-muted-fg">Hosted Context Delivery + Diagnostics</div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                disabled={hostedBusy || providerMode !== "hosted" || !hostedStatus?.auth.signedIn}
-                onClick={() => {
-                  setHostedBusy(true);
-                  setActionError(null);
-                  setSaveNotice(null);
-                  window.ade.hosted
-                    .syncMirror({ includeTranscripts: false })
-                    .then(() => window.ade.hosted.getStatus())
-                    .then((status) => {
-                      setHostedStatus(status);
-                      setSaveNotice("Mirror sync finished.");
-                    })
-                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-                    .finally(() => setHostedBusy(false));
-                }}
-              >
-                {hostedBusy ? "Syncing..." : "Sync Mirror Now"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={hostedCleanupBusy || providerMode !== "hosted" || !hostedStatus?.auth.signedIn}
-                onClick={() => {
-                  setHostedCleanupBusy(true);
-                  setActionError(null);
-                  setSaveNotice(null);
-                  window.ade.hosted
-                    .cleanMirrorData()
-                    .then(() => window.ade.hosted.getStatus())
-                    .then((status) => {
-                      setHostedStatus(status);
-                      setSaveNotice("Mirror cleanup completed.");
-                    })
-                    .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
-                    .finally(() => setHostedCleanupBusy(false));
-                }}
-              >
-                {hostedCleanupBusy ? "Cleaning..." : "Clean Mirror Data"}
-              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -1255,12 +1142,6 @@ export function SettingsPage() {
               </Button>
             </div>
             <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
-              <div>last sync attempt: {mirrorSync?.lastAttemptAt ?? "never"}</div>
-              <div>last sync success: {mirrorSync?.lastSuccessAt ?? "never"}</div>
-              <div>last sync error: {mirrorSync?.lastError ?? "none"}</div>
-              <div>last cleanup attempt: {mirrorCleanup?.lastAttemptAt ?? "never"}</div>
-              <div>last cleanup success: {mirrorCleanup?.lastSuccessAt ?? "never"}</div>
-              <div>last cleanup error: {mirrorCleanup?.lastError ?? "none"}</div>
               <div>context fallback count: {contextTelemetry?.inlineFallbackCount ?? 0}</div>
               <div>insufficient-context job count: {contextTelemetry?.insufficientContextJobCount ?? 0}</div>
               <div>narrative timeout count: {contextTelemetry?.narrativeTimeoutCount ?? 0}</div>
@@ -1272,7 +1153,6 @@ export function SettingsPage() {
                   ? `${contextTelemetry.lastNarrativeTiming.totalDurationMs}ms total (queue ${contextTelemetry.lastNarrativeTiming.queueWaitMs}ms, poll ${contextTelemetry.lastNarrativeTiming.pollDurationMs}ms, artifact ${contextTelemetry.lastNarrativeTiming.artifactFetchMs}ms)`
                   : "none"}
               </div>
-              <div>staleness reason: {mirrorStalenessReason ?? "none"}</div>
               <div>
                 context operations:
                 {" "}
@@ -1609,6 +1489,48 @@ export function SettingsPage() {
             </div>
             <div className="mt-1 text-[11px] text-muted-fg">
               Controls background PR refresh and notifications. Default is 25s; higher values reduce GitHub API usage.
+            </div>
+          </div>
+          <div className="mt-3 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Lane Auto-Rebase</div>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={autoRebaseDraft}
+                onChange={(e) => setAutoRebaseDraft(e.target.checked)}
+              />
+              <span>Automatically rebase dependent lanes when a parent/main lane advances.</span>
+            </label>
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <Button size="sm" disabled={autoRebaseBusy} onClick={() => void saveAutoRebaseSettings()}>
+                {autoRebaseBusy ? "Saving..." : "Save"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={autoRebaseBusy}
+                onClick={() => {
+                  window.ade.projectConfig
+                    .get()
+                    .then((snapshot) => {
+                      const localAutoRebase =
+                        typeof snapshot.local.git?.autoRebaseOnHeadChange === "boolean"
+                          ? snapshot.local.git.autoRebaseOnHeadChange
+                          : null;
+                      const effectiveAutoRebase =
+                        typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean"
+                          ? snapshot.effective.git.autoRebaseOnHeadChange
+                          : null;
+                      setAutoRebaseDraft(localAutoRebase ?? effectiveAutoRebase ?? false);
+                    })
+                    .catch(() => {});
+                }}
+              >
+                Reset
+              </Button>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-fg">
+              If conflicts are predicted, ADE will not rewrite that lane and will mark it for manual rebase.
             </div>
           </div>
         </div>

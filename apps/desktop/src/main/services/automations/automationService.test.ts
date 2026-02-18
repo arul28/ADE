@@ -195,58 +195,6 @@ describe("automationService integration", () => {
     expect(String(mapped[0]?.output ?? "")).toContain("hello");
   });
 
-  it("skips sync-to-mirror when hosted mode isn't enabled", async () => {
-    const { db, raw } = createInMemoryAdeDb();
-    const logger = createLogger();
-    const projectId = "proj";
-    const projectRoot = "/tmp";
-
-    const rule = {
-      id: "mirror",
-      name: "Mirror",
-      trigger: { type: "manual" as const },
-      actions: [{ type: "sync-to-mirror" as const }],
-      enabled: true
-    };
-
-    const projectConfigService = {
-      get: () => ({
-        trust: { requiresSharedTrust: false },
-        effective: { automations: [rule], providerMode: "guest" }
-      }),
-      save: () => {
-        throw new Error("not used");
-      }
-    } as any;
-
-    const laneService = {
-      list: async () => [],
-      getLaneWorktreePath: () => projectRoot,
-      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
-    } as any;
-
-    const packService = { refreshLanePack: async () => {}, refreshProjectPack: async () => {} } as any;
-
-    const service = createAutomationService({
-      db: db as any,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      projectConfigService,
-      packService
-    });
-
-    const run = await service.triggerManually({ id: "mirror" });
-    expect(run.status).toBe("succeeded");
-
-    const actionRows = raw.exec("select status, error_message, output from automation_action_results");
-    const mapped = mapExecRows(actionRows);
-    expect(String(mapped[0]?.status)).toBe("skipped");
-    expect(String(mapped[0]?.error_message ?? "")).toBe("");
-    expect(String(mapped[0]?.output ?? "")).toContain("Hosted mode is not enabled");
-  });
-
   it("blocks execution when shared config trust is required", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();

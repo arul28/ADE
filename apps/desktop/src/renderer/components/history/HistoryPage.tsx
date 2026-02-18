@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Activity, ArrowRight, Calendar, Clock, FileText, Hash, RefreshCw, Tag } from "lucide-react";
+import { Activity, ArrowRight, Calendar, Clock, Download, FileText, Hash, RefreshCw, Tag } from "lucide-react";
 import type { OperationRecord } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -95,6 +95,9 @@ export function HistoryPage() {
   const [statusFilter, setStatusFilter] = useState<OperationRecord["status"] | "all">("all");
   const [kindFilter, setKindFilter] = useState<string>("all");
   const [selectedOperationId, setSelectedOperationId] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState<"csv" | "json" | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const operationIdParam = params.get("operationId");
   const laneIdParam = params.get("laneId");
@@ -128,6 +131,30 @@ export function HistoryPage() {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const exportOperations = async (format: "csv" | "json") => {
+    setExportBusy(format);
+    setExportError(null);
+    setExportNotice(null);
+    try {
+      const result = await window.ade.history.exportOperations({
+        laneId: laneFilter === "all" ? undefined : laneFilter,
+        kind: kindFilter === "all" ? undefined : kindFilter,
+        status: statusFilter,
+        format,
+        limit: 1000
+      });
+      if (result.cancelled) {
+        setExportNotice("Export canceled.");
+        return;
+      }
+      setExportNotice(`Exported ${result.rowCount} event(s) to ${result.savedPath}`);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExportBusy(null);
     }
   };
 
@@ -215,6 +242,12 @@ export function HistoryPage() {
           </select>
         </label>
       </div>
+      {exportError ? (
+        <div className="border-b border-border/15 px-4 py-2 text-[11px] text-red-300">{exportError}</div>
+      ) : null}
+      {exportNotice ? (
+        <div className="border-b border-border/15 px-4 py-2 text-[11px] text-muted-fg">{exportNotice}</div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
         {filtered.length === 0 ? (
@@ -384,9 +417,33 @@ export function HistoryPage() {
       icon: Clock,
       meta: <span className="text-xs text-muted-fg">{loading ? "Loading\u2026" : `${filtered.length} events`}</span>,
       headerActions: (
-        <Button variant="ghost" size="sm" onClick={() => refresh().catch(() => {})}>
-          <RefreshCw className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="Refresh" onClick={() => refresh().catch(() => {})}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[10px]"
+            title="Export filtered events as JSON"
+            disabled={exportBusy !== null}
+            onClick={() => void exportOperations("json")}
+          >
+            <Download className="mr-1 h-3 w-3" />
+            {exportBusy === "json" ? "JSON..." : "JSON"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[10px]"
+            title="Export filtered events as CSV"
+            disabled={exportBusy !== null}
+            onClick={() => void exportOperations("csv")}
+          >
+            <Download className="mr-1 h-3 w-3" />
+            {exportBusy === "csv" ? "CSV..." : "CSV"}
+          </Button>
+        </div>
       ),
       bodyClassName: "flex flex-col",
       children: timelineContent

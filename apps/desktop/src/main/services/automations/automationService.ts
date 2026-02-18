@@ -405,38 +405,6 @@ export function createAutomationService({
       return { status: "succeeded" };
     }
 
-    if (action.type === "sync-to-mirror") {
-      if (!isHostedEnabled()) {
-        return { status: "skipped", output: "Hosted mode is not enabled; skipping mirror sync." };
-      }
-      if (!hostedAgentService) throw new Error("Hosted agent service unavailable");
-
-      const timeoutMs = Math.max(1000, action.timeoutMs ?? 5 * 60_000);
-      const res = await Promise.race([
-        hostedAgentService.syncMirror({
-          ...(trigger.laneId ? { laneId: trigger.laneId } : {}),
-          includeTranscripts: false
-        }),
-        new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`Mirror sync timed out after ${timeoutMs}ms`)), timeoutMs))
-      ]);
-
-      return {
-        status: "succeeded",
-        output: [
-          `remoteProjectId: ${res.remoteProjectId}`,
-          `lanesSynced: ${(res.lanesSynced ?? []).length}`,
-          `packs: ${res.packCount}`,
-          `uploaded: ${res.uploaded}`,
-          `deduplicated: ${res.deduplicated}`,
-          `excluded: ${res.excluded}`,
-          `syncedAt: ${res.syncedAt}`,
-          `warnings: ${(res.warnings ?? []).join(" | ") || "none"}`,
-          `cleanupDeleted: ${res.cleanup?.deletedBlobs ?? 0}`,
-          `cleanupReclaimedBytes: ${res.cleanup?.reclaimedBytes ?? 0}`
-        ].join("\n")
-      };
-    }
-
     if (action.type === "run-tests") {
       const suiteId = (action.suiteId ?? "").trim();
       if (!suiteId) throw new Error("run-tests requires suiteId");

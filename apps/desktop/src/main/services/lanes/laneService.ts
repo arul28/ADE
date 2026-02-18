@@ -716,6 +716,7 @@ export function createLaneService({
 
     async restack(args: RestackArgs): Promise<RestackResult> {
       const recursive = args.recursive ?? true;
+      const reason = typeof args.reason === "string" && args.reason.trim().length ? args.reason.trim() : "restack";
       const target = getLaneRow(args.laneId);
       if (!target) throw new Error(`Lane not found: ${args.laneId}`);
       if (!target.parent_lane_id) {
@@ -771,7 +772,7 @@ export function createLaneService({
           kind: "lane_restack",
           preHeadSha,
           metadata: {
-            reason: "restack",
+            reason,
             parentLaneId: parent.id,
             parentBranchRef: parent.branch_ref,
             parentHeadSha: parentHead,
@@ -793,7 +794,7 @@ export function createLaneService({
             try {
               onHeadChanged({
                 laneId: lane.id,
-                reason: "restack",
+                reason,
                 preHeadSha,
                 postHeadSha
               });

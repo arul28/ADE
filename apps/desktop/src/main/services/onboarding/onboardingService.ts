@@ -187,27 +187,12 @@ function buildSuggestedConfig(args: {
       actions: [
         { type: "predict-conflicts" }
       ]
-    },
-    {
-      id: "hourly-mirror-sync",
-      name: "Hourly mirror sync (hosted)",
-      enabled: false,
-      trigger: { type: "schedule", cron: "0 * * * *" },
-      actions: [
-        { type: "sync-to-mirror", condition: "hosted-enabled" }
-      ]
     }
   ];
 
   out.providers = {
     hosted: {
-      contextDeliveryMode: "auto",
-      mirrorCleanupPolicy: {
-        staleGraceMs: 600000,
-        maxObjectsScanned: 5000,
-        maxDelete: 1000,
-        maxBytesScanned: 524288000
-      }
+      contextDeliveryMode: "auto"
     },
     contextTools: {
       generators: {

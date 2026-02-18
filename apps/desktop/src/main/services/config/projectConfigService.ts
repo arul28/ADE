@@ -120,7 +120,6 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const typeRaw = asString(value.type)?.trim() ?? "";
   const type: AutomationActionType | null =
     typeRaw === "update-packs" ||
-    typeRaw === "sync-to-mirror" ||
     typeRaw === "predict-conflicts" ||
     typeRaw === "run-tests" ||
     typeRaw === "run-command"
@@ -324,6 +323,15 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
         }
       : undefined;
 
+  const git =
+    isRecord(value.git) && (asBool(value.git.autoRebaseOnHeadChange) != null)
+      ? {
+          ...(asBool(value.git.autoRebaseOnHeadChange) != null
+            ? { autoRebaseOnHeadChange: asBool(value.git.autoRebaseOnHeadChange) }
+            : {})
+        }
+      : undefined;
+
   return {
     version,
     processes,
@@ -333,6 +341,7 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     automations,
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
+    ...(git ? { git } : {}),
     ...(isRecord(value.providers) ? { providers: value.providers } : {})
   };
 }
@@ -369,6 +378,7 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     automations: config.automations ?? [],
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
+    ...(config.git ? { git: config.git } : {}),
     ...(config.providers ? { providers: config.providers } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
@@ -541,6 +551,13 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       }
     : undefined;
 
+  const mergedGit = shared.git || local.git
+    ? {
+        ...(shared.git ?? {}),
+        ...(local.git ?? {})
+      }
+    : undefined;
+
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
   const modeRaw = typeof mergedProviders?.mode === "string" ? mergedProviders.mode : undefined;
@@ -557,6 +574,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(environments.length ? { environments } : {}),
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
+    git: {
+      autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false
+    },
     ...(mergedProviders ? { providers: mergedProviders } : {})
   };
 }
@@ -843,7 +863,6 @@ function validateEffectiveConfig(
       if (
         type !== "update-packs" &&
         type !== "predict-conflicts" &&
-        type !== "sync-to-mirror" &&
         type !== "run-tests" &&
         type !== "run-command"
       ) {

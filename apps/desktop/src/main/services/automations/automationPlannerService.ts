@@ -232,12 +232,6 @@ function buildPlannerSchema(): Record<string, unknown> {
             {
               type: "object",
               additionalProperties: false,
-              properties: { type: { const: "sync-to-mirror" }, ...baseActionProps },
-              required: ["type"]
-            },
-            {
-              type: "object",
-              additionalProperties: false,
               properties: { type: { const: "run-tests" }, suite: { type: "string" }, ...baseActionProps },
               required: ["type", "suite"]
             },
@@ -269,7 +263,6 @@ function buildPlannerPrompt(args: {
     "",
     "Policy:",
     "- If user intent implies running commands, prefer built-in actions when possible.",
-    "- If you include sync-to-mirror, guard it with condition 'hosted-enabled'.",
     "- For schedules, output a 5-field cron expression (minute hour day-of-month month day-of-week).",
     "",
     "Available triggers:",
@@ -281,7 +274,6 @@ function buildPlannerPrompt(args: {
     "Available actions:",
     "- update-packs",
     "- predict-conflicts",
-    "- sync-to-mirror (uploads pack data to hosted mirror; add condition hosted-enabled)",
     "- run-tests (requires suite string; use a suite id or name below)",
     "- run-command (requires command string; keep it a single shell command)",
     "",
@@ -535,23 +527,10 @@ function normalizeDraft(args: {
     if (
       type !== "update-packs" &&
       type !== "predict-conflicts" &&
-      type !== "sync-to-mirror" &&
       type !== "run-tests" &&
       type !== "run-command"
     ) {
       issues.push({ level: "error", path: `actions[${idx}].type`, message: `Unknown action type '${safeTrim(action?.type)}'.` });
-      continue;
-    }
-
-    if (type === "sync-to-mirror") {
-      if (enabled && !condition) {
-        issues.push({
-          level: "warning",
-          path: `actions[${idx}].condition`,
-          message: "Recommended: set condition to 'hosted-enabled' so mirror sync only runs when hosted mode is configured."
-        });
-      }
-      normalizedActions.push(base as AutomationAction);
       continue;
     }
 
@@ -645,16 +624,6 @@ function requiredConfirmationsForDraft(draft: AutomationRuleDraftNormalized): Au
   // Confirmations gate execution risk. Disabled rules can be saved without acknowledging
   // these prompts; the confirmations will be required once the rule is enabled.
   if (!draft.enabled) return reqs;
-
-  const syncs = draft.actions.filter((a) => a.type === "sync-to-mirror");
-  if (syncs.length > 0) {
-    reqs.push({
-      key: "confirm.sync-to-mirror",
-      severity: "warning",
-      title: "Confirm hosted mirror upload",
-      message: "This automation uploads pack data to the hosted mirror when hosted mode is enabled."
-    });
-  }
 
   const runCommands = draft.actions.filter((a) => a.type === "run-command");
   if (runCommands.length > 0) {
@@ -947,10 +916,6 @@ export function createAutomationPlannerService({
         const warnings: string[] = [];
         if (action.type === "run-command") {
           warnings.push("Shell command execution is potentially dangerous. Review command and cwd.");
-        }
-        if (action.type === "sync-to-mirror") {
-          warnings.push("Uploads pack data to the hosted mirror (only runs when hosted mode is enabled).");
-          if (!action.condition) warnings.push("Recommended: add condition hosted-enabled to avoid failures in guest/BYOK mode.");
         }
         if (action.type === "run-tests") {
           const suite = suites.find((s) => s.id === action.suiteId);

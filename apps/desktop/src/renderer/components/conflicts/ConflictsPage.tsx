@@ -1,4 +1,6 @@
 import React from "react";
+import { useSearchParams } from "react-router-dom";
+import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { ConflictsProvider, useConflictsState, useConflictsDispatch } from "./state/ConflictsContext";
 import { MergeOneLaneTab } from "./tabs/MergeOneLaneTab";
@@ -11,8 +13,44 @@ const TABS: { id: ActiveTab; label: string }[] = [
 ];
 
 function ConflictsPageInner() {
+  const lanes = useAppStore((s) => s.lanes);
+  const [searchParams] = useSearchParams();
   const { activeTab } = useConflictsState();
   const dispatch = useConflictsDispatch();
+  const appliedDeepLinkRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    const paramsKey = searchParams.toString();
+    if (!paramsKey || lanes.length === 0) return;
+    if (appliedDeepLinkRef.current === paramsKey) return;
+
+    const laneIds = new Set(lanes.map((lane) => lane.id));
+    const tabParam = searchParams.get("tab");
+    const sourceParam = (searchParams.get("laneAId") ?? searchParams.get("sourceLaneId") ?? "").trim();
+    const targetParam = (searchParams.get("laneBId") ?? searchParams.get("targetLaneId") ?? "").trim();
+
+    if (tabParam === "merge-one" || tabParam === "merge-multiple") {
+      dispatch({ type: "SET_ACTIVE_TAB", tab: tabParam });
+    }
+
+    const sourceLaneId = sourceParam && laneIds.has(sourceParam) ? sourceParam : null;
+    const targetLaneId = targetParam && laneIds.has(targetParam) ? targetParam : null;
+
+    if (sourceLaneId) {
+      dispatch({ type: "SET_ACTIVE_TAB", tab: "merge-one" });
+      dispatch({ type: "SET_LANE_LIST_VIEW", view: "by-lane" });
+      dispatch({ type: "SET_VIEW_MODE", mode: "summary" });
+      dispatch({ type: "SET_SELECTED_LANE", laneId: sourceLaneId });
+      dispatch({ type: "SET_PROPOSAL_PEER_LANE_ID", laneId: targetLaneId });
+      if (targetLaneId && targetLaneId !== sourceLaneId) {
+        dispatch({ type: "SET_SELECTED_PAIR", pair: { laneAId: sourceLaneId, laneBId: targetLaneId } });
+      } else {
+        dispatch({ type: "SET_SELECTED_PAIR", pair: null });
+      }
+    }
+
+    appliedDeepLinkRef.current = paramsKey;
+  }, [searchParams, lanes, dispatch]);
 
   return (
     <div className="flex h-full flex-col">

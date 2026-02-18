@@ -36,6 +36,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createCiService } from "./services/ci/ciService";
 import { createRestackSuggestionService } from "./services/lanes/restackSuggestionService";
+import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -148,6 +149,7 @@ app.whenReady().then(async () => {
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null = null;
     let restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null = null;
+    let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -178,6 +180,9 @@ app.whenReady().then(async () => {
       });
       void restackSuggestionService
         ?.onParentHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
+        .catch(() => {});
+      void autoRebaseService
+        ?.onHeadChanged({ laneId, reason: args.reason, preHeadSha: prev, postHeadSha })
         .catch(() => {});
     };
 
@@ -296,6 +301,17 @@ app.whenReady().then(async () => {
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => broadcast(IPC.conflictsEvent, event)
     });
+
+    autoRebaseService = createAutoRebaseService({
+      db,
+      logger,
+      laneService,
+      conflictService,
+      projectConfigService,
+      onEvent: (event) => broadcast(IPC.lanesAutoRebaseEvent, event)
+    });
+    // Prime status stream so renderer can render immediately on load.
+    void autoRebaseService.emit().catch(() => {});
 
     jobEngine = createJobEngine({
       logger,
@@ -503,6 +519,7 @@ app.whenReady().then(async () => {
       onboardingService,
       laneService,
       restackSuggestionService,
+      autoRebaseService,
       sessionService,
       ptyService,
       diffService,

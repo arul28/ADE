@@ -83,6 +83,8 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportHistoryArgs,
+  ExportHistoryResult,
   ExportConfigBundleResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
@@ -94,9 +96,6 @@ import type {
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
   HostedMirrorDeleteResult,
-  HostedMirrorCleanupSummaryV1,
-  HostedMirrorSyncArgs,
-  HostedMirrorSyncResult,
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
@@ -158,6 +157,7 @@ import type {
   RestackArgs,
   RestackResult,
   RestackSuggestion,
+  AutoRebaseLaneStatus,
   RiskMatrixEntry,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
@@ -184,6 +184,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createRestackSuggestionService } from "../lanes/restackSuggestionService";
+import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createDiffService } from "../diffs/diffService";
@@ -225,6 +226,7 @@ export type AppContext = {
   ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
   restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null;
+  autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -253,6 +255,11 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
+}
+
+function escapeCsvCell(value: string | null | undefined): string {
+  const input = value ?? "";
+  return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
 }
 
 export function registerIpc({
@@ -703,6 +710,12 @@ export function registerIpc({
     await ctx.restackSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
   });
 
+  ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (): Promise<AutoRebaseLaneStatus[]> => {
+    const ctx = getCtx();
+    if (!ctx.autoRebaseService) return [];
+    return await ctx.autoRebaseService.listStatuses();
+  });
+
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
     const worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
@@ -1081,9 +1094,9 @@ export function registerIpc({
     return {
       ...base,
       contextManifestRefs: {
-        project: hosted.remoteProjectId ? `${hosted.remoteProjectId}/project/manifest.json` : null,
-        packs: hosted.remoteProjectId ? `${hosted.remoteProjectId}/packs/manifest.json` : null,
-        transcripts: hosted.remoteProjectId ? `${hosted.remoteProjectId}/transcripts/manifest.json` : null
+        project: null,
+        packs: null,
+        transcripts: null
       },
       hostedTiming: hosted.contextTelemetry?.lastNarrativeTiming ?? null,
       hostedTimeoutCount: hosted.contextTelemetry?.narrativeTimeoutCount ?? 0,
@@ -1494,16 +1507,6 @@ export function registerIpc({
     ctx.hostedAgentService.signOut();
   });
 
-  ipcMain.handle(IPC.hostedSyncMirror, async (_event, arg: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
-    const ctx = getCtx();
-    return await ctx.hostedAgentService.syncMirror(arg);
-  });
-
-  ipcMain.handle(IPC.hostedCleanMirrorData, async (): Promise<HostedMirrorCleanupSummaryV1> => {
-    const ctx = getCtx();
-    return await ctx.hostedAgentService.cleanMirrorData();
-  });
-
   ipcMain.handle(IPC.hostedDeleteMirrorData, async (): Promise<HostedMirrorDeleteResult> => {
     const ctx = getCtx();
     return await ctx.hostedAgentService.deleteMirrorData();
@@ -1639,6 +1642,119 @@ export function registerIpc({
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
     const ctx = getCtx();
     return ctx.operationService.list(arg);
+  });
+
+  ipcMain.handle(IPC.historyExportOperations, async (event, arg: ExportHistoryArgs): Promise<ExportHistoryResult> => {
+    const ctx = getCtx();
+    const format: "csv" | "json" = arg?.format === "csv" ? "csv" : "json";
+    const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : undefined;
+    const kind = typeof arg?.kind === "string" && arg.kind.trim().length > 0 ? arg.kind.trim() : undefined;
+    const status = arg?.status;
+
+    const rows = ctx.operationService.list({
+      laneId,
+      kind,
+      limit: typeof arg?.limit === "number" ? arg.limit : 1000
+    });
+    const filteredRows =
+      status && status !== "all"
+        ? rows.filter((row) => row.status === status)
+        : rows;
+
+    const exportedAt = new Date().toISOString();
+    const projectSlug = ctx.project.displayName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const dateStamp = exportedAt.slice(0, 10);
+    const defaultPath = path.join(ctx.project.rootPath, `ade-history-${projectSlug}-${dateStamp}.${format}`);
+
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const result = win
+      ? await dialog.showSaveDialog(win, {
+          title: "Export history",
+          defaultPath,
+          buttonLabel: "Export",
+          filters:
+            format === "csv"
+              ? [{ name: "CSV", extensions: ["csv"] }]
+              : [{ name: "JSON", extensions: ["json"] }]
+        })
+      : await dialog.showSaveDialog({
+          title: "Export history",
+          defaultPath,
+          buttonLabel: "Export",
+          filters:
+            format === "csv"
+              ? [{ name: "CSV", extensions: ["csv"] }]
+              : [{ name: "JSON", extensions: ["json"] }]
+        });
+
+    if (result.canceled || !result.filePath) {
+      return { cancelled: true };
+    }
+
+    let content = "";
+    if (format === "json") {
+      content = `${JSON.stringify(
+        {
+          exportedAt,
+          project: {
+            rootPath: ctx.project.rootPath,
+            displayName: ctx.project.displayName
+          },
+          filters: {
+            laneId: laneId ?? null,
+            kind: kind ?? null,
+            status: status ?? "all"
+          },
+          rowCount: filteredRows.length,
+          rows: filteredRows
+        },
+        null,
+        2
+      )}\n`;
+    } else {
+      const headers = [
+        "id",
+        "laneId",
+        "laneName",
+        "kind",
+        "status",
+        "startedAt",
+        "endedAt",
+        "preHeadSha",
+        "postHeadSha",
+        "metadataJson"
+      ];
+      const lines = [headers.join(",")];
+      for (const row of filteredRows) {
+        lines.push(
+          [
+            row.id,
+            row.laneId,
+            row.laneName,
+            row.kind,
+            row.status,
+            row.startedAt,
+            row.endedAt,
+            row.preHeadSha,
+            row.postHeadSha,
+            row.metadataJson
+          ]
+            .map((value) => escapeCsvCell(value == null ? "" : String(value)))
+            .join(",")
+        );
+      }
+      content = `${lines.join("\n")}\n`;
+    }
+
+    fs.writeFileSync(result.filePath, content, "utf8");
+    return {
+      cancelled: false,
+      savedPath: result.filePath,
+      bytesWritten: Buffer.byteLength(content, "utf8"),
+      exportedAt,
+      rowCount: filteredRows.length,
+      format
+    };
   });
 
   ipcMain.handle(IPC.processesListDefinitions, async (): Promise<ProcessDefinition[]> => {

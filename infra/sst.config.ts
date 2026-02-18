@@ -438,22 +438,6 @@ export default $config({
       auth: protectedAuth
     });
 
-    api.route("POST /projects/{id}/lanes/{lid}/manifest", "packages/functions/src/api/handlers.updateLaneManifest", {
-      auth: protectedAuth
-    });
-
-    api.route("POST /projects/{id}/packs/manifest", "packages/functions/src/api/handlers.updatePacksManifest", {
-      auth: protectedAuth
-    });
-
-    api.route("POST /projects/{id}/transcripts/manifest", "packages/functions/src/api/handlers.updateTranscriptsManifest", {
-      auth: protectedAuth
-    });
-
-    api.route("POST /projects/{id}/mirror/cleanup", "packages/functions/src/api/handlers.cleanMirrorData", {
-      auth: protectedAuth
-    });
-
     api.route("POST /projects/{id}/jobs", "packages/functions/src/api/handlers.submitJob", {
       auth: protectedAuth
     });
