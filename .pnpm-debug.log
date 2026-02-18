@@ -1,0 +1,40 @@
+{
+  "0 debug pnpm:scope": {
+    "selected": 1
+  },
+  "1 info pnpm": {
+    "err": {
+      "name": "Error",
+      "message": "Command failed with ENOENT: -C /Users/arul/ADE/apps/desktop vitest run src/main/services/conflicts/conflictService.test.ts\nspawn -C ENOENT",
+      "code": "ENOENT",
+      "stack": "Error: Command failed with ENOENT: -C /Users/arul/ADE/apps/desktop vitest run src/main/services/conflicts/conflictService.test.ts\nspawn -C ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:283:19)\n    at onErrorNT (node:internal/child_process:476:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)"
+    }
+  },
+  "2 error pnpm": {
+    "errno": -2,
+    "code": "ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL",
+    "syscall": "spawn -C",
+    "path": "-C",
+    "spawnargs": [
+      "/Users/arul/ADE/apps/desktop",
+      "vitest",
+      "run",
+      "src/main/services/conflicts/conflictService.test.ts"
+    ],
+    "originalMessage": "spawn -C ENOENT",
+    "shortMessage": "Command failed with ENOENT: -C /Users/arul/ADE/apps/desktop vitest run src/main/services/conflicts/conflictService.test.ts\nspawn -C ENOENT",
+    "command": "-C /Users/arul/ADE/apps/desktop vitest run src/main/services/conflicts/conflictService.test.ts",
+    "escapedCommand": "-C \"/Users/arul/ADE/apps/desktop\" vitest run \"src/main/services/conflicts/conflictService.test.ts\"",
+    "failed": true,
+    "timedOut": false,
+    "isCanceled": false,
+    "killed": false,
+    "prefix": "/Users/arul/ADE/apps/desktop",
+    "err": {
+      "name": "Error",
+      "message": "Command failed with ENOENT: -C /Users/arul/ADE/apps/desktop vitest run src/main/services/conflicts/conflictService.test.ts\nspawn -C ENOENT",
+      "code": "ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL",
+      "stack": "Error: Command failed with ENOENT: -C /Users/arul/ADE/apps/desktop vitest run src/main/services/conflicts/conflictService.test.ts\nspawn -C ENOENT\n    at ChildProcess._handle.onexit (node:internal/child_process:283:19)\n    at onErrorNT (node:internal/child_process:476:16)\n    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)"
+    }
+  }
+}

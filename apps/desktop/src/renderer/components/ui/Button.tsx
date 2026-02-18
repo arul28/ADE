@@ -17,15 +17,15 @@ export const Button = React.forwardRef<
   ref
 ) {
   const base =
-    "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none";
 
-  const sizes = size === "sm" ? "h-8 px-2.5 text-sm" : "h-9 px-3 text-sm";
+  const sizes = size === "sm" ? "h-8 px-3 text-[13px]" : "h-9 px-4 text-sm";
 
   const variants: Record<Variant, string> = {
-    primary: "bg-accent text-accent-fg hover:brightness-95 active:brightness-90 shadow-sm",
+    primary: "bg-accent text-accent-fg hover:brightness-110 active:brightness-95 shadow-panel ring-1 ring-inset ring-white/10",
     outline:
-      "bg-card/70 text-card-fg border border-border hover:bg-card/90 active:bg-card shadow-[0_1px_0_rgba(0,0,0,0.06)]",
-    ghost: "bg-transparent text-fg hover:bg-muted/70 active:bg-muted/90"
+      "bg-card/60 text-card-fg shadow-panel hover:shadow-card-hover hover:bg-card/80 active:bg-card",
+    ghost: "bg-transparent text-fg hover:bg-muted/50 active:bg-muted/70"
   };
 
   return <button ref={ref} className={cn(base, sizes, variants[variant], className)} {...props} />;

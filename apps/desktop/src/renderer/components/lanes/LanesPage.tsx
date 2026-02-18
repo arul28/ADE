@@ -1,27 +1,41 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Group, Panel, Separator } from "react-resizable-panels";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GripHorizontal, GripVertical, Home, Link2, Pin, Play, Plus, X } from "lucide-react";
-import { LaneDetail } from "./LaneDetail";
-import { LaneInspector } from "./LaneInspector";
+import { Group, Panel } from "react-resizable-panels";
+import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Pin, Play, Plus, Search, Terminal, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
-import type { ConflictChip, ConflictStatus, DeleteLaneArgs, LaneSummary } from "../../../shared/types";
+import { PaneTilingLayout } from "../ui/PaneTilingLayout";
+import { ResizeGutter } from "../ui/ResizeGutter";
+import { LaneStackPane } from "./LaneStackPane";
+import { LaneGitActionsPane } from "./LaneGitActionsPane";
+import { LaneDiffPane } from "./LaneDiffPane";
+import { LaneWorkPane } from "./LaneWorkPane";
+import { LaneInspectorPane } from "./LaneInspectorPane";
+import type {
+  ConflictChip,
+  ConflictStatus,
+  DeleteLaneArgs,
+  GitCommitSummary,
+  LaneSummary,
+  RestackSuggestion
+} from "../../../shared/types";
+import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { revealLabel } from "../../lib/platform";
+import type { PaneSplit } from "../ui/PaneTilingLayout";
+
+/* ---- Utility functions ---- */
 
 function sortLanesForTabs<T extends { laneType: string; createdAt: string }>(lanes: T[]): T[] {
   return [...lanes].sort((a, b) => {
     const aPrimary = a.laneType === "primary" ? 1 : 0;
     const bPrimary = b.laneType === "primary" ? 1 : 0;
     if (aPrimary !== bPrimary) return bPrimary - aPrimary;
-
     const aTs = Date.parse(a.createdAt);
     const bTs = Date.parse(b.createdAt);
-    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) {
-      return bTs - aTs;
-    }
+    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
     return 0;
   });
 }
@@ -30,15 +44,16 @@ function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const childrenByParent = new Map<string, LaneSummary[]>();
   const roots: LaneSummary[] = [];
+  const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
+  const primaryId = primary?.id ?? null;
 
   for (const lane of lanes) {
-    if (!lane.parentLaneId || !laneById.has(lane.parentLaneId)) {
-      roots.push(lane);
-      continue;
-    }
-    const children = childrenByParent.get(lane.parentLaneId) ?? [];
+    if (lane.laneType === "primary") { roots.push(lane); continue; }
+    const effectiveParentId = lane.parentLaneId && laneById.has(lane.parentLaneId) ? lane.parentLaneId : primaryId;
+    if (!effectiveParentId || effectiveParentId === lane.id) { roots.push(lane); continue; }
+    const children = childrenByParent.get(effectiveParentId) ?? [];
     children.push(lane);
-    childrenByParent.set(lane.parentLaneId, children);
+    childrenByParent.set(effectiveParentId, children);
   }
 
   const byCreatedAsc = (a: LaneSummary, b: LaneSummary) => {
@@ -53,8 +68,8 @@ function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
     if (aPrimary !== bPrimary) return bPrimary - aPrimary;
     return byCreatedAsc(a, b);
   });
-  for (const [parentId, children] of childrenByParent.entries()) {
-    childrenByParent.set(parentId, [...children].sort(byCreatedAsc));
+  for (const [, children] of childrenByParent.entries()) {
+    children.sort(byCreatedAsc);
   }
 
   const out: LaneSummary[] = [];
@@ -63,7 +78,6 @@ function sortLanesForStackGraph(lanes: LaneSummary[]): LaneSummary[] {
     for (const child of childrenByParent.get(lane.id) ?? []) visit(child);
   };
   for (const root of roots) visit(root);
-
   const seen = new Set(out.map((lane) => lane.id));
   return out.concat(lanes.filter((lane) => !seen.has(lane.id)).sort(byCreatedAsc));
 }
@@ -84,25 +98,16 @@ function mergeUnique(...lists: string[][]): string[] {
 function toggleFilterToken(query: string, token: string): string {
   const normalizedToken = token.toLowerCase().trim();
   if (!normalizedToken.length) return query;
-
-  const tokens = query
-    .trim()
-    .split(/\s+/)
-    .map((part) => part.toLowerCase())
-    .filter(Boolean);
+  const tokens = query.trim().split(/\s+/).map((part) => part.toLowerCase()).filter(Boolean);
   const next = new Set(tokens);
-  if (next.has(normalizedToken)) {
-    next.delete(normalizedToken);
-  } else {
-    next.add(normalizedToken);
-  }
+  if (next.has(normalizedToken)) next.delete(normalizedToken);
+  else next.add(normalizedToken);
   return Array.from(next).join(" ");
 }
 
 function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, token: string): boolean {
   const normalized = token.trim().toLowerCase();
   if (!normalized.length) return true;
-
   if (normalized.startsWith("is:")) {
     const value = normalized.slice(3);
     if (value === "dirty") return lane.status.dirty;
@@ -113,33 +118,21 @@ function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, token: str
     if (value === "attached") return lane.laneType === "attached";
     return false;
   }
-
-  if (normalized.startsWith("type:")) {
-    const value = normalized.slice(5);
-    return lane.laneType === value;
-  }
+  if (normalized.startsWith("type:")) return lane.laneType === normalized.slice(5);
 
   const indexedText = [
-    lane.name,
-    lane.branchRef,
-    lane.laneType,
-    lane.description ?? "",
+    lane.name, lane.branchRef, lane.laneType, lane.description ?? "",
     lane.worktreePath,
     lane.status.dirty ? "dirty modified changed" : "clean",
     lane.status.ahead > 0 ? `ahead ahead:${lane.status.ahead}` : "ahead:0",
     lane.status.behind > 0 ? `behind behind:${lane.status.behind}` : "behind:0",
     isPinned ? "pinned" : ""
   ].join(" ").toLowerCase();
-
   return indexedText.includes(normalized);
 }
 
 function laneMatchesFilter(lane: LaneSummary, isPinned: boolean, query: string): boolean {
-  const tokens = query
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
   return tokens.every((token) => matchesLaneFilterToken(lane, isPinned, token));
 }
@@ -156,155 +149,91 @@ function chipLabel(kind: ConflictChip["kind"]): string {
   return kind === "high-risk" ? "high risk" : "new overlap";
 }
 
-// --- SVG Stack Graph (Tree-style) ---
+/* ---- Default tiling layout ---- */
 
-const TREE_ROW_H = 28;
-const TREE_INDENT = 22;
-const TREE_LEFT_PAD = 16;
-const TREE_DOT_R = 4;
-
-type TreeNodeLayout = {
-  lane: LaneSummary;
-  row: number;
-  depth: number;
-  dotX: number;
-  dotY: number;
+const LANES_TILING_TREE: PaneSplit = {
+  type: "split",
+  direction: "horizontal",
+  children: [
+    {
+      node: {
+        type: "split",
+        direction: "vertical",
+        children: [
+          { node: { type: "pane", id: "stack" }, defaultSize: 50, minSize: 15 },
+          { node: { type: "pane", id: "diff-viewer" }, defaultSize: 50, minSize: 15 }
+        ]
+      },
+      defaultSize: 28,
+      minSize: 15
+    },
+    {
+      node: {
+        type: "split",
+        direction: "vertical",
+        children: [
+          {
+            node: {
+              type: "split",
+              direction: "horizontal",
+              children: [
+                { node: { type: "pane", id: "git-actions" }, defaultSize: 50, minSize: 20 },
+                { node: { type: "pane", id: "inspector" }, defaultSize: 50, minSize: 20 }
+              ]
+            },
+            defaultSize: 30,
+            minSize: 12
+          },
+          { node: { type: "pane", id: "work" }, defaultSize: 70, minSize: 25 }
+        ]
+      },
+      defaultSize: 72,
+      minSize: 40
+    }
+  ]
 };
 
-function computeTreeLayout(lanes: LaneSummary[]): TreeNodeLayout[] {
-  return lanes.map((lane, idx) => ({
-    lane,
-    row: idx,
-    depth: lane.stackDepth,
-    dotX: TREE_LEFT_PAD + lane.stackDepth * TREE_INDENT,
-    dotY: idx * TREE_ROW_H + TREE_ROW_H / 2
-  }));
-}
+const RESIZE_TARGET_MINIMUM_SIZE = { coarse: 37, fine: 27 } as const;
 
-function StackGraph({
-  lanes,
-  selectedLaneId,
-  onSelect
-}: {
-  lanes: LaneSummary[];
-  selectedLaneId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const layout = React.useMemo(() => computeTreeLayout(lanes), [lanes]);
-  const layoutById = React.useMemo(() => new Map(layout.map((n) => [n.lane.id, n])), [layout]);
+type LanePaneDetailSelection = {
+  selectedFilePath: string | null;
+  selectedFileMode: "staged" | "unstaged" | null;
+  selectedCommit: GitCommitSummary | null;
+};
 
-  const totalHeight = layout.length * TREE_ROW_H + 4;
+type LaneBranchOption = {
+  name: string;
+  isCurrent: boolean;
+  isRemote: boolean;
+  upstream: string | null;
+};
 
-  // Build parent → children map
-  const childrenByParent = React.useMemo(() => {
-    const map = new Map<string, TreeNodeLayout[]>();
-    for (const node of layout) {
-      if (!node.lane.parentLaneId) continue;
-      const arr = map.get(node.lane.parentLaneId) ?? [];
-      arr.push(node);
-      map.set(node.lane.parentLaneId, arr);
-    }
-    return map;
-  }, [layout]);
+function formatBranchCheckoutError(input: string): string {
+  const message = input.trim();
+  const lowered = message.toLowerCase();
+  const dirtyCheckout =
+    lowered.includes("would be overwritten by checkout") ||
+    lowered.includes("please commit your changes or stash them before you switch branches");
+  if (!dirtyCheckout) return message;
 
-  // Build tree-style SVG connectors: vertical line from parent down, horizontal branches to children
-  const connectors: React.ReactNode[] = [];
-  for (const [parentId, children] of childrenByParent) {
-    const parent = layoutById.get(parentId);
-    if (!parent || children.length === 0) continue;
-
-    const lastChild = children[children.length - 1]!;
-
-    // Vertical line from below parent dot to last child's row
-    connectors.push(
-      <line
-        key={`v:${parentId}`}
-        x1={parent.dotX}
-        y1={parent.dotY + TREE_DOT_R + 2}
-        x2={parent.dotX}
-        y2={lastChild.dotY}
-        stroke="currentColor"
-        className="text-muted-fg/35"
-        strokeWidth={1.5}
-      />
-    );
-
-    // Horizontal branch from vertical line to each child's dot
-    for (const child of children) {
-      connectors.push(
-        <line
-          key={`h:${child.lane.id}`}
-          x1={parent.dotX}
-          y1={child.dotY}
-          x2={child.dotX - TREE_DOT_R - 3}
-          y2={child.dotY}
-          stroke="currentColor"
-          className="text-muted-fg/35"
-          strokeWidth={1.5}
-        />
-      );
-    }
+  const touchedFiles = message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("/") && !line.toLowerCase().startsWith("error:"));
+  const fileCount = touchedFiles.length;
+  if (fileCount > 0) {
+    return `Cannot switch branches: you have uncommitted primary-lane changes in ${fileCount} file${fileCount === 1 ? "" : "s"}. Commit, stash, or discard changes first.`;
   }
-
-  return (
-    <div className="h-full overflow-auto">
-      <div className="relative py-1" style={{ height: totalHeight, minWidth: "100%" }}>
-        {/* SVG layer: connectors + dots */}
-        <svg className="absolute inset-0 pointer-events-none" width="100%" height={totalHeight}>
-          {connectors}
-          {layout.map((node) => (
-            <circle
-              key={`dot:${node.lane.id}`}
-              cx={node.dotX}
-              cy={node.dotY}
-              r={TREE_DOT_R}
-              className={cn(
-                node.lane.laneType === "primary"
-                  ? "fill-emerald-500"
-                  : node.lane.status.dirty
-                    ? "fill-amber-500"
-                    : "fill-sky-500"
-              )}
-            />
-          ))}
-        </svg>
-
-        {/* HTML layer: clickable labels */}
-        {layout.map((node) => {
-          const { lane } = node;
-          const isSelected = selectedLaneId === lane.id;
-          return (
-            <button
-              key={`label:${lane.id}`}
-              type="button"
-              className={cn(
-                "absolute flex items-center gap-1.5 rounded px-1.5 text-[11px] transition-colors whitespace-nowrap",
-                isSelected
-                  ? "bg-accent/15 text-fg ring-1 ring-accent/50"
-                  : "text-muted-fg hover:bg-muted/60 hover:text-fg"
-              )}
-              style={{
-                left: node.dotX + TREE_DOT_R + 5,
-                top: node.dotY - (TREE_ROW_H - 6) / 2,
-                height: TREE_ROW_H - 6
-              }}
-              onClick={() => onSelect(lane.id)}
-              title={lane.parentLaneId ? `Child of ${layoutById.get(lane.parentLaneId)?.lane.name ?? "parent"}` : "Root"}
-            >
-              <span className="truncate max-w-[160px]">{lane.name}</span>
-              {(lane.status.ahead > 0 || lane.status.behind > 0) && (
-                <span className="shrink-0 font-mono text-[9px] text-muted-fg/70">
-                  {lane.status.ahead > 0 ? `${lane.status.ahead}↑` : ""}
-                  {lane.status.behind > 0 ? `${lane.status.behind}↓` : ""}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
+  return "Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.";
 }
+
+const EMPTY_LANE_PANE_DETAIL: LanePaneDetailSelection = {
+  selectedFilePath: null,
+  selectedFileMode: null,
+  selectedCommit: null
+};
+
+/* ---- Component ---- */
 
 export function LanesPage() {
   const [params] = useSearchParams();
@@ -315,6 +244,7 @@ export function LanesPage() {
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
   const baseRef = project?.baseRef;
 
@@ -322,17 +252,15 @@ export function LanesPage() {
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
   const [laneFilter, setLaneFilter] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
-
-  // Create lane dialog state
   const [createOpen, setCreateOpen] = useState(false);
   const [createLaneName, setCreateLaneName] = useState("");
   const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
-
-  // Attach lane dialog state
+  const [createAsChild, setCreateAsChild] = useState(false);
+  const [createBaseBranch, setCreateBaseBranch] = useState("");
+  const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
   const [attachPath, setAttachPath] = useState("");
-
   const canCreateLane = Boolean(project?.rootPath);
   const [deleteMode, setDeleteMode] = useState<"worktree" | "local_branch" | "remote_branch">("worktree");
   const [deleteRemoteName, setDeleteRemoteName] = useState("origin");
@@ -343,9 +271,26 @@ export function LanesPage() {
   const [conflictStatusByLane, setConflictStatusByLane] = useState<Record<string, ConflictStatus>>({});
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
+  const [restackSuggestions, setRestackSuggestions] = useState<RestackSuggestion[]>([]);
+  const [restackBusyLaneId, setRestackBusyLaneId] = useState<string | null>(null);
+  const [restackSuggestionError, setRestackSuggestionError] = useState<string | null>(null);
+
+  const [primaryBranches, setPrimaryBranches] = useState<LaneBranchOption[]>([]);
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
+  const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
+  const branchDropdownRef = useRef<HTMLDivElement>(null);
+
+  const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
+  const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
+  const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
 
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  const restackByLaneId = useMemo(
+    () => new Map(restackSuggestions.map((s) => [s.laneId, s] as const)),
+    [restackSuggestions]
+  );
 
   const filteredLanes = useMemo(() => {
     return sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter));
@@ -353,23 +298,72 @@ export function LanesPage() {
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
+  const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
+  const visibleRestackSuggestions = useMemo(() => {
+    const laneIdSet = new Set(filteredLaneIds);
+    return restackSuggestions.filter((s) => laneIdSet.has(s.laneId));
+  }, [restackSuggestions, filteredLaneIds]);
+
+  const activeWithPins = useMemo(
+    () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
+    [activeLaneIds, pinnedLaneIds, lanesById]
+  );
+  const visibleLaneIds = useMemo(
+    () => activeWithPins.filter((id) => lanesById.has(id) && filteredSet.has(id)),
+    [activeWithPins, lanesById, filteredSet]
+  );
+
+  const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
+  const canManageLane = Boolean(managedLane && managedLane.laneType !== "primary");
+  const deletePhrase = managedLane ? `delete ${managedLane.name}` : "";
+
+  const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+
+  useEffect(() => {
+    if (!primaryLane) return;
+    window.ade.git.listBranches({ laneId: primaryLane.id })
+      .then(setPrimaryBranches)
+      .catch(() => {});
+  }, [primaryLane?.id, primaryLane?.branchRef]);
+
+  useEffect(() => {
+    if (!primaryLane) return;
+    const current = primaryBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
+    if (!current || current === primaryLane.branchRef) return;
+    refreshLanes().catch(() => {});
+  }, [primaryBranches, primaryLane?.id, primaryLane?.branchRef, refreshLanes]);
+
+  useEffect(() => {
+    if (!branchDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [branchDropdownOpen]);
+
+  /* ---- Conflict loading ---- */
 
   const loadConflictStatuses = useCallback(async () => {
     try {
       const assessment = await window.ade.conflicts.getBatchAssessment();
       const next: Record<string, ConflictStatus> = {};
-      for (const status of assessment.lanes) {
-        next[status.laneId] = status;
-      }
+      for (const status of assessment.lanes) next[status.laneId] = status;
       setConflictStatusByLane(next);
-    } catch {
-      // best effort: lane rendering should still work without conflict data
-    }
+    } catch { /* best effort */ }
+  }, []);
+
+  const refreshRestackSuggestions = useCallback(async () => {
+    try {
+      const next = await window.ade.lanes.listRestackSuggestions();
+      setRestackSuggestions(next);
+    } catch { /* best effort */ }
   }, []);
 
   const pushConflictChips = useCallback((chips: ConflictChip[]) => {
     if (chips.length === 0) return;
-    const now = Date.now();
     setConflictChipsByLane((prev) => {
       const next: Record<string, ConflictChip[]> = { ...prev };
       for (const chip of chips) {
@@ -379,26 +373,19 @@ export function LanesPage() {
       }
       return next;
     });
-
     for (const chip of chips) {
       const key = `${chip.laneId}:${chip.peerId ?? "base"}:${chip.kind}`;
       const existing = chipTimersRef.current.get(key);
       if (existing) window.clearTimeout(existing);
+      const now = Date.now();
       const timer = window.setTimeout(() => {
         setConflictChipsByLane((prev) => {
           const laneChips = prev[chip.laneId] ?? [];
           const filtered = laneChips.filter((entry) => {
-            return !(
-              entry.kind === chip.kind &&
-              entry.peerId === chip.peerId &&
-              entry.overlapCount === chip.overlapCount
-            );
+            return !(entry.kind === chip.kind && entry.peerId === chip.peerId && entry.overlapCount === chip.overlapCount);
           });
           if (filtered.length === laneChips.length) return prev;
-          return {
-            ...prev,
-            [chip.laneId]: filtered
-          };
+          return { ...prev, [chip.laneId]: filtered };
         });
         chipTimersRef.current.delete(key);
       }, Math.max(8_000, 12_000 - (Date.now() - now)));
@@ -406,13 +393,15 @@ export function LanesPage() {
     }
   }, []);
 
+  /* ---- Effects ---- */
+
   useEffect(() => {
     const laneId = params.get("laneId");
     const sessionId = params.get("sessionId");
     const inspectorTab = params.get("inspectorTab");
     if (laneId) {
       selectLane(laneId);
-      if (inspectorTab === "terminals" || inspectorTab === "packs" || inspectorTab === "stack" || inspectorTab === "conflicts" || inspectorTab === "pr") {
+      if (inspectorTab === "terminals" || inspectorTab === "packs" || inspectorTab === "stack" || inspectorTab === "merge") {
         setLaneInspectorTab(laneId, inspectorTab);
       }
       if (params.get("focus") === "single") {
@@ -422,9 +411,7 @@ export function LanesPage() {
     if (sessionId) focusSession(sessionId);
   }, [params, selectLane, setLaneInspectorTab, focusSession]);
 
-  useEffect(() => {
-    void loadConflictStatuses();
-  }, [loadConflictStatuses, lanes.length]);
+  useEffect(() => { void loadConflictStatuses(); }, [loadConflictStatuses, lanes.length]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -436,47 +423,151 @@ export function LanesPage() {
   }, [loadConflictStatuses, pushConflictChips]);
 
   useEffect(() => {
+    void refreshRestackSuggestions();
+    const unsubscribe = window.ade.lanes.onRestackSuggestionsEvent((event) => {
+      if (event.type !== "restack-suggestions-updated") return;
+      setRestackSuggestions(event.suggestions);
+    });
+    return unsubscribe;
+  }, [refreshRestackSuggestions]);
+
+  useEffect(() => {
     return () => {
-      for (const timer of chipTimersRef.current.values()) {
-        window.clearTimeout(timer);
-      }
+      for (const timer of chipTimersRef.current.values()) window.clearTimeout(timer);
       chipTimersRef.current.clear();
     };
   }, []);
 
   useEffect(() => {
+    if (!laneContextMenu) return;
+    const onPointerDown = () => setLaneContextMenu(null);
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [laneContextMenu]);
+
+  useEffect(() => {
     setPinnedLaneIds((prev) => {
       const next = new Set<string>();
-      for (const id of prev) {
-        if (lanesById.has(id)) next.add(id);
+      for (const laneId of prev) {
+        if (lanesById.has(laneId)) next.add(laneId);
       }
-      return next;
+      return next.size === prev.size ? prev : next;
     });
   }, [lanesById]);
 
   useEffect(() => {
-    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+    const pinned = Array.from(pinnedLaneIds).filter((laneId) => lanesById.has(laneId));
     setActiveLaneIds((prev) => {
-      const validPrev = prev.filter((id) => lanesById.has(id));
+      const validPrev = prev.filter((laneId) => lanesById.has(laneId));
       const selected = selectedLaneId && lanesById.has(selectedLaneId) ? [selectedLaneId] : [];
-      const fallback = selected.length ? [] : validPrev.length ? [validPrev[0]!] : sortedLanes[0]?.id ? [sortedLanes[0]!.id] : [];
+      const fallback = selected.length
+        ? []
+        : validPrev.length
+          ? [validPrev[0]!]
+          : sortedLanes[0]?.id
+            ? [sortedLanes[0]!.id]
+            : [];
       return mergeUnique(selected, fallback, validPrev, pinned);
     });
   }, [selectedLaneId, lanesById, sortedLanes, pinnedLaneIds]);
 
-  const activeWithPins = useMemo(
-    () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
-    [activeLaneIds, pinnedLaneIds, lanesById]
-  );
+  useEffect(() => {
+    setLanePaneDetails((prev) => {
+      const next: Record<string, LanePaneDetailSelection> = {};
+      for (const [laneId, detail] of Object.entries(prev)) {
+        if (lanesById.has(laneId)) next[laneId] = detail;
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [lanesById]);
 
-  const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
-  const visibleLaneIds = useMemo(
-    () => activeWithPins.filter((id) => lanesById.has(id) && filteredSet.has(id)),
-    [activeWithPins, lanesById, filteredSet]
+  /* ---- Keyboard navigation ---- */
+
+  const stepLaneSelection = useCallback((direction: -1 | 1) => {
+    if (filteredLaneIds.length === 0) return;
+    const currentId = selectedLaneId && filteredSet.has(selectedLaneId) ? selectedLaneId : filteredLaneIds[0]!;
+    const currentIdx = filteredLaneIds.indexOf(currentId);
+    const nextIdx = (currentIdx + direction + filteredLaneIds.length) % filteredLaneIds.length;
+    const nextId = filteredLaneIds[nextIdx];
+    if (!nextId) return;
+    const pinned = Array.from(pinnedLaneIds).filter((laneId) => laneId !== nextId && lanesById.has(laneId));
+    setActiveLaneIds(mergeUnique([nextId], pinned));
+    selectLane(nextId);
+  }, [filteredLaneIds, selectedLaneId, filteredSet, pinnedLaneIds, lanesById, selectLane]);
+
+  const kbFilterFocus = useMemo(() => getEffectiveBinding(keybindings, "lanes.filter.focus", "/,Mod+F"), [keybindings]);
+  const kbNext = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.next", "J,ArrowDown"), [keybindings]);
+  const kbPrev = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.prev", "K,ArrowUp"), [keybindings]);
+  const kbNextTab = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.nextTab", "]"), [keybindings]);
+  const kbPrevTab = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.prevTab", "["), [keybindings]);
+  const kbConfirm = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.confirm", "Enter"), [keybindings]);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      const targetIsTyping = isTypingTarget(event.target);
+      if (!targetIsTyping && eventMatchesBinding(event, kbFilterFocus)) {
+        event.preventDefault();
+        const input = document.getElementById("lanes-filter-input");
+        if (input instanceof HTMLInputElement) { input.focus(); input.select(); }
+        return;
+      }
+      if (event.key === "Escape" && expandedLaneId) {
+        event.preventDefault();
+        setExpandedLaneId(null);
+        return;
+      }
+      if (targetIsTyping) {
+        if (event.key === "Escape") {
+          const active = document.activeElement;
+          if (active instanceof HTMLInputElement && active.id === "lanes-filter-input") {
+            event.preventDefault();
+            if (laneFilter.length > 0) setLaneFilter("");
+            else active.blur();
+          }
+        }
+        return;
+      }
+      if (eventMatchesBinding(event, kbPrevTab) || eventMatchesBinding(event, kbNextTab)) {
+        event.preventDefault();
+        stepLaneSelection(eventMatchesBinding(event, kbNextTab) ? 1 : -1);
+        return;
+      }
+      if (eventMatchesBinding(event, kbNext)) { event.preventDefault(); stepLaneSelection(1); return; }
+      if (eventMatchesBinding(event, kbPrev)) { event.preventDefault(); stepLaneSelection(-1); return; }
+      if (eventMatchesBinding(event, kbConfirm) && filteredLaneIds.length > 0) {
+        event.preventDefault();
+        const laneId = selectedLaneId && filteredSet.has(selectedLaneId) ? selectedLaneId : filteredLaneIds[0]!;
+        const pinned = Array.from(pinnedLaneIds).filter((lane) => lane !== laneId && lanesById.has(lane));
+        setActiveLaneIds(mergeUnique([laneId], pinned));
+        selectLane(laneId);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId]);
+
+  /* ---- Lane management actions ---- */
+
+  const activeFilterTokens = useMemo(() => {
+    return new Set(laneFilter.trim().toLowerCase().split(/\s+/).filter(Boolean));
+  }, [laneFilter]);
+
+  const currentPrimaryBranch = useMemo(
+    () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
+    [primaryBranches, primaryLane?.branchRef]
   );
-  const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
-  const canManageLane = Boolean(managedLane && managedLane.laneType !== "primary");
-  const deletePhrase = managedLane ? `delete ${managedLane.name}` : "";
+  const localPrimaryBranches = useMemo(
+    () => primaryBranches.filter((branch) => !branch.isRemote),
+    [primaryBranches]
+  );
+  const remotePrimaryBranches = useMemo(
+    () => primaryBranches.filter((branch) => branch.isRemote),
+    [primaryBranches]
+  );
 
   const runLaneAction = async (fn: () => Promise<void>) => {
     setLaneActionBusy(true);
@@ -492,6 +583,32 @@ export function LanesPage() {
     }
   };
 
+  const checkoutPrimaryBranch = useCallback(async (branchName: string) => {
+    if (!primaryLane) return;
+    if (primaryLane.status.dirty) {
+      setBranchCheckoutError("Cannot switch branches while primary lane has uncommitted changes. Commit, stash, or discard changes first.");
+      return;
+    }
+    setBranchCheckoutBusy(true);
+    setBranchCheckoutError(null);
+    let succeeded = false;
+    try {
+      await window.ade.git.checkoutBranch({ laneId: primaryLane.id, branchName });
+      await refreshLanes();
+      const updated = await window.ade.git.listBranches({ laneId: primaryLane.id });
+      setPrimaryBranches(updated);
+      succeeded = true;
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      setBranchCheckoutError(formatBranchCheckoutError(raw));
+    } finally {
+      setBranchCheckoutBusy(false);
+      if (succeeded) {
+        setBranchDropdownOpen(false);
+      }
+    }
+  }, [primaryLane, refreshLanes]);
+
   const archiveManagedLane = async () => {
     if (!managedLane || managedLane.laneType === "primary") return;
     await runLaneAction(async () => {
@@ -502,12 +619,8 @@ export function LanesPage() {
   const deleteManagedLane = async () => {
     if (!managedLane || managedLane.laneType === "primary") return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
-
     await runLaneAction(async () => {
-      const args: DeleteLaneArgs = {
-        laneId: managedLane.id,
-        force: deleteForce
-      };
+      const args: DeleteLaneArgs = { laneId: managedLane.id, force: deleteForce };
       if (deleteMode === "worktree") {
         args.deleteBranch = false;
       } else {
@@ -518,13 +631,11 @@ export function LanesPage() {
         }
       }
       await window.ade.lanes.delete(args);
-      if (selectedLaneId === managedLane.id) {
-        selectLane(null);
-      }
+      if (selectedLaneId === managedLane.id) selectLane(null);
     });
   };
 
-  const handleLaneSelect = (laneId: string, args: { extend: boolean }) => {
+  const handleLaneSelect = useCallback((laneId: string, args: { extend: boolean }) => {
     const lane = lanesById.get(laneId);
     if (!lane) return;
 
@@ -537,7 +648,7 @@ export function LanesPage() {
 
     const isPinned = pinnedLaneIds.has(laneId);
     const isActive = activeWithPins.includes(laneId);
-    if (isActive && isPinned) {
+    if (isPinned && isActive) {
       selectLane(laneId);
       return;
     }
@@ -546,9 +657,9 @@ export function LanesPage() {
     const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
     setActiveLaneIds(mergeUnique(next.length ? next : [laneId], pinned));
     selectLane(laneId);
-  };
+  }, [lanesById, pinnedLaneIds, activeWithPins, selectLane]);
 
-  const removeSplitLane = (laneId: string) => {
+  const removeSplitLane = useCallback((laneId: string) => {
     if (pinnedLaneIds.has(laneId)) return;
 
     const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
@@ -558,137 +669,257 @@ export function LanesPage() {
     if (!normalized.includes(selectedLaneId ?? "")) {
       selectLane(normalized[0] ?? null);
     }
-  };
+  }, [pinnedLaneIds, lanesById, activeWithPins, selectedLaneId, selectLane]);
 
-  const togglePinnedLane = (laneId: string) => {
+  const togglePinnedLane = useCallback((laneId: string) => {
     const lane = lanesById.get(laneId);
     if (!lane || lane.laneType === "primary") return;
 
+    const isPinned = pinnedLaneIds.has(laneId);
     setPinnedLaneIds((prev) => {
       const next = new Set(prev);
       if (next.has(laneId)) next.delete(laneId);
       else next.add(laneId);
       return next;
     });
+    if (!isPinned) {
+      setActiveLaneIds((prev) => mergeUnique(prev, [laneId]));
+    }
+  }, [lanesById, pinnedLaneIds]);
 
-    setActiveLaneIds((prev) => {
-      if (pinnedLaneIds.has(laneId)) return prev;
-      return mergeUnique(prev, [laneId]);
-    });
+  const restackNow = async (laneId: string) => {
+    setRestackSuggestionError(null);
+    setRestackBusyLaneId(laneId);
+    try {
+      const result = await window.ade.lanes.restack({ laneId, recursive: true });
+      if (result.error) throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
+      await Promise.all([refreshLanes(), refreshRestackSuggestions()]);
+    } catch (err) {
+      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestackBusyLaneId(null);
+    }
   };
 
-  const stepLaneSelection = useCallback((direction: -1 | 1) => {
-    if (filteredLaneIds.length === 0) return;
+  const dismissRestackSuggestion = async (laneId: string) => {
+    setRestackSuggestionError(null);
+    setRestackBusyLaneId(laneId);
+    try {
+      await window.ade.lanes.dismissRestackSuggestion({ laneId });
+      await refreshRestackSuggestions();
+    } catch (err) {
+      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestackBusyLaneId(null);
+    }
+  };
 
-    const currentId = selectedLaneId && filteredSet.has(selectedLaneId) ? selectedLaneId : filteredLaneIds[0]!;
-    const currentIdx = filteredLaneIds.indexOf(currentId);
-    const nextIdx = (currentIdx + direction + filteredLaneIds.length) % filteredLaneIds.length;
-    const nextId = filteredLaneIds[nextIdx];
-    if (!nextId) return;
+  const deferRestackSuggestion = async (laneId: string, minutes: number) => {
+    setRestackSuggestionError(null);
+    setRestackBusyLaneId(laneId);
+    try {
+      await window.ade.lanes.deferRestackSuggestion({ laneId, minutes });
+      await refreshRestackSuggestions();
+    } catch (err) {
+      setRestackSuggestionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestackBusyLaneId(null);
+    }
+  };
 
-    const pinned = Array.from(pinnedLaneIds).filter((id) => id !== nextId && lanesById.has(id));
-    setActiveLaneIds(mergeUnique([nextId], pinned));
-    selectLane(nextId);
-  }, [filteredLaneIds, selectedLaneId, filteredSet, pinnedLaneIds, lanesById, selectLane]);
+  /* ---- Detail handlers ---- */
 
-  useEffect(() => {
-    const isTypingTarget = (target: EventTarget | null): boolean => {
-      if (!(target instanceof HTMLElement)) return false;
-      return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable;
-    };
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      const isMac = navigator.platform.toLowerCase().includes("mac");
-      const mod = isMac ? event.metaKey : event.ctrlKey;
-      const key = event.key.toLowerCase();
-      const targetIsTyping = isTypingTarget(event.target);
-
-      if (!targetIsTyping && (event.key === "/" || (mod && key === "f"))) {
-        event.preventDefault();
-        const input = document.getElementById("lanes-filter-input");
-        if (input instanceof HTMLInputElement) {
-          input.focus();
-          input.select();
-        }
-        return;
+  const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged") => {
+    setLanePaneDetails((prev) => ({
+      ...prev,
+      [laneId]: {
+        selectedFilePath: path,
+        selectedFileMode: mode,
+        selectedCommit: null
       }
+    }));
+  }, []);
 
-      if (targetIsTyping) {
-        if (event.key === "Escape") {
-          const active = document.activeElement;
-          if (active instanceof HTMLInputElement && active.id === "lanes-filter-input") {
-            event.preventDefault();
-            if (laneFilter.length > 0) {
-              setLaneFilter("");
-            } else {
-              active.blur();
-            }
+  const handleSelectCommit = useCallback((laneId: string, commit: GitCommitSummary | null) => {
+    setLanePaneDetails((prev) => {
+      const prevDetail = prev[laneId] ?? EMPTY_LANE_PANE_DETAIL;
+      const nextDetail: LanePaneDetailSelection = commit
+        ? {
+            selectedFilePath: null,
+            selectedFileMode: null,
+            selectedCommit: commit
           }
-        }
-        return;
-      }
+        : {
+            ...prevDetail,
+            selectedCommit: null
+          };
+      return { ...prev, [laneId]: nextDetail };
+    });
+  }, []);
 
-      if (event.key === "[" || event.key === "]") {
-        event.preventDefault();
-        stepLaneSelection(event.key === "]" ? 1 : -1);
-        return;
-      }
+  /* ---- Pane configs ---- */
 
-      const noMods = !event.metaKey && !event.ctrlKey && !event.altKey;
-      if (noMods && (event.key === "ArrowDown" || key === "j")) {
-        event.preventDefault();
-        stepLaneSelection(1);
-        return;
+  const getPaneConfigs = useCallback((laneId: string | null) => {
+    const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
+    return {
+      "stack": {
+        title: "Stack",
+        icon: Layers3,
+        bodyClassName: "overflow-hidden",
+        children: (
+          <LaneStackPane
+            lanes={stackGraphLanes}
+            selectedLaneId={laneId}
+            onSelect={(id) => handleLaneSelect(id, { extend: false })}
+          />
+        )
+      },
+      "git-actions": {
+        title: "Git Actions",
+        icon: FileCode2,
+        bodyClassName: "overflow-hidden",
+        children: (
+          <LaneGitActionsPane
+            laneId={laneId}
+            selectedPath={laneDetail.selectedFilePath}
+            selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
+            onSelectFile={(path, mode) => {
+              if (!laneId) return;
+              handleSelectFile(laneId, path, mode);
+            }}
+            onSelectCommit={(commit) => {
+              if (!laneId) return;
+              handleSelectCommit(laneId, commit);
+            }}
+          />
+        )
+      },
+      "diff-viewer": {
+        title: "Diff",
+        icon: FileCode2,
+        bodyClassName: "overflow-hidden",
+        children: (
+          <LaneDiffPane
+            laneId={laneId}
+            selectedPath={laneDetail.selectedFilePath}
+            selectedFileMode={laneDetail.selectedFileMode}
+            selectedCommit={laneDetail.selectedCommit}
+          />
+        )
+      },
+      "work": {
+        title: "Work",
+        icon: Terminal,
+        bodyClassName: "overflow-hidden",
+        children: <LaneWorkPane laneId={laneId} />
+      },
+      "inspector": {
+        title: "Inspector",
+        icon: Search,
+        bodyClassName: "overflow-hidden",
+        children: <LaneInspectorPane laneId={laneId} />
       }
-      if (noMods && (event.key === "ArrowUp" || key === "k")) {
-        event.preventDefault();
-        stepLaneSelection(-1);
-        return;
-      }
-
-      if (noMods && event.key === "Enter" && filteredLaneIds.length > 0) {
-        event.preventDefault();
-        const laneId = selectedLaneId && filteredSet.has(selectedLaneId)
-          ? selectedLaneId
-          : filteredLaneIds[0]!;
-        const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id));
-        setActiveLaneIds(mergeUnique([laneId], pinned));
-        selectLane(laneId);
-      }
-
     };
+  }, [lanePaneDetails, stackGraphLanes, handleLaneSelect, handleSelectFile, handleSelectCommit]);
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredLaneIds, filteredSet, selectedLaneId, selectLane, pinnedLaneIds, lanesById, laneFilter, stepLaneSelection]);
-
-  const activeFilterTokens = useMemo(() => {
-    return new Set(
-      laneFilter
-        .trim()
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(Boolean)
-    );
-  }, [laneFilter]);
+  /* ---- Render ---- */
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
-      <div className="border-b border-border px-2 py-1.5">
+      {/* Header bar */}
+      <div className="border-b border-border/15 px-2 py-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <div className="text-xs font-semibold text-muted-fg">Lanes</div>
+          {primaryLane && selectedLaneId === primaryLane.id ? (
+            <div className="relative" ref={branchDropdownRef}>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-[--color-surface-overlay] px-2.5 py-1 text-xs font-medium text-fg shadow-card transition-colors hover:bg-emerald-500/12"
+                onClick={() => setBranchDropdownOpen((prev) => !prev)}
+                disabled={branchCheckoutBusy}
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+                <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+              {branchDropdownOpen ? (
+                <div className="absolute left-0 top-full z-50 mt-1 w-72 max-h-80 overflow-auto rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Local branches</div>
+                  {localPrimaryBranches.map((branch) => (
+                    <button
+                      key={`local:${branch.name}`}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50",
+                        branch.isCurrent && "font-medium text-emerald-700"
+                      )}
+                      disabled={branchCheckoutBusy || branch.isCurrent}
+                      onClick={async () => {
+                        if (branch.isCurrent) return;
+                        await checkoutPrimaryBranch(branch.name);
+                      }}
+                    >
+                      {branch.isCurrent ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                      <span className="truncate">{branch.name}</span>
+                      {branch.upstream ? <span className="ml-auto shrink-0 text-[10px] text-muted-fg">tracked</span> : null}
+                    </button>
+                  ))}
+                  {remotePrimaryBranches.length > 0 ? (
+                    <>
+                      <div className="my-1 h-px bg-border/20" />
+                      <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Remote branches</div>
+                      {remotePrimaryBranches.map((branch) => (
+                        <button
+                          key={`remote:${branch.name}`}
+                          type="button"
+                          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+                          disabled={branchCheckoutBusy}
+                          onClick={async () => {
+                            await checkoutPrimaryBranch(branch.name);
+                          }}
+                        >
+                          <span className="w-3 shrink-0" />
+                          <span className="truncate">{branch.name}</span>
+                          <span className="ml-auto shrink-0 text-[10px] text-sky-700">remote</span>
+                        </button>
+                      ))}
+                    </>
+                  ) : null}
+                  {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
+                    <div className="px-3 py-1.5 text-[11px] text-muted-fg">No branches found.</div>
+                  ) : null}
+                  {branchCheckoutError ? (
+                    <div className="px-3 py-1.5 text-[10px] text-red-400">{branchCheckoutError}</div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
+            <div className="inline-flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-800">
+              <span>{branchCheckoutError}</span>
+              <button
+                type="button"
+                className="rounded px-1 text-red-900/70 transition-colors hover:bg-red-500/15 hover:text-red-900"
+                onClick={() => setBranchCheckoutError(null)}
+                title="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           <div className="relative">
             <input
               id="lanes-filter-input"
               value={laneFilter}
               onChange={(event) => setLaneFilter(event.target.value)}
               placeholder="Filter lanes (is:dirty is:pinned type:worktree)"
-              className="h-7 min-w-[280px] rounded border border-border bg-card/70 px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
+              className="h-7 min-w-[280px] rounded-xl bg-muted/30 shadow-card px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
             />
             {laneFilter.trim().length > 0 ? (
               <button
                 type="button"
-                className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-fg transition-colors hover:bg-muted/70 hover:text-fg"
+                className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-lg text-muted-fg transition-colors hover:bg-muted/70 hover:text-fg"
                 onClick={() => setLaneFilter("")}
                 title="Clear filter"
               >
@@ -701,7 +932,6 @@ export function LanesPage() {
             variant={activeFilterTokens.has("is:dirty") ? "primary" : "outline"}
             className="h-7 px-2 text-[11px]"
             onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:dirty"))}
-            title="Toggle dirty lanes filter"
           >
             dirty
           </Button>
@@ -710,7 +940,6 @@ export function LanesPage() {
             variant={activeFilterTokens.has("is:pinned") ? "primary" : "outline"}
             className="h-7 px-2 text-[11px]"
             onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:pinned"))}
-            title="Toggle pinned lanes filter"
           >
             pinned
           </Button>
@@ -719,7 +948,6 @@ export function LanesPage() {
             variant={activeFilterTokens.has("type:worktree") ? "primary" : "outline"}
             className="h-7 px-2 text-[11px]"
             onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "type:worktree"))}
-            title="Toggle worktree lanes filter"
           >
             worktree
           </Button>
@@ -741,26 +969,28 @@ export function LanesPage() {
             Manage lane
           </Button>
 
-          <div className="h-4 w-px bg-border" />
+          <div className="h-4 w-px bg-border/20" />
 
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-[11px]"
-            disabled={!canCreateLane}
-            onClick={() => { setCreateLaneName(""); setCreateParentLaneId(""); setCreateOpen(true); }}
-            title={canCreateLane ? "Create a new lane" : "Open a repo first"}
-          >
+          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => {
+            setCreateLaneName("");
+            setCreateParentLaneId("");
+            setCreateAsChild(false);
+            setCreateBaseBranch("");
+            const primary = lanes.find((l) => l.laneType === "primary");
+            if (primary) {
+              window.ade.git.listBranches({ laneId: primary.id })
+                .then((branches) => {
+                  setCreateBranches(branches);
+                  const current = branches.find((b) => b.isCurrent && !b.isRemote);
+                  if (current) setCreateBaseBranch(current.name);
+                })
+                .catch(() => {});
+            }
+            setCreateOpen(true);
+          }}>
             <Plus className="h-3 w-3 mr-0.5" /> Lane
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-[11px]"
-            disabled={!canCreateLane}
-            onClick={() => { setAttachName(""); setAttachPath(""); setAttachOpen(true); }}
-            title={canCreateLane ? "Attach an existing worktree" : "Open a repo first"}
-          >
+          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => { setAttachName(""); setAttachPath(""); setAttachOpen(true); }}>
             <Link2 className="h-3 w-3 mr-0.5" /> Attach
           </Button>
           <Button
@@ -778,18 +1008,18 @@ export function LanesPage() {
                 })
                 .catch(() => {});
             }}
-            title={selectedLaneId ? "Start a terminal session" : "Select a lane first"}
           >
             <Play className="h-3 w-3 mr-0.5" /> Terminal
           </Button>
 
           <div className="ml-auto text-[11px] text-muted-fg">
-            {filteredLanes.length}/{sortedLanes.length} · j/k ↑↓ move · [ ] cycle · / filter
+            {filteredLanes.length}/{sortedLanes.length} · shift-click split · j/k move · [ ] cycle · / filter
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1.5">
+      {/* Lane tabs */}
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-border/15 px-2 py-1.5">
         {filteredLanes.map((lane) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
@@ -798,54 +1028,58 @@ export function LanesPage() {
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const conflictStatus = conflictStatusByLane[lane.id];
           const chips = conflictChipsByLane[lane.id] ?? [];
+          const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
 
           return (
             <button
               key={lane.id}
               type="button"
               className={cn(
-                "inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs transition-colors",
+                "inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-xs transition-colors",
                 isSelected
-                  ? "border-accent bg-accent/25 text-fg ring-1 ring-accent/60"
+                  ? "bg-accent/20 text-fg shadow-card ring-1 ring-accent/40 font-semibold"
                   : isVisible
-                    ? "border-accent/35 bg-accent/10 text-fg"
-                    : "border-border bg-card/70 text-muted-fg hover:border-muted-fg hover:text-fg",
-                isPrimary && "border-emerald-500/70 bg-emerald-500/15"
+                    ? "bg-accent/10 text-fg"
+                    : "bg-muted/30 text-muted-fg hover:bg-muted/50 hover:text-fg",
+                isPrimary && !isSelected && "bg-emerald-500/15"
               )}
               onClick={(event) => {
                 handleLaneSelect(lane.id, {
                   extend: Boolean(event.shiftKey || event.metaKey || event.ctrlKey)
                 });
               }}
-              title={isPrimary ? "Primary lane (home workspace)" : "Lane"}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setLaneContextMenu({ laneId: lane.id, x: event.clientX, y: event.clientY });
+              }}
             >
-              {isPrimary ? <Home className="h-3.5 w-3.5 text-emerald-700" /> : <Pin className={cn("h-3.5 w-3.5", isPinned ? "text-amber-700" : "text-muted-fg/60")} />}
+              {isPrimary ? (
+                <Home className="h-3.5 w-3.5 text-emerald-700" />
+              ) : (
+                <Pin className={cn("h-3.5 w-3.5", isPinned ? "text-amber-700" : "text-muted-fg/60")} />
+              )}
               <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
               <span className="truncate">{lane.name}</span>
-              {isPrimary ? <span className="rounded border border-emerald-400 px-1 text-[10px] text-emerald-700">HOME</span> : null}
-              {!isPrimary && isPinned ? <span className="rounded border border-amber-400 px-1 text-[10px] text-amber-800">PINNED</span> : null}
+              {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">{lane.branchRef}</span> : null}
+              {!isPrimary && isPinned ? <span className="rounded-lg bg-amber-500/15 px-1 text-[10px] text-amber-800">PINNED</span> : null}
+              {restackSuggestion ? (
+                <span className="rounded-lg bg-amber-500/10 px-1 text-[10px] text-amber-800" title={`Behind parent by ${restackSuggestion.behindCount} commit(s)`}>
+                  RESTACK {restackSuggestion.behindCount}
+                </span>
+              ) : null}
               {chips.slice(0, 1).map((chip, index) => (
                 <span
                   key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
-                  className={cn(
-                    "rounded border px-1 text-[10px] uppercase",
-                    chip.kind === "high-risk"
-                      ? "border-red-500/70 bg-red-900/30 text-red-200"
-                      : "border-amber-500/70 bg-amber-900/30 text-amber-200"
-                  )}
-                  title={chip.peerId ? `${chipLabel(chip.kind)} with ${chip.peerId}` : chipLabel(chip.kind)}
+                  className={cn("rounded-lg px-1 text-[10px] uppercase", chip.kind === "high-risk" ? "bg-red-500/10 text-red-200" : "bg-amber-500/10 text-amber-200")}
                 >
                   {chipLabel(chip.kind)}
                 </span>
               ))}
-
               {!isPrimary ? (
                 <span
                   className={cn(
-                    "inline-flex h-4 w-4 items-center justify-center rounded border",
-                    isPinned
-                      ? "border-amber-400 bg-amber-100 text-amber-800"
-                      : "border-border text-muted-fg hover:text-fg"
+                    "inline-flex h-4 w-4 items-center justify-center rounded-lg",
+                    isPinned ? "bg-amber-100 text-amber-800" : "text-muted-fg hover:text-fg"
                   )}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -856,10 +1090,19 @@ export function LanesPage() {
                   <Pin className="h-2.5 w-2.5" />
                 </span>
               ) : null}
-
+              <span
+                className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setExpandedLaneId(lane.id === expandedLaneId ? null : lane.id);
+                }}
+                title="Expand lane fullscreen"
+              >
+                <Maximize2 className="h-2.5 w-2.5" />
+              </span>
               {closable ? (
                 <span
-                  className="inline-flex h-4 w-4 items-center justify-center rounded hover:bg-muted/60"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded-lg hover:bg-muted/60"
                   onClick={(event) => {
                     event.stopPropagation();
                     removeSplitLane(lane.id);
@@ -874,184 +1117,203 @@ export function LanesPage() {
         })}
       </div>
 
-      <Group id="lanes-vertical-split" orientation="vertical" className="flex-1 min-h-0">
-        <Panel id="stack-graph-panel" defaultSize={14} minSize={3} collapsible>
-          <div className="flex h-full flex-col bg-card/35">
-            <div className="shrink-0 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack graph</div>
-            <StackGraph
-              lanes={stackGraphLanes}
-              selectedLaneId={selectedLaneId}
-              onSelect={(id) => handleLaneSelect(id, { extend: false })}
-            />
+      {/* Restack suggestions */}
+      {visibleRestackSuggestions.length > 0 ? (
+        <div className="border-b border-border/15 bg-amber-500/5 px-2 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-muted-fg/70">Restack suggested</div>
+            <div className="text-[11px] text-muted-fg">{visibleRestackSuggestions.length} lane(s) behind parent</div>
           </div>
-        </Panel>
-        <Separator className="relative h-1.5 shrink-0 cursor-row-resize border-y border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-          <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-            <GripHorizontal className="h-3 w-3" />
+          <div className="mt-2 space-y-2">
+            {visibleRestackSuggestions.slice(0, 3).map((s) => {
+              const lane = lanesById.get(s.laneId) ?? null;
+              if (!lane) return null;
+              const busy = restackBusyLaneId === s.laneId;
+              return (
+                <div key={`restack:${s.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded-xl shadow-card bg-card/40 p-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
+                      {s.hasPr ? <span className="rounded-lg bg-sky-500/10 px-1 text-[10px] text-sky-700">PR</span> : null}
+                      <span className="text-[11px] text-muted-fg">{s.behindCount} behind</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-muted-fg">Rebase this lane onto its parent to pick up new commits.</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={Boolean(restackBusyLaneId)} onClick={() => void deferRestackSuggestion(s.laneId, 60)}>
+                      Defer 1h
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={Boolean(restackBusyLaneId)} onClick={() => void dismissRestackSuggestion(s.laneId)}>
+                      Dismiss
+                    </Button>
+                    <Button size="sm" variant="primary" className="h-7 px-2 text-[11px]" disabled={Boolean(restackBusyLaneId)} onClick={() => void restackNow(s.laneId)}>
+                      <Layers3 className="mr-1 h-3 w-3" />
+                      {busy ? "Restacking..." : "Restack now"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+            {visibleRestackSuggestions.length > 3 ? (
+              <div className="text-[11px] text-muted-fg">+ {visibleRestackSuggestions.length - 3} more suggestions.</div>
+            ) : null}
+            {restackSuggestionError ? (
+              <div className="rounded-xl bg-red-500/10 p-2 text-[11px] text-red-200">{restackSuggestionError}</div>
+            ) : null}
           </div>
-        </Separator>
-        <Panel id="lanes-main" minSize={50}>
-          {visibleLaneIds.length === 0 ? (
-            <div className="flex h-full items-center justify-center">
-              <EmptyState
-                title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
-                description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to open changes and terminals."}
-              />
+        </div>
+      ) : null}
+
+      {/* Floating pane tiling layout */}
+      {visibleLaneIds.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <EmptyState
+            title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
+            description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to begin."}
+          />
+        </div>
+      ) : visibleLaneIds.length === 1 ? (
+        <PaneTilingLayout
+          layoutId={`lanes:tiling:v3:${visibleLaneIds[0]}`}
+          tree={LANES_TILING_TREE}
+          panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
+          className="flex-1 min-h-0"
+        />
+      ) : (
+        <Group
+          key={`lanes-split-columns:${visibleLaneIds.join(",")}`}
+          id="lanes-split-columns"
+          orientation="horizontal"
+          resizeTargetMinimumSize={RESIZE_TARGET_MINIMUM_SIZE}
+          className="flex-1 min-h-0 min-w-0"
+        >
+          {visibleLaneIds.map((laneId, index) => {
+            const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
+            return (
+              <React.Fragment key={laneId}>
+                <Panel id={`lane-column:${laneId}`} minSize="18%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
+                  <PaneTilingLayout
+                    layoutId={`lanes:tiling:v3:${laneId}`}
+                    tree={LANES_TILING_TREE}
+                    panes={getPaneConfigs(laneId)}
+                    className="h-full min-h-0"
+                  />
+                </Panel>
+                {index < visibleLaneIds.length - 1 ? <ResizeGutter orientation="vertical" laneDivider /> : null}
+              </React.Fragment>
+            );
+          })}
+        </Group>
+      )}
+
+      {/* Fullscreen lane overlay */}
+      {expandedLaneId && lanesById.has(expandedLaneId) ? (
+        <div className="fixed inset-0 z-[80] bg-bg flex flex-col">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">{lanesById.get(expandedLaneId)?.name}</span>
+              <span className="text-xs text-muted-fg">Fullscreen</span>
             </div>
-          ) : (
-            <Group key={visibleLaneIds.join("|")} id="lanes-split-columns" orientation="horizontal" className="h-full w-full">
-              {visibleLaneIds.map((laneId, index) => {
-                const lane = lanesById.get(laneId);
-                const defaultSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
-                return (
-                  <React.Fragment key={laneId}>
-                    <Panel id={`lane-column:${laneId}`} minSize={18} defaultSize={defaultSize} className="h-full min-h-0 min-w-0">
-                      <Group id={`lane-stack:${laneId}`} orientation="horizontal" className="h-full min-h-0 w-full">
-                        <Panel id={`lane-changes:${laneId}`} minSize={30} defaultSize={58} className="h-full min-h-0">
-                          <LaneDetail overrideLaneId={laneId} isPrimary={lane?.laneType === "primary"} />
-                        </Panel>
-                        <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-                          <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-                            <GripVertical className="h-3 w-3" />
-                          </div>
-                        </Separator>
-                        <Panel id={`lane-inspector:${laneId}`} minSize={22} defaultSize={42} className="h-full min-h-0">
-                          <LaneInspector overrideLaneId={laneId} hideHeader />
-                        </Panel>
-                      </Group>
-                    </Panel>
+            <Button variant="ghost" size="sm" onClick={() => setExpandedLaneId(null)} title="Exit fullscreen (Esc)">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <PaneTilingLayout
+            layoutId={`lanes:tiling:v3:fullscreen:${expandedLaneId}`}
+            tree={LANES_TILING_TREE}
+            panes={getPaneConfigs(expandedLaneId)}
+            className="flex-1 min-h-0"
+          />
+        </div>
+      ) : null}
 
-                    {index < visibleLaneIds.length - 1 ? (
-                      <Separator className="relative w-2 shrink-0 cursor-col-resize border-x border-border bg-card/40 transition-colors hover:bg-accent/30 data-[resize-handle-active]:bg-accent/30">
-                        <div className="absolute inset-0 flex items-center justify-center text-muted-fg/50">
-                          <GripVertical className="h-3 w-3" />
-                        </div>
-                      </Separator>
-                    ) : null}
-                  </React.Fragment>
-                );
-              })}
-            </Group>
-          )}
-        </Panel>
-      </Group>
+      {/* Lane tab context menu */}
+      {laneContextMenu ? (() => {
+        const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
+        return (
+          <div
+            className="fixed z-40 min-w-[190px] rounded-xl bg-[--color-surface-overlay] p-1 shadow-float backdrop-blur-xl"
+            style={{ left: laneContextMenu.x, top: laneContextMenu.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {ctxLane?.worktreePath ? (
+              <>
+                <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+                  setLaneContextMenu(null);
+                  window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});
+                }}>{revealLabel}</button>
+                <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+                  setLaneContextMenu(null);
+                  navigator.clipboard.writeText(ctxLane.worktreePath).catch(() => {});
+                }}>Copy Path</button>
+              </>
+            ) : null}
+          </div>
+        );
+      })() : null}
 
+      {/* Manage Lane dialog */}
       <Dialog.Root open={manageOpen} onOpenChange={setManageOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-card p-4 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
             <div className="mb-4 flex items-center justify-between gap-3">
               <Dialog.Title className="text-lg font-semibold">Manage lane</Dialog.Title>
-              <Dialog.Close asChild>
-                <Button variant="ghost" size="sm">Esc</Button>
-              </Dialog.Close>
+              <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
             </div>
-
             {!managedLane ? (
               <div className="text-sm text-muted-fg">Select a lane first.</div>
             ) : managedLane.laneType === "primary" ? (
               <div className="text-sm text-muted-fg">Primary lane cannot be archived or deleted.</div>
             ) : (
               <div className="space-y-3">
-                <div className="rounded border border-border bg-bg/40 p-3 text-xs">
+                <div className="rounded-xl shadow-card bg-bg/40 p-3 text-xs">
                   <div><span className="text-muted-fg">Lane:</span> {managedLane.name}</div>
                   <div><span className="text-muted-fg">Branch:</span> {managedLane.branchRef}</div>
                   <div className="truncate"><span className="text-muted-fg">Worktree:</span> {managedLane.worktreePath}</div>
                 </div>
-
-                <div className="rounded border border-border bg-bg/40 p-3">
+                <div className="rounded-xl shadow-card bg-bg/40 p-3">
                   <div className="mb-2 text-xs font-semibold">Archive</div>
                   <div className="mb-2 text-xs text-muted-fg">Hide lane from ADE without deleting worktree or branches.</div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={laneActionBusy}
-                    onClick={() => {
-                      archiveManagedLane().catch(() => {});
-                    }}
-                  >
+                  <Button size="sm" variant="outline" disabled={laneActionBusy} onClick={() => { archiveManagedLane().catch(() => {}); }}>
                     Archive lane from ADE
                   </Button>
                 </div>
-
-                <div className="rounded border border-red-300 bg-red-50 p-3">
+                <div className="rounded-xl shadow-card bg-red-50 p-3">
                   <div className="mb-2 text-xs font-semibold text-red-900">Delete</div>
-                  <div className="mb-2 text-xs text-red-800">
-                    This removes the lane worktree from disk. Choose branch cleanup mode below.
-                  </div>
-
+                  <div className="mb-2 text-xs text-red-800">This removes the lane worktree from disk.</div>
                   <div className="mb-2 grid gap-2 md:grid-cols-3">
-                    <label className="inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
-                      <input
-                        type="radio"
-                        name="lane-delete-mode"
-                        checked={deleteMode === "worktree"}
-                        onChange={() => setDeleteMode("worktree")}
-                      />
+                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                      <input type="radio" name="lane-delete-mode" checked={deleteMode === "worktree"} onChange={() => setDeleteMode("worktree")} />
                       Worktree only
                     </label>
-                    <label className="inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
-                      <input
-                        type="radio"
-                        name="lane-delete-mode"
-                        checked={deleteMode === "local_branch"}
-                        onChange={() => setDeleteMode("local_branch")}
-                      />
-                      Worktree + local branch
+                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                      <input type="radio" name="lane-delete-mode" checked={deleteMode === "local_branch"} onChange={() => setDeleteMode("local_branch")} />
+                      + local branch
                     </label>
-                    <label className="inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
-                      <input
-                        type="radio"
-                        name="lane-delete-mode"
-                        checked={deleteMode === "remote_branch"}
-                        onChange={() => setDeleteMode("remote_branch")}
-                      />
-                      Worktree + local + remote
+                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                      <input type="radio" name="lane-delete-mode" checked={deleteMode === "remote_branch"} onChange={() => setDeleteMode("remote_branch")} />
+                      + local + remote
                     </label>
                   </div>
-
                   {deleteMode === "remote_branch" ? (
                     <div className="mb-2">
                       <label className="mb-1 block text-xs text-muted-fg">Remote name</label>
-                      <input
-                        value={deleteRemoteName}
-                        onChange={(event) => setDeleteRemoteName(event.target.value)}
-                        className="h-8 w-full rounded border border-border bg-card px-2 text-xs outline-none"
-                        placeholder="origin"
-                      />
+                      <input value={deleteRemoteName} onChange={(event) => setDeleteRemoteName(event.target.value)} className="h-8 w-full rounded-xl bg-card/60 shadow-card px-2 text-xs outline-none" placeholder="origin" />
                     </div>
                   ) : null}
-
-                  <label className="mb-2 inline-flex items-center gap-2 rounded border border-border bg-card px-2 py-1 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={deleteForce}
-                      onChange={(event) => setDeleteForce(event.target.checked)}
-                    />
-                    Force delete if worktree has uncommitted changes
+                  <label className="mb-2 inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                    <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} />
+                    Force delete
                   </label>
-
                   <div className="mb-2">
                     <label className="mb-1 block text-xs text-muted-fg">
                       Type <span className="font-semibold text-red-900">{deletePhrase}</span> to confirm
                     </label>
-                    <input
-                      value={deleteConfirmText}
-                      onChange={(event) => setDeleteConfirmText(event.target.value)}
-                      className="h-8 w-full rounded border border-border bg-card px-2 text-xs outline-none"
-                    />
+                    <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} className="h-8 w-full rounded-xl bg-card/60 shadow-card px-2 text-xs outline-none" />
                   </div>
-
-                  {laneActionError ? <div className="mb-2 rounded border border-red-300 bg-red-100 px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
-
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    disabled={laneActionBusy || deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()}
-                    onClick={() => {
-                      deleteManagedLane().catch(() => {});
-                    }}
-                  >
+                  {laneActionError ? <div className="mb-2 rounded-xl bg-red-100 shadow-card px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
+                  <Button size="sm" variant="primary" disabled={laneActionBusy || deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()} onClick={() => { deleteManagedLane().catch(() => {}); }}>
                     {laneActionBusy ? "Working..." : "Delete lane"}
                   </Button>
                 </div>
@@ -1065,63 +1327,107 @@ export function LanesPage() {
       <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-3 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
-              <Dialog.Close asChild>
-                <Button variant="ghost" size="sm">Esc</Button>
-              </Dialog.Close>
+              <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
             </div>
-            <div className="mt-3 space-y-2">
-              <div className="text-xs text-muted-fg">Name</div>
-              <input
-                value={createLaneName}
-                onChange={(e) => setCreateLaneName(e.target.value)}
-                placeholder="e.g. feature/auth-refresh"
-                className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
-                autoFocus
-              />
-              <div className="space-y-1">
-                <div className="text-xs text-muted-fg">Parent lane (optional)</div>
-                <select
-                  value={createParentLaneId}
-                  onChange={(event) => setCreateParentLaneId(event.target.value)}
-                  className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none"
-                >
-                  <option value="">None (base: {baseRef ?? "main"})</option>
-                  {lanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>
-                      {lane.name} ({lane.branchRef})
-                    </option>
-                  ))}
-                </select>
+            <div className="mt-3 space-y-3">
+              {/* Lane name */}
+              <div>
+                <div className="text-xs text-muted-fg">Name</div>
+                <input
+                  value={createLaneName}
+                  onChange={(e) => setCreateLaneName(e.target.value)}
+                  placeholder="e.g. feature/auth-refresh"
+                  className="mt-1 h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
+                  autoFocus
+                />
               </div>
+
+              {/* Child lane toggle */}
+              <label className="flex items-center gap-2 rounded-xl bg-muted/20 px-3 py-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={createAsChild}
+                  onChange={(e) => {
+                    setCreateAsChild(e.target.checked);
+                    if (!e.target.checked) setCreateParentLaneId("");
+                  }}
+                />
+                <span className="text-muted-fg">Create as child of another lane</span>
+              </label>
+
+              {/* Conditional: Child lane parent selector OR branch selector */}
+              {createAsChild ? (
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-fg">Parent lane</div>
+                  <select
+                    value={createParentLaneId}
+                    onChange={(event) => setCreateParentLaneId(event.target.value)}
+                    className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
+                  >
+                    <option value="">Select a parent lane...</option>
+                    {lanes.map((lane) => (
+                      <option key={lane.id} value={lane.id}>{lane.name} ({lane.branchRef})</option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-fg">Base branch on primary</div>
+                  <select
+                    value={createBaseBranch}
+                    onChange={(event) => setCreateBaseBranch(event.target.value)}
+                    className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
+                  >
+                    {createBranches.filter((b) => !b.isRemote).map((branch) => (
+                      <option key={branch.name} value={branch.name}>
+                        {branch.name}{branch.isCurrent ? " (current)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-[10px] text-muted-fg/70 px-1">
+                    Lane will be created from primary/{createBaseBranch || "..."}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
-              <Button variant="outline" onClick={() => { setCreateOpen(false); setCreateLaneName(""); setCreateParentLaneId(""); }}>
-                Cancel
-              </Button>
+              <Button variant="outline" onClick={() => { setCreateOpen(false); setCreateLaneName(""); setCreateParentLaneId(""); setCreateAsChild(false); setCreateBaseBranch(""); }}>Cancel</Button>
               <Button
                 variant="primary"
-                disabled={!createLaneName.trim().length}
+                disabled={!createLaneName.trim().length || (createAsChild && !createParentLaneId)}
                 onClick={() => {
                   const name = createLaneName.trim();
-                  const parentId = createParentLaneId || null;
-                  const promise = parentId
-                    ? window.ade.lanes.createChild({ name, parentLaneId: parentId })
-                    : window.ade.lanes.create({ name });
-                  promise
-                    .then(async (lane) => {
+                  if (createAsChild && createParentLaneId) {
+                    window.ade.lanes.createChild({ name, parentLaneId: createParentLaneId })
+                      .then(async (lane) => {
+                        await refreshLanes();
+                        setCreateOpen(false);
+                        setCreateLaneName("");
+                        setCreateParentLaneId("");
+                        setCreateAsChild(false);
+                        navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                      }).catch(() => {});
+                  } else {
+                    const primaryLane = lanes.find((l) => l.laneType === "primary");
+                    const promise = primaryLane
+                      ? window.ade.lanes.create({ name, parentLaneId: primaryLane.id })
+                      : window.ade.lanes.create({ name });
+                    promise.then(async (lane) => {
                       await refreshLanes();
                       setCreateOpen(false);
                       setCreateLaneName("");
                       setCreateParentLaneId("");
+                      setCreateAsChild(false);
+                      setCreateBaseBranch("");
                       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
-                    })
-                    .catch(() => {});
+                    }).catch(() => {});
+                  }
                 }}
               >
-                {createParentLaneId ? "Create child lane" : "Create"}
+                {createAsChild && createParentLaneId ? "Create child lane" : `Create from ${createBaseBranch || "primary"}`}
               </Button>
             </div>
           </Dialog.Content>
@@ -1132,54 +1438,36 @@ export function LanesPage() {
       <Dialog.Root open={attachOpen} onOpenChange={setAttachOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded border border-border bg-bg p-3 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Attach lane</Dialog.Title>
-              <Dialog.Close asChild>
-                <Button variant="ghost" size="sm">Esc</Button>
-              </Dialog.Close>
+              <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
             </div>
             <div className="mt-3 space-y-2">
               <div>
                 <div className="mb-1 text-xs text-muted-fg">Lane name</div>
-                <input
-                  value={attachName}
-                  onChange={(e) => setAttachName(e.target.value)}
-                  placeholder="e.g. bugfix/from-other-worktree"
-                  className="h-10 w-full rounded border border-border bg-card/70 px-3 text-sm outline-none placeholder:text-muted-fg"
-                  autoFocus
-                />
+                <input value={attachName} onChange={(e) => setAttachName(e.target.value)} placeholder="e.g. bugfix/from-other-worktree" className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg" autoFocus />
               </div>
               <div>
                 <div className="mb-1 text-xs text-muted-fg">Attached path</div>
-                <input
-                  value={attachPath}
-                  onChange={(e) => setAttachPath(e.target.value)}
-                  placeholder="/absolute/path/to/existing/worktree"
-                  className="h-10 w-full rounded border border-border bg-card/70 px-3 font-mono text-xs outline-none placeholder:text-muted-fg"
-                />
+                <input value={attachPath} onChange={(e) => setAttachPath(e.target.value)} placeholder="/absolute/path/to/existing/worktree" className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 font-mono text-xs outline-none placeholder:text-muted-fg" />
               </div>
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
-              <Button variant="outline" onClick={() => { setAttachOpen(false); setAttachName(""); setAttachPath(""); }}>
-                Cancel
-              </Button>
+              <Button variant="outline" onClick={() => { setAttachOpen(false); setAttachName(""); setAttachPath(""); }}>Cancel</Button>
               <Button
                 variant="primary"
                 disabled={!attachPath.trim().length || !attachName.trim().length}
                 onClick={() => {
                   const name = attachName.trim();
                   const attachedPath = attachPath.trim();
-                  window.ade.lanes
-                    .attach({ name, attachedPath })
-                    .then(async (lane) => {
-                      await refreshLanes();
-                      setAttachOpen(false);
-                      setAttachName("");
-                      setAttachPath("");
-                      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
-                    })
-                    .catch(() => {});
+                  window.ade.lanes.attach({ name, attachedPath }).then(async (lane) => {
+                    await refreshLanes();
+                    setAttachOpen(false);
+                    setAttachName("");
+                    setAttachPath("");
+                    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+                  }).catch(() => {});
                 }}
               >
                 Attach

@@ -1,6 +1,6 @@
 # History — Operations Timeline & Replay
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -47,10 +47,7 @@ This timeline serves multiple purposes:
 - **Auditing**: The complete operation log provides accountability for changes,
   especially useful in team environments where understanding who did what matters.
 
-**Current status**: The core timeline (operation recording, display, filtering) is
-**implemented and working**. Checkpoint and event logging features are planned for
-**Phase 8** (Automations + Onboarding + Packs V2). Advanced timeline features
-(graph view, undo, replay, export) are planned for **Phase 9** (Advanced Features + Polish).
+**Current status**: Implemented and working (Phases 2 + 8). The core operations timeline is recorded and browsable, and Phase 8 adds checkpoints + pack events as first-class history artifacts. The UI favors readable activity summaries with deep links into lanes and packs; raw metadata remains available but is de-emphasized to reduce noise. Advanced timeline features (graph view, undo, replay, export) remain planned for Phase 9.
 
 ---
 
@@ -72,13 +69,16 @@ Currently tracked operation kinds:
 
 | Kind | Description | Metadata |
 |------|-------------|----------|
-| `git.commit` | A git commit was created | `{ message, filesChanged, sha }` |
+| `git.commit` / `git_commit` | A git commit was created | `{ message, filesChanged, sha }` |
 | `git.checkout` | Branch was checked out | `{ fromBranch, toBranch }` |
 | `git.merge` | A merge was performed | `{ fromBranch, conflicts }` |
 | `git.rebase` | A rebase was performed | `{ ontoBranch, commitCount }` |
-| `git.push` | Changes pushed to remote | `{ remote, branch, commitCount }` |
+| `git.push` / `git_push` | Changes pushed to remote | `{ remote, branch, commitCount }` |
 | `git.pull` | Changes pulled from remote | `{ remote, branch, newCommits }` |
-| `pack.refresh` | A pack was regenerated | `{ packType, laneId, trigger }` |
+| `git.fetch` / `git_fetch` | Fetch from remote | `{ remote }` |
+| `git.sync` / `git_sync` | Merge or rebase with upstream | `{ mode, baseRef }` |
+| `pack_update_lane` | A lane pack was regenerated | `{ reason, trigger }` |
+| `pack_update_project` | The project pack was regenerated | `{ reason, trigger }` |
 
 ### Session Record
 
@@ -93,9 +93,9 @@ Terminal session lifecycle tracking. Each session records:
 Sessions appear in the timeline alongside other operations, providing context about
 what terminal work was happening around each git or pack operation.
 
-### Checkpoint (Future)
+### Checkpoint
 
-An immutable snapshot created at session boundaries. A checkpoint captures:
+An immutable snapshot created at session boundaries (implemented in Phase 8 via packService). A checkpoint captures:
 
 - The exact SHA at the moment of creation
 - Diff stat since the previous checkpoint
@@ -105,11 +105,11 @@ An immutable snapshot created at session boundaries. A checkpoint captures:
 Checkpoints enable navigating to any past state to see what the repository looked
 like at that point.
 
-### Pack Event (Future)
+### Pack Event
 
-Append-only log entries recording changes to pack state. Each event records what
+Append-only log entries recording changes to pack state (implemented in Phase 8 via packService). Each event records what
 happened (checkpoint created, narrative updated, conflict detected, etc.) with a
-typed payload. This provides a granular audit trail of how packs evolved.
+typed payload. This provides a granular audit trail of how packs evolved. Events are surfaced as a human-readable activity feed in the PackViewer UI.
 
 ### Feature History (Future)
 
@@ -129,31 +129,33 @@ pack content, and session context at a given point in time.
 
 ### Layout
 
-The History tab uses a 2-pane layout optimized for timeline browsing with
+The History tab uses a 2-pane `PaneTilingLayout` optimized for timeline browsing with
 contextual detail:
 
 ```
 +-----------------------------+-------------------------+
 |                             |                         |
 |   Timeline                  |   Event Detail          |
-|   (~52% width)              |   (~48% width)          |
+|   (~45% width)              |   (~55% width)          |
 |                             |                         |
 |   [Filters]                 |   Kind: git.commit      |
 |   ┌─────────────────────┐   |   Status: succeeded     |
-|   │ ● git.commit        │   |   Lane: feature/auth    |
+|   │ ● Git commit        │   |   Lane: feature/auth    |
 |   │   feature/auth      │   |   Started: 14:32:01     |
 |   │   2 min ago         │   |   Ended: 14:32:02       |
-|   ├─────────────────────┤   |   Pre-HEAD: abc1234     |
-|   │ ○ pack.refresh      │   |   Post-HEAD: def5678    |
-|   │   feature/auth      │   |                         |
-|   │   5 min ago         │   |   Metadata:             |
-|   ├─────────────────────┤   |   { message: "Add..."   |
-|   │ ● git.push          │   |     filesChanged: 3 }   |
-|   │   feature/auth      │   |                         |
-|   │   12 min ago        │   |   [Jump to lane]        |
-|   └─────────────────────┘   |                         |
+|   ├─────────────────────┤   |   Duration: 1.2s        |
+|   │ ○ Lane pack refresh │   |   Pre-HEAD: abc1234     |
+|   │   feature/auth      │   |   Post-HEAD: def5678    |
+|   │   5 min ago         │   |                         |
+|   ├─────────────────────┤   |   Metadata:             |
+|   │ ● Git push          │   |   { message: "Add..."   |
+|   │   feature/auth      │   |     filesChanged: 3 }   |
+|   │   12 min ago        │   |                         |
+|   └─────────────────────┘   |   [Jump to lane]        |
 +-----------------------------+-------------------------+
 ```
+
+The layout uses `PaneTilingLayout` (recursive `react-resizable-panels` tree) with persisted pane sizes.
 
 ### Timeline Panel
 
@@ -162,29 +164,28 @@ The left pane displays a chronological list of operations, most recent first.
 **Filter bar** (top of timeline):
 
 - **Lane filter** (dropdown): "All lanes" (default), or select a specific lane
-  to see only operations in that lane
-- **Kind filter** (dropdown/multi-select): "All kinds" (default), or select
-  specific kinds (git, pack, session, etc.)
-- **Status filter** (dropdown): "All statuses" (default), or filter to
-  succeeded, failed, running, canceled
+  to see only operations in that lane. Also accepts `laneId` URL parameter.
+- **Kind filter** (dropdown): "All kinds" (default), or filter to specific
+  kind (e.g., `git_commit`, `pack_update_lane`)
+- **Status filter** (chip buttons): "All" (default), succeeded, failed,
+  running, canceled — click to toggle
+- **Refresh button**: Manually refresh the operation list
+- Auto-refresh: polling every 2.5s when any operation has `running` status
 
 **Operation rows**:
 
 Each row displays:
 
-- **Kind icon**: Visual indicator of the operation type
-  - Git operations: branch icon (commit), arrows (push/pull), merge icon
-  - Pack operations: package icon
-  - Session operations: terminal icon
-- **Description**: Human-readable summary (e.g., "Committed 3 files",
-  "Refreshed lane pack", "Session started")
-- **Lane name**: Which lane this happened in (or "project" for project-level ops)
-- **Status indicator**: Color-coded
-  - Green: succeeded
+- **Status border**: Color-coded left border
+  - Emerald: succeeded
   - Red: failed
-  - Blue: running
+  - Amber: running
   - Gray: canceled
-- **Timestamp**: Relative time ("2 min ago") with absolute time on hover
+- **Description**: Human-readable summary generated by `describeOperation()` (e.g., "Git commit · feature/auth · Add login button", "Lane pack refreshed · trigger: session_end")
+- **Kind chip**: Operation kind displayed as a chip (e.g., "Git commit", "Lane pack refreshed")
+- **Lane name**: Which lane this happened in (or "project" for project-level ops)
+- **Status chip**: Color-coded status badge
+- **Timestamp**: Relative time ("2m ago", "5h ago") with absolute time on hover
 
 **Interaction**:
 
@@ -199,38 +200,32 @@ The right pane shows comprehensive details for the selected operation.
 
 **Header**:
 
-- Operation kind (e.g., "git.commit") with icon
+- Operation kind (humanized, e.g., "Git commit") with kind icon
 - Status badge with color
-- Lane name (clickable — navigates to the lane in the Lanes tab)
+- Lane name (clickable — navigates to the lane in the Lanes tab via `/lanes?laneId=...`)
 
-**Timestamps**:
+**Detail fields** (displayed as labeled rows):
 
-- **Started at**: ISO 8601 timestamp, displayed in local time with relative offset
-- **Ended at**: Same format (blank if operation is still running)
+- **Kind**: Full operation kind string
+- **Status**: Color-coded badge
+- **Started**: ISO 8601 timestamp with relative time and calendar/clock icons
+- **Ended**: Same format (blank if operation is still running)
 - **Duration**: Computed from start-to-end (e.g., "1.2s", "45s", "2m 13s")
-
-**SHA Transitions** (for git operations):
-
-- **Pre-HEAD**: SHA before the operation, displayed as abbreviated hash with
-  copy-to-clipboard button
-- **Post-HEAD**: SHA after the operation, same format
-- **Arrow**: Visual indicator showing the transition direction
-- **Diff link** (future): Click to see the diff between pre and post HEAD
+- **Pre-HEAD**: SHA before the operation, displayed as abbreviated hash (10 chars)
+- **Post-HEAD**: SHA after the operation, displayed with arrow transition indicator
 
 **Metadata**:
 
-- JSON display of operation-specific metadata
-- Expandable/collapsible sections for large metadata objects
-- Syntax-highlighted JSON rendering
-- Common fields pulled out as labeled values (e.g., commit message displayed
-  prominently rather than buried in JSON)
+- Parsed from `metadataJson` field
+- Key fields pulled out as labeled values (e.g., commit message, trigger reason)
+- Full JSON expandable view for detailed inspection
+- Collapsible section for large metadata objects
 
 **Actions** (bottom of detail panel):
 
-- **Jump to lane**: Navigate to the associated lane in the Lanes tab
-- **Jump to session**: Navigate to the associated terminal session (future)
+- **Jump to lane**: Navigate to the associated lane in the Lanes tab (implemented — navigates to `/lanes?laneId=...`)
 - **Undo**: Reverse this operation (future, only for reversible git operations)
-- **Copy details**: Copy the full operation record as JSON to clipboard
+- **Copy details**: Copy the full operation record as JSON to clipboard (future)
 
 ### Future Enhancements
 
@@ -296,13 +291,18 @@ after each git operation to capture the pre/post state.
 |---------|-----------|-------------|
 | `ade.history.listOperations` | `(args: { laneId?: string; kind?: string; status?: string; limit: number; offset: number }) => OperationRecord[]` | Query operations with optional filters and pagination |
 
+**Pack/checkpoint channels** (implemented via packService, Phase 8):
+
+| Channel | Signature | Description |
+|---------|-----------|-------------|
+| `ade.packs.listCheckpoints` | `(args: { laneId?: string; limit?: number }) => Checkpoint[]` | List checkpoints (via packService) |
+| `ade.packs.listEvents` | `(args: { limit?: number }) => PackEvent[]` | List pack events |
+| `ade.packs.listEventsSince` | `(args: { since: string; limit?: number }) => PackEvent[]` | List pack events since a timestamp |
+
 **Planned (future)**:
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.history.getCheckpoint` | `(id: string) => Checkpoint` | Retrieve a specific checkpoint with its full data |
-| `ade.history.listCheckpoints` | `(args: { laneId: string; limit: number }) => Checkpoint[]` | List checkpoints for a lane |
-| `ade.history.listPackEvents` | `(args: { packKey: string; limit: number }) => PackEvent[]` | List pack events for a given pack |
 | `ade.history.getFeatureHistory` | `(featureId: string) => HistoryEntry[]` | Get the complete history for a feature across lanes |
 | `ade.history.undoOperation` | `(id: string) => GitActionResult` | Undo a reversible operation |
 | `ade.history.exportHistory` | `(args: { format: 'csv' \| 'json'; filters?: HistoryFilters }) => string` | Export filtered history as CSV or JSON |
@@ -363,10 +363,10 @@ CREATE INDEX idx_operations_kind ON operations(kind);
 CREATE INDEX idx_operations_started_at ON operations(started_at);
 ```
 
-### Future Tables
+### Phase 8 Tables (Implemented)
 
 ```sql
--- Immutable snapshots at session boundaries
+-- Immutable snapshots at session boundaries (implemented Phase 8)
 checkpoints (
   id TEXT PRIMARY KEY,             -- UUID
   lane_id TEXT NOT NULL,           -- FK to lanes table
@@ -377,7 +377,7 @@ checkpoints (
   created_at TEXT NOT NULL         -- ISO 8601 timestamp
 )
 
--- Append-only log of pack state changes
+-- Append-only log of pack state changes (implemented Phase 8)
 pack_events (
   id TEXT PRIMARY KEY,             -- UUID
   pack_key TEXT NOT NULL,          -- Which pack this event relates to
@@ -386,7 +386,7 @@ pack_events (
   created_at TEXT NOT NULL         -- ISO 8601 timestamp
 )
 
--- Indexes for future tables
+-- Indexes for Phase 8 tables
 CREATE INDEX idx_checkpoints_lane_id ON checkpoints(lane_id);
 CREATE INDEX idx_checkpoints_created_at ON checkpoints(created_at);
 CREATE INDEX idx_pack_events_pack_key ON pack_events(pack_key);
@@ -396,18 +396,18 @@ CREATE INDEX idx_pack_events_created_at ON pack_events(created_at);
 ### Type Definitions
 
 ```typescript
-interface OperationRecord {
+type OperationRecord = {
   id: string;
-  projectId: string;
   laneId: string | null;
+  laneName: string | null;
   kind: string;
   startedAt: string;
   endedAt: string | null;
   status: 'running' | 'succeeded' | 'failed' | 'canceled';
   preHeadSha: string | null;
   postHeadSha: string | null;
-  metadata: Record<string, unknown>;
-}
+  metadataJson: string | null;
+};
 
 interface Checkpoint {
   id: string;
@@ -469,12 +469,14 @@ interface HistoryEntry {
 
 ### Checkpoints & Snapshots
 
+Backend implementation (packService) is DONE (Phase 8). History tab UI for browsing these remains TODO for Phase 9.
+
 | ID | Task | Status |
 |----|------|--------|
-| HIST-011 | Checkpoint creation on session end | TODO |
-| HIST-012 | Checkpoint storage and indexing (SQLite + filesystem) | TODO |
-| HIST-013 | Pack event logging (append-only event log) | TODO |
-| HIST-014 | Pack version tracking (version numbers, content hashes) | TODO |
+| HIST-011 | Checkpoint creation on session end | DONE — Phase 8 (backend: `packService` creates checkpoints on session end, stored in `checkpoints` table) |
+| HIST-012 | Checkpoint storage and indexing (SQLite + filesystem) | DONE — Phase 8 (backend: SQLite `checkpoints` table + filesystem at `.ade/history/checkpoints/`) |
+| HIST-013 | Pack event logging (append-only event log) | DONE — Phase 8 (backend: SQLite `pack_events` table, append-only, surfaced as activity feed in PackViewer) |
+| HIST-014 | Pack version tracking (version numbers, content hashes) | DONE — Phase 8 (backend: SQLite `pack_versions` + `pack_heads` tables, immutable snapshots with diff viewer) |
 
 ### Advanced Timeline Features
 
@@ -491,10 +493,20 @@ interface HistoryEntry {
 
 | ID | Task | Status |
 |----|------|--------|
-| HIST-021 | Jump to lane from operation detail | TODO |
-| HIST-022 | Jump to session from operation detail | TODO |
+| HIST-021 | Jump to lane from operation detail | DONE — Phase 7 (HistoryPage navigates to `/lanes?laneId=...` on click) |
+| HIST-022 | Jump to session from operation detail | DONE — Phase 7 (HistoryPage navigates to lane with packs/inspector tab) |
 | HIST-023 | Export history (CSV and JSON formats with filters) | TODO |
+
+### Phase 8 — UI Enhancements
+
+| ID | Task | Status |
+|----|------|--------|
+| HIST-024 | PaneTilingLayout for HistoryPage | DONE — Phase 8 (2-pane layout: timeline 45%, detail 55%) |
+| HIST-025 | Human-readable operation descriptions (`describeOperation`) | DONE — Phase 8 (pack updates, git commits, and other operations get readable titles/detail lines) |
+| HIST-026 | Status-colored left border on operation rows | DONE — Phase 8 (emerald/red/amber/gray border based on status) |
+| HIST-027 | URL parameter support (`laneId`, `operationId`) | DONE — Phase 8 (deep linking to specific lane/operation) |
+| HIST-028 | Auto-refresh for running operations | DONE — Phase 8 (2.5s polling when any operation has `running` status) |
 
 ---
 
-*This document describes the History feature for ADE. The core timeline is implemented. Checkpoints and event logging are planned for Phase 8. Advanced timeline features (graph view, undo, replay, export) are planned for Phase 9.*
+*This document describes the History feature for ADE. The core timeline is implemented (Phases 2+). Checkpoints, pack event logging, and pack version tracking are implemented in the backend (Phase 8, via packService). The History UI received PaneTilingLayout, human-readable descriptions, status-colored borders, URL parameter support, and auto-refresh in Phase 8. Advanced timeline features (graph view, undo, replay, export, History UI for browsing checkpoints/events) are planned for Phase 9.*

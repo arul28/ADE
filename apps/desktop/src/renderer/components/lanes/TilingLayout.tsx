@@ -1,8 +1,9 @@
 import React, { useMemo } from "react";
-import { Panel, Group, Separator } from "react-resizable-panels";
-import { X, GripVertical, GripHorizontal } from "lucide-react";
+import { Panel, Group } from "react-resizable-panels";
+import { X } from "lucide-react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
+import { ResizeGutter } from "../ui/ResizeGutter";
 import { TerminalView } from "../terminals/TerminalView";
 import type { TerminalSessionSummary } from "../../../shared/types";
 
@@ -145,7 +146,7 @@ function TileRenderer({
 
   return (
     <Group id={`tiling-group:${node.id}`} orientation={node.direction} className="h-full w-full">
-      <Panel id={`tiling-panel:${first.id}`} defaultSize={firstSize} minSize={10}>
+      <Panel id={`tiling-panel:${first.id}`} defaultSize={`${firstSize}%`} minSize="10%">
         <TileRenderer
           node={first}
           sessions={sessions}
@@ -155,22 +156,8 @@ function TileRenderer({
           closingSessionIds={closingSessionIds}
         />
       </Panel>
-      <Separator
-        className={cn(
-          "relative flex shrink-0 items-center justify-center bg-border/70 transition-colors hover:bg-accent data-[resize-handle-active]:bg-accent",
-          node.direction === "horizontal" ? "w-2 cursor-col-resize" : "h-2 cursor-row-resize"
-        )}
-      >
-        <div className={cn("z-20 bg-accent/70", node.direction === "horizontal" ? "h-full w-px" : "h-px w-full")} />
-        <div
-          className={cn(
-            "pointer-events-none absolute inset-0 flex items-center justify-center opacity-100"
-          )}
-        >
-          {node.direction === "horizontal" ? <GripVertical className="h-3 w-3 text-bg" /> : <GripHorizontal className="h-3 w-3 text-bg" />}
-        </div>
-      </Separator>
-      <Panel id={`tiling-panel:${second.id}`} defaultSize={secondSize} minSize={10}>
+      <ResizeGutter orientation={node.direction === "horizontal" ? "vertical" : "horizontal"} />
+      <Panel id={`tiling-panel:${second.id}`} defaultSize={`${secondSize}%`} minSize="10%">
         <TileRenderer
           node={second}
           sessions={sessions}

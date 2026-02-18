@@ -1,6 +1,6 @@
 # Desktop Application Architecture
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -113,7 +113,7 @@ The renderer process runs with `contextIsolation: true` and `nodeIntegration: fa
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Main Process** (trusted): Created via `main.ts`. Has full Node.js access including `fs`, `child_process`, `net`, and native modules. All services are instantiated here. Handles all 82+ IPC channels. Manages application lifecycle events (`ready`, `activate`, `before-quit`, `window-all-closed`).
+**Main Process** (trusted): Created via `main.ts`. Has full Node.js access including `fs`, `child_process`, `net`, and native modules. All services are instantiated here. Handles 197 IPC request-response channels plus 10 event broadcast channels. Manages application lifecycle events (`ready`, `activate`, `before-quit`, `window-all-closed`).
 
 **Renderer Process** (untrusted): A React SPA loaded from either a Vite dev server URL (development) or a local `file://` URL (production). Has no direct access to Node.js APIs. Communicates with the main process through `window.ade`, which is injected by the preload script.
 
@@ -121,7 +121,7 @@ The renderer process runs with `contextIsolation: true` and `nodeIntegration: fa
 
 ### AppContext and Service Initialization
 
-The `AppContext` type defines the complete set of services available in the main process:
+The `AppContext` type defines the complete set of services available in the main process (27 fields as of Phase 8):
 
 ```typescript
 export type AppContext = {
@@ -130,13 +130,29 @@ export type AppContext = {
   project: ProjectInfo;
   projectId: string;
   adeDir: string;
+  disposeHeadWatcher: () => void;
+  keybindingsService: ReturnType<typeof createKeybindingsService>;
+  terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
+  agentToolsService: ReturnType<typeof createAgentToolsService>;
+  onboardingService: ReturnType<typeof createOnboardingService>;
+  ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
+  restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
   fileService: ReturnType<typeof createFileService>;
   operationService: ReturnType<typeof createOperationService>;
   gitService: ReturnType<typeof createGitOperationsService>;
+  conflictService: ReturnType<typeof createConflictService>;
+  hostedAgentService: ReturnType<typeof createHostedAgentService>;
+  byokLlmService: ReturnType<typeof createByokLlmService>;
+  githubService: ReturnType<typeof createGithubService>;
+  prService: ReturnType<typeof createPrService>;
+  prPollingService: ReturnType<typeof createPrPollingService>;
+  jobEngine: ReturnType<typeof createJobEngine>;
+  automationService: ReturnType<typeof createAutomationService>;
+  automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -148,31 +164,41 @@ Services are initialized in a specific order within `initContextForProjectRoot()
 
 1. **Infrastructure**: `ensureAdeDirs()`, `createFileLogger()`, `openKvDb()`
 2. **Project setup**: `toProjectInfo()`, `upsertProjectRow()`, `ensureAdeExcluded()`
-3. **Core data services**: `laneService`, `sessionService`
-4. **Derived services**: `diffService` (depends on laneService), `fileService` (depends on laneService)
-5. **Config service**: `projectConfigService`
-6. **Tracking service**: `operationService`
-7. **Pack service**: `packService` (depends on laneService, sessionService, projectConfigService, operationService)
-8. **Job engine**: `jobEngine` (depends on packService)
-9. **PTY service**: `ptyService` (depends on laneService, sessionService; calls jobEngine on session end)
-10. **Git service**: `gitService` (depends on laneService, operationService; calls jobEngine on HEAD change)
-11. **Execution services**: `processService`, `testService`
+3. **Config service**: `projectConfigService`
+4. **Settings services**: `keybindingsService`, `terminalProfilesService`, `agentToolsService`
+5. **Core data services**: `laneService`, `sessionService`
+6. **Onboarding / CI**: `onboardingService`, `ciService`
+7. **Derived services**: `diffService`, `fileService`
+8. **Tracking service**: `operationService`
+9. **Pack service**: `packService` (depends on laneService, sessionService, projectConfigService, operationService)
+10. **AI services**: `hostedAgentService`, `byokLlmService`
+11. **Conflict service**: `conflictService` (depends on laneService, gitService, packService)
+12. **Job engine**: `jobEngine` (depends on packService, conflictService, hostedAgentService, projectConfigService, byokLlmService)
+13. **PTY service**: `ptyService` (depends on laneService, sessionService; calls jobEngine on session end)
+14. **Git service**: `gitService` (depends on laneService, operationService)
+15. **Head watcher**: Polls for HEAD changes, routes to jobEngine, automationService, restackSuggestionService
+16. **GitHub / PR services**: `githubService`, `prService`, `prPollingService`
+17. **Restack suggestions**: `restackSuggestionService`
+18. **Automation services**: `automationService`, `automationPlannerService`
+19. **Execution services**: `processService`, `testService`
 
 ### IPC Registration
 
-The `registerIpc()` function in `registerIpc.ts` binds all IPC channels to their handler functions. It receives a `getCtx()` function (rather than a direct context reference) to support project switching -- when the user opens a different repository, the context reference is swapped.
+The `registerIpc()` function in `registerIpc.ts` binds all IPC channels to their handler functions. It receives a `getCtx()` function (rather than a direct context reference) to support project switching -- when the user opens a different repository, the context reference is swapped. It also receives `globalStatePath` for recent project management.
 
 ```typescript
 export function registerIpc({
   getCtx,
-  switchProjectFromDialog
+  switchProjectFromDialog,
+  globalStatePath
 }: {
   getCtx: () => AppContext;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  globalStatePath: string;
 }) {
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
   ipcMain.handle(IPC.lanesList, async (_event, arg) => getCtx().laneService.list(arg));
-  // ... 71 total handlers
+  // ... 197 total request-response handlers
 }
 ```
 
@@ -181,37 +207,80 @@ Each handler follows a consistent pattern:
 2. Delegate to the appropriate service method
 3. Return the result (automatically serialized by Electron's IPC)
 
+The IPC channels are organized by domain (see `shared/ipc.ts` for the full list of 207 channel constants). Major domain groups include: `app`, `project`, `onboarding`, `ci`, `lanes`, `sessions`, `pty`, `diff`, `files`, `git`, `conflicts`, `context`, `packs`, `hosted`, `github`, `prs`, `automations`, `keybindings`, `agentTools`, `terminalProfiles`, `history`, `layout`, `tilingTree`, `graphState`, `processes`, `tests`, `projectConfig`.
+
 ### Preload Bridge
 
-The preload script (`preload.ts`) uses `contextBridge.exposeInMainWorld()` to inject a typed `window.ade` object into the renderer. The API surface is organized by subsystem:
+The preload script (`preload.ts`) uses `contextBridge.exposeInMainWorld()` to inject a typed `window.ade` object into the renderer. The API surface is organized by 26 subsystems:
 
 ```typescript
 contextBridge.exposeInMainWorld("ade", {
-  app:           { ping, getInfo, getProject },
-  project:       { openRepo, openAdeFolder },
-  lanes:         { list, create, rename, archive, delete, openFolder },
-  sessions:      { list, get, readTranscriptTail, getDelta },
-  pty:           { create, write, resize, dispose, onData, onExit },
-  diff:          { getChanges, getFile },
-  files:         { listWorkspaces, listTree, readFile, writeText, createFile,
-                   createDirectory, rename, delete: deletePath, watch, stopWatching,
-                   quickOpen, searchText, onChangeEvent },
-  git:           { stageFile, unstageFile, discardFile, restoreStagedFile,
-                   commit, listRecentCommits, revertCommit, cherryPickCommit,
-                   stashPush, stashList, stashApply, stashPop, stashDrop,
-                   fetch, sync, push },
-  packs:         { getProjectPack, getLanePack, refreshLanePack },
-  history:       { listOperations },
-  layout:        { get, set },
-  processes:     { listDefinitions, listRuntime, start, stop, restart, kill,
-                   startStack, stopStack, restartStack, startAll, stopAll,
-                   getLogTail, onEvent },
-  tests:         { listSuites, run, stop, listRuns, getLogTail, onEvent },
-  projectConfig: { get, validate, save, diffAgainstDisk, confirmTrust }
+  app:              { ping, getInfo, getProject, openExternal },
+  project:          { openRepo, openAdeFolder, clearLocalData, exportConfig,
+                      listRecent, switchToPath, forgetRecent },
+  keybindings:      { get, set },
+  agentTools:       { detect },
+  terminalProfiles: { get, set },
+  onboarding:       { getStatus, detectDefaults, detectExistingLanes,
+                      generateInitialPacks, complete },
+  ci:               { scan, import: importCi },
+  automations:      { list, toggle, triggerManually, getHistory, getRunDetail,
+                      parseNaturalLanguage, validateDraft, saveDraft, simulate,
+                      onEvent },
+  lanes:            { list, create, createChild, importBranch, attach, rename,
+                      reparent, updateAppearance, archive, delete, getStackChain,
+                      getChildren, restack, listRestackSuggestions,
+                      dismissRestackSuggestion, deferRestackSuggestion,
+                      openFolder, onRestackSuggestionsEvent },
+  sessions:         { list, get, updateMeta, readTranscriptTail, getDelta },
+  pty:              { create, write, resize, dispose, onData, onExit },
+  diff:             { getChanges, getFile },
+  files:            { writeTextAtomic, listWorkspaces, listTree, readFile,
+                      writeText, watch, stopWatching, quickOpen, searchText,
+                      createFile, createDirectory, rename, delete: deletePath,
+                      onChangeEvent },
+  git:              { stageFile, unstageFile, discardFile, restoreStagedFile,
+                      commit, listRecentCommits, listCommitFiles, getCommitMessage,
+                      revertCommit, cherryPickCommit, stashPush, stashList,
+                      stashApply, stashPop, stashDrop, fetch, sync, push,
+                      getConflictState, rebaseContinue, rebaseAbort,
+                      mergeContinue, mergeAbort },
+  conflicts:        { getLaneStatus, listOverlaps, getRiskMatrix, simulateMerge,
+                      runPrediction, getBatchAssessment, listProposals,
+                      prepareProposal, requestProposal, applyProposal,
+                      undoProposal, runExternalResolver, listExternalResolverRuns,
+                      commitExternalResolverRun, onEvent },
+  context:          { getStatus, generateDocs, openDoc },
+  packs:            { getProjectPack, getLanePack, getFeaturePack, getConflictPack,
+                      getPlanPack, getProjectExport, getLaneExport,
+                      getConflictExport, refreshLanePack, refreshProjectPack,
+                      refreshFeaturePack, refreshConflictPack, savePlanPack,
+                      applyHostedNarrative, generateNarrative, listVersions,
+                      getVersion, diffVersions, updateNarrative, listEvents,
+                      listEventsSince, listCheckpoints, getHeadVersion,
+                      getDeltaDigest, onEvent },
+  github:           { getStatus, setToken, clearToken },
+  prs:              { createFromLane, linkToLane, getForLane, listAll, refresh,
+                      getStatus, getChecks, getReviews, updateDescription, land,
+                      landStack, draftDescription, openInGitHub, onEvent },
+  hosted:           { getStatus, getBootstrapConfig, applyBootstrapConfig,
+                      signIn, signOut, syncMirror, cleanMirrorData,
+                      deleteMirrorData, submitJob, getJob, getArtifact,
+                      githubGetStatus, githubConnectStart, githubDisconnect,
+                      githubListEvents },
+  history:          { listOperations },
+  layout:           { get, set },
+  tilingTree:       { get, set },
+  graphState:       { get, set },
+  processes:        { listDefinitions, listRuntime, start, stop, restart, kill,
+                      startStack, stopStack, restartStack, startAll, stopAll,
+                      getLogTail, onEvent },
+  tests:            { listSuites, run, stop, listRuns, getLogTail, onEvent },
+  projectConfig:    { get, validate, save, diffAgainstDisk, confirmTrust }
 });
 ```
 
-Request-response methods use `ipcRenderer.invoke()`. Event subscriptions (`onData`, `onExit`, `onEvent`) use `ipcRenderer.on()` and return a cleanup function for unsubscription.
+Request-response methods use `ipcRenderer.invoke()`. Event subscriptions (`onData`, `onExit`, `onEvent`, `onChangeEvent`, `onRestackSuggestionsEvent`) use `ipcRenderer.on()` and return a cleanup function for unsubscription. There are 10 event broadcast channels in total.
 
 ### Window Management
 
@@ -272,11 +341,14 @@ ADE supports switching between git repositories at runtime. When the user opens 
 
 On `before-quit`, ADE performs ordered cleanup:
 
-1. Dispose all test service runners (`testService.disposeAll()`)
-2. Dispose all managed processes (`processService.disposeAll()`)
-3. Dispose all PTY sessions (`ptyService.disposeAll()`)
-4. Flush database to disk (`db.flushNow()`)
-5. Close database (`db.close()`)
+1. Dispose head watcher (`disposeHeadWatcher()`)
+2. Dispose job engine timers (`jobEngine.dispose()`)
+3. Dispose PR polling service (`prPollingService.dispose()`)
+4. Dispose all test service runners (`testService.disposeAll()`)
+5. Dispose all managed processes (`processService.disposeAll()`)
+6. Dispose all PTY sessions (`ptyService.disposeAll()`)
+7. Flush database to disk (`db.flushNow()`)
+8. Close database (`db.close()`)
 
 Each disposal step is wrapped in try/catch to ensure that failures in one service do not prevent cleanup of others.
 
@@ -286,12 +358,18 @@ Each disposal step is wrapped in try/catch to ensure that failures in one servic
 
 ### Main Process to Renderer
 
-- **IPC invoke/handle**: 66 request-response channels for CRUD operations and queries
-- **IPC push events**: 5 broadcast channels for real-time data:
+- **IPC invoke/handle**: 197 request-response channels for CRUD operations and queries
+- **IPC push events**: 10 broadcast channels for real-time data:
   - `ade.pty.data` -- Terminal output chunks
   - `ade.pty.exit` -- Terminal session exit events
+  - `ade.files.change` -- File system change events
   - `ade.processes.event` -- Process log and runtime state changes
   - `ade.tests.event` -- Test run and log events
+  - `ade.conflicts.event` -- Conflict prediction and proposal events
+  - `ade.packs.event` -- Pack refresh, version, and narrative events
+  - `ade.prs.event` -- Pull request status change events
+  - `ade.automations.event` -- Automation rule execution events
+  - `ade.lanes.restackSuggestions.event` -- Restack suggestion events
 
 ### Main Process Internal
 
@@ -299,10 +377,15 @@ Services communicate through direct method calls and callback injection:
 
 - `ptyService` --> `sessionService` (session lifecycle)
 - `ptyService` --> `jobEngine` (session end trigger)
+- `headWatcher` --> `jobEngine` (HEAD change trigger)
+- `headWatcher` --> `automationService` (HEAD change trigger)
+- `headWatcher` --> `restackSuggestionService` (evaluate lane)
 - `gitService` --> `operationService` (operation tracking)
-- `gitService` --> `jobEngine` (HEAD change trigger)
 - `jobEngine` --> `packService` (pack refresh)
+- `jobEngine` --> `conflictService` (conflict prediction)
+- `jobEngine` --> `hostedAgentService` / `byokLlmService` (narrative generation)
 - `packService` --> `operationService` (pack operation tracking)
+- `prPollingService` --> `prService` (periodic PR status refresh)
 
 ### External Dependencies
 
@@ -318,15 +401,17 @@ Services communicate through direct method calls and callback injection:
 ### Completed
 
 - Electron shell with main/renderer/preload architecture
-- All 82+ IPC channels registered and typed
-- Service factory pattern for all 11 services
-- Project initialization and switching
+- 197 IPC request-response channels + 10 event broadcast channels, all registered and typed
+- Service factory pattern for all 30+ services in AppContext
+- Project initialization and switching with full context teardown/rebuild
 - Window management with security hardening
 - Development build pipeline (Vite + tsup + Electron)
 - Production build pipeline
-- Ordered shutdown with resource cleanup
-- Global state persistence (recent projects)
+- Ordered shutdown with resource cleanup (head watcher, job engine, PR polling, tests, processes, PTY, DB)
+- Global state persistence (recent projects, project switching)
 - Error boundary handlers (uncaughtException, unhandledRejection)
+- Head watcher for detecting external commits and routing to job engine / automation / restack services
+- Preload bridge with 26 subsystems matching the full IPC surface
 
 ### Not Yet Implemented
 

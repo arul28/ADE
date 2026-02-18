@@ -6,6 +6,18 @@ import { cn } from "../ui/cn";
 import { useAppStore, type ThemeId } from "../../state/appStore";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
+type XtermCoreLike = {
+  _core?: {
+    _coreBrowserService?: { window?: Window };
+    _viewport?: {
+      _innerRefresh?: () => void;
+      syncScrollArea?: (immediate?: boolean) => void;
+      _refreshAnimationFrame?: number | null;
+      __adeSafeRefreshPatched?: boolean;
+      __adeSafeSyncPatched?: boolean;
+    };
+  };
+};
 
 const terminalThemes: Record<"light" | "dark", XtermTheme> = {
   light: {
@@ -26,6 +38,53 @@ const terminalThemes: Record<"light" | "dark", XtermTheme> = {
 
 function isDarkTheme(theme: ThemeId): boolean {
   return theme === "bloomberg" || theme === "github" || theme === "rainbow" || theme === "pats";
+}
+
+function patchViewportRefresh(term: Terminal): void {
+  // xterm can throw in Viewport._innerRefresh when a pane is mounted/unmounted quickly.
+  try {
+    const core = (term as unknown as XtermCoreLike)._core;
+    const viewport = core?._viewport;
+    if (!viewport || typeof viewport._innerRefresh !== "function" || viewport.__adeSafeRefreshPatched) return;
+    const original = viewport._innerRefresh.bind(viewport);
+    viewport._innerRefresh = () => {
+      try {
+        original();
+      } catch {
+        // Ignore transient teardown races inside xterm internals.
+      }
+    };
+    viewport.__adeSafeRefreshPatched = true;
+    if (typeof viewport.syncScrollArea === "function" && !viewport.__adeSafeSyncPatched) {
+      const originalSync = viewport.syncScrollArea.bind(viewport);
+      viewport.syncScrollArea = (immediate?: boolean) => {
+        try {
+          originalSync(immediate);
+        } catch {
+          // Ignore transient teardown races inside xterm internals.
+        }
+      };
+      viewport.__adeSafeSyncPatched = true;
+    }
+  } catch {
+    // Ignore internal access failures across xterm versions.
+  }
+}
+
+function cancelViewportRaf(term: Terminal): void {
+  try {
+    const core = (term as unknown as XtermCoreLike)._core;
+    const viewport = core?._viewport;
+    if (!viewport) return;
+    const rafId = viewport._refreshAnimationFrame;
+    const rafWindow = core?._coreBrowserService?.window ?? window;
+    if (typeof rafId === "number") {
+      rafWindow.cancelAnimationFrame(rafId);
+      viewport._refreshAnimationFrame = null;
+    }
+  } catch {
+    // Ignore internal access failures across xterm versions.
+  }
 }
 
 export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; sessionId: string; className?: string }) {
@@ -56,10 +115,26 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(el);
+    let fitRafId: number | null = null;
+    let initialRafId: number | null = null;
+
+    const ensureOpen = () => {
+      if (cancelled) return false;
+      if (term.element) return true;
+      if (!el.isConnected) return false;
+      if (el.clientWidth === 0 || el.clientHeight === 0) return false;
+      try {
+        term.open(el);
+      } catch {
+        return false;
+      }
+      patchViewportRefresh(term);
+      return true;
+    };
 
     const doFit = () => {
       if (cancelled) return;
+      if (!ensureOpen()) return;
       if (!el.isConnected) return;
       // xterm can misbehave if we try to fit while hidden/zero-sized.
       if (el.clientWidth === 0 || el.clientHeight === 0) return;
@@ -69,6 +144,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         return;
       }
       const next = { cols: term.cols, rows: term.rows };
+      if (!Number.isFinite(next.cols) || !Number.isFinite(next.rows) || next.cols <= 0 || next.rows <= 0) return;
       const prev = lastDimsRef.current;
       if (!prev || prev.cols !== next.cols || prev.rows !== next.rows) {
         lastDimsRef.current = next;
@@ -76,8 +152,20 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       }
     };
 
+    const scheduleFit = () => {
+      if (cancelled) return;
+      if (fitRafId != null) cancelAnimationFrame(fitRafId);
+      fitRafId = requestAnimationFrame(() => {
+        fitRafId = null;
+        doFit();
+      });
+    };
+
     // Allow layout to settle before first fit (helps in StrictMode/dev + tab switching).
-    requestAnimationFrame(doFit);
+    initialRafId = requestAnimationFrame(() => {
+      initialRafId = null;
+      scheduleFit();
+    });
 
     // Try to hydrate recent output so switching tabs doesn't feel like losing context.
     window.ade.sessions
@@ -102,8 +190,9 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       const isMac = navigator.platform.toLowerCase().includes("mac");
       const mod = isMac ? ev.metaKey : ev.ctrlKey;
       const key = ev.key.toLowerCase();
+
+      // Cmd+V: handle paste
       if (mod && key === "v" && ev.type === "keydown") {
-        // Best-effort paste.
         navigator.clipboard
           .readText()
           .then((text) => {
@@ -113,18 +202,31 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
           .catch(() => {});
         return false;
       }
+
+      // Cmd+C: copy if selection exists, otherwise let xterm handle (SIGINT)
+      if (mod && key === "c" && ev.type === "keydown") {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection).catch(() => {});
+          return false;
+        }
+        // No selection - let xterm send SIGINT
+        return true;
+      }
+
+      // Let ALL other keys pass through to xterm
       return true;
     });
 
-	    const unsubData = window.ade.pty.onData((ev) => {
-	      if (ev.ptyId !== ptyId) return;
-	      if (cancelled) return;
-	      try {
-	        term.write(ev.data);
-	      } catch {
-	        // Ignore writes after disposal/unmount.
-	      }
-	    });
+    const unsubData = window.ade.pty.onData((ev) => {
+      if (ev.ptyId !== ptyId) return;
+      if (cancelled) return;
+      try {
+        term.write(ev.data);
+      } catch {
+        // Ignore writes after disposal/unmount.
+      }
+    });
 
     const unsubExit = window.ade.pty.onExit((ev) => {
       if (ev.ptyId !== ptyId) return;
@@ -134,11 +236,39 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     const obs = new ResizeObserver(() => {
       // Throttle to animation frame to avoid spamming.
-      requestAnimationFrame(() => {
-        doFit();
-      });
+      scheduleFit();
     });
     obs.observe(el);
+
+    const intObs = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) scheduleFit();
+      }
+    });
+    intObs.observe(el);
+
+    // Watch for visibility changes via CSS class toggling (invisible/pointer-events-none)
+    const mutObs = new MutationObserver(() => {
+      if (cancelled) return;
+      // Check if our container is currently visible
+      const parentEl = el.parentElement;
+      if (!parentEl) return;
+      const isHidden = parentEl.classList.contains('invisible');
+      if (!isHidden && el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) {
+        // Terminal just became visible - schedule a double-RAF fit
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            doFit();
+          });
+        });
+      }
+    });
+
+    // Observe the parent element for class changes
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      mutObs.observe(parentEl, { attributes: true, attributeFilter: ['class'] });
+    }
 
     termRef.current = term;
     fitRef.current = fit;
@@ -146,6 +276,12 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     return () => {
       cancelled = true;
+      if (initialRafId != null) {
+        cancelAnimationFrame(initialRafId);
+      }
+      if (fitRafId != null) {
+        cancelAnimationFrame(fitRafId);
+      }
       try {
         unsubData();
         unsubExit();
@@ -163,6 +299,13 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         // ignore
       }
       try {
+        intObs.disconnect();
+      } catch {
+        // ignore
+      }
+      try { mutObs.disconnect(); } catch { /* ignore */ }
+      cancelViewportRaf(term);
+      try {
         term.dispose();
       } catch {
         // ignore
@@ -178,19 +321,27 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     if (!term) return;
     // Avoid reassigning `term.options` wholesale. Some options (cols/rows) are readonly after construction
     // and xterm will throw if we try to set them via the options setter.
-    term.options.theme = termTheme ? { ...termTheme } : undefined;
+    // Defer theme update to next frame so the renderer is fully initialised.
+    const id = requestAnimationFrame(() => {
+      try {
+        term.options.theme = termTheme ? { ...termTheme } : undefined;
+      } catch {
+        // Ignore if terminal was disposed or renderer not ready.
+      }
+    });
+    return () => cancelAnimationFrame(id);
   }, [termTheme]);
 
   return (
     <div
       className={cn(
-        "relative h-full min-h-0 w-full overflow-hidden rounded-md border border-border bg-muted/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]",
+        "relative h-full min-h-0 w-full overflow-hidden rounded-xl bg-muted/70 shadow-card",
         className
       )}
     >
       <div ref={containerRef} className="h-full w-full p-2" />
       {exited != null ? (
-        <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-border bg-bg/90 px-2 py-1 text-[11px] text-muted-fg">
+        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg bg-bg/90 shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
         </div>
       ) : null}

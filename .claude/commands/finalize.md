@@ -1,159 +1,166 @@
 ---
 name: 'finalize'
-description: 'Final gate before pushing: audit docs, verify task-tracking parity, and run local checks'
+description: 'End-of-cycle documentation audit: scan codebase, verify docs, update implementation plan, and run local checks'
 ---
 
 # Finalize Command
 
-This command is the final gate before pushing and opening a PR.
-
-It must guarantee three outcomes:
-1. all documentation is tracked and up-to-date,
-2. task-tracking in feature docs matches the actual implementation state,
-3. local checks pass.
+This command is the end-of-cycle gate. It performs a comprehensive scan of the codebase and documentation to ensure everything is synchronized, then runs local verification checks.
 
 **Usage:** `/finalize`
 
 ## Pipeline Overview
 
 ```
-Phase 1: Determine scope of changes
-Phase 2: Task-tracking audit (docs)
-Phase 3: Documentation update
-Phase 4: Local verification (typecheck + build)
-Phase 5: Final summary
+Phase 1: Codebase scan (build ground truth)
+Phase 2: Documentation audit (compare docs vs reality)
+Phase 3: Implementation plan update
+Phase 4: Documentation fixes
+Phase 5: Local verification (typecheck + build)
+Phase 6: Final summary
 ```
 
 ---
 
-## Phase 1: Determine Scope of Changes
+## Phase 1: Codebase Scan
 
-### 1a. Identify what changed
+### 1a. Service inventory
+Scan the main process services directory to build a ground truth inventory:
 
+```bash
+# List all service directories
+ls -d apps/desktop/src/main/services/*/
+
+# Count files per service
+find apps/desktop/src/main/services -type d -mindepth 1 -maxdepth 1 | sort | xargs -I {} sh -c 'echo -n "$(basename {}): "; find {} -name "*.ts" -not -name "*.test.ts" | wc -l'
+```
+
+### 1b. IPC channel count
+```bash
+# Count IPC channels
+grep -c ":" apps/desktop/src/shared/ipc.ts
+```
+
+### 1c. Type export count
+```bash
+# Count exported types
+grep -cE "^export type |^export interface " apps/desktop/src/shared/types.ts
+```
+
+### 1d. Renderer component inventory
+```bash
+# List all page/component directories
+ls -d apps/desktop/src/renderer/components/*/
+```
+
+### 1e. Identify what changed (vs main branch)
 ```bash
 git diff main --name-only
 git diff main --stat | tail -30
 git log main..HEAD --oneline
 ```
 
-### 1b. Categorize changes
-
-Separate changed files into:
-- **Code** — `apps/desktop/src/**/*.{ts,tsx}`
-- **Docs** — `docs/**/*.md`
-- **Config** — `package.json`, `tsconfig.json`, `vite.config.ts`, `tsup.config.ts`, `tailwind.config.cjs`
-- **New untracked files** — check `git status` for files that should be staged
+Categorize changed files into: Code, Docs, Config, New untracked files.
 
 ---
 
-## Phase 2: Task-Tracking Audit
+## Phase 2: Documentation Audit
 
-### 2a. Build impacted doc set
+### 2a. Feature docs task tracking
+For each feature doc in `docs/features/`, extract:
+- Total task count (task IDs like TERM-001, LANES-001, etc.)
+- Count DONE vs TODO vs PARTIAL
+- Tasks that reference future phases or are marked deferred
+- Any inconsistencies between doc status and actual code
 
-Collect candidate docs from:
-- changed docs in `docs/features/**` and `docs/architecture/**`,
-- feature docs that correspond to changed code areas (use mapping below),
-- `docs/IMPLEMENTATION_PLAN.md` when feature scope or phase progress changed.
+**Feature docs to audit:**
+| Doc | Code Areas |
+|-----|-----------|
+| `AUTOMATIONS.md` | `services/automations/` |
+| `CONFLICTS.md` | `services/conflicts/`, `components/conflicts/` |
+| `FILES_AND_EDITOR.md` | `services/files/`, `components/files/` |
+| `HISTORY.md` | `services/history/`, `components/history/` |
+| `LANES.md` | `services/lanes/`, `components/lanes/` |
+| `ONBOARDING_AND_SETTINGS.md` | `services/onboarding/`, `services/keybindings/` |
+| `PACKS.md` | `services/packs/`, `components/packs/` |
+| `PROJECT_HOME.md` | `services/processes/`, `services/tests/`, `components/project/` |
+| `PULL_REQUESTS.md` | `services/prs/`, `components/prs/` |
+| `TERMINALS_AND_SESSIONS.md` | `services/pty/`, `services/sessions/`, `components/terminals/` |
+| `WORKSPACE_GRAPH.md` | `components/graph/` |
 
-**Code-to-doc mapping:**
+### 2b. Architecture docs status check
+For each architecture doc in `docs/architecture/`, verify:
+- Implementation status sections are accurate
+- Services referenced actually exist
+- IPC channels referenced are registered
+- No features listed as "planned" that are actually done
 
-| Code Path Pattern | Feature Doc |
-|---|---|
-| `src/main/services/lanes/`, `src/renderer/components/lanes/` | `docs/features/LANES.md` |
-| `src/main/services/pty/`, `src/main/services/sessions/`, `src/renderer/components/terminals/` | `docs/features/TERMINALS_AND_SESSIONS.md` |
-| `src/main/services/processes/`, `src/main/services/tests/`, `src/renderer/components/project/` | `docs/features/PROJECT_HOME.md` |
-| `src/main/services/files/`, `src/renderer/components/files/` | `docs/features/FILES_AND_EDITOR.md` |
-| `src/main/services/packs/`, `src/renderer/components/packs/` | `docs/features/PACKS.md` |
-| `src/main/services/diffs/`, `src/renderer/components/conflicts/` | `docs/features/CONFLICTS.md` |
-| `src/renderer/components/prs/` | `docs/features/PULL_REQUESTS.md` |
-| `src/main/services/history/`, `src/renderer/components/history/` | `docs/features/HISTORY.md` |
-| `src/renderer/components/app/` (settings) | `docs/features/ONBOARDING_AND_SETTINGS.md` |
-| `src/main/services/jobs/` | `docs/architecture/JOB_ENGINE.md` |
-| `src/main/services/git/` | `docs/architecture/GIT_ENGINE.md` |
-| `src/main/services/config/`, `src/main/services/state/` | `docs/architecture/CONFIGURATION.md` |
-| `src/main/services/ipc/`, `src/preload/` | `docs/architecture/DESKTOP_APP.md` |
-| `src/shared/types.ts`, `src/shared/ipc.ts` | `docs/architecture/DATA_MODEL.md` |
+**Architecture docs to audit:**
+- `CLOUD_BACKEND.md`, `CONFIGURATION.md`, `CONTEXT_CONTRACT.md`
+- `DATA_MODEL.md`, `DESKTOP_APP.md`, `GIT_ENGINE.md`
+- `HOSTED_AGENT.md`, `JOB_ENGINE.md`, `SECURITY_AND_PRIVACY.md`
+- `SYSTEM_OVERVIEW.md`, `UI_FRAMEWORK.md`
 
-### 2b. Validate task-tracking in each impacted doc
+### 2c. Cross-reference validation
+- Verify task IDs in implementation plan match task IDs in feature docs
+- Verify services listed in implementation plan match services in code
+- Verify IPC channel counts match between docs and shared/ipc.ts
+- Flag any orphaned docs (docs for features that don't exist)
 
-For each impacted feature doc, ensure:
-- tasks are clearly marked done/not done (`[x]` / `[ ]`),
-- open tasks include implementation steps and/or acceptance checks,
-- completed tasks reflect what was actually implemented in this branch,
-- contradictory or stale statuses are corrected.
+---
 
-If a doc lacks task tracking, add a `## Task Tracking` section.
-
-Minimum acceptable task item quality:
-- one clear outcome,
-- one or more concrete steps,
-- at least one acceptance condition.
-
-### 2c. Validate implementation plan
+## Phase 3: Implementation Plan Update
 
 Check `docs/IMPLEMENTATION_PLAN.md`:
-- current phase progress is accurate,
-- completed items match what's actually built,
-- next-up items are still relevant.
-
-### 2d. Record audit results
-
-Prepare an audit note for the final summary:
-- docs audited,
-- docs fixed,
-- task-tracking gaps found and resolved,
-- implementation plan updates made.
+- Phase summary table accuracy
+- Completed phase descriptions match reality
+- Current/upcoming phase task lists are accurate
+- No items listed as "done" that aren't implemented
+- No items listed as "upcoming" that are already done
+- Future phase references are consistent
 
 ---
 
-## Phase 3: Documentation Update
+## Phase 4: Documentation Fixes
 
-### 3a. Update impacted feature docs
+### 4a. Update feature docs
+For each doc identified with issues in Phase 2:
+- Update task statuses to match implementation
+- Add sections for newly implemented capabilities
+- Mark deferred items clearly
+- Ensure file path references point to real paths
 
-For each doc identified in Phase 2:
-- update descriptions to match current implementation,
-- add new sections for newly implemented capabilities,
-- remove or mark as deferred any planned items that were descoped,
-- ensure code examples and file references point to real paths.
+### 4b. Update architecture docs
+If status sections are stale:
+- Update implementation status tables
+- Mark completed features as DONE
+- Verify service names match actual service file names
 
-### 3b. Update architecture docs if needed
+### 4c. Update implementation plan
+- Check off completed deliverables
+- Update phase status if milestones were reached
+- Note scope changes or newly discovered work
 
-If the changes touch architecture-level concerns (new services, IPC channels, data model changes):
-- update the relevant architecture doc,
-- ensure `docs/architecture/SYSTEM_OVERVIEW.md` still reflects reality.
-
-### 3c. Update implementation plan
-
-In `docs/IMPLEMENTATION_PLAN.md`:
-- check off completed deliverables,
-- note any scope changes or newly discovered work,
-- update phase status if a phase milestone was reached.
-
-### 3d. Verify doc consistency
-
-Spot-check that:
-- no doc references files or features that don't exist,
-- terminology is consistent across updated docs,
-- no orphaned docs (docs for removed features).
+### 4d. Consistency check
+- No doc references non-existent files or features
+- Terminology is consistent across docs
+- No orphaned docs
 
 ---
 
-## Phase 4: Local Verification
+## Phase 5: Local Verification
 
-### 4a. Install dependencies
-
+### 5a. Install dependencies
 ```bash
 cd /Users/arul/ADE/apps/desktop && npm install
 ```
 
-### 4b. Typecheck
-
+### 5b. Typecheck
 ```bash
 cd /Users/arul/ADE/apps/desktop && npm run typecheck
 ```
 
-### 4c. Build
-
+### 5c. Build
 ```bash
 cd /Users/arul/ADE/apps/desktop && npm run build
 ```
@@ -162,45 +169,59 @@ All checks must pass. If typecheck or build fails, fix the issues before proceed
 
 ---
 
-## Phase 5: Final Summary
+## Phase 6: Final Summary
 
-Output a summary including:
+Output a summary:
 
 ```markdown
 ## Finalize Summary
 
-### Changes Overview
-- [branch name]
+### Codebase Snapshot
+- Services: [count] categories, [count] .ts files
+- IPC channels: [count]
+- Type exports: [count]
+- Renderer components: [count] page directories
+
+### Changes (vs main)
+- Branch: [name]
 - [X files changed, Y insertions, Z deletions]
-- [brief description of what was done]
+- Brief description of what was done
 
 ### Documentation Audit
-- Docs audited: [list]
-- Docs updated: [list]
-- Task-tracking gaps resolved: [count + details]
-- Implementation plan updated: [yes/no + details]
+- Feature docs audited: [count]/11
+- Architecture docs audited: [count]/11
+- Task tracking gaps found: [count + details]
+- Status corrections made: [count + details]
+
+### Implementation Plan
+- Current phase: [phase]
+- Phase status: [status]
+- Updates made: [yes/no + details]
 
 ### Local Verification
 - Typecheck: [pass/fail]
 - Build: [pass/fail]
 
-### Ready to Push
+### Ready State
 - [ ] All docs current and tracked
-- [ ] Task-tracking accurate in all impacted docs
-- [ ] Implementation plan reflects current state
+- [ ] Task tracking accurate in all feature docs
+- [ ] Architecture docs reflect implementation reality
+- [ ] Implementation plan matches current state
 - [ ] Typecheck passes
 - [ ] Build succeeds
 ```
 
 ---
 
-## Completion Checklist
+## Parallel Agent Strategy
 
-- [ ] Scope of changes identified
-- [ ] Task-tracking lists audited and corrected in impacted docs
-- [ ] Required steps/acceptance present for open tasks
-- [ ] Implementation plan updated
-- [ ] Architecture docs updated if needed
-- [ ] Feature docs updated if needed
-- [ ] Typecheck passes
-- [ ] Build succeeds
+For maximum efficiency, launch parallel agents:
+1. **Codebase scanner**: Scan services, IPC, types, components
+2. **Feature doc auditor**: Read all 11 feature docs, extract task status
+3. **Architecture doc auditor**: Read all 11 architecture docs, check staleness
+
+Then synthesize findings and make updates sequentially.
+
+---
+
+*This command ensures documentation stays synchronized with the codebase after every work cycle.*

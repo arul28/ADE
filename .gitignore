@@ -6,4 +6,3 @@ infra/.sst/
 infra/.pulumi/
 /infra/.home
 /.npm-cache
-/apps/web/node_modules

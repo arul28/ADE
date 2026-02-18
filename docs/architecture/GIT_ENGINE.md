@@ -96,8 +96,8 @@ git worktree add -b ade/<slug>-<uuid8> .ade/worktrees/<slug>-<uuid8> <base_ref>
 | Type | Description | Worktree Location |
 |------|-------------|-------------------|
 | Worktree | Standard ADE lane | `.ade/worktrees/<slug>-<uuid8>` |
-| Primary | Main repo directory (planned) | Project root itself |
-| Attached | Pre-existing worktree (planned) | User-specified path |
+| Primary | Main repo directory | Project root itself |
+| Attached | Pre-existing worktree | User-specified path |
 
 **Branch naming convention**: `ade/<slugified-name>-<uuid-prefix>`
 
@@ -322,17 +322,17 @@ Renderer: user clicks "Commit"
 - Operation tracking wrapper with pre/post HEAD SHA capture
 - Path validation with traversal prevention
 - HEAD change event propagation to job engine
+- Conflict prediction via dry-merge simulation using `git merge-tree` (Phase 5)
+- Pairwise lane conflict detection across all active lanes (Phase 5)
+- Stack operations: parent-child lane relationships with restack propagation (Phase 4)
+- Primary lane support: main repo directory represented as a lane (Phase 7)
+- Attached worktree support: link pre-existing worktrees to ADE (Phase 7)
 
 ### Planned (Not Yet Started)
 
-- **Conflict prediction**: Dry-merge simulation using `git merge-tree` or temporary index
-- **Pairwise conflict detection**: Compare all active lanes for potential conflicts
-- **Stack operations**: Parent-child lane relationships with restack propagation
 - **Branch operations**: Create, delete, checkout, rename branches
 - **Interactive rebase support**: Reorder, squash, fixup commits
 - **Merge conflict resolution UI**: Inline conflict markers with accept/reject actions
 - **Git hooks integration**: Surface pre-commit hook failures in the UI
 - **Partial staging**: Stage individual hunks within a file
 - **Blame integration**: Surface authorship information in diff views
-- **Primary lane support**: Represent the main repo directory as a lane
-- **Attached worktree support**: Link pre-existing worktrees to ADE

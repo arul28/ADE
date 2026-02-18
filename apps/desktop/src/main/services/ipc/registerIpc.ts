@@ -1,12 +1,29 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import fs from "node:fs";
+import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
   AttachLaneArgs,
   AppInfo,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunDetail,
+  AutomationParseNaturalLanguageRequest,
+  AutomationParseNaturalLanguageResult,
+  AutomationValidateDraftRequest,
+  AutomationValidateDraftResult,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+  AutomationSimulateRequest,
+  AutomationSimulateResult,
   ConflictProposal,
+  ConflictExternalResolverRunSummary,
+  ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
   CreateLaneArgs,
@@ -35,9 +52,14 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitBatchFileActionArgs,
+  GitBranchSummary,
+  GitListBranchesArgs,
+  GitCheckoutBranchArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -60,6 +82,7 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportConfigBundleResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
   HostedGitHubAppStatus,
@@ -69,11 +92,23 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorDeleteResult,
+  HostedMirrorCleanupSummaryV1,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
+  AgentTool,
+  KeybindingOverride,
+  KeybindingsSnapshot,
+  ImportBranchLaneArgs,
+  CiScanResult,
+  CiImportRequest,
+  CiImportResult,
+  OnboardingDetectionResult,
+  OnboardingExistingLaneCandidate,
+  OnboardingStatus,
   LaneSummary,
   ListOperationsArgs,
   ListOverlapsArgs,
@@ -83,7 +118,26 @@ import type {
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
+  PackExport,
+  PackDeltaDigestArgs,
+  PackDeltaDigestV1,
+  PackEvent,
+  PackHeadVersion,
   PackSummary,
+  PackVersion,
+  PackVersionSummary,
+  Checkpoint,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GetConflictExportArgs,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
+  ContextInstallGeneratedDocsArgs,
+  ContextOpenDocArgs,
+  ContextStatus,
+  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessRuntime,
@@ -94,6 +148,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
   ReparentLaneArgs,
@@ -101,8 +156,14 @@ import type {
   RenameLaneArgs,
   RestackArgs,
   RestackResult,
+  RestackSuggestion,
   RiskMatrixEntry,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
+  RunExternalConflictResolverArgs,
+  ListExternalConflictResolverRunsArgs,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
   RunTestSuiteArgs,
@@ -110,7 +171,9 @@ import type {
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
+  TerminalProfilesSnapshot,
   TerminalSessionSummary,
+  UpdateSessionMetaArgs,
   TestRunSummary,
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
@@ -119,6 +182,7 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
+import type { createRestackSuggestionService } from "../lanes/restackSuggestionService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createDiffService } from "../diffs/diffService";
@@ -136,6 +200,15 @@ import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createByokLlmService } from "../byok/byokLlmService";
+import { readGlobalState, writeGlobalState } from "../state/globalState";
+import type { createKeybindingsService } from "../keybindings/keybindingsService";
+import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
+import type { createAgentToolsService } from "../agentTools/agentToolsService";
+import type { createOnboardingService } from "../onboarding/onboardingService";
+import type { createCiService } from "../ci/ciService";
+import type { createAutomationService } from "../automations/automationService";
+import type { createAutomationPlannerService } from "../automations/automationPlannerService";
+import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
   db: AdeDb;
@@ -143,7 +216,14 @@ export type AppContext = {
   project: ProjectInfo;
   projectId: string;
   adeDir: string;
+  disposeHeadWatcher: () => void;
+  keybindingsService: ReturnType<typeof createKeybindingsService>;
+  terminalProfilesService: ReturnType<typeof createTerminalProfilesService>;
+  agentToolsService: ReturnType<typeof createAgentToolsService>;
+  onboardingService: ReturnType<typeof createOnboardingService>;
+  ciService: ReturnType<typeof createCiService>;
   laneService: ReturnType<typeof createLaneService>;
+  restackSuggestionService: ReturnType<typeof createRestackSuggestionService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -157,6 +237,8 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   jobEngine: ReturnType<typeof createJobEngine>;
+  automationService: ReturnType<typeof createAutomationService>;
+  automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -174,10 +256,12 @@ function clampLayout(layout: DockLayout): DockLayout {
 
 export function registerIpc({
   getCtx,
-  switchProjectFromDialog
+  switchProjectFromDialog,
+  globalStatePath
 }: {
   getCtx: () => AppContext;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  globalStatePath: string;
 }) {
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
@@ -196,6 +280,12 @@ export function registerIpc({
       throw new Error("Only http(s) URLs are allowed.");
     }
     await shell.openExternal(parsed.toString());
+  });
+
+  ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
+    const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
+    if (!raw) return;
+    shell.showItemInFolder(raw);
   });
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
@@ -236,6 +326,256 @@ export function registerIpc({
     await shell.openPath(ctx.adeDir);
   });
 
+  ipcMain.handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
+    const ctx = getCtx();
+    const clearedAt = new Date().toISOString();
+    const deletedPaths: string[] = [];
+
+    const rmrf = (absPath: string) => {
+      const resolved = path.resolve(absPath);
+      const allowedRoot = path.resolve(ctx.adeDir) + path.sep;
+      if (!resolved.startsWith(allowedRoot)) {
+        throw new Error("Refusing to delete outside .ade directory");
+      }
+      if (!fs.existsSync(resolved)) return;
+      fs.rmSync(resolved, { recursive: true, force: true });
+      deletedPaths.push(resolved);
+    };
+
+    if (arg.packs) rmrf(path.join(ctx.adeDir, "packs"));
+    if (arg.logs) rmrf(path.join(ctx.adeDir, "logs"));
+    if (arg.transcripts) rmrf(path.join(ctx.adeDir, "transcripts"));
+
+    return { deletedPaths, clearedAt };
+  });
+
+  ipcMain.handle(IPC.projectExportConfig, async (event): Promise<ExportConfigBundleResult> => {
+    const ctx = getCtx();
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+
+    const snapshot = ctx.projectConfigService.get();
+    const sharedPath = snapshot.paths.sharedPath;
+    const localPath = snapshot.paths.localPath;
+
+    const readText = (p: string): string => {
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return "";
+      }
+    };
+
+    const redactSecrets = (input: string): string => {
+      let output = input;
+      output = output.replace(
+        /((?:api[_-]?key|token|secret|password|refreshToken|accessToken|idToken)\s*:\s*)(["']?)[^\s"']{6,}\2/gi,
+        "$1<redacted>"
+      );
+      output = output.replace(
+        /-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g,
+        "<redacted-private-key>"
+      );
+      output = output.replace(
+        /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
+        "<redacted-token>"
+      );
+      return output;
+    };
+
+    const defaultName = `ade-config-${ctx.project.displayName.replace(/[^a-zA-Z0-9._-]+/g, "_")}-${new Date()
+      .toISOString()
+      .slice(0, 10)}.json`;
+    const defaultPath = path.join(ctx.project.rootPath, defaultName);
+
+    const result = win
+      ? await dialog.showSaveDialog(win, {
+          title: "Export ADE config",
+          defaultPath,
+          buttonLabel: "Export",
+          filters: [{ name: "JSON", extensions: ["json"] }]
+        })
+      : await dialog.showSaveDialog({
+          title: "Export ADE config",
+          defaultPath,
+          buttonLabel: "Export",
+          filters: [{ name: "JSON", extensions: ["json"] }]
+        });
+
+    if (result.canceled || !result.filePath) {
+      return { cancelled: true };
+    }
+
+    const exportedAt = new Date().toISOString();
+    const bundle = {
+      exportedAt,
+      project: ctx.project,
+      config: {
+        sharedPath,
+        localPath,
+        sharedYaml: readText(sharedPath),
+        localYamlRedacted: redactSecrets(readText(localPath))
+      }
+    };
+
+    const content = `${JSON.stringify(bundle, null, 2)}\n`;
+    fs.writeFileSync(result.filePath, content, "utf8");
+
+    return {
+      cancelled: false,
+      savedPath: result.filePath,
+      bytesWritten: Buffer.byteLength(content, "utf8"),
+      exportedAt
+    };
+  });
+
+  ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
+    const state = readGlobalState(globalStatePath);
+    return (state.recentProjects ?? []).map((entry) => ({
+      rootPath: entry.rootPath,
+      displayName: entry.displayName,
+      lastOpenedAt: entry.lastOpenedAt,
+      exists: fs.existsSync(entry.rootPath)
+    }));
+  });
+
+  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath: string }): Promise<RecentProjectSummary[]> => {
+    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    if (!rootPath) {
+      const state = readGlobalState(globalStatePath);
+      return (state.recentProjects ?? []).map((entry) => ({
+        rootPath: entry.rootPath,
+        displayName: entry.displayName,
+        lastOpenedAt: entry.lastOpenedAt,
+        exists: fs.existsSync(entry.rootPath)
+      }));
+    }
+    const state = readGlobalState(globalStatePath);
+    const filtered = (state.recentProjects ?? []).filter((entry) => entry.rootPath !== rootPath);
+    const next = { ...state, recentProjects: filtered };
+    if (next.lastProjectRoot === rootPath) {
+      delete next.lastProjectRoot;
+    }
+    writeGlobalState(globalStatePath, next);
+    return filtered.map((entry) => ({
+      rootPath: entry.rootPath,
+      displayName: entry.displayName,
+      lastOpenedAt: entry.lastOpenedAt,
+      exists: fs.existsSync(entry.rootPath)
+    }));
+  });
+
+  ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
+    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    if (!rootPath) return getCtx().project;
+    if (rootPath === getCtx().project.rootPath) return getCtx().project;
+    return await switchProjectFromDialog(rootPath);
+  });
+
+  ipcMain.handle(IPC.keybindingsGet, async (): Promise<KeybindingsSnapshot> => {
+    const ctx = getCtx();
+    return ctx.keybindingsService.get();
+  });
+
+  ipcMain.handle(IPC.keybindingsSet, async (_event, arg: { overrides: KeybindingOverride[] }): Promise<KeybindingsSnapshot> => {
+    const ctx = getCtx();
+    return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
+  });
+
+  ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
+    const ctx = getCtx();
+    return ctx.agentToolsService.detect();
+  });
+
+  ipcMain.handle(IPC.terminalProfilesGet, async (): Promise<TerminalProfilesSnapshot> => {
+    const ctx = getCtx();
+    return ctx.terminalProfilesService.get();
+  });
+
+  ipcMain.handle(IPC.terminalProfilesSet, async (_event, arg: TerminalProfilesSnapshot): Promise<TerminalProfilesSnapshot> => {
+    const ctx = getCtx();
+    return ctx.terminalProfilesService.set(arg);
+  });
+
+  ipcMain.handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {
+    const ctx = getCtx();
+    return ctx.onboardingService.getStatus();
+  });
+
+  ipcMain.handle(IPC.onboardingDetectDefaults, async (): Promise<OnboardingDetectionResult> => {
+    const ctx = getCtx();
+    return await ctx.onboardingService.detectDefaults();
+  });
+
+  ipcMain.handle(IPC.onboardingDetectExistingLanes, async (): Promise<OnboardingExistingLaneCandidate[]> => {
+    const ctx = getCtx();
+    return await ctx.onboardingService.detectExistingLanes();
+  });
+
+  ipcMain.handle(IPC.onboardingGenerateInitialPacks, async (_event, arg: { laneIds?: string[] } = {}): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.onboardingService.generateInitialPacks({ laneIds: arg.laneIds });
+  });
+
+  ipcMain.handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
+    const ctx = getCtx();
+    return ctx.onboardingService.complete();
+  });
+
+  ipcMain.handle(IPC.ciScan, async (): Promise<CiScanResult> => {
+    const ctx = getCtx();
+    return await ctx.ciService.scan();
+  });
+
+  ipcMain.handle(IPC.ciImport, async (_event, arg: CiImportRequest): Promise<CiImportResult> => {
+    const ctx = getCtx();
+    return await ctx.ciService.import(arg);
+  });
+
+  ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.list();
+  });
+
+  ipcMain.handle(IPC.automationsToggle, async (_event, arg: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
+  });
+
+  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: { id: string; laneId?: string | null }): Promise<AutomationRun> => {
+    const ctx = getCtx();
+    return await ctx.automationService.triggerManually({ id: arg?.id ?? "", laneId: arg?.laneId ?? null });
+  });
+
+  ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
+    const ctx = getCtx();
+    return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
+  });
+
+  ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
+    const ctx = getCtx();
+    return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
+  });
+
+  ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
+    const ctx = getCtx();
+    return await ctx.automationPlannerService.parseNaturalLanguage(arg);
+  });
+
+  ipcMain.handle(IPC.automationsValidateDraft, async (_event, arg: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> => {
+    const ctx = getCtx();
+    return ctx.automationPlannerService.validateDraft(arg);
+  });
+
+  ipcMain.handle(IPC.automationsSaveDraft, async (_event, arg: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> => {
+    const ctx = getCtx();
+    return ctx.automationPlannerService.saveDraft(arg);
+  });
+
+  ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
+    const ctx = getCtx();
+    return ctx.automationPlannerService.simulate(arg);
+  });
+
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
     const ctx = getCtx();
     const key = `dock_layout:${arg.layoutId}`;
@@ -250,6 +590,21 @@ export function registerIpc({
     const safe = clampLayout(arg.layout);
     ctx.db.setJson(key, safe);
     ctx.logger.debug("layout.set", { key, panels: Object.keys(safe).length });
+  });
+
+  ipcMain.handle(IPC.tilingTreeGet, async (_event, arg: { layoutId: string }): Promise<unknown> => {
+    const ctx = getCtx();
+    const key = `tiling_tree:${arg.layoutId}`;
+    const value = ctx.db.getJson<unknown>(key);
+    ctx.logger.debug("tilingTree.get", { key, hit: value != null });
+    return value;
+  });
+
+  ipcMain.handle(IPC.tilingTreeSet, async (_event, arg: { layoutId: string; tree: unknown }): Promise<void> => {
+    const ctx = getCtx();
+    const key = `tiling_tree:${arg.layoutId}`;
+    ctx.db.setJson(key, arg.tree);
+    ctx.logger.debug("tilingTree.set", { key });
   });
 
   ipcMain.handle(IPC.graphStateGet, async (_event, arg: { projectId: string }): Promise<GraphPersistedState | null> => {
@@ -277,6 +632,11 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
     const ctx = getCtx();
     return await ctx.laneService.createChild(arg);
+  });
+
+  ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
+    const ctx = getCtx();
+    return await ctx.laneService.importBranch(arg);
   });
 
   ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
@@ -324,6 +684,24 @@ export function registerIpc({
     return await ctx.laneService.restack(arg);
   });
 
+  ipcMain.handle(IPC.lanesListRestackSuggestions, async (): Promise<RestackSuggestion[]> => {
+    const ctx = getCtx();
+    if (!ctx.restackSuggestionService) return [];
+    return await ctx.restackSuggestionService.listSuggestions();
+  });
+
+  ipcMain.handle(IPC.lanesDismissRestackSuggestion, async (_event, arg: { laneId: string }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.restackSuggestionService) return;
+    await ctx.restackSuggestionService.dismiss({ laneId: arg.laneId });
+  });
+
+  ipcMain.handle(IPC.lanesDeferRestackSuggestion, async (_event, arg: { laneId: string; minutes: number }): Promise<void> => {
+    const ctx = getCtx();
+    if (!ctx.restackSuggestionService) return;
+    await ctx.restackSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
+  });
+
   ipcMain.handle(IPC.lanesOpenFolder, async (_event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
     const worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
@@ -338,6 +716,11 @@ export function registerIpc({
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = getCtx();
     return ctx.sessionService.get(arg.sessionId);
+  });
+
+  ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
+    const ctx = getCtx();
+    return ctx.sessionService.updateMeta(arg);
   });
 
   ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number }): Promise<string> => {
@@ -466,9 +849,19 @@ export function registerIpc({
     return ctx.gitService.stageFile(arg);
   });
 
+  ipcMain.handle(IPC.gitStageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.stageAll(arg);
+  });
+
   ipcMain.handle(IPC.gitUnstageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.unstageFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitUnstageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.unstageAll(arg);
   });
 
   ipcMain.handle(IPC.gitDiscardFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
@@ -551,6 +944,41 @@ export function registerIpc({
     return ctx.gitService.push(arg);
   });
 
+  ipcMain.handle(IPC.gitGetConflictState, async (_event, arg: { laneId: string }): Promise<GitConflictState> => {
+    const ctx = getCtx();
+    return await ctx.gitService.getConflictState({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitRebaseContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.rebaseContinue({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitRebaseAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.rebaseAbort({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitMergeContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.mergeContinue({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.mergeAbort({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitListBranches, async (_event, arg: GitListBranchesArgs): Promise<GitBranchSummary[]> => {
+    const ctx = getCtx();
+    return await ctx.gitService.listBranches(arg);
+  });
+
+  ipcMain.handle(IPC.gitCheckoutBranch, async (_event, arg: GitCheckoutBranchArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return await ctx.gitService.checkoutBranch(arg);
+  });
+
   ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
     const ctx = getCtx();
     return await ctx.conflictService.getLaneStatus(arg);
@@ -586,6 +1014,11 @@ export function registerIpc({
     return await ctx.conflictService.listProposals({ laneId: arg.laneId });
   });
 
+  ipcMain.handle(IPC.conflictsPrepareProposal, async (_event, arg: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.prepareProposal(arg);
+  });
+
   ipcMain.handle(IPC.conflictsRequestProposal, async (_event, arg: RequestConflictProposalArgs): Promise<ConflictProposal> => {
     const ctx = getCtx();
     return await ctx.conflictService.requestProposal(arg);
@@ -603,6 +1036,76 @@ export function registerIpc({
     const updated = await ctx.conflictService.undoProposal(arg);
     ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
     return updated;
+  });
+
+  ipcMain.handle(IPC.conflictsRunExternalResolver, async (_event, arg: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const ctx = getCtx();
+    return await ctx.conflictService.runExternalResolver(arg);
+  });
+
+  ipcMain.handle(IPC.conflictsListExternalResolverRuns, async (_event, arg: ListExternalConflictResolverRunsArgs = {}): Promise<ConflictExternalResolverRunSummary[]> => {
+    const ctx = getCtx();
+    return ctx.conflictService.listExternalResolverRuns(arg);
+  });
+
+  ipcMain.handle(
+    IPC.conflictsCommitExternalResolverRun,
+    async (_event, arg: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> => {
+      const ctx = getCtx();
+      const committed = await ctx.conflictService.commitExternalResolverRun(arg);
+      ctx.jobEngine.runConflictPredictionNow({ laneId: committed.laneId });
+      return committed;
+    }
+  );
+
+  ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => getCtx().conflictService.prepareResolverSession(arg));
+
+  ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => getCtx().conflictService.finalizeResolverSession(arg));
+
+  ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => getCtx().conflictService.suggestResolverTarget(arg));
+
+  ipcMain.handle(IPC.contextGetStatus, async (): Promise<ContextStatus> => {
+    const ctx = getCtx();
+    const base = ctx.packService.getContextStatus();
+    const hosted = ctx.hostedAgentService.getStatus();
+    return {
+      ...base,
+      contextManifestRefs: {
+        project: hosted.remoteProjectId ? `${hosted.remoteProjectId}/project/manifest.json` : null,
+        packs: hosted.remoteProjectId ? `${hosted.remoteProjectId}/packs/manifest.json` : null,
+        transcripts: hosted.remoteProjectId ? `${hosted.remoteProjectId}/transcripts/manifest.json` : null
+      },
+      hostedTiming: hosted.contextTelemetry?.lastNarrativeTiming ?? null,
+      hostedTimeoutCount: hosted.contextTelemetry?.narrativeTimeoutCount ?? 0,
+      hostedLastTimeoutReason: hosted.contextTelemetry?.lastNarrativeTimeoutReason ?? null,
+      insufficientContextCount:
+        base.insufficientContextCount + (hosted.contextTelemetry?.insufficientContextJobCount ?? 0)
+    };
+  });
+
+  ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
+    const ctx = getCtx();
+    return ctx.packService.generateContextDocs(arg);
+  });
+
+  ipcMain.handle(IPC.contextPrepareDocGeneration, async (_event, arg: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> => {
+    const ctx = getCtx();
+    return ctx.packService.prepareContextDocGeneration(arg);
+  });
+
+  ipcMain.handle(IPC.contextInstallGeneratedDocs, async (_event, arg: ContextInstallGeneratedDocsArgs): Promise<ContextGenerateDocsResult> => {
+    const ctx = getCtx();
+    return ctx.packService.installGeneratedDocs(arg);
+  });
+
+  ipcMain.handle(IPC.contextOpenDoc, async (_event, arg: ContextOpenDocArgs): Promise<void> => {
+    const ctx = getCtx();
+    const explicitPath = typeof arg.path === "string" ? arg.path.trim() : "";
+    const target = explicitPath || (arg.docId ? ctx.packService.getContextDocPath(arg.docId) : "");
+    if (!target) {
+      throw new Error("contextOpenDoc requires docId or path");
+    }
+    await shell.openPath(target);
   });
 
   ipcMain.handle(IPC.packsGetProjectPack, async (): Promise<PackSummary> => {
@@ -628,6 +1131,14 @@ export function registerIpc({
     return lanePack;
   });
 
+  ipcMain.handle(IPC.packsRefreshProjectPack, async (_event, arg: { laneId?: string | null } = {}): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.refreshProjectPack({
+      reason: "manual_refresh",
+      ...(arg.laneId ? { laneId: arg.laneId } : {})
+    });
+  });
+
   ipcMain.handle(IPC.packsApplyHostedNarrative, async (_event, arg: { laneId: string; narrative: string }): Promise<PackSummary> => {
     const ctx = getCtx();
     return ctx.packService.applyHostedNarrative({
@@ -643,39 +1154,309 @@ export function registerIpc({
       throw new Error("Lane pack is empty. Refresh the deterministic pack first.");
     }
 
+    const laneExport = await ctx.packService.getLaneExport({ laneId: arg.laneId, level: "standard" });
+    const projectExport = await ctx.packService.getProjectExport({ level: "lite" });
+    const packBody = redactSecrets(laneExport.content);
+    const lanePackKey =
+      typeof laneExport.header?.packKey === "string" && laneExport.header.packKey.trim().length
+        ? laneExport.header.packKey
+        : lanePack.packKey;
+    const projectPackKey =
+      typeof projectExport.header?.packKey === "string" && projectExport.header.packKey.trim().length
+        ? projectExport.header.packKey
+        : null;
+    const projectContext = {
+      projectExport: redactSecrets(projectExport.content),
+      refs: {
+        lanePackKey,
+        projectPackKey
+      },
+      omissions: [
+        ...(laneExport.clipReason ? [`lane_export:${laneExport.clipReason}`] : []),
+        ...(projectExport.clipReason ? [`project_export:${projectExport.clipReason}`] : []),
+        ...((laneExport.omittedSections ?? []).map((entry) => `lane_export:${entry}`)),
+        ...((projectExport.omittedSections ?? []).map((entry) => `project_export:${entry}`))
+      ],
+      assumptions: {
+        prdPreferred: true,
+        architecturePreferred: true
+      }
+    };
+
     const providerMode = ctx.projectConfigService.get().effective.providerMode ?? "guest";
-    if (providerMode === "hosted" && ctx.hostedAgentService.getStatus().enabled) {
-      const narrative = await ctx.hostedAgentService.requestLaneNarrative({
-        laneId: arg.laneId,
-        packBody: lanePack.body
-      });
-      return ctx.packService.applyHostedNarrative({
-        laneId: arg.laneId,
-        narrative: narrative.narrative,
-        metadata: {
-          jobId: narrative.jobId,
-          artifactId: narrative.artifactId
+    if (providerMode === "hosted") {
+      if (!ctx.hostedAgentService.getStatus().enabled) {
+        throw new Error("Hosted AI is selected but not ready. Go to Settings → Provider, grant consent, apply bootstrap, and sign in.");
+      }
+      const submittedAt = new Date().toISOString();
+      let jobId: string | null = null;
+      let lastStatus: "queued" | "processing" | "completed" | "failed" | null = null;
+
+      try {
+        const narrative = await ctx.hostedAgentService.requestLaneNarrative({
+          laneId: arg.laneId,
+          packBody,
+          projectContext,
+          onJobSubmitted: (submission) => {
+            jobId = submission.jobId;
+            lastStatus = submission.status;
+            try {
+              ctx.packService.recordEvent({
+                packKey: lanePack.packKey,
+                eventType: "narrative_requested",
+                payload: {
+                  laneId: arg.laneId,
+                  providerMode,
+                  jobId: submission.jobId,
+                  status: submission.status,
+                  submittedAt,
+                  trigger: "manual_ai",
+                  sessionId: null,
+                  deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+                  contentHash: lanePack.contentHash,
+                  exportLevel: laneExport.level,
+                  exportApproxTokens: laneExport.approxTokens,
+                  exportMaxTokens: laneExport.maxTokens,
+                  projectExportLevel: projectExport.level,
+                  projectExportApproxTokens: projectExport.approxTokens,
+                  projectExportMaxTokens: projectExport.maxTokens
+                }
+              });
+            } catch {
+              // ignore pack event failures
+            }
+          },
+          onJobStatus: (status) => {
+            lastStatus = status.status;
+          }
+        });
+
+        return ctx.packService.applyHostedNarrative({
+          laneId: arg.laneId,
+          narrative: narrative.narrative,
+          metadata: {
+            jobId: narrative.jobId,
+            artifactId: narrative.artifactId,
+            provider: narrative.provider,
+            model: narrative.model,
+            inputTokens: narrative.inputTokens,
+            outputTokens: narrative.outputTokens,
+            latencyMs: narrative.latencyMs,
+            timing: narrative.timing,
+            timeoutReason: narrative.timing.timeoutReason,
+            trigger: "manual_ai",
+            sessionId: null
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const telemetry = ctx.hostedAgentService.getStatus().contextTelemetry;
+        try {
+          ctx.packService.recordEvent({
+            packKey: lanePack.packKey,
+            eventType: "narrative_failed",
+            payload: {
+              laneId: arg.laneId,
+              providerMode,
+              ...(jobId ? { jobId } : {}),
+              ...(lastStatus ? { status: lastStatus } : {}),
+              submittedAt,
+              trigger: "manual_ai",
+              sessionId: null,
+              error: message,
+              timeoutReason: telemetry?.lastNarrativeTimeoutReason ?? null,
+              timing: telemetry?.lastNarrativeTiming ?? null
+            }
+          });
+        } catch {
+          // ignore pack event failures
         }
-      });
+        throw error;
+      }
     }
 
     if (providerMode === "byok") {
-      const narrative = await ctx.byokLlmService.generateLaneNarrative({
-        laneId: arg.laneId,
-        packBody: lanePack.body
-      });
-      return ctx.packService.applyHostedNarrative({
-        laneId: arg.laneId,
-        narrative: narrative.narrative,
-        metadata: {
-          source: "byok",
-          provider: narrative.provider,
-          model: narrative.model
+      const submittedAt = new Date().toISOString();
+      try {
+        ctx.packService.recordEvent({
+          packKey: lanePack.packKey,
+          eventType: "narrative_requested",
+          payload: {
+            laneId: arg.laneId,
+            providerMode,
+            status: "processing",
+            submittedAt,
+            trigger: "manual_ai",
+            sessionId: null,
+            deterministicUpdatedAt: lanePack.deterministicUpdatedAt,
+            contentHash: lanePack.contentHash,
+            exportLevel: laneExport.level,
+            exportApproxTokens: laneExport.approxTokens,
+            exportMaxTokens: laneExport.maxTokens,
+            projectExportLevel: projectExport.level,
+            projectExportApproxTokens: projectExport.approxTokens,
+            projectExportMaxTokens: projectExport.maxTokens
+          }
+        });
+      } catch {
+        // ignore pack event failures
+      }
+
+      try {
+        const narrative = await ctx.byokLlmService.generateLaneNarrative({
+          laneId: arg.laneId,
+          packBody: [packBody, "", "## Project Context", projectContext.projectExport].join("\n")
+        });
+        return ctx.packService.applyHostedNarrative({
+          laneId: arg.laneId,
+          narrative: narrative.narrative,
+          metadata: {
+            source: "byok",
+            provider: narrative.provider,
+            model: narrative.model,
+            trigger: "manual_ai",
+            sessionId: null
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        try {
+          ctx.packService.recordEvent({
+            packKey: lanePack.packKey,
+            eventType: "narrative_failed",
+            payload: {
+              laneId: arg.laneId,
+              providerMode,
+              status: "failed",
+              submittedAt,
+              trigger: "manual_ai",
+              sessionId: null,
+              error: message
+            }
+          });
+        } catch {
+          // ignore pack event failures
         }
-      });
+        throw error;
+      }
     }
 
     throw new Error("AI narrative generation requires Hosted or BYOK provider mode.");
+  });
+
+  ipcMain.handle(IPC.packsGetFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getFeaturePack(arg.featureKey);
+  });
+
+  ipcMain.handle(
+    IPC.packsGetConflictPack,
+    async (_event, arg: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> => {
+      const ctx = getCtx();
+      return ctx.packService.getConflictPack({ laneId: arg.laneId, peerLaneId: arg.peerLaneId ?? null });
+    }
+  );
+
+  ipcMain.handle(IPC.packsGetPlanPack, async (_event, arg: { laneId: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getPlanPack(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.packsGetProjectExport, async (_event, arg: GetProjectExportArgs): Promise<PackExport> => {
+    const ctx = getCtx();
+    return await ctx.packService.getProjectExport(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetLaneExport, async (_event, arg: GetLaneExportArgs): Promise<PackExport> => {
+    const ctx = getCtx();
+    return await ctx.packService.getLaneExport(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetConflictExport, async (_event, arg: GetConflictExportArgs): Promise<PackExport> => {
+    const ctx = getCtx();
+    return await ctx.packService.getConflictExport(arg);
+  });
+
+  ipcMain.handle(IPC.packsGetDeltaDigest, async (_event, arg: PackDeltaDigestArgs): Promise<PackDeltaDigestV1> => {
+    const ctx = getCtx();
+    return await ctx.packService.getDeltaDigest(arg);
+  });
+
+  ipcMain.handle(IPC.packsRefreshFeaturePack, async (_event, arg: { featureKey: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.refreshFeaturePack({ featureKey: arg.featureKey, reason: "manual_refresh" });
+  });
+
+  ipcMain.handle(
+    IPC.packsRefreshConflictPack,
+    async (_event, arg: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> => {
+      const ctx = getCtx();
+      return await ctx.packService.refreshConflictPack({
+        laneId: arg.laneId,
+        peerLaneId: arg.peerLaneId ?? null,
+        reason: "manual_refresh"
+      });
+    }
+  );
+
+  ipcMain.handle(IPC.packsSavePlanPack, async (_event, arg: { laneId: string; body: string }): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.savePlanPack({ laneId: arg.laneId, body: arg.body, reason: "manual_save" });
+  });
+
+  ipcMain.handle(IPC.packsListVersions, async (_event, arg: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> => {
+    const ctx = getCtx();
+    return ctx.packService.listVersions({ packKey: arg.packKey, limit: arg.limit });
+  });
+
+  ipcMain.handle(IPC.packsGetVersion, async (_event, arg: { versionId: string }): Promise<PackVersion> => {
+    const ctx = getCtx();
+    return ctx.packService.getVersion(arg.versionId);
+  });
+
+  ipcMain.handle(
+    IPC.packsDiffVersions,
+    async (_event, arg: { fromId: string; toId: string }): Promise<string> => {
+      const ctx = getCtx();
+      return await ctx.packService.diffVersions(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsUpdateNarrative,
+    async (_event, arg: { packKey: string; narrative: string }): Promise<PackSummary> => {
+      const ctx = getCtx();
+      return ctx.packService.updateNarrative({ packKey: arg.packKey, narrative: arg.narrative, source: "user" });
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsListEvents,
+    async (_event, arg: { packKey: string; limit?: number }): Promise<PackEvent[]> => {
+      const ctx = getCtx();
+      return ctx.packService.listEvents({ packKey: arg.packKey, limit: arg.limit });
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsListEventsSince,
+    async (_event, arg: ListPackEventsSinceArgs): Promise<PackEvent[]> => {
+      const ctx = getCtx();
+      return ctx.packService.listEventsSince(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.packsListCheckpoints,
+    async (_event, arg: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> => {
+      const ctx = getCtx();
+      return ctx.packService.listCheckpoints({ laneId: arg.laneId, limit: arg.limit });
+    }
+  );
+
+  ipcMain.handle(IPC.packsGetHeadVersion, async (_event, arg: { packKey: string }): Promise<PackHeadVersion> => {
+    const ctx = getCtx();
+    return ctx.packService.getHeadVersion({ packKey: arg.packKey });
   });
 
   ipcMain.handle(IPC.hostedGetStatus, async (): Promise<HostedStatus> => {
@@ -706,6 +1487,16 @@ export function registerIpc({
   ipcMain.handle(IPC.hostedSyncMirror, async (_event, arg: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
     const ctx = getCtx();
     return await ctx.hostedAgentService.syncMirror(arg);
+  });
+
+  ipcMain.handle(IPC.hostedCleanMirrorData, async (): Promise<HostedMirrorCleanupSummaryV1> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.cleanMirrorData();
+  });
+
+  ipcMain.handle(IPC.hostedDeleteMirrorData, async (): Promise<HostedMirrorDeleteResult> => {
+    const ctx = getCtx();
+    return await ctx.hostedAgentService.deleteMirrorData();
   });
 
   ipcMain.handle(IPC.hostedSubmitJob, async (_event, arg: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> => {
@@ -825,6 +1616,16 @@ export function registerIpc({
     return await ctx.prService.openInGitHub(arg.prId);
   });
 
+  ipcMain.handle(IPC.prsCreateStacked, async (_event, arg) => getCtx().prService.createStackedPrs(arg));
+
+  ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg) => getCtx().prService.createIntegrationPr(arg));
+
+  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg) => getCtx().prService.landStackEnhanced(arg));
+
+  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg) => getCtx().prService.getConflictAnalysis(arg));
+
+  ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
+
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
     const ctx = getCtx();
     return ctx.operationService.list(arg);
@@ -930,7 +1731,13 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectConfigSave, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigSnapshot> => {
     const ctx = getCtx();
-    return ctx.projectConfigService.save(arg.candidate);
+    const next = ctx.projectConfigService.save(arg.candidate);
+    try {
+      ctx.automationService.syncFromConfig();
+    } catch {
+      // ignore schedule refresh failures
+    }
+    return next;
   });
 
   ipcMain.handle(IPC.projectConfigDiffAgainstDisk, async (): Promise<ProjectConfigDiff> => {

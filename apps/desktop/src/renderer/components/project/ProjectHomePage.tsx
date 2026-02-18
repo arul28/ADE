@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertCircle,
   ExternalLink,
   FolderOpen,
+  Home,
+  Layers,
   Play,
   RefreshCw,
   RotateCcw,
@@ -17,6 +20,7 @@ import type {
   ConfigStackButtonDefinition,
   ConfigTestSuiteDefinition,
   ProcessDefinition,
+  ProcessRestartPolicy,
   ProcessRuntime,
   ProcessRuntimeStatus,
   ProjectConfigCandidate,
@@ -31,6 +35,8 @@ import type {
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
+import { CiImportPanel } from "./CiImportPanel";
+import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 
 const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
 const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
@@ -101,6 +107,26 @@ function stackTone(status: StackAggregateStatus): string {
   if (status === "partial") return "text-amber-700 border-amber-200";
   if (status === "error") return "text-red-700 border-red-200";
   return "text-muted-fg border-border";
+}
+
+function statusBadgeBg(status: ProcessRuntimeStatus): string {
+  if (status === "running") return "bg-emerald-500/15 text-emerald-400";
+  if (status === "starting" || status === "stopping") return "bg-amber-500/15 text-amber-400";
+  if (status === "degraded" || status === "crashed") return "bg-red-500/15 text-red-400";
+  return "bg-muted/20 text-muted-fg";
+}
+
+function readinessBadgeBg(readiness: ProcessRuntime["readiness"]): string {
+  if (readiness === "ready") return "bg-emerald-500/15 text-emerald-400";
+  if (readiness === "not_ready") return "bg-red-500/15 text-red-400";
+  return "bg-muted/20 text-muted-fg";
+}
+
+function testStatusBadgeBg(status: string | undefined): string {
+  if (status === "passed") return "bg-emerald-500/15 text-emerald-400";
+  if (status === "failed") return "bg-red-500/15 text-red-400";
+  if (status === "running") return "bg-blue-500/15 text-blue-400";
+  return "bg-muted/20 text-muted-fg";
 }
 
 function getRuntimeFallback(laneId: string | null, processId: string): ProcessRuntime {
@@ -249,7 +275,7 @@ type EditableProcessRow = {
   commandJson: string;
   envJson: string;
   autostart: boolean;
-  restart: "never" | "on_crash";
+  restart: ProcessRestartPolicy;
   gracefulShutdownMs: string;
   dependsOnCsv: string;
   readinessType: "none" | "port" | "logRegex";
@@ -464,6 +490,39 @@ function toFileSuites(rows: EditableSuiteRow[]): ConfigTestSuiteDefinition[] {
   return out;
 }
 
+/* ---- Default tiling layout ---- */
+
+const PROJECT_HOME_TILING_TREE: PaneSplit = {
+  type: "split",
+  direction: "horizontal",
+  children: [
+    {
+      node: {
+        type: "split",
+        direction: "vertical",
+        children: [
+          { node: { type: "pane", id: "overview" }, defaultSize: 40, minSize: 20 },
+          { node: { type: "pane", id: "processes" }, defaultSize: 60, minSize: 25 }
+        ]
+      },
+      defaultSize: 50,
+      minSize: 25
+    },
+    {
+      node: {
+        type: "split",
+        direction: "vertical",
+        children: [
+          { node: { type: "pane", id: "tests" }, defaultSize: 50, minSize: 20 },
+          { node: { type: "pane", id: "config" }, defaultSize: 50, minSize: 20 }
+        ]
+      },
+      defaultSize: 50,
+      minSize: 25
+    }
+  ]
+};
+
 export function ProjectHomePage() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
@@ -510,7 +569,7 @@ export function ProjectHomePage() {
 
   const processLogRef = useRef<HTMLPreElement | null>(null);
   const testLogRef = useRef<HTMLPreElement | null>(null);
-  const configEditorRef = useRef<HTMLElement | null>(null);
+  const configEditorRef = useRef<HTMLDivElement | null>(null);
   const selectedProcessIdRef = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
 
@@ -869,71 +928,32 @@ export function ProjectHomePage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [processItems, selectedProcessId, trustRequired, runWithRefresh, runtimeById, effectiveLaneId]);
 
-  return (
-    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-border bg-card/60 backdrop-blur">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold">Run</div>
-          <div className="text-xs text-muted-fg">Managed processes, lane-scoped stack controls, tests, and config</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setNotice(null);
-              refreshAll().catch(() => { });
-            }}
-            title="Refresh"
-          >
-            <RefreshCw className={cx("h-4 w-4", loading && "animate-spin")} />
-            Refresh
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              openRepo().catch((err) => {
-                setError(err instanceof Error ? err.message : String(err));
-              });
-            }}
-          >
-            <FolderOpen className="h-4 w-4" />
-            Open repo
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              window.ade.project.openAdeFolder().catch((err) => {
-                setError(err instanceof Error ? err.message : String(err));
-              });
-            }}
-          >
-            <ExternalLink className="h-4 w-4" />
-            Open .ade
-          </Button>
+  /* ---- Pane configs for the floating tiling layout ---- */
 
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        <div className="space-y-3">
+  const paneConfigs: Record<string, PaneConfig> = useMemo(() => ({
+    overview: {
+      title: "Overview",
+      icon: Home,
+      meta: project?.displayName ?? "(no project)",
+      minimizable: true,
+      bodyClassName: "overflow-auto",
+      children: (
+        <div className="space-y-3 p-3">
           {error ? (
-            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">
+            <div className="rounded-xl bg-red-500/10 border-l-[3px] border-red-500 px-3 py-2 text-xs text-red-400">
               <div className="flex items-start gap-2">
-                <AlertCircle className="mt-0.5 h-4 w-4" />
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <div className="min-w-0">{error}</div>
               </div>
             </div>
           ) : null}
 
           {notice ? (
-            <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{notice}</div>
+            <div className="rounded-xl bg-emerald-500/10 border-l-[3px] border-emerald-500 px-3 py-2 text-xs text-emerald-400">{notice}</div>
           ) : null}
 
           {trustRequired ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <div className="rounded-xl bg-amber-500/10 border-l-[3px] border-amber-500 px-3 py-2 text-xs text-amber-400">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
                   <ShieldCheck className="mt-0.5 h-4 w-4" />
@@ -956,11 +976,11 @@ export function ProjectHomePage() {
             </div>
           ) : null}
 
-          <section className="rounded-md border border-border bg-card/70 p-3">
+          <div>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold">Project header</div>
-                <div className="text-xs text-muted-fg">Repo summary and global stack controls</div>
+                <div className="text-sm font-bold tracking-tight">Project header</div>
+                <div className="text-[11px] text-muted-fg/70">Repo summary and global stack controls</div>
               </div>
               <div className="flex items-center gap-2">
                 <Chip>base: {project?.baseRef ?? "main"}</Chip>
@@ -968,7 +988,7 @@ export function ProjectHomePage() {
                 <label className="flex items-center gap-2 text-xs text-muted-fg">
                   <span>Running in:</span>
                   <select
-                    className="h-7 rounded border border-border bg-card/80 px-2 text-xs"
+                    className="h-7 rounded-lg bg-muted/30 px-2 text-xs"
                     value={effectiveLaneId ?? ""}
                     onChange={(e) => selectRunLane(e.target.value || null)}
                   >
@@ -1008,7 +1028,7 @@ export function ProjectHomePage() {
               </Button>
 
               {stackStatuses.map(({ stack, status }) => (
-                <div key={stack.id} className="inline-flex items-center gap-1 rounded-md border border-border bg-card/80 px-2 py-1">
+                <div key={stack.id} className={cx("inline-flex items-center gap-1.5 rounded-xl shadow-card bg-card/60 px-2.5 py-1.5 border-t-2", status === "running" ? "border-emerald-500/50" : status === "error" ? "border-red-500/50" : status === "partial" ? "border-amber-500/50" : "border-border/30")}>
                   <Chip className={cx("text-[11px]", stackTone(status))}>{status}</Chip>
                   <span className="text-xs font-semibold">{stack.name}</span>
                   <Button
@@ -1038,13 +1058,13 @@ export function ProjectHomePage() {
                 </div>
               ))}
             </div>
-          </section>
+          </div>
 
-          <section className="rounded-md border border-border bg-card/70 p-3">
+          <div>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-semibold">Quick add process</div>
-                <div className="text-xs text-muted-fg">Use this for common commands. You can fine-tune in Config editor.</div>
+                <div className="text-sm font-bold tracking-tight">Quick add process</div>
+                <div className="text-[11px] text-muted-fg/70">Use this for common commands. You can fine-tune in Config editor.</div>
               </div>
               <Button size="sm" variant="outline" onClick={scrollToConfigEditor}>
                 Jump to config editor
@@ -1053,19 +1073,19 @@ export function ProjectHomePage() {
 
             <div className="grid gap-2 md:grid-cols-[160px_1fr_1fr_auto_auto]">
               <input
-                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
                 placeholder="Name (optional)"
                 value={quickProcessName}
                 onChange={(e) => setQuickProcessName(e.target.value)}
               />
               <input
-                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
                 placeholder="Working directory, e.g. apps/web"
                 value={quickProcessCwd}
                 onChange={(e) => setQuickProcessCwd(e.target.value)}
               />
               <input
-                className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
                 placeholder='Command, e.g. "pnpm dev"'
                 value={quickProcessCommand}
                 onChange={(e) => setQuickProcessCommand(e.target.value)}
@@ -1080,281 +1100,297 @@ export function ProjectHomePage() {
             <div className="mt-2 text-[11px] text-muted-fg">
               For commands that need a subdirectory, set <span className="font-mono">Working directory</span> instead of using <span className="font-mono">cd ... &&</span>.
             </div>
-          </section>
-
-          <section className="rounded-md border border-border bg-card/70 p-3">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold">Managed processes</div>
-                <div className="text-xs text-muted-fg">Lifecycle, runtime state, and logs</div>
+          </div>
+        </div>
+      )
+    },
+    processes: {
+      title: "Processes",
+      icon: Play,
+      meta: `${processItems.length} processes`,
+      minimizable: true,
+      bodyClassName: "overflow-auto",
+      children: (
+        <div className="space-y-3 p-3">
+          <div className="space-y-2">
+            {processItems.length === 0 ? (
+              <div className="rounded-xl bg-muted/10 p-3 text-xs text-muted-fg">
+                No process definitions. Use "Quick add process" above or the config editor.
               </div>
-              <Chip>{processItems.length} processes</Chip>
-            </div>
+            ) : null}
 
-            <div className="grid gap-3 xl:grid-cols-[1.2fr_1fr]">
-              <div className="space-y-2">
-                {processItems.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
-                    No process definitions. Use "Quick add process" above or the config editor.
-                  </div>
-                ) : null}
-
-                <div className="overflow-hidden rounded-md border border-border bg-card/50">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-muted/50 font-medium text-muted-fg">
-                      <tr>
-                        <th className="px-3 py-2">Name</th>
-                        <th className="w-24 px-3 py-2">Status</th>
-                        <th className="w-24 px-3 py-2">Readiness</th>
-                        <th className="w-16 px-3 py-2">PID</th>
-                        <th className="w-20 px-3 py-2">Uptime</th>
-                        <th className="w-20 px-3 py-2">Port</th>
-                        <th className="w-32 px-3 py-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {processItems.map(({ definition, runtime: rowRuntime }) => {
-                        const active = selectedProcessId === definition.id;
-                        const isRunning = rowRuntime.status === "running" || rowRuntime.status === "starting" || rowRuntime.status === "degraded";
-                        const canStart = !isRunning && !trustRequired && Boolean(effectiveLaneId);
-                        const canStop = isRunning && Boolean(effectiveLaneId);
-                        return (
-                          <tr
-                            key={definition.id}
-                            className={cx("cursor-pointer transition-colors hover:bg-muted/30", active && "bg-accent/20")}
-                            onClick={() => setSelectedProcessId(definition.id)}
-                          >
-                            <td className="truncate px-3 py-1.5 font-medium" title={definition.name}>
-                              {definition.name}
-                              {active && <span className="ml-2 font-bold text-accent">●</span>}
-                            </td>
-                            <td className="px-3 py-1.5">
-                              <span className={cx("font-mono", statusTone(rowRuntime.status).split(" ")[0])}>
-                                {rowRuntime.status}
-                              </span>
-                            </td>
-                            <td className="px-3 py-1.5">
-                              <span className={cx("font-mono", readinessTone(rowRuntime.readiness).split(" ")[0])}>
-                                {rowRuntime.readiness}
-                              </span>
-                            </td>
-                            <td className="px-3 py-1.5 font-mono text-muted-fg">{rowRuntime.pid ?? "-"}</td>
-                            <td className="px-3 py-1.5 font-mono text-muted-fg">{formatUptime(rowRuntime, nowTick)}</td>
-                            <td className="px-3 py-1.5 font-mono text-muted-fg">
-                              {rowRuntime.ports.length ? rowRuntime.ports.join(",") : "-"}
-                            </td>
-                            <td className="px-3 py-1.5">
-                              <div className="flex items-center gap-1">
-                                {isRunning ? (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={!canStop}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      if (!effectiveLaneId) return;
-                                      runWithRefresh(async () => {
-                                        await window.ade.processes.stop({ laneId: effectiveLaneId, processId: definition.id });
-                                      });
-                                    }}
-                                  >
-                                    Stop
-                                  </Button>
-                                ) : (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    disabled={!canStart}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      if (!effectiveLaneId) return;
-                                      runWithRefresh(async () => {
-                                        await window.ade.processes.start({ laneId: effectiveLaneId, processId: definition.id });
-                                      });
-                                    }}
-                                  >
-                                    Start
-                                  </Button>
-                                )}
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={trustRequired || !effectiveLaneId}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    if (!effectiveLaneId) return;
-                                    runWithRefresh(async () => {
-                                      await window.ade.processes.restart({ laneId: effectiveLaneId, processId: definition.id });
-                                    });
-                                  }}
-                                >
-                                  Restart
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="rounded-md border border-border bg-card/80 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold">Process logs</div>
-                    <div className="text-xs text-muted-fg">
-                      {selectedProcessRuntime ? `${selectedProcessRuntime.processId} (${selectedProcessRuntime.status})` : "No process selected"}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setProcessPauseAutoscroll((v) => !v)}
-                      title="Pause autoscroll"
-                    >
-                      <SquareDashed className="h-4 w-4" />
-                      {processPauseAutoscroll ? "Resume" : "Pause"}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setProcessLogRaw("")}>Clear view</Button>
-                  </div>
-                </div>
-
-                <div className="mt-2">
-                  <input
-                    className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
-                    placeholder="Search log lines"
-                    value={processLogSearch}
-                    onChange={(e) => setProcessLogSearch(e.target.value)}
-                  />
-                </div>
-
-                <pre
-                  ref={processLogRef}
-                  className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
-                >
-                  {visibleProcessLog || "(no output yet)"}
-                </pre>
-              </div>
-            </div>
-          </section>
-
-          <section className="rounded-md border border-border bg-card/70 p-3">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold">Test suites</div>
-                <div className="text-xs text-muted-fg">Run suite buttons with last-run badges and logs</div>
-              </div>
-              <Chip>{suites.length} suites</Chip>
-            </div>
-
-            <div className="grid gap-3 xl:grid-cols-[1.1fr_1fr]">
-              <div className="space-y-2">
-                {suites.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-fg">
-                    No test suites defined. Add suites in the config editor below.
-                  </div>
-                ) : null}
-
-                {suites.map((suite) => {
-                  const last = latestRunBySuite.get(suite.id);
-                  const running = last?.status === "running";
-                  return (
-                    <div key={suite.id} className="rounded-md border border-border bg-card/80 p-3">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold">{suite.name}</div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
-                            <Chip>{suite.id}</Chip>
-                            <Chip>last: {last?.status ?? "never"}</Chip>
-                            <Chip>duration: {formatDurationMs(last?.durationMs ?? null)}</Chip>
-                            <Chip>time: {formatDate(last?.startedAt ?? null)}</Chip>
+            <div className="overflow-hidden rounded-xl border border-border/10 bg-card/30">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b-2 border-accent/20 bg-muted/30">
+                    <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Name</th>
+                    <th className="w-24 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Status</th>
+                    <th className="w-24 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Readiness</th>
+                    <th className="w-16 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">PID</th>
+                    <th className="w-20 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Uptime</th>
+                    <th className="w-20 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Port</th>
+                    <th className="w-32 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/10">
+                  {processItems.map(({ definition, runtime: rowRuntime }) => {
+                    const active = selectedProcessId === definition.id;
+                    const isRunning = rowRuntime.status === "running" || rowRuntime.status === "starting" || rowRuntime.status === "degraded";
+                    const canStart = !isRunning && !trustRequired && Boolean(effectiveLaneId);
+                    const canStop = isRunning && Boolean(effectiveLaneId);
+                    return (
+                      <tr
+                        key={definition.id}
+                        className={cx("cursor-pointer transition-colors duration-150 hover:bg-muted/20", active && "bg-accent/15 border-l-2 border-accent")}
+                        onClick={() => setSelectedProcessId(definition.id)}
+                      >
+                        <td className={cx("truncate py-2 font-medium", active ? "pl-2 pr-3" : "px-3")} title={definition.name}>
+                          {definition.name}
+                          {active && <span className="ml-2 font-bold text-accent">●</span>}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", statusBadgeBg(rowRuntime.status))}>
+                            {rowRuntime.status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", readinessBadgeBg(rowRuntime.readiness))}>
+                            {rowRuntime.readiness}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-muted-fg/70">{rowRuntime.pid ?? "-"}</td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-muted-fg/70">{formatUptime(rowRuntime, nowTick)}</td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-muted-fg/70">
+                          {rowRuntime.ports.length ? rowRuntime.ports.join(",") : "-"}
+                        </td>
+                        <td className="px-3 py-1.5">
+                          <div className="flex items-center gap-1">
+                            {isRunning ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!canStop}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (!effectiveLaneId) return;
+                                  runWithRefresh(async () => {
+                                    await window.ade.processes.stop({ laneId: effectiveLaneId, processId: definition.id });
+                                  });
+                                }}
+                              >
+                                Stop
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!canStart}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (!effectiveLaneId) return;
+                                  runWithRefresh(async () => {
+                                    await window.ade.processes.start({ laneId: effectiveLaneId, processId: definition.id });
+                                  });
+                                }}
+                              >
+                                Start
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={trustRequired || !effectiveLaneId}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (!effectiveLaneId) return;
+                                runWithRefresh(async () => {
+                                  await window.ade.processes.restart({ laneId: effectiveLaneId, processId: definition.id });
+                                });
+                              }}
+                            >
+                              Restart
+                            </Button>
                           </div>
-                        </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={trustRequired || running || !effectiveLaneId}
-                            onClick={() => runWithRefresh(async () => {
-                              if (!effectiveLaneId) return;
-                              const next = await window.ade.tests.run({ laneId: effectiveLaneId, suiteId: suite.id });
-                              setSelectedRunId(next.id);
-                            })}
-                          >
-                            {last ? "Rerun" : "Run"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={!running || !last}
-                            onClick={() => {
-                              if (!last) return;
-                              runWithRefresh(async () => { await window.ade.tests.stop({ runId: last.id }); });
-                            }}
-                          >
-                            Stop
-                          </Button>
-                        </div>
+          <div className="rounded-xl shadow-card bg-card/50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold">Process logs</div>
+                <div className="text-xs text-muted-fg">
+                  {selectedProcessRuntime ? `${selectedProcessRuntime.processId} (${selectedProcessRuntime.status})` : "No process selected"}
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setProcessPauseAutoscroll((v) => !v)}
+                  title="Pause autoscroll"
+                >
+                  <SquareDashed className="h-4 w-4" />
+                  {processPauseAutoscroll ? "Resume" : "Pause"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setProcessLogRaw("")}>Clear view</Button>
+              </div>
+            </div>
+
+            <div className="mt-2 relative">
+              <svg className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-fg/40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input
+                className="h-8 w-full rounded-lg border border-border/15 bg-muted/20 pl-8 pr-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/40"
+                placeholder="Search log lines..."
+                value={processLogSearch}
+                onChange={(e) => setProcessLogSearch(e.target.value)}
+              />
+            </div>
+
+            <pre
+              ref={processLogRef}
+              className="mt-2 h-[330px] overflow-auto rounded-xl border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
+            >
+              {visibleProcessLog || "(no output yet)"}
+            </pre>
+          </div>
+        </div>
+      )
+    },
+    tests: {
+      title: "Tests",
+      icon: Layers,
+      meta: `${suites.length} suites`,
+      minimizable: true,
+      bodyClassName: "overflow-auto",
+      children: (
+        <div className="space-y-3 p-3">
+          <div className="space-y-2">
+            {suites.length === 0 ? (
+              <div className="rounded-xl bg-muted/10 p-3 text-xs text-muted-fg">
+                No test suites defined. Add suites in the config editor.
+              </div>
+            ) : null}
+
+            {suites.map((suite) => {
+              const last = latestRunBySuite.get(suite.id);
+              const running = last?.status === "running";
+              return (
+                <div key={suite.id} className={cx("rounded-xl shadow-card bg-card/50 p-3 border-l-[3px] transition-colors", last?.status === "passed" ? "border-emerald-500/50" : last?.status === "failed" ? "border-red-500/50" : last?.status === "running" ? "border-blue-500/50" : "border-border/20")}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">{suite.name}</div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
+                        <Chip>{suite.id}</Chip>
+                        <span className={cx("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", testStatusBadgeBg(last?.status))}>{last?.status ?? "never"}</span>
+                        <Chip>duration: {formatDurationMs(last?.durationMs ?? null)}</Chip>
+                        <Chip>time: {formatDate(last?.startedAt ?? null)}</Chip>
                       </div>
                     </div>
-                  );
-                })}
 
-                <div className="rounded-md border border-border bg-card/80 p-2">
-                  <div className="mb-1 text-xs font-semibold text-muted-fg">Run history</div>
-                  <div className="max-h-[180px] space-y-1 overflow-auto">
-                    {runs.map((run) => (
-                      <button
-                        key={run.id}
-                        className={cx(
-                          "flex w-full items-center justify-between rounded border border-border px-2 py-1 text-left text-xs",
-                          selectedRunId === run.id && "ring-1 ring-accent/40"
-                        )}
-                        onClick={() => setSelectedRunId(run.id)}
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={trustRequired || running || !effectiveLaneId}
+                        onClick={() => runWithRefresh(async () => {
+                          if (!effectiveLaneId) return;
+                          const next = await window.ade.tests.run({ laneId: effectiveLaneId, suiteId: suite.id });
+                          setSelectedRunId(next.id);
+                        })}
                       >
-                        <span className="truncate">{run.suiteName}</span>
-                        <span className="ml-2 shrink-0 text-muted-fg">{run.status}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-md border border-border bg-card/80 p-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">Suite logs</div>
-                    <div className="text-xs text-muted-fg">
-                      {selectedRun ? `${selectedRun.suiteName} • ${selectedRun.status}` : "Select a run"}
+                        <Play className="h-3.5 w-3.5" />
+                        {last ? "Rerun" : "Run"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!running || !last}
+                        onClick={() => {
+                          if (!last) return;
+                          runWithRefresh(async () => { await window.ade.tests.stop({ runId: last.id }); });
+                        }}
+                      >
+                        <Square className="h-3.5 w-3.5" />
+                        Stop
+                      </Button>
                     </div>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => setTestLogRaw("")}>Clear view</Button>
                 </div>
+              );
+            })}
 
-                <div className="mt-2">
-                  <input
-                    className="h-8 w-full rounded-md border border-border bg-card px-2 text-xs outline-none placeholder:text-muted-fg"
-                    placeholder="Search log lines"
-                    value={testLogSearch}
-                    onChange={(e) => setTestLogSearch(e.target.value)}
-                  />
-                </div>
-
-                <pre
-                  ref={testLogRef}
-                  className="mt-2 h-[330px] overflow-auto rounded-md border border-border bg-bg p-2 text-[11px] leading-5"
-                >
-                  {visibleTestLog || "(no output yet)"}
-                </pre>
+            <div className="rounded-xl shadow-card bg-card/50 p-2">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-fg/70">Run history</div>
+              <div className="max-h-[180px] space-y-0.5 overflow-auto">
+                {runs.map((run) => (
+                  <button
+                    key={run.id}
+                    className={cx(
+                      "flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-muted/20",
+                      selectedRunId === run.id && "bg-accent/10 ring-1 ring-accent/30"
+                    )}
+                    onClick={() => setSelectedRunId(run.id)}
+                  >
+                    <span className="truncate font-medium">{run.suiteName}</span>
+                    <span className={cx("ml-2 shrink-0 inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", testStatusBadgeBg(run.status))}>{run.status}</span>
+                  </button>
+                ))}
               </div>
             </div>
-          </section>
+          </div>
 
-          <section ref={configEditorRef} className="rounded-md border border-border bg-card/70 p-3">
+          <div className="rounded-xl shadow-card bg-card/50 p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold">Suite logs</div>
+                <div className="text-xs text-muted-fg">
+                  {selectedRun ? `${selectedRun.suiteName} • ${selectedRun.status}` : "Select a run"}
+                </div>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => setTestLogRaw("")}>Clear view</Button>
+            </div>
+
+            <div className="mt-2 relative">
+              <svg className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-fg/40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input
+                className="h-8 w-full rounded-lg border border-border/15 bg-muted/20 pl-8 pr-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/40"
+                placeholder="Search log lines..."
+                value={testLogSearch}
+                onChange={(e) => setTestLogSearch(e.target.value)}
+              />
+            </div>
+
+            <pre
+              ref={testLogRef}
+              className="mt-2 h-[330px] overflow-auto rounded-xl border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
+            >
+              {visibleTestLog || "(no output yet)"}
+            </pre>
+          </div>
+        </div>
+      )
+    },
+    config: {
+      title: "Config",
+      icon: Activity,
+      meta: configTarget === "shared" ? ".ade/ade.yaml" : ".ade/local.yaml",
+      minimizable: true,
+      bodyClassName: "overflow-auto",
+      children: (
+        <div className="space-y-3 p-3">
+          <CiImportPanel
+            onImported={() => {
+              refreshAll().catch(() => { });
+            }}
+          />
+
+          <div ref={configEditorRef}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-semibold">Config editor</div>
@@ -1363,7 +1399,7 @@ export function ProjectHomePage() {
               <div className="flex items-center gap-2">
                 <label className="text-xs text-muted-fg">Editing</label>
                 <select
-                  className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                  className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                   value={configTarget}
                   onChange={(e) => setConfigTarget(e.target.value as "shared" | "local")}
                 >
@@ -1378,7 +1414,7 @@ export function ProjectHomePage() {
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-md border border-border p-2">
+              <div className="rounded-xl bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Processes</div>
                   <Button
@@ -1411,7 +1447,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {processRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `process ${idx + 1}`}</div>
                         <Button
@@ -1426,7 +1462,7 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) =>
@@ -1434,7 +1470,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) =>
@@ -1442,7 +1478,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="cwd (use this instead of cd ... &&)"
                           value={row.cwd}
                           onChange={(e) =>
@@ -1450,7 +1486,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='command, e.g. pnpm dev'
                           value={row.commandLine}
                           onChange={(e) =>
@@ -1458,7 +1494,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='env JSON, e.g. {"PORT":"3000"}'
                           value={row.envJson}
                           onChange={(e) =>
@@ -1466,7 +1502,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="dependsOn (comma-separated ids)"
                           value={row.dependsOnCsv}
                           onChange={(e) =>
@@ -1474,19 +1510,21 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           value={row.restart}
                           onChange={(e) =>
                             setProcessRows((prev) =>
-                              prev.map((p, i) => (i === idx ? { ...p, restart: e.target.value as "never" | "on_crash" } : p))
+                              prev.map((p, i) => (i === idx ? { ...p, restart: e.target.value as ProcessRestartPolicy } : p))
                             )
                           }
                         >
                           <option value="never">restart: never</option>
+                          <option value="on-failure">restart: on-failure</option>
+                          <option value="always">restart: always</option>
                           <option value="on_crash">restart: on_crash</option>
                         </select>
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="gracefulShutdownMs"
                           value={row.gracefulShutdownMs}
                           onChange={(e) =>
@@ -1496,7 +1534,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           value={row.readinessType}
                           onChange={(e) =>
                             setProcessRows((prev) =>
@@ -1512,7 +1550,7 @@ export function ProjectHomePage() {
                         </select>
                         {row.readinessType === "port" ? (
                           <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                             placeholder="readiness port"
                             value={row.readinessPort}
                             onChange={(e) =>
@@ -1524,7 +1562,7 @@ export function ProjectHomePage() {
                         ) : null}
                         {row.readinessType === "logRegex" ? (
                           <input
-                            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                             placeholder="readiness pattern"
                             value={row.readinessPattern}
                             onChange={(e) =>
@@ -1534,7 +1572,7 @@ export function ProjectHomePage() {
                             }
                           />
                         ) : null}
-                        <label className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-2 text-xs">
+                        <label className="inline-flex h-8 items-center gap-2 rounded-xl bg-muted/20 px-2 text-xs">
                           <input
                             type="checkbox"
                             checked={row.autostart}
@@ -1544,10 +1582,10 @@ export function ProjectHomePage() {
                           />
                           autostart
                         </label>
-                        <details className="rounded-md border border-border bg-card px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
+                        <details className="rounded-xl bg-card/30 px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
                           <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
                           <input
-                            className="mt-2 h-8 w-full rounded-md border border-border bg-card px-2 text-xs"
+                            className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
                             placeholder='["npm","run","dev"]'
                             value={row.commandJson}
                             onChange={(e) =>
@@ -1561,7 +1599,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-md border border-border p-2">
+              <div className="rounded-xl bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Stack buttons</div>
                   <Button
@@ -1580,7 +1618,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {stackRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `stack ${idx + 1}`}</div>
                         <Button
@@ -1595,13 +1633,13 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) => setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) =>
@@ -1609,7 +1647,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="process ids (comma-separated)"
                           value={row.processIdsCsv}
                           onChange={(e) =>
@@ -1619,7 +1657,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           value={row.startOrder}
                           onChange={(e) =>
                             setStackRows((prev) =>
@@ -1638,7 +1676,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-md border border-border p-2">
+              <div className="rounded-xl bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Test suites</div>
                   <Button
@@ -1665,7 +1703,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {suiteRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-md border border-border bg-card/80 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `suite ${idx + 1}`}</div>
                         <Button
@@ -1680,25 +1718,25 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="cwd"
                           value={row.cwd}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='command JSON, e.g. ["npm","run","test:unit"]'
                           value={row.commandJson}
                           onChange={(e) =>
@@ -1706,13 +1744,13 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder='env JSON, e.g. {"CI":"1"}'
                           value={row.envJson}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
                           placeholder="timeoutMs (optional)"
                           value={row.timeoutMs}
                           onChange={(e) =>
@@ -1720,7 +1758,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-md border border-border bg-card px-2 text-xs md:col-span-2 xl:col-span-3"
+                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs md:col-span-2 xl:col-span-3"
                           placeholder="tags (comma-separated: unit, lint, integration, e2e, custom)"
                           value={row.tagsCsv}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, tagsCsv: e.target.value } : p)))}
@@ -1731,8 +1769,73 @@ export function ProjectHomePage() {
                 </div>
               </div>
             </div>
-          </section>
+          </div>
         </div>
+      )
+    }
+  }), [
+    error, notice, trustRequired, config, project, effectiveLaneId, effectiveLaneName,
+    lanes, selectRunLane, stackStatuses, runWithRefresh, quickProcessName, quickProcessCwd,
+    quickProcessCommand, addQuickProcessDraft, saveConfig, scrollToConfigEditor,
+    processItems, selectedProcessId, selectedProcessRuntime, nowTick, processPauseAutoscroll,
+    processLogSearch, visibleProcessLog, suites, latestRunBySuite, runs, selectedRunId,
+    selectedRun, testLogSearch, visibleTestLog, configTarget, processRows, stackRows,
+    suiteRows, refreshAll, loading
+  ]);
+
+  return (
+    <div className="flex h-full min-w-0 flex-col bg-bg">
+      <div className="flex items-center justify-between border-b border-border/15 px-5 py-3 shrink-0">
+        <div>
+          <div className="text-base font-bold tracking-tight">Run</div>
+          <div className="text-[11px] text-muted-fg/70">Managed processes, lane-scoped stack controls, tests, and config</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setNotice(null);
+              refreshAll().catch(() => { });
+            }}
+            title="Refresh"
+          >
+            <RefreshCw className={cx("h-4 w-4", loading && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              openRepo().catch((err) => {
+                setError(err instanceof Error ? err.message : String(err));
+              });
+            }}
+          >
+            <FolderOpen className="h-4 w-4" />
+            Open repo
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.ade.project.openAdeFolder().catch((err) => {
+                setError(err instanceof Error ? err.message : String(err));
+              });
+            }}
+          >
+            <ExternalLink className="h-4 w-4" />
+            Open .ade
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0">
+        <PaneTilingLayout
+          layoutId="project-home:tiling:v1"
+          tree={PROJECT_HOME_TILING_TREE}
+          panes={paneConfigs}
+        />
       </div>
     </div>
   );

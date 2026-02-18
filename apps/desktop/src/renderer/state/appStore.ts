@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 
 export type ThemeId = "e-paper" | "bloomberg" | "github" | "rainbow" | "sky" | "pats";
 export const THEME_IDS: ThemeId[] = ["e-paper", "bloomberg", "github", "rainbow", "sky", "pats"];
@@ -31,6 +31,7 @@ type AppState = {
   theme: ThemeId;
   providerMode: ProviderMode;
   laneInspectorTabs: Record<string, LaneInspectorTab>;
+  keybindings: KeybindingsSnapshot | null;
 
   setProject: (project: ProjectInfo) => void;
   setLanes: (lanes: LaneSummary[]) => void;
@@ -40,13 +41,15 @@ type AppState = {
   focusSession: (sessionId: string | null) => void;
   setTheme: (theme: ThemeId) => void;
   refreshProviderMode: () => Promise<void>;
+  refreshKeybindings: () => Promise<void>;
 
   refreshProject: () => Promise<void>;
   refreshLanes: () => Promise<void>;
   openRepo: () => Promise<void>;
+  switchProjectToPath: (rootPath: string) => Promise<void>;
 };
 
-export type LaneInspectorTab = "terminals" | "packs" | "stack" | "conflicts" | "pr";
+export type LaneInspectorTab = "terminals" | "packs" | "stack" | "merge";
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
@@ -57,6 +60,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: readInitialTheme(),
   providerMode: "guest",
   laneInspectorTabs: {},
+  keybindings: null,
 
   setProject: (project) => set({ project }),
   setLanes: (lanes) => set({ lanes }),
@@ -101,11 +105,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ providerMode: snapshot.effective.providerMode ?? "guest" });
   },
 
+  refreshKeybindings: async () => {
+    const keybindings = await window.ade.keybindings.get();
+    set({ keybindings });
+  },
+
   openRepo: async () => {
     const project = await window.ade.project.openRepo();
-    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {} });
+    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {}, keybindings: null });
     // Refresh lanes for the newly opened project.
     await get().refreshLanes();
     await get().refreshProviderMode().catch(() => { });
+    await get().refreshKeybindings().catch(() => { });
+  },
+
+  switchProjectToPath: async (rootPath: string) => {
+    const project = await window.ade.project.switchToPath(rootPath);
+    set({ project, lanes: [], selectedLaneId: null, runLaneId: null, focusedSessionId: null, laneInspectorTabs: {}, keybindings: null });
+    await get().refreshLanes();
+    await get().refreshProviderMode().catch(() => { });
+    await get().refreshKeybindings().catch(() => { });
   }
 }));

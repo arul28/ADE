@@ -1,6 +1,6 @@
 # Security & Privacy Architecture
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 This document describes how ADE protects user data, source code, and development workflows across both the local desktop application and the optional hosted cloud services.
 
@@ -180,9 +180,9 @@ The following patterns are excluded from hosted mirror uploads by default:
 
 | Secret Type | Storage Location | Encryption |
 |-------------|-----------------|------------|
-| Hosted Clerk OAuth tokens | OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) | OS-level encryption |
+| Hosted Clerk OAuth tokens | `~/.ade/hosted/hosted-auth.v1.bin` | Electron `safeStorage` (OS-level encryption via macOS Keychain / Windows DPAPI / Linux Secret Service) |
 | BYOK API keys | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
-| Clerk OAuth tokens | Memory (access/ID) + OS keychain (refresh) | OS-level encryption for refresh token |
+| GitHub PAT (local) | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
 
 **Important**: API keys for BYOK providers must ONLY be placed in `local.yaml`, never in `ade.yaml`. The config validation system warns if it detects an `apiKey` field in the shared config file.
 
@@ -193,6 +193,19 @@ When uploading content to the hosted mirror, ADE applies redaction rules to stri
 - Environment variable values matching common secret patterns (`*_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`)
 - Strings matching known token formats (JWT patterns, API key prefixes)
 - Custom redaction patterns configurable in `.ade/ade.yaml` under `mirror.redact`
+
+#### AI Job Payloads (Bounded Exports)
+
+When Hosted or BYOK is enabled, ADE’s default LLM inputs are **token-budgeted context exports**, not raw pack dumps or transcript slabs.
+
+- Lane narrative generation uses `LaneExportStandard` (bounded).
+- Conflict proposals use `LaneExportLite` (lane + optional peer) and `ConflictExportStandard` (bounded).
+
+Before any outbound request (Hosted or BYOK), ADE applies redaction to export content to reduce the risk of leaking secrets.
+
+Notes:
+- Guest mode remains fully functional: packs/events/versions/checkpoints/exports are generated deterministically without any network calls.
+- Hosted can be self-hosted by configuring `providers.hosted.apiBaseUrl` in `.ade/local.yaml`; diagnostics should reference `apiBaseUrl` and `remoteProjectId` (no AWS assumptions).
 
 ### Configuration Trust
 
@@ -374,13 +387,13 @@ The audit trail provides a complete record of significant operations for debuggi
 | Operation tracking (audit trail) | Done | Pre/post SHA recorded for git operations |
 | Path validation for file operations | Done | Lane root scoping enforced |
 | Force push safety (`--force-with-lease`) | Done | Hard-coded in git service |
-| Default exclude patterns for secrets | Partial | Pattern list defined, filter partially implemented |
-| Secret redaction rules | Not started | Redaction engine not implemented |
-| Hosted mirror encryption | Not started | Cloud backend not provisioned |
-| Tenant isolation (IAM/DynamoDB) | Not started | Cloud backend not provisioned |
-| Access logging (CloudWatch) | Not started | Cloud backend not provisioned |
-| Data retention and deletion | Not started | Cloud backend not provisioned |
-| Transcript upload redaction | Not started | Transcript upload not implemented |
-| Confidence heuristics for proposals | Not started | Hosted agent not implemented |
+| Default exclude patterns for secrets | Done | Pattern list defined and enforced in mirror sync + exports |
+| Secret redaction rules | Done | `redactSecrets()` and `redactSecretsDeep()` in `apps/desktop/src/main/utils/redaction.ts`; applied to all outbound AI payloads and mirror uploads |
+| Hosted mirror encryption | Done | S3 SSE-S256 at rest, TLS 1.3 in transit (Phase 6 cloud backend) |
+| Tenant isolation (IAM/DynamoDB) | Done | IAM policies + DynamoDB partition key scoping + JWT authorizer (Phase 6) |
+| Access logging (CloudWatch) | Done | All API access logged with user ID, action type, resource IDs (Phase 6) |
+| Data retention and deletion | Done | Recursive project deletion via API and desktop UI; configurable retention (Phase 6) |
+| Transcript upload redaction | Done | Opt-in upload with redaction rules applied before transmission (Phase 6) |
+| Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in ConflictsPage proposal list (Phase 6) |
 
-**Overall status**: Core local security model is DONE (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety). Cloud security features are NOT YET STARTED pending cloud backend implementation. Secret redaction rules are NOT YET STARTED.
+**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety) and cloud security features (mirror encryption, tenant isolation, access logging, data retention, secret redaction, transcript privacy, proposal confidence) are all implemented across Phases -1 through 8.

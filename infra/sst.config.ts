@@ -227,6 +227,7 @@ export default $config({
           rangeKey: "submittedAt"
         }
       },
+      ttl: "expiresAt",
       transform: {
         table: (args: any) => {
           args.name = `ade-${stage}-jobs`;
@@ -441,6 +442,18 @@ export default $config({
       auth: protectedAuth
     });
 
+    api.route("POST /projects/{id}/packs/manifest", "packages/functions/src/api/handlers.updatePacksManifest", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/transcripts/manifest", "packages/functions/src/api/handlers.updateTranscriptsManifest", {
+      auth: protectedAuth
+    });
+
+    api.route("POST /projects/{id}/mirror/cleanup", "packages/functions/src/api/handlers.cleanMirrorData", {
+      auth: protectedAuth
+    });
+
     api.route("POST /projects/{id}/jobs", "packages/functions/src/api/handlers.submitJob", {
       auth: protectedAuth
     });
@@ -504,7 +517,17 @@ export default $config({
           RATE_LIMITS_TABLE_NAME: rateLimitsTable.name,
           RATE_LIMIT_JOBS_PER_MINUTE: process.env.ADE_RATE_LIMIT_JOBS_PER_MINUTE ?? "20",
           RATE_LIMIT_DAILY_JOBS: process.env.ADE_RATE_LIMIT_DAILY_JOBS ?? "500",
-          RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000"
+          RATE_LIMIT_DAILY_ESTIMATED_TOKENS: process.env.ADE_RATE_LIMIT_DAILY_ESTIMATED_TOKENS ?? "250000",
+
+          // Keep worker env aligned with shared env requirements (api + worker share env parsing).
+          // Missing these can crash SST dev/deploy during cold start even if a given job type doesn't use GitHub features.
+          GITHUB_CONNECT_STATES_TABLE_NAME: githubConnectStatesTable.name,
+          GITHUB_INSTALLATIONS_TABLE_NAME: githubInstallationsTable.name,
+          GITHUB_EVENTS_TABLE_NAME: githubEventsTable.name,
+          GITHUB_APP_ID: githubAppId.value,
+          GITHUB_APP_SLUG: githubAppSlug.value,
+          GITHUB_APP_PRIVATE_KEY_BASE64: githubAppPrivateKeyBase64.value,
+          GITHUB_WEBHOOK_SECRET: githubWebhookSecret.value
         },
         link: [
           jobsTable,
@@ -525,6 +548,21 @@ export default $config({
         }
       }
     );
+
+    const jobSweeper = new sst.aws.Cron("JobSweeper", {
+      schedule: "rate(15 minutes)",
+      job: {
+        handler: "packages/functions/src/workers/jobSweeper.handler",
+        timeout: "60 seconds",
+        memory: "256 MB",
+        architecture: "arm64",
+        environment: {
+          APP_STAGE: stage,
+          JOBS_TABLE_NAME: jobsTable.name
+        },
+        link: [jobsTable]
+      }
+    });
 
 	    const dlqAlarm = new aws.cloudwatch.MetricAlarm("JobsDlqVisibleAlarm", {
 	      name: `ade-${stage}-jobs-dlq-visible`,
@@ -599,7 +637,8 @@ export default $config({
         jobsQueueAge: queueAgeAlarm.arn
       },
       workers: {
-        jobsWorker: worker.nodes.function.name
+        jobsWorker: worker.nodes.function.name,
+        jobSweeper: jobSweeper.nodes.job.name
       }
     };
   }

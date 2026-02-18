@@ -6,8 +6,11 @@ import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import { runGit } from "../git/git";
 import type { PtyDataEvent, PtyExitEvent, PtyCreateArgs, PtyCreateResult, TerminalSessionStatus } from "../../../shared/types";
+import { stripAnsi } from "../../utils/ansiStrip";
+import { summarizeTerminalSession } from "../../utils/sessionSummary";
 
 type PtyEntry = {
   pty: IPty;
@@ -54,6 +57,7 @@ export function createPtyService({
   transcriptsDir,
   laneService,
   sessionService,
+  hostedAgentService,
   logger,
   broadcastData,
   broadcastExit,
@@ -64,6 +68,7 @@ export function createPtyService({
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
+  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -81,6 +86,31 @@ export function createPtyService({
     return sha.length ? sha : null;
   };
 
+  const summarizeSessionBestEffort = (sessionId: string): void => {
+    Promise.resolve()
+      .then(() => {
+        const session = sessionService.get(sessionId);
+        if (!session) return;
+
+        const transcript = session.tracked
+          ? sessionService.readTranscriptTail(session.transcriptPath, 220_000)
+          : "";
+
+        const summary = summarizeTerminalSession({
+          title: session.title,
+          goal: session.goal,
+          toolType: session.toolType,
+          exitCode: session.exitCode,
+          transcript
+        });
+
+        sessionService.setSummary(sessionId, summary);
+      })
+      .catch(() => {
+        // ignore summary generation failures
+      });
+  };
+
   const closeEntry = (ptyId: string, exitCode: number | null) => {
     const entry = ptys.get(ptyId);
     if (!entry) return;
@@ -96,6 +126,7 @@ export function createPtyService({
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
     sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
+    summarizeSessionBestEffort(entry.sessionId);
 
     // Best-effort head SHA at end; never block exit.
     Promise.resolve()
@@ -134,7 +165,7 @@ export function createPtyService({
     const trimmed = chunk.replace(/\r/g, "").split("\n").filter((l) => l.trim().length > 0);
     const last = trimmed[trimmed.length - 1];
     if (!last) return;
-    sessionService.setLastOutputPreview(entry.sessionId, last.slice(0, 220));
+    sessionService.setLastOutputPreview(entry.sessionId, stripAnsi(last).trim().slice(0, 220));
   };
 
   return {
@@ -205,6 +236,7 @@ export function createPtyService({
           // ignore
         }
         sessionService.end({ sessionId, endedAt: new Date().toISOString(), exitCode: null, status: "failed" });
+        summarizeSessionBestEffort(sessionId);
         broadcastExit({ ptyId, sessionId, exitCode: null });
         throw err;
       }
@@ -221,16 +253,62 @@ export function createPtyService({
       };
       ptys.set(ptyId, entry);
 
+      // Buffer initial output for AI title generation
+      let titleOutputBuffer = "";
+      let titleBufferFull = false;
+
       pty.onData((data) => {
         writeTranscript(entry, data);
         updatePreviewThrottled(entry, data);
         broadcastData({ ptyId, sessionId, data });
+
+        // Accumulate initial output for session title generation
+        if (!titleBufferFull) {
+          titleOutputBuffer += data;
+          if (titleOutputBuffer.length >= 500) {
+            titleBufferFull = true;
+          }
+        }
       });
 
       pty.onExit(({ exitCode }) => {
         logger.info("pty.exit", { ptyId, sessionId, exitCode });
         closeEntry(ptyId, exitCode ?? null);
       });
+
+      // Fire-and-forget: after 4s, attempt AI title generation for non-shell sessions
+      if (hostedAgentService) {
+        const capturedHostedAgent = hostedAgentService;
+        setTimeout(() => {
+          if (entry.disposed) return;
+          const strippedOutput = stripAnsi(titleOutputBuffer).trim();
+          if (strippedOutput.length < 10) return;
+
+          // Check if session has a non-shell toolType (set by the renderer after creation)
+          const session = sessionService.get(sessionId);
+          if (!session) return;
+          const toolType = session.toolType;
+          if (!toolType || toolType === "shell") return;
+
+          capturedHostedAgent
+            .requestSessionTitle({
+              sessionId,
+              laneId,
+              initialOutput: strippedOutput.slice(0, 500)
+            })
+            .then((title) => {
+              if (title) {
+                sessionService.updateMeta({ sessionId, goal: title });
+              }
+            })
+            .catch((err) => {
+              logger.warn("pty.session_title_generation_failed", {
+                sessionId,
+                error: err instanceof Error ? err.message : String(err)
+              });
+            });
+        }, 4000);
+      }
 
       logger.info("pty.create", { ptyId, sessionId, laneId, cwd, shell: selectedShell?.file ?? "unknown" });
 
@@ -268,6 +346,7 @@ export function createPtyService({
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
+        summarizeSessionBestEffort(sessionId);
         broadcastExit({ ptyId, sessionId, exitCode: null });
         if (session.tracked) {
           try {
@@ -293,6 +372,7 @@ export function createPtyService({
       }
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
+      summarizeSessionBestEffort(entry.sessionId);
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);
 

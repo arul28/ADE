@@ -3,10 +3,13 @@ import path from "node:path";
 import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { safeStorage } from "electron";
+import { BOOTSTRAP_DEFAULTS } from "../../../generated/bootstrapDefaults";
 import type {
   HostedArtifactResult,
   HostedAuthStatus,
   HostedBootstrapConfig,
+  HostedContextSource,
+  HostedHandoffV1,
   HostedGitHubAppStatus,
   HostedGitHubConnectStartResult,
   HostedGitHubDisconnectResult,
@@ -15,8 +18,16 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedJobContextDeliveryV1,
+  HostedContextDeliveryMode,
+  HostedManifestRefsV1,
+  HostedMirrorDeleteResult,
+  HostedMirrorCleanupResult,
+  HostedMirrorCleanupSummaryV1,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
+  HostedMirrorSyncSummaryV1,
+  HostedNarrativeTimingV1,
   HostedSignInResult,
   HostedSignInArgs,
   HostedStatus,
@@ -27,6 +38,16 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
+import { redactSecrets, redactSecretsDeep } from "../../utils/redaction";
+import {
+  ADE_HANDOFF_SCHEMA_V1,
+  ADE_HOSTED_MIRROR_CLEANUP_SUMMARY_SCHEMA_V1,
+  ADE_JOB_CONTEXT_INLINE_META_SCHEMA_V1,
+  ADE_JOB_CONTEXT_REF_SCHEMA_V1,
+  ADE_MIRROR_PACKS_MANIFEST_SCHEMA_V1,
+  ADE_MIRROR_TRANSCRIPTS_MANIFEST_SCHEMA_V1
+} from "../../../shared/contextContract";
+import { buildInlineFallbackParams, decideHostedContextDelivery, estimateUtf8Bytes, stableJsonStringify } from "./hostedContextPolicy";
 
 type HostedAuthTokens = {
   accessToken?: string;
@@ -57,6 +78,26 @@ type HostedConfig = {
   mirrorExcludePatterns: string[];
   uploadTranscripts: boolean;
   remoteProjectId: string | null;
+  contextDeliveryMode: HostedContextDeliveryMode;
+  mirrorLastAttemptAt: string | null;
+  mirrorLastSuccessAt: string | null;
+  mirrorLastError: string | null;
+  mirrorLastResult: HostedMirrorSyncSummaryV1 | null;
+  mirrorCleanupLastAttemptAt: string | null;
+  mirrorCleanupLastSuccessAt: string | null;
+  mirrorCleanupLastError: string | null;
+  mirrorCleanupLastResult: HostedMirrorCleanupSummaryV1 | null;
+  contextTelemetry: {
+    inlineCount: number;
+    mirrorCount: number;
+    inlineFallbackCount: number;
+    lastUpdatedAt: string | null;
+    lastFallbackAt: string | null;
+    insufficientContextJobCount: number;
+    lastNarrativeTiming: HostedNarrativeTimingV1 | null;
+    narrativeTimeoutCount: number;
+    lastNarrativeTimeoutReason: HostedNarrativeTimingV1["timeoutReason"];
+  };
   auth: HostedAuthTokens;
 };
 
@@ -71,6 +112,13 @@ type ManifestEntry = {
   path: string;
   sha256: string;
   size: number;
+};
+
+type MirrorFileEntry = {
+  path: string;
+  sha256: string;
+  size: number;
+  contentType: string;
 };
 
 const CALLBACK_PORT = 42420;
@@ -112,7 +160,9 @@ const HOSTED_FETCH_TIMEOUT_MS = 20_000;
 const POLL_INITIAL_DELAY_MS = 700;
 const POLL_MAX_DELAY_MS = 4_000;
 const POLL_TIMEOUT_FLOOR_MS = 60_000;
-const POLL_STALL_TIMEOUT_MS = 90_000;
+const POLL_STALL_TIMEOUT_MS = 180_000;
+const CONTEXT_POLICY_TTL_MS = 20 * 60_000;
+const MIRROR_CLEANUP_INTERVAL_MS = 6 * 60 * 60_000;
 
 const TEXT_EXTENSIONS = new Set([
   ".md",
@@ -158,6 +208,11 @@ function asStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean);
 }
 
+function asNumber(value: unknown, fallback = 0): number {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
 function base64Url(input: Buffer): string {
   return input
     .toString("base64")
@@ -179,23 +234,6 @@ function isProbablyText(filePath: string, bytes: Buffer): boolean {
   return true;
 }
 
-function redactSecrets(text: string): string {
-  let output = text;
-  output = output.replace(
-    /((?:api[_-]?key|token|secret|password)\s*[:=]\s*)(["']?)[^\s"']{6,}\2/gi,
-    "$1<redacted>"
-  );
-  output = output.replace(
-    /-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g,
-    "<redacted-private-key>"
-  );
-  output = output.replace(
-    /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
-    "<redacted-token>"
-  );
-  return output;
-}
-
 function globLikeMatch(inputPath: string, pattern: string): boolean {
   const normalizedPath = inputPath.replace(/\\/g, "/").toLowerCase();
   const normalizedPattern = pattern.trim().replace(/\\/g, "/").toLowerCase();
@@ -214,6 +252,35 @@ function globLikeMatch(inputPath: string, pattern: string): boolean {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function summarizeWarningsForContext(args: {
+  decisionMode: "inline" | "mirror";
+  finalContextSource: HostedContextSource;
+  decisionReasonCode: string;
+  uploadError?: string | null;
+  missingRelevanceWarnings?: string[];
+  mirrorStaleReason?: string | null;
+}): string[] {
+  const warnings: string[] = [];
+  if (args.finalContextSource === "inline_fallback") {
+    warnings.push("CONTEXT_RETRIEVAL_INCOMPLETE");
+    warnings.push(`Context mirror ref could not be resolved; used inline fallback (${args.uploadError ?? "unknown error"}).`);
+  }
+  if (args.missingRelevanceWarnings?.length) {
+    warnings.push(...args.missingRelevanceWarnings);
+  }
+  if (args.decisionMode === "mirror" && args.mirrorStaleReason) {
+    warnings.push(`Mirror context may be stale: ${args.mirrorStaleReason}`);
+  }
+  if (
+    args.finalContextSource === "inline" &&
+    args.decisionMode === "mirror" &&
+    args.decisionReasonCode !== "POLICY_INLINE_FORCED"
+  ) {
+    warnings.push("Mirror path selected by policy but submitted inline due fallback.");
+  }
+  return warnings;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -453,53 +520,66 @@ export function createHostedAgentService({
     persistAuthTokens({});
   };
 
-  const readBootstrapConfig = (): HostedBootstrapConfig | null => {
-    if (!fs.existsSync(hostedBootstrapPath)) return null;
+  const parseBootstrapRecord = (parsed: unknown): HostedBootstrapConfig | null => {
+    if (!isRecord(parsed)) return null;
 
-    try {
-      const raw = fs.readFileSync(hostedBootstrapPath, "utf8");
-      const parsed = JSON.parse(raw);
-      if (!isRecord(parsed)) return null;
+    const config: HostedBootstrapConfig = {
+      stage: asString(parsed.stage) || "unknown",
+      apiBaseUrl: asString(parsed.apiBaseUrl),
+      region: asString(parsed.region),
+      clerkPublishableKey: asString(parsed.clerkPublishableKey),
+      clerkOauthClientId: asString(parsed.clerkOauthClientId),
+      clerkIssuer: normalizeHttpUrl(asString(parsed.clerkIssuer)),
+      clerkFrontendApiUrl: normalizeHttpUrl(asString(parsed.clerkFrontendApiUrl)),
+      clerkOauthMetadataUrl: normalizeHttpUrl(asString(parsed.clerkOauthMetadataUrl)),
+      clerkOauthAuthorizeUrl: normalizeHttpUrl(asString(parsed.clerkOauthAuthorizeUrl)),
+      clerkOauthTokenUrl: normalizeHttpUrl(asString(parsed.clerkOauthTokenUrl)),
+      clerkOauthRevocationUrl: normalizeHttpUrl(asString(parsed.clerkOauthRevocationUrl)),
+      clerkOauthUserInfoUrl: normalizeHttpUrl(asString(parsed.clerkOauthUserInfoUrl)),
+      clerkOauthScopes: asString(parsed.clerkOauthScopes) || "openid profile email offline_access",
+      ...(asString(parsed.generatedAt) ? { generatedAt: asString(parsed.generatedAt) } : {})
+    };
 
-      const config: HostedBootstrapConfig = {
-        stage: asString(parsed.stage) || "unknown",
-        apiBaseUrl: asString(parsed.apiBaseUrl),
-        region: asString(parsed.region),
-        clerkPublishableKey: asString(parsed.clerkPublishableKey),
-        clerkOauthClientId: asString(parsed.clerkOauthClientId),
-        clerkIssuer: normalizeHttpUrl(asString(parsed.clerkIssuer)),
-        clerkFrontendApiUrl: normalizeHttpUrl(asString(parsed.clerkFrontendApiUrl)),
-        clerkOauthMetadataUrl: normalizeHttpUrl(asString(parsed.clerkOauthMetadataUrl)),
-        clerkOauthAuthorizeUrl: normalizeHttpUrl(asString(parsed.clerkOauthAuthorizeUrl)),
-        clerkOauthTokenUrl: normalizeHttpUrl(asString(parsed.clerkOauthTokenUrl)),
-        clerkOauthRevocationUrl: normalizeHttpUrl(asString(parsed.clerkOauthRevocationUrl)),
-        clerkOauthUserInfoUrl: normalizeHttpUrl(asString(parsed.clerkOauthUserInfoUrl)),
-        clerkOauthScopes: asString(parsed.clerkOauthScopes) || "openid profile email offline_access",
-        ...(asString(parsed.generatedAt) ? { generatedAt: asString(parsed.generatedAt) } : {})
-      };
-
-      if (
-        !config.apiBaseUrl ||
-        !config.region ||
-        !config.clerkPublishableKey ||
-        !config.clerkOauthClientId ||
-        !config.clerkIssuer ||
-        !config.clerkFrontendApiUrl ||
-        !config.clerkOauthMetadataUrl ||
-        !config.clerkOauthAuthorizeUrl ||
-        !config.clerkOauthTokenUrl
-      ) {
-        return null;
-      }
-
-      return config;
-    } catch (error) {
-      logger.warn("hosted.bootstrap_read_failed", {
-        projectId,
-        error: error instanceof Error ? error.message : String(error)
-      });
+    if (
+      !config.apiBaseUrl ||
+      !config.region ||
+      !config.clerkPublishableKey ||
+      !config.clerkOauthClientId ||
+      !config.clerkIssuer ||
+      !config.clerkFrontendApiUrl ||
+      !config.clerkOauthMetadataUrl ||
+      !config.clerkOauthAuthorizeUrl ||
+      !config.clerkOauthTokenUrl
+    ) {
       return null;
     }
+
+    return config;
+  };
+
+  const readBootstrapConfig = (): HostedBootstrapConfig | null => {
+    // Priority 1: per-project file override
+    if (fs.existsSync(hostedBootstrapPath)) {
+      try {
+        const raw = fs.readFileSync(hostedBootstrapPath, "utf8");
+        const parsed = JSON.parse(raw);
+        const config = parseBootstrapRecord(parsed);
+        if (config) return config;
+      } catch (error) {
+        logger.warn("hosted.bootstrap_read_failed", {
+          projectId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    // Priority 2: build-time baked defaults
+    if (BOOTSTRAP_DEFAULTS) {
+      const config = parseBootstrapRecord(BOOTSTRAP_DEFAULTS);
+      if (config) return config;
+    }
+
+    return null;
   };
 
   const readHostedConfig = (): HostedConfig => {
@@ -520,6 +600,11 @@ export function createHostedAgentService({
       ...localHosted
     };
     const region = asString(hosted.region);
+    const deliveryRaw = asString(hosted.contextDeliveryMode).trim().toLowerCase();
+    const contextDeliveryMode: HostedContextDeliveryMode =
+      deliveryRaw === "inline" || deliveryRaw === "mirror_preferred" || deliveryRaw === "auto"
+        ? (deliveryRaw as HostedContextDeliveryMode)
+        : "auto";
 
     return {
       mode,
@@ -539,6 +624,110 @@ export function createHostedAgentService({
       mirrorExcludePatterns: asStringArray(hosted.mirrorExcludePatterns),
       uploadTranscripts: asBoolean(hosted.uploadTranscripts),
       remoteProjectId: asString(hosted.remoteProjectId) || null,
+      contextDeliveryMode,
+      mirrorLastAttemptAt: asString(hosted.mirrorLastAttemptAt) || null,
+      mirrorLastSuccessAt: asString(hosted.mirrorLastSuccessAt) || null,
+      mirrorLastError: asString(hosted.mirrorLastError) || null,
+      mirrorLastResult: (() => {
+        const raw = hosted.mirrorLastResult;
+        if (!isRecord(raw)) return null;
+        const syncedAt = asString(raw.syncedAt);
+        const remoteProjectId = asString(raw.remoteProjectId);
+        if (!syncedAt.trim() || !remoteProjectId.trim()) return null;
+        return {
+          schema: "ade.hostedMirrorSyncSummary.v1",
+          remoteProjectId,
+          lanesSyncedCount: Number(raw.lanesSyncedCount ?? 0) || 0,
+          uploaded: Number(raw.uploaded ?? 0) || 0,
+          deduplicated: Number(raw.deduplicated ?? 0) || 0,
+          excluded: Number(raw.excluded ?? 0) || 0,
+          manifestCount: Number(raw.manifestCount ?? 0) || 0,
+          transcriptCount: Number(raw.transcriptCount ?? 0) || 0,
+          packCount: Number(raw.packCount ?? 0) || 0,
+          syncedAt,
+          warnings: Array.isArray(raw.warnings) ? raw.warnings.map((v) => String(v)) : []
+        } satisfies HostedMirrorSyncSummaryV1;
+      })(),
+      mirrorCleanupLastAttemptAt: asString(hosted.mirrorCleanupLastAttemptAt) || null,
+      mirrorCleanupLastSuccessAt: asString(hosted.mirrorCleanupLastSuccessAt) || null,
+      mirrorCleanupLastError: asString(hosted.mirrorCleanupLastError) || null,
+      mirrorCleanupLastResult: (() => {
+        const raw = hosted.mirrorCleanupLastResult;
+        if (!isRecord(raw)) return null;
+        const remoteProjectId = asString(raw.remoteProjectId);
+        const startedAt = asString(raw.startedAt);
+        const finishedAt = asString(raw.finishedAt);
+        if (!remoteProjectId.trim() || !startedAt.trim() || !finishedAt.trim()) return null;
+        return {
+          schema: ADE_HOSTED_MIRROR_CLEANUP_SUMMARY_SCHEMA_V1,
+          remoteProjectId,
+          startedAt,
+          finishedAt,
+          reachableBlobs: asNumber(raw.reachableBlobs),
+          orphanedBlobs: asNumber(raw.orphanedBlobs),
+          deletedBlobs: asNumber(raw.deletedBlobs),
+          reclaimedBytes: asNumber(raw.reclaimedBytes),
+          policy: isRecord(raw.policy)
+            ? {
+                staleGraceMs: asNumber(raw.policy.staleGraceMs),
+                maxObjectsScanned: asNumber(raw.policy.maxObjectsScanned),
+                maxDelete: asNumber(raw.policy.maxDelete),
+                maxBytesScanned: asNumber(raw.policy.maxBytesScanned)
+              }
+            : {
+                staleGraceMs: 10 * 60_000,
+                maxObjectsScanned: 5000,
+                maxDelete: 1000,
+                maxBytesScanned: 500 * 1024 * 1024
+              },
+          warnings: Array.isArray(raw.warnings) ? raw.warnings.map((v) => String(v)) : []
+        } satisfies HostedMirrorCleanupSummaryV1;
+      })(),
+      contextTelemetry: (() => {
+        const raw = isRecord(hosted.contextTelemetry) ? hosted.contextTelemetry : {};
+        const lastNarrativeTiming = (() => {
+          if (!isRecord(raw.lastNarrativeTiming)) return null;
+          const timing = raw.lastNarrativeTiming;
+          const submitStartedAt = asString(timing.submitStartedAt);
+          if (!submitStartedAt) return null;
+          const timeoutReasonRaw = asString(timing.timeoutReason);
+          const timeoutReason =
+            timeoutReasonRaw === "timeout_poll" ||
+            timeoutReasonRaw === "timeout_total" ||
+            timeoutReasonRaw === "job_failed" ||
+            timeoutReasonRaw === "artifact_missing"
+              ? timeoutReasonRaw
+              : null;
+          return {
+            schema: "ade.hostedNarrativeTiming.v1",
+            submitStartedAt,
+            submitDurationMs: asNumber(timing.submitDurationMs),
+            queueWaitMs: asNumber(timing.queueWaitMs),
+            pollDurationMs: asNumber(timing.pollDurationMs),
+            artifactFetchMs: asNumber(timing.artifactFetchMs),
+            totalDurationMs: asNumber(timing.totalDurationMs),
+            timeoutMs: asNumber(timing.timeoutMs),
+            timeoutReason
+          } satisfies HostedNarrativeTimingV1;
+        })();
+        return {
+          inlineCount: asNumber(raw.inlineCount),
+          mirrorCount: asNumber(raw.mirrorCount),
+          inlineFallbackCount: asNumber(raw.inlineFallbackCount),
+          lastUpdatedAt: asString(raw.lastUpdatedAt) || null,
+          lastFallbackAt: asString(raw.lastFallbackAt) || null,
+          insufficientContextJobCount: asNumber(raw.insufficientContextJobCount),
+          lastNarrativeTiming,
+          narrativeTimeoutCount: asNumber(raw.narrativeTimeoutCount),
+          lastNarrativeTimeoutReason:
+            asString(raw.lastNarrativeTimeoutReason) === "timeout_poll" ||
+            asString(raw.lastNarrativeTimeoutReason) === "timeout_total" ||
+            asString(raw.lastNarrativeTimeoutReason) === "job_failed" ||
+            asString(raw.lastNarrativeTimeoutReason) === "artifact_missing"
+              ? (asString(raw.lastNarrativeTimeoutReason) as HostedNarrativeTimingV1["timeoutReason"])
+              : null
+        };
+      })(),
       auth: readStoredAuthTokens()
     };
   };
@@ -566,7 +755,17 @@ export function createHostedAgentService({
       ...(patch.clerkOauthScopes != null ? { clerkOauthScopes: patch.clerkOauthScopes } : {}),
       ...(patch.mirrorExcludePatterns != null ? { mirrorExcludePatterns: patch.mirrorExcludePatterns } : {}),
       ...(patch.uploadTranscripts != null ? { uploadTranscripts: patch.uploadTranscripts } : {}),
-      ...(patch.remoteProjectId !== undefined ? { remoteProjectId: patch.remoteProjectId } : {})
+      ...(patch.remoteProjectId !== undefined ? { remoteProjectId: patch.remoteProjectId } : {}),
+      ...(patch.contextDeliveryMode != null ? { contextDeliveryMode: patch.contextDeliveryMode } : {}),
+      ...(patch.mirrorLastAttemptAt !== undefined ? { mirrorLastAttemptAt: patch.mirrorLastAttemptAt } : {}),
+      ...(patch.mirrorLastSuccessAt !== undefined ? { mirrorLastSuccessAt: patch.mirrorLastSuccessAt } : {}),
+      ...(patch.mirrorLastError !== undefined ? { mirrorLastError: patch.mirrorLastError } : {}),
+      ...(patch.mirrorLastResult !== undefined ? { mirrorLastResult: patch.mirrorLastResult } : {}),
+      ...(patch.mirrorCleanupLastAttemptAt !== undefined ? { mirrorCleanupLastAttemptAt: patch.mirrorCleanupLastAttemptAt } : {}),
+      ...(patch.mirrorCleanupLastSuccessAt !== undefined ? { mirrorCleanupLastSuccessAt: patch.mirrorCleanupLastSuccessAt } : {}),
+      ...(patch.mirrorCleanupLastError !== undefined ? { mirrorCleanupLastError: patch.mirrorCleanupLastError } : {}),
+      ...(patch.mirrorCleanupLastResult !== undefined ? { mirrorCleanupLastResult: patch.mirrorCleanupLastResult } : {}),
+      ...(patch.contextTelemetry !== undefined ? { contextTelemetry: patch.contextTelemetry } : {})
     };
 
     const nextLocalProviders: Record<string, unknown> = {
@@ -636,7 +835,7 @@ export function createHostedAgentService({
   const applyBootstrapHostedConfig = (): HostedBootstrapConfig => {
     const bootstrap = readBootstrapConfig();
     if (!bootstrap) {
-      throw new Error("No hosted bootstrap config found at .ade/hosted/bootstrap.json");
+      throw new Error("No hosted bootstrap config available. Rebuild with SST outputs or place a bootstrap.json override in .ade/hosted/.");
     }
 
     updateHostedConfig({
@@ -694,16 +893,16 @@ export function createHostedAgentService({
     }
 
     if (!config.apiBaseUrl.trim()) {
-      throw new Error("Hosted API base URL is not configured. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted API base URL is not configured. Rebuild with SST outputs or check Settings.");
     }
     if (!config.clerkOauthClientId.trim()) {
-      throw new Error("Hosted Clerk OAuth client ID is missing. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted Clerk OAuth client ID is missing. Rebuild with SST outputs or check Settings.");
     }
     if (!config.clerkOauthAuthorizeUrl.trim() || !config.clerkOauthTokenUrl.trim()) {
-      throw new Error("Hosted Clerk OAuth endpoints are missing. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted Clerk OAuth endpoints are missing. Rebuild with SST outputs or check Settings.");
     }
     if (!config.clerkIssuer.trim()) {
-      throw new Error("Hosted Clerk JWT issuer is missing. Apply .ade/hosted/bootstrap.json or set values in Settings.");
+      throw new Error("Hosted Clerk JWT issuer is missing. Rebuild with SST outputs or check Settings.");
     }
 
     return config;
@@ -1002,9 +1201,9 @@ export function createHostedAgentService({
     };
   };
 
-  const syncPacks = async (remoteProjectId: string, excludePatterns: string[]): Promise<{ uploaded: number; deduplicated: number; excluded: number; packCount: number }> => {
+  const syncPacks = async (remoteProjectId: string, excludePatterns: string[]): Promise<{ uploaded: number; deduplicated: number; excluded: number; packCount: number; entries: MirrorFileEntry[] }> => {
     if (!fs.existsSync(packsDir)) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, packCount: 0 };
+      return { uploaded: 0, deduplicated: 0, excluded: 0, packCount: 0, entries: [] };
     }
 
     const packPaths: string[] = [];
@@ -1025,21 +1224,24 @@ export function createHostedAgentService({
     walk(packsDir);
 
     const uploads: BlobUpload[] = [];
+    const entries: MirrorFileEntry[] = [];
     for (const absPath of packPaths) {
       const relPath = path.relative(projectRoot, absPath).replace(/\\/g, "/");
       if (!relPath || excludePatterns.some((pattern) => globLikeMatch(relPath, pattern))) continue;
       const text = redactSecrets(fs.readFileSync(absPath, "utf8"));
       const bytes = Buffer.from(text, "utf8");
+      const sha256 = sha256Hex(bytes);
       uploads.push({
         path: relPath,
-        sha256: sha256Hex(bytes),
+        sha256,
         contentBase64: bytes.toString("base64"),
         contentType: "text/markdown"
       });
+      entries.push({ path: relPath, sha256, size: bytes.length, contentType: "text/markdown" });
     }
 
     if (!uploads.length) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, packCount: 0 };
+      return { uploaded: 0, deduplicated: 0, excluded: 0, packCount: 0, entries: [] };
     }
 
     const summary = await uploadBlobsInBatches({
@@ -1050,13 +1252,14 @@ export function createHostedAgentService({
 
     return {
       ...summary,
-      packCount: uploads.length
+      packCount: uploads.length,
+      entries
     };
   };
 
-  const syncTranscripts = async (remoteProjectId: string, excludePatterns: string[]): Promise<{ uploaded: number; deduplicated: number; excluded: number; transcriptCount: number }> => {
+  const syncTranscripts = async (remoteProjectId: string, excludePatterns: string[]): Promise<{ uploaded: number; deduplicated: number; excluded: number; transcriptCount: number; entries: MirrorFileEntry[] }> => {
     if (!fs.existsSync(transcriptsDir)) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, transcriptCount: 0 };
+      return { uploaded: 0, deduplicated: 0, excluded: 0, transcriptCount: 0, entries: [] };
     }
 
     const files = fs
@@ -1066,21 +1269,24 @@ export function createHostedAgentService({
       .slice(-20);
 
     const uploads: BlobUpload[] = [];
+    const entries: MirrorFileEntry[] = [];
     for (const absPath of files) {
       const relPath = path.relative(projectRoot, absPath).replace(/\\/g, "/");
       if (!relPath || excludePatterns.some((pattern) => globLikeMatch(relPath, pattern))) continue;
       const text = redactSecrets(fs.readFileSync(absPath, "utf8"));
       const bytes = Buffer.from(text, "utf8");
+      const sha256 = sha256Hex(bytes);
       uploads.push({
         path: relPath,
-        sha256: sha256Hex(bytes),
+        sha256,
         contentBase64: bytes.toString("base64"),
         contentType: "text/plain"
       });
+      entries.push({ path: relPath, sha256, size: bytes.length, contentType: "text/plain" });
     }
 
     if (!uploads.length) {
-      return { uploaded: 0, deduplicated: 0, excluded: 0, transcriptCount: 0 };
+      return { uploaded: 0, deduplicated: 0, excluded: 0, transcriptCount: 0, entries: [] };
     }
 
     const summary = await uploadBlobsInBatches({
@@ -1091,7 +1297,8 @@ export function createHostedAgentService({
 
     return {
       ...summary,
-      transcriptCount: uploads.length
+      transcriptCount: uploads.length,
+      entries
     };
   };
 
@@ -1122,6 +1329,12 @@ export function createHostedAgentService({
       jobId: string;
       artifactId: string;
       narrative: string;
+      provider: string | null;
+      model: string | null;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      latencyMs: number | null;
+      timing: HostedNarrativeTimingV1;
     }>
   >();
 
@@ -1147,6 +1360,8 @@ export function createHostedAgentService({
     }>
   >();
 
+  const sessionTitleRequests = new Map<string, Promise<string | null>>();
+
   const runSingleRequest = async <T>(args: {
     key: string;
     inFlight: Map<string, Promise<T>>;
@@ -1161,7 +1376,11 @@ export function createHostedAgentService({
     return inFlight;
   };
 
-  const pollJob = async (jobId: string, timeoutMs = 120_000): Promise<HostedJobStatusResult> => {
+  const pollJob = async (
+    jobId: string,
+    timeoutMs = 120_000,
+    onStatus?: (status: HostedJobStatusResult) => void
+  ): Promise<HostedJobStatusResult> => {
     const started = Date.now();
     const effectiveTimeout = Math.max(POLL_TIMEOUT_FLOOR_MS, timeoutMs);
     let delayMs = POLL_INITIAL_DELAY_MS;
@@ -1185,11 +1404,16 @@ export function createHostedAgentService({
         continue;
       }
 
-      const normalizedStatus = status.status === "in_progress" ? "processing" : status.status;
+      const normalizedStatus = status.status;
 
       if (normalizedStatus !== lastStatus) {
         lastStatus = normalizedStatus;
         statusStreakStart = Date.now();
+        try {
+          onStatus?.(status);
+        } catch {
+          // ignore callback failures
+        }
       }
 
       if (!["queued", "processing", "completed", "failed"].includes(normalizedStatus)) {
@@ -1387,15 +1611,42 @@ export function createHostedAgentService({
 
   const getStatus = (): HostedStatus => {
     const config = readHostedConfig();
+    const apiBaseUrl = config.apiBaseUrl.trim();
     return {
       enabled: config.mode === "hosted",
       mode: config.mode,
       consentGiven: config.consentGiven,
       apiConfigured: Boolean(config.apiBaseUrl.trim()),
+      apiBaseUrl: apiBaseUrl.length ? apiBaseUrl : null,
       remoteProjectId: config.remoteProjectId,
       auth: getAuthStatus(),
       mirrorExcludePatterns: config.mirrorExcludePatterns,
-      transcriptUploadEnabled: config.uploadTranscripts
+      transcriptUploadEnabled: config.uploadTranscripts,
+      contextDeliveryMode: config.contextDeliveryMode,
+      mirrorSync: {
+        lastAttemptAt: config.mirrorLastAttemptAt,
+        lastSuccessAt: config.mirrorLastSuccessAt,
+        lastError: config.mirrorLastError,
+        lastResult: config.mirrorLastResult
+      },
+      mirrorCleanup: {
+        lastAttemptAt: config.mirrorCleanupLastAttemptAt,
+        lastSuccessAt: config.mirrorCleanupLastSuccessAt,
+        lastError: config.mirrorCleanupLastError,
+        lastResult: config.mirrorCleanupLastResult
+      },
+      contextTelemetry: {
+        schema: "ade.hostedContextTelemetry.v1",
+        inlineCount: config.contextTelemetry.inlineCount,
+        mirrorCount: config.contextTelemetry.mirrorCount,
+        inlineFallbackCount: config.contextTelemetry.inlineFallbackCount,
+        lastUpdatedAt: config.contextTelemetry.lastUpdatedAt,
+        lastFallbackAt: config.contextTelemetry.lastFallbackAt,
+        insufficientContextJobCount: config.contextTelemetry.insufficientContextJobCount,
+        lastNarrativeTiming: config.contextTelemetry.lastNarrativeTiming,
+        narrativeTimeoutCount: config.contextTelemetry.narrativeTimeoutCount,
+        lastNarrativeTimeoutReason: config.contextTelemetry.lastNarrativeTimeoutReason
+      }
     };
   };
 
@@ -1405,20 +1656,306 @@ export function createHostedAgentService({
 
   const submitJob = async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> => {
     const remoteProjectId = await ensureRemoteProject();
-    const response = await apiRequest<{ jobId: string; status: "queued" | "processing" | "completed" | "failed" }>({
-      method: "POST",
-      path: `/projects/${remoteProjectId}/jobs`,
-      body: {
-        type: args.type,
-        laneId: args.laneId,
-        params: args.params ?? {}
+    const config = readHostedConfig();
+
+    const rawParams = (args.params ?? {}) as Record<string, unknown>;
+    const redactedParams = (redactSecretsDeep(rawParams) ?? {}) as Record<string, unknown>;
+    const paramsJson = stableJsonStringify(redactedParams);
+    const approxParamsBytes = estimateUtf8Bytes(paramsJson);
+    const mirrorStalenessMs = (() => {
+      if (!config.mirrorLastSuccessAt) return null;
+      const ts = Date.parse(config.mirrorLastSuccessAt);
+      if (!Number.isFinite(ts)) return null;
+      return Math.max(0, Date.now() - ts);
+    })();
+    const mirrorStaleReason =
+      mirrorStalenessMs != null && mirrorStalenessMs > CONTEXT_POLICY_TTL_MS
+        ? `mirrorStalenessMs=${mirrorStalenessMs} policyTtlMs=${CONTEXT_POLICY_TTL_MS}`
+        : null;
+    const decision = decideHostedContextDelivery({
+      mode: config.contextDeliveryMode,
+      jobType: args.type,
+      estimatedBytes: approxParamsBytes,
+      mirrorLastSuccessAt: config.mirrorLastSuccessAt,
+      policyTtlMs: CONTEXT_POLICY_TTL_MS
+    });
+
+    const warnings: string[] = [];
+    const missingRelevanceWarnings: string[] = [];
+    const incomingManifestRefs = isRecord((redactedParams as Record<string, unknown>).projectContextRefs)
+      ? ((redactedParams as Record<string, unknown>).projectContextRefs as Record<string, unknown>)
+      : {};
+    const manifestRefs: HostedManifestRefsV1 = {
+      lane: `${remoteProjectId}/${args.laneId}/manifest.json`,
+      packs: `${remoteProjectId}/packs/manifest.json`,
+      transcripts: `${remoteProjectId}/transcripts/manifest.json`,
+      project: `${remoteProjectId}/project/manifest.json`,
+      conflict: `${remoteProjectId}/conflicts/${args.laneId}/manifest.json`,
+      ...(typeof incomingManifestRefs.project === "string" ? { project: incomingManifestRefs.project } : {}),
+      ...(typeof incomingManifestRefs.packs === "string" ? { packs: incomingManifestRefs.packs } : {}),
+      ...(typeof incomingManifestRefs.transcripts === "string" ? { transcripts: incomingManifestRefs.transcripts } : {}),
+      ...(typeof incomingManifestRefs.lane === "string" ? { lane: incomingManifestRefs.lane } : {}),
+      ...(typeof incomingManifestRefs.conflict === "string" ? { conflict: incomingManifestRefs.conflict } : {})
+    };
+    const extractVersionRef = (value: unknown, fallbackPackKey: string) => {
+      if (typeof value !== "string") {
+        return {
+          packKey: fallbackPackKey,
+          versionId: null,
+          versionNumber: null,
+          contentHash: null
+        };
       }
+      const match = value.match(/```json\s*([\s\S]*?)\s*```/);
+      if (!match) {
+        return {
+          packKey: fallbackPackKey,
+          versionId: null,
+          versionNumber: null,
+          contentHash: null
+        };
+      }
+      try {
+        const parsed = JSON.parse(match[1] ?? "{}") as Record<string, unknown>;
+        return {
+          packKey:
+            typeof parsed.packKey === "string" && parsed.packKey.trim().length
+              ? parsed.packKey
+              : fallbackPackKey,
+          versionId: typeof parsed.versionId === "string" ? parsed.versionId : null,
+          versionNumber:
+            typeof parsed.versionNumber === "number" && Number.isFinite(parsed.versionNumber)
+              ? parsed.versionNumber
+              : null,
+          contentHash: typeof parsed.contentHash === "string" ? parsed.contentHash : null
+        };
+      } catch {
+        return {
+          packKey: fallbackPackKey,
+          versionId: null,
+          versionNumber: null,
+          contentHash: null
+        };
+      }
+    };
+
+    const lanePackVersion = extractVersionRef(redactedParams.packBody, `lane:${args.laneId}`);
+    const projectPackVersion = extractVersionRef(redactedParams.projectPackBody, "project");
+    const conflictPackVersion = extractVersionRef(
+      (redactedParams as Record<string, unknown>).conflictExportStandard ?? (redactedParams as Record<string, unknown>).conflictPackBody,
+      `conflict:${args.laneId}:${String((redactedParams as Record<string, unknown>).peerLaneId ?? "base")}`
+    );
+
+    if (args.type === "ProposeConflictResolution" || args.type === "ConflictResolution") {
+      const conflictContext = isRecord(redactedParams.conflictContext) ? redactedParams.conflictContext : redactedParams;
+      const fileContexts = Array.isArray(conflictContext.fileContexts) ? conflictContext.fileContexts : [];
+      const relevantFiles = Array.isArray(conflictContext.relevantFilesForConflict) ? conflictContext.relevantFilesForConflict : [];
+      if (relevantFiles.length === 0) missingRelevanceWarnings.push("Conflict context missing relevantFilesForConflict.");
+      if (fileContexts.length === 0) missingRelevanceWarnings.push("Conflict context missing fileContexts.");
+      const fileContextsMissing = relevantFiles.length > 0 && fileContexts.length < relevantFiles.length;
+      if (fileContextsMissing) {
+        missingRelevanceWarnings.push(
+          `Conflict context incomplete fileContexts (${fileContexts.length}/${relevantFiles.length}).`
+        );
+      }
+      if (Boolean(conflictContext.insufficientContext)) {
+        missingRelevanceWarnings.push("Conflict context marked insufficientContext=true.");
+      }
+    }
+
+    let submittedParams: Record<string, unknown> = redactedParams;
+    let contextRefSha256: string | null = null;
+    let finalContextSource: HostedContextSource = "inline";
+    let inlineClipReasonTags: string[] | null = null;
+    let uploadError: string | null = null;
+    let fileContextsMissing = false;
+    const conflictContextRaw = isRecord(redactedParams.conflictContext) ? redactedParams.conflictContext : null;
+    if (conflictContextRaw) {
+      const fileContexts = Array.isArray(conflictContextRaw.fileContexts) ? conflictContextRaw.fileContexts : [];
+      const relevantFiles = Array.isArray(conflictContextRaw.relevantFilesForConflict)
+        ? conflictContextRaw.relevantFilesForConflict
+        : [];
+      fileContextsMissing = relevantFiles.length > 0 && fileContexts.length < relevantFiles.length;
+    }
+
+    const buildHandoff = (contextSource: HostedContextSource): HostedHandoffV1 => ({
+      schema: ADE_HANDOFF_SCHEMA_V1,
+      contextSource,
+      reasonCode: decision.reasonCode,
+      approxParamsBytes,
+      policyTtlMs: CONTEXT_POLICY_TTL_MS,
+      staleness: {
+        mirrorLastSuccessAt: config.mirrorLastSuccessAt,
+        mirrorStalenessMs,
+        docsLastRefreshAt:
+          typeof redactedParams.lastDocsRefreshAt === "string" ? redactedParams.lastDocsRefreshAt : null,
+        docsStaleReason:
+          typeof redactedParams.docsStaleReason === "string" ? redactedParams.docsStaleReason : null
+      },
+      packVersion: lanePackVersion,
+      projectPackVersion,
+      conflictPackVersion,
+      manifestRefs,
+      missingRelevanceWarnings,
+      fileContextsMissing,
+      warnings,
+      refSha256: contextRefSha256,
+      inlineClipReasonTags
+    });
+
+    if (decision.mode === "mirror") {
+      try {
+        const redactedJson = redactSecrets(paramsJson);
+        const bytes = Buffer.from(redactedJson, "utf8");
+        const sha256 = sha256Hex(bytes);
+        contextRefSha256 = sha256;
+
+        // Upload the canonical JSON params as a single content-addressed blob.
+        // The hosted worker will resolve __adeContextRef before building prompts.
+        await apiRequest<{ uploaded: number; deduplicated: number; excluded: number }>({
+          method: "POST",
+          path: `/projects/${remoteProjectId}/upload`,
+          body: {
+            blobs: [
+              {
+                path: `__ade_job_context__/${args.type}/${args.laneId}/${sha256}.json`,
+                sha256,
+                contentBase64: bytes.toString("base64"),
+                contentType: "application/json"
+              }
+            ],
+            excludePatterns: []
+          }
+        });
+
+        const fallbackInfo = buildInlineFallbackParams({
+          params: redactedParams,
+          maxBytes: decision.inlineFallbackMaxBytes
+        });
+        inlineClipReasonTags = fallbackInfo.clipReasonTags;
+        submittedParams = {
+          __adeContextRef: {
+            schema: ADE_JOB_CONTEXT_REF_SCHEMA_V1,
+            sha256,
+            bytes: bytes.length,
+            contentType: "application/json",
+            uploadedAt: nowIso(),
+            jobType: args.type,
+            reasonCode: decision.reasonCode,
+            approxParamsBytes,
+            thresholdBytes: decision.thresholdBytes,
+            inlineFallbackMaxBytes: decision.inlineFallbackMaxBytes
+          },
+          __adeContextInline: fallbackInfo.fallback,
+          __adeContextInlineMeta: {
+            schema: ADE_JOB_CONTEXT_INLINE_META_SCHEMA_V1,
+            clipReasonTags: fallbackInfo.clipReasonTags,
+            approxOriginalBytes: fallbackInfo.approxOriginalBytes,
+            approxBytes: fallbackInfo.approxBytes
+          }
+        };
+        finalContextSource = "mirror";
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        uploadError = message;
+        const fallbackInfo = buildInlineFallbackParams({
+          params: redactedParams,
+          maxBytes: decision.inlineFallbackMaxBytes
+        });
+        inlineClipReasonTags = fallbackInfo.clipReasonTags;
+        warnings.push(`Mirror context upload failed; falling back to inline reduced params. (${message})`);
+        submittedParams = fallbackInfo.fallback;
+        contextRefSha256 = null;
+        finalContextSource = "inline_fallback";
+      }
+    }
+
+    warnings.push(
+      ...summarizeWarningsForContext({
+        decisionMode: decision.mode,
+        finalContextSource,
+        decisionReasonCode: decision.reasonCode,
+        uploadError,
+        missingRelevanceWarnings,
+        mirrorStaleReason
+      })
+    );
+    submittedParams = {
+      ...submittedParams,
+      __adeHandoff: buildHandoff(finalContextSource)
+    };
+
+    let response: { jobId: string; status: "queued" | "processing" | "completed" | "failed" };
+    try {
+      response = await apiRequest<{ jobId: string; status: "queued" | "processing" | "completed" | "failed" }>({
+        method: "POST",
+        path: `/projects/${remoteProjectId}/jobs`,
+        body: {
+          type: args.type,
+          laneId: args.laneId,
+          params: submittedParams
+        }
+      });
+    } catch (error) {
+      // Never hard fail on mirror-specific submission shape; retry once with compact inline fallback.
+      if (finalContextSource === "mirror") {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(`Mirror-formatted submission failed; retrying inline fallback (${message}).`);
+        const fallbackInfo = buildInlineFallbackParams({
+          params: redactedParams,
+          maxBytes: decision.inlineFallbackMaxBytes
+        });
+        inlineClipReasonTags = fallbackInfo.clipReasonTags;
+        finalContextSource = "inline_fallback";
+        const retryParams: Record<string, unknown> = {
+          ...fallbackInfo.fallback,
+          __adeHandoff: buildHandoff("inline_fallback")
+        };
+        response = await apiRequest<{ jobId: string; status: "queued" | "processing" | "completed" | "failed" }>({
+          method: "POST",
+          path: `/projects/${remoteProjectId}/jobs`,
+          body: {
+            type: args.type,
+            laneId: args.laneId,
+            params: retryParams
+          }
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    const delivery: HostedJobContextDeliveryV1 = {
+      schema: "ade.hostedJobContextDelivery.v1",
+      mode: finalContextSource === "mirror" ? "mirror" : "inline",
+      reasonCode: decision.reasonCode,
+      approxParamsBytes,
+      contextRefSha256: finalContextSource === "mirror" ? contextRefSha256 : null,
+      warnings,
+      contextSource: finalContextSource,
+      confidenceLevel: fileContextsMissing ? "low" : finalContextSource === "mirror" ? "high" : "medium"
+    };
+
+    const nextTelemetry = {
+      ...config.contextTelemetry,
+      inlineCount: config.contextTelemetry.inlineCount + (finalContextSource === "inline" ? 1 : 0),
+      mirrorCount: config.contextTelemetry.mirrorCount + (finalContextSource === "mirror" ? 1 : 0),
+      inlineFallbackCount: config.contextTelemetry.inlineFallbackCount + (finalContextSource === "inline_fallback" ? 1 : 0),
+      lastUpdatedAt: nowIso(),
+      lastFallbackAt: finalContextSource === "inline_fallback" ? nowIso() : config.contextTelemetry.lastFallbackAt,
+      insufficientContextJobCount:
+        config.contextTelemetry.insufficientContextJobCount +
+        (missingRelevanceWarnings.some((warning) => warning.toLowerCase().includes("insufficient")) ? 1 : 0)
+    };
+    updateHostedConfig({
+      contextTelemetry: nextTelemetry
     });
 
     return {
       remoteProjectId,
       jobId: response.jobId,
-      status: response.status
+      status: response.status,
+      contextDelivery: delivery
     };
   };
 
@@ -1504,6 +2041,11 @@ export function createHostedAgentService({
   const syncMirror = async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> => {
     const config = ensureHostedConfigured();
     const remoteProjectId = await ensureRemoteProject();
+    const attemptAt = nowIso();
+    updateHostedConfig({
+      mirrorLastAttemptAt: attemptAt,
+      mirrorLastError: null
+    });
 
     const lanes = await laneService.list({ includeArchived: false });
     const targetLaneIds = args.laneId ? [args.laneId] : lanes.map((lane) => lane.id);
@@ -1516,43 +2058,216 @@ export function createHostedAgentService({
     let manifestCount = 0;
     let packCount = 0;
     let transcriptCount = 0;
+    const warnings: string[] = [];
+    let cleanup: HostedMirrorCleanupSummaryV1 | null = null;
+    let packsManifestKey: string | null = null;
+    let transcriptsManifestKey: string | null = null;
 
-    for (const laneId of targetLaneIds) {
-      const laneResult = await syncLaneMirror({
-        laneId,
+    try {
+      for (const laneId of targetLaneIds) {
+        const laneResult = await syncLaneMirror({
+          laneId,
+          remoteProjectId,
+          excludePatterns
+        });
+        uploaded += laneResult.uploaded;
+        deduplicated += laneResult.deduplicated;
+        excluded += laneResult.excluded;
+        manifestCount += laneResult.manifestCount;
+      }
+
+      const packResult = await syncPacks(remoteProjectId, excludePatterns);
+      uploaded += packResult.uploaded;
+      deduplicated += packResult.deduplicated;
+      excluded += packResult.excluded;
+      packCount += packResult.packCount;
+
+      if (packResult.entries.length) {
+        try {
+          const res = await apiRequest<{ manifestKey: string; timestamp: string; packCount: number }>({
+            method: "POST",
+            path: `/projects/${remoteProjectId}/packs/manifest`,
+            body: {
+              schema: ADE_MIRROR_PACKS_MANIFEST_SCHEMA_V1,
+              generatedAt: nowIso(),
+              packs: packResult.entries
+            }
+          });
+          packsManifestKey = res.manifestKey;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          warnings.push(`Failed to write packs manifest: ${message}`);
+        }
+      }
+
+      if (config.uploadTranscripts && args.includeTranscripts) {
+        const transcriptResult = await syncTranscripts(remoteProjectId, excludePatterns);
+        uploaded += transcriptResult.uploaded;
+        deduplicated += transcriptResult.deduplicated;
+        excluded += transcriptResult.excluded;
+        transcriptCount += transcriptResult.transcriptCount;
+
+        if (transcriptResult.entries.length) {
+          try {
+            const res = await apiRequest<{ manifestKey: string; timestamp: string; transcriptCount: number }>({
+              method: "POST",
+              path: `/projects/${remoteProjectId}/transcripts/manifest`,
+              body: {
+                schema: ADE_MIRROR_TRANSCRIPTS_MANIFEST_SCHEMA_V1,
+                generatedAt: nowIso(),
+                transcripts: transcriptResult.entries
+              }
+            });
+            transcriptsManifestKey = res.manifestKey;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            warnings.push(`Failed to write transcripts manifest: ${message}`);
+          }
+        }
+      }
+
+      const syncedAt = nowIso();
+      const maybeRunCleanup = async () => {
+        const lastCleanupAt = config.mirrorCleanupLastSuccessAt ? Date.parse(config.mirrorCleanupLastSuccessAt) : NaN;
+        const shouldRun = !Number.isFinite(lastCleanupAt) || Date.now() - lastCleanupAt > MIRROR_CLEANUP_INTERVAL_MS;
+        if (!shouldRun) return null;
+        try {
+          return await cleanMirrorDataInternal(remoteProjectId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          warnings.push(`Mirror cleanup failed: ${message}`);
+          return null;
+        }
+      };
+      cleanup = await maybeRunCleanup();
+
+      const summary: HostedMirrorSyncSummaryV1 = {
+        schema: "ade.hostedMirrorSyncSummary.v1",
         remoteProjectId,
-        excludePatterns
+        lanesSyncedCount: targetLaneIds.length,
+        uploaded,
+        deduplicated,
+        excluded,
+        manifestCount,
+        transcriptCount,
+        packCount,
+        syncedAt,
+        warnings,
+        cleanup
+      };
+
+      updateHostedConfig({
+        mirrorLastSuccessAt: syncedAt,
+        mirrorLastError: null,
+        mirrorLastResult: summary
       });
-      uploaded += laneResult.uploaded;
-      deduplicated += laneResult.deduplicated;
-      excluded += laneResult.excluded;
-      manifestCount += laneResult.manifestCount;
+
+      return {
+        remoteProjectId,
+        lanesSynced: targetLaneIds,
+        uploaded,
+        deduplicated,
+        excluded,
+        manifestCount,
+        transcriptCount,
+        packCount,
+        syncedAt,
+        packsManifestKey,
+        transcriptsManifestKey,
+        warnings,
+        cleanup
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateHostedConfig({
+        mirrorLastError: message
+      });
+      throw error;
+    }
+  };
+
+  const cleanMirrorDataInternal = async (remoteProjectId: string): Promise<HostedMirrorCleanupSummaryV1> => {
+    const attemptAt = nowIso();
+    updateHostedConfig({
+      mirrorCleanupLastAttemptAt: attemptAt,
+      mirrorCleanupLastError: null
+    });
+
+    try {
+      const result = await apiRequest<HostedMirrorCleanupResult>({
+        method: "POST",
+        path: `/projects/${remoteProjectId}/mirror/cleanup`,
+        body: {}
+      });
+      const finishedAt = nowIso();
+      const summary: HostedMirrorCleanupSummaryV1 = {
+        schema: ADE_HOSTED_MIRROR_CLEANUP_SUMMARY_SCHEMA_V1,
+        remoteProjectId: result.remoteProjectId,
+        startedAt: attemptAt,
+        finishedAt,
+        reachableBlobs: result.reachableBlobs,
+        orphanedBlobs: result.orphanedBlobs,
+        deletedBlobs: result.deletedBlobs,
+        reclaimedBytes: result.reclaimedBytes,
+        policy: {
+          staleGraceMs: 10 * 60_000,
+          maxObjectsScanned: 5000,
+          maxDelete: 1000,
+          maxBytesScanned: 500 * 1024 * 1024
+        },
+        warnings: result.warnings ?? []
+      };
+      updateHostedConfig({
+        mirrorCleanupLastSuccessAt: finishedAt,
+        mirrorCleanupLastError: null,
+        mirrorCleanupLastResult: summary
+      });
+      return summary;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateHostedConfig({
+        mirrorCleanupLastError: message
+      });
+      throw error;
+    }
+  };
+
+  const cleanMirrorData = async (): Promise<HostedMirrorCleanupSummaryV1> => {
+    const config = ensureHostedConfigured();
+    if (!config.remoteProjectId) {
+      throw new Error("No hosted remote project is configured for this repo yet.");
+    }
+    return await cleanMirrorDataInternal(config.remoteProjectId);
+  };
+
+  const deleteMirrorData = async (): Promise<HostedMirrorDeleteResult> => {
+    const config = ensureHostedConfigured();
+    const remoteProjectId = config.remoteProjectId;
+    if (!remoteProjectId) {
+      throw new Error("No hosted remote project is configured for this repo yet.");
     }
 
-    const packResult = await syncPacks(remoteProjectId, excludePatterns);
-    uploaded += packResult.uploaded;
-    deduplicated += packResult.deduplicated;
-    excluded += packResult.excluded;
-    packCount += packResult.packCount;
+    await apiRequest<{ deleted?: boolean }>({
+      method: "DELETE",
+      path: `/projects/${remoteProjectId}`
+    });
 
-    if (config.uploadTranscripts && args.includeTranscripts) {
-      const transcriptResult = await syncTranscripts(remoteProjectId, excludePatterns);
-      uploaded += transcriptResult.uploaded;
-      deduplicated += transcriptResult.deduplicated;
-      excluded += transcriptResult.excluded;
-      transcriptCount += transcriptResult.transcriptCount;
-    }
+    updateHostedConfig({ remoteProjectId: null });
+    updateHostedConfig({
+      mirrorLastAttemptAt: null,
+      mirrorLastSuccessAt: null,
+      mirrorLastError: null,
+      mirrorLastResult: null,
+      mirrorCleanupLastAttemptAt: null,
+      mirrorCleanupLastSuccessAt: null,
+      mirrorCleanupLastError: null,
+      mirrorCleanupLastResult: null
+    });
 
     return {
+      deleted: true,
       remoteProjectId,
-      lanesSynced: targetLaneIds,
-      uploaded,
-      deduplicated,
-      excluded,
-      manifestCount,
-      transcriptCount,
-      packCount,
-      syncedAt: nowIso()
+      deletedAt: nowIso()
     };
   };
 
@@ -1575,6 +2290,14 @@ export function createHostedAgentService({
 
     async syncMirror(args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> {
       return await syncMirror(args);
+    },
+
+    async cleanMirrorData(): Promise<HostedMirrorCleanupSummaryV1> {
+      return await cleanMirrorData();
+    },
+
+    async deleteMirrorData(): Promise<HostedMirrorDeleteResult> {
+      return await deleteMirrorData();
     },
 
     async submitJob(args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> {
@@ -1671,45 +2394,182 @@ export function createHostedAgentService({
       });
     },
 
-    async requestLaneNarrative(args: { laneId: string; packBody: string }): Promise<{
+    async requestLaneNarrative(args: {
+      laneId: string;
+      packBody: string;
+      projectContext?: {
+        projectExport: string;
+        refs?: Record<string, string | null>;
+        omissions?: string[];
+        assumptions?: Record<string, unknown>;
+      };
+      timeoutMs?: number;
+      onJobSubmitted?: (submission: HostedJobSubmissionResult) => void;
+      onJobStatus?: (status: HostedJobStatusResult) => void;
+    }): Promise<{
       jobId: string;
       artifactId: string;
       narrative: string;
+      provider: string | null;
+      model: string | null;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      latencyMs: number | null;
+      timing: HostedNarrativeTimingV1;
     }> {
       const requestKey = makeRequestKey("lane-narrative", {
         laneId: args.laneId,
-        packBody: args.packBody
+        packBody: args.packBody,
+        projectContext: args.projectContext ?? null
       });
 
       return runSingleRequest({
         key: requestKey,
         inFlight: laneNarrativeRequests,
         run: async () => {
+          const submitStartedAtMs = Date.now();
+          const submitStartedAtIso = nowIso();
+          const effectiveTimeoutMs = Math.max(45_000, Math.floor(args.timeoutMs ?? 240_000));
+          let queueEnteredAtMs: number | null = null;
+          let queueExitedAtMs: number | null = null;
+          let timeoutReason: HostedNarrativeTimingV1["timeoutReason"] = null;
           const submission = await submitJob({
             type: "NarrativeGeneration" as HostedJobType,
             laneId: args.laneId,
             params: {
-              packBody: args.packBody
+              packBody: args.packBody,
+              projectContext: args.projectContext?.projectExport ?? null,
+              projectContextRefs: args.projectContext?.refs ?? null,
+              projectContextMeta: {
+                omissions: args.projectContext?.omissions ?? [],
+                assumptions: args.projectContext?.assumptions ?? {}
+              }
             }
           });
+          const submitDurationMs = Math.max(0, Date.now() - submitStartedAtMs);
 
-          const status = await pollJob(submission.jobId, 120_000);
+          try {
+            args.onJobSubmitted?.(submission);
+          } catch {
+            // ignore callback failures
+          }
+
+          const pollStartedAtMs = Date.now();
+          let status: HostedJobStatusResult;
+          try {
+            status = await pollJob(submission.jobId, effectiveTimeoutMs, (nextStatus) => {
+              if (nextStatus.status === "queued" && queueEnteredAtMs == null) {
+                queueEnteredAtMs = Date.now();
+              }
+              if (nextStatus.status !== "queued" && queueEnteredAtMs != null && queueExitedAtMs == null) {
+                queueExitedAtMs = Date.now();
+              }
+              try {
+                args.onJobStatus?.(nextStatus);
+              } catch {
+                // ignore callback failures
+              }
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            timeoutReason = /timed out|timeout|stuck/i.test(message) ? "timeout_poll" : "timeout_total";
+            const timing: HostedNarrativeTimingV1 = {
+              schema: "ade.hostedNarrativeTiming.v1",
+              submitStartedAt: submitStartedAtIso,
+              submitDurationMs,
+              queueWaitMs:
+                queueEnteredAtMs != null && queueExitedAtMs != null ? Math.max(0, queueExitedAtMs - queueEnteredAtMs) : 0,
+              pollDurationMs: Math.max(0, Date.now() - pollStartedAtMs),
+              artifactFetchMs: 0,
+              totalDurationMs: Math.max(0, Date.now() - submitStartedAtMs),
+              timeoutMs: effectiveTimeoutMs,
+              timeoutReason
+            };
+            const config = readHostedConfig();
+            updateHostedConfig({
+              contextTelemetry: {
+                ...config.contextTelemetry,
+                lastNarrativeTiming: timing,
+                narrativeTimeoutCount: config.contextTelemetry.narrativeTimeoutCount + 1,
+                lastNarrativeTimeoutReason: timeoutReason
+              }
+            });
+            throw new Error(`Narrative generation timed out (${timeoutReason}). ${message}`);
+          }
+          const pollDurationMs = Math.max(0, Date.now() - pollStartedAtMs);
           if (status.status !== "completed" || !status.artifactId) {
+            timeoutReason = status.status === "failed" ? "job_failed" : "artifact_missing";
+            const timing: HostedNarrativeTimingV1 = {
+              schema: "ade.hostedNarrativeTiming.v1",
+              submitStartedAt: submitStartedAtIso,
+              submitDurationMs,
+              queueWaitMs:
+                queueEnteredAtMs != null && queueExitedAtMs != null ? Math.max(0, queueExitedAtMs - queueEnteredAtMs) : 0,
+              pollDurationMs,
+              artifactFetchMs: 0,
+              totalDurationMs: Math.max(0, Date.now() - submitStartedAtMs),
+              timeoutMs: effectiveTimeoutMs,
+              timeoutReason
+            };
+            const config = readHostedConfig();
+            updateHostedConfig({
+              contextTelemetry: {
+                ...config.contextTelemetry,
+                lastNarrativeTiming: timing,
+                narrativeTimeoutCount: config.contextTelemetry.narrativeTimeoutCount + 1,
+                lastNarrativeTimeoutReason: timeoutReason
+              }
+            });
             const message = status.error?.message ?? `Narrative job ${status.jobId} did not complete successfully.`;
             throw new Error(message);
           }
 
+          const artifactStartedAtMs = Date.now();
           const artifact = await getArtifact(status.artifactId);
+          const artifactFetchMs = Math.max(0, Date.now() - artifactStartedAtMs);
           const narrative = isRecord(artifact.content) && typeof artifact.content.content === "string"
             ? (artifact.content.content as string)
             : typeof artifact.content === "string"
               ? artifact.content
               : JSON.stringify(artifact.content, null, 2);
 
+          const meta = isRecord(artifact.content) && isRecord(artifact.content.metadata) ? artifact.content.metadata : null;
+          const provider = meta ? asString(meta.provider).trim() : "";
+          const model = meta ? asString(meta.model).trim() : "";
+          const inputTokens = meta ? Number(meta.inputTokens ?? NaN) : NaN;
+          const outputTokens = meta ? Number(meta.outputTokens ?? NaN) : NaN;
+          const latencyMs = meta ? Number(meta.latencyMs ?? NaN) : NaN;
+          const timing: HostedNarrativeTimingV1 = {
+            schema: "ade.hostedNarrativeTiming.v1",
+            submitStartedAt: submitStartedAtIso,
+            submitDurationMs,
+            queueWaitMs:
+              queueEnteredAtMs != null && queueExitedAtMs != null ? Math.max(0, queueExitedAtMs - queueEnteredAtMs) : 0,
+            pollDurationMs,
+            artifactFetchMs,
+            totalDurationMs: Math.max(0, Date.now() - submitStartedAtMs),
+            timeoutMs: effectiveTimeoutMs,
+            timeoutReason: null
+          };
+          const config = readHostedConfig();
+          updateHostedConfig({
+            contextTelemetry: {
+              ...config.contextTelemetry,
+              lastNarrativeTiming: timing,
+              lastNarrativeTimeoutReason: null
+            }
+          });
+
           return {
             jobId: submission.jobId,
             artifactId: artifact.artifactId,
-            narrative
+            narrative,
+            provider: provider || null,
+            model: model || null,
+            inputTokens: Number.isFinite(inputTokens) ? inputTokens : null,
+            outputTokens: Number.isFinite(outputTokens) ? outputTokens : null,
+            latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
+            timing
           };
         }
       });
@@ -1758,6 +2618,63 @@ export function createHostedAgentService({
             title: "",
             body
           };
+        }
+      });
+    },
+
+    async requestSessionTitle(args: {
+      sessionId: string;
+      laneId: string;
+      initialOutput: string;
+    }): Promise<string | null> {
+      const requestKey = makeRequestKey("session-title", {
+        sessionId: args.sessionId,
+        initialOutput: args.initialOutput
+      });
+
+      return runSingleRequest({
+        key: requestKey,
+        inFlight: sessionTitleRequests,
+        run: async () => {
+          try {
+            const submission = await submitJob({
+              type: "SessionTitleGeneration" as HostedJobType,
+              laneId: args.laneId,
+              params: {
+                sessionId: args.sessionId,
+                initialOutput: args.initialOutput.slice(0, 500),
+                prompt:
+                  "Generate a brief 3-8 word title describing what this terminal session is doing based on the initial output. Return ONLY the title, nothing else."
+              }
+            });
+
+            const status = await pollJob(submission.jobId, 18_000);
+            if (status.status !== "completed" || !status.artifactId) {
+              logger.warn("hosted.session_title_job_incomplete", {
+                jobId: submission.jobId,
+                status: status.status
+              });
+              return null;
+            }
+
+            const artifact = await getArtifact(status.artifactId);
+            const raw =
+              isRecord(artifact.content) && typeof artifact.content.content === "string"
+                ? (artifact.content.content as string)
+                : typeof artifact.content === "string"
+                  ? artifact.content
+                  : "";
+
+            const title = raw.trim().replace(/^["']|["']$/g, "").trim();
+            if (!title || title.length > 120) return null;
+            return title;
+          } catch (err) {
+            logger.warn("hosted.session_title_failed", {
+              sessionId: args.sessionId,
+              error: err instanceof Error ? err.message : String(err)
+            });
+            return null;
+          }
         }
       });
     }

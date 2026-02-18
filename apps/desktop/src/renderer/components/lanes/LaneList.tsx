@@ -140,7 +140,7 @@ export function LaneList({
               else setLocalFilter(next);
             }}
             placeholder="Filter lanes…"
-            className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs outline-none placeholder:text-muted-fg"
+            className="h-8 w-full rounded-xl bg-muted/30 shadow-card px-2 text-xs outline-none placeholder:text-muted-fg"
           />
         </div>
         {visibleLanes.length === 0 ? (
@@ -172,16 +172,16 @@ export function LaneList({
             ))}
           </div>
         )}
-        <div className="mt-3 rounded-lg border border-border bg-card/60 p-2">
-          <div className="mb-1 px-1 text-[10px] uppercase tracking-wider text-muted-fg">Stack Graph</div>
+        <div className="mt-3 rounded-xl shadow-card bg-card/40 p-2">
+          <div className="mb-1 px-1 text-xs text-muted-fg/70">Stack Graph</div>
           <div className="space-y-0.5">
             {visibleLanes.map((lane) => (
               <button
                 key={`stack:${lane.id}`}
                 type="button"
                 className={cn(
-                  "relative flex w-full items-center justify-between rounded px-1 py-1 text-left text-[11px] transition-colors",
-                  selectedIdSet.has(lane.id) ? "bg-accent/15 text-fg" : "text-muted-fg hover:bg-muted/50 hover:text-fg"
+                  "relative flex w-full items-center justify-between rounded-lg px-1 py-1 text-left text-[11px] transition-colors",
+                  selectedIdSet.has(lane.id) ? "bg-accent/10 text-fg shadow-card" : "text-muted-fg hover:bg-muted/30 hover:text-fg"
                 )}
                 onClick={() => {
                   if (onLaneSelect) onLaneSelect(lane.id, { extend: false });

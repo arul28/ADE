@@ -1,6 +1,6 @@
 # Terminals & Sessions — Command Center
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -18,7 +18,7 @@
   - [Lane Terminal Panel](#lane-terminal-panel)
   - [Terminal View](#terminal-view)
   - [Session Delta Card](#session-delta-card)
-  - [Tiling Layout (Future)](#tiling-layout-future)
+  - [Tiling Layout](#tiling-layout)
   - [Session Lifecycle](#session-lifecycle)
 - [Technical Implementation](#technical-implementation)
   - [Services](#services)
@@ -64,15 +64,23 @@ In ADE, PTYs are rendered in the browser using `xterm.js`, a high-performance te
 A **session** is a tracked terminal lifecycle from creation to exit. When a PTY is created, a session record is simultaneously created in the database. The session captures:
 
 - **Identity**: Unique session ID, associated lane, user-provided title.
+- **Goal**: A short human-readable intent/purpose string (distinct from the auto-generated title).
+- **Tool type**: Detected or specified tool type (`shell`, `claude`, `codex`, `cursor`, `aider`, `continue`, `other`). Used for filtering and display.
+- **Tracked/Pinned**: Whether the session captures transcripts (`tracked`) and whether it is pinned for visibility (`pinned`).
 - **Timing**: Start time, end time, duration.
-- **State**: Running or ended, exit code.
+- **State**: `running`, `completed`, `failed`, or `disposed`. Exit code.
 - **Git context**: HEAD SHA at session start and end (enabling delta computation).
 - **Transcript path**: Location of the captured output file.
-- **Preview**: Last few lines of output (for display in session lists without reading the full transcript).
+- **Preview**: Last few lines of output (ANSI-stripped) for display in lists without reading the full transcript.
+- **Summary**: A deterministic one-line summary generated when the session ends (via `sessionSummary.ts`, ANSI-stripped). Examples: `Ran npm test (PASS, 31 tests, 1.2s)`, `Ran npm install (FAIL, exit code 1, EACCES permission denied)`, `Ran cargo build (OK)`. The summarizer detects Jest, Vitest, and pytest output formats for test summaries.
 
 ### Transcript
 
-A **transcript** is the raw terminal output saved to disk at `.ade/transcripts/<session-id>.log`. Every byte written by the PTY to stdout is appended to this file. Transcripts include ANSI escape codes (preserving color and formatting information).
+A **transcript** is the raw terminal output saved to disk at `.ade/transcripts/<session-id>.log`. Every byte written by the PTY to stdout is appended to this file. Transcripts are stored raw (including ANSI escape codes for color/cursor control).
+
+User-facing excerpts derived from transcripts (previews, failure lines, summaries) are **sanitized** before display:
+- ANSI escape sequences are stripped.
+- Carriage-return line rewrites and backspaces are normalized so the output reads like plain text.
 
 Transcripts serve multiple purposes:
 - **Audit trail**: Review what commands were run and what output was produced.
@@ -91,7 +99,7 @@ Delta computation works by comparing the git state at session start (captured HE
 | `insertions` | Total lines added across all changed files |
 | `deletions` | Total lines removed across all changed files |
 | `touched_files` | List of specific file paths that changed |
-| `failure_lines` | Lines from the transcript matching common failure patterns (stack traces, error keywords) |
+| `failure_lines` | ANSI-stripped, de-duplicated lines from the transcript matching common failure patterns (stack traces, error keywords) |
 
 ### Checkpoint
 
@@ -105,7 +113,7 @@ An **untracked session** is a terminal launched with context recording disabled.
 - Sensitive operations where transcript capture is undesirable (e.g., entering credentials, viewing secrets)
 - Debugging or exploration that the developer explicitly wants excluded from project history
 
-Untracked sessions still appear in the session list (marked with a "ghost" badge) so the developer can see what's running, but they produce no persistent artifacts. The "New Terminal" button offers a dropdown: "New Terminal" (default, tracked) and "New Terminal (Untracked)".
+Untracked sessions still appear in the session list (marked with a "no context" badge) so the developer can see what's running, but they produce no persistent artifacts. Terminals can be launched either with context (tracked) or without context (untracked).
 
 **Implementation note**: When `tracked: false` is passed to `ade.pty.create`, the PTY service skips transcript file creation, the session service skips delta computation on exit, and the job engine receives no session-end trigger.
 
@@ -115,44 +123,39 @@ Untracked sessions still appear in the session list (marked with a "ghost" badge
 
 ### Terminals Tab (Global)
 
-The Terminals tab provides a centralized view of all terminal sessions across all lanes in the project.
+The Terminals tab provides a centralized view of all terminal sessions across all lanes in the project, using a `PaneTilingLayout` with 3 panes: session list (28%), terminal view (top-right 70%), and details (bottom-right 30%).
 
 ```
-+-------------------------------------------------------------------+
-| Filter: [All Lanes ▼] [All Status ▼] [Search...              ]   |
-+-------------------------------------------------------------------+
-| Session List                                                      |
-| +---------------------------------------------------------------+ |
-| | Title              | Lane         | Status  | Exit | Time     | |
-| |--------------------|--------------|---------|------|----------| |
-| | npm run dev        | feature-auth | Running |  —   | 14:30    | |
-| | pytest tests/      | bugfix-123   | Ended   |  0   | 14:15    | |
-| | cargo build        | refactor-db  | Ended   |  1   | 13:45    | |
-| | git rebase -i      | feature-auth | Ended   |  0   | 13:30    | |
-| +---------------------------------------------------------------+ |
-| Last output: "Server listening on port 3000..."                   |
-+-------------------------------------------------------------------+
++--------------------+----------------------------------------------+
+| Session List       |  Terminal View                               |
+| (~28%)             |  (xterm.js, ~70% of right)                   |
+|                    |                                              |
+| [Filters]          +----------------------------------------------+
+| [session rows]     |  Session Details                             |
+|                    |  (delta card, metadata, ~30% of right)       |
++--------------------+----------------------------------------------+
 ```
 
 **Filter bar**:
 - **Lane dropdown**: Filter sessions to a specific lane, or show all.
-- **Status dropdown**: Filter by running, ended, or all.
-- **Tool type filter** (future): Filter by detected tool type (Claude, Cursor, shell, etc.).
-- **Search field**: Free-text search across session titles and transcript content.
+- **Status dropdown**: Filter by running, completed, failed, disposed, or all.
+- **Search field**: Free-text search across session titles and content.
 
 **Session list**:
 Each session row displays:
-- **Title**: User-provided or auto-generated (from the initial command).
+- **Title/Goal**: Goal (if set) takes precedence, falling back to auto-generated title. Ended sessions show a composite label: `toolType · exit status · summary`.
 - **Lane name**: Which lane this session belongs to.
-- **Status chip**: Green "Running" or gray "Ended".
+- **Status chip**: Green "Running" (with green dot), gray "Ended"/"Completed", red "Failed", muted "Disposed".
 - **Exit code**: Displayed for ended sessions. Non-zero codes highlighted in red.
 - **Timestamp**: When the session started.
+- **Tool type**: Detected tool type badge (claude, codex, shell, etc.).
 - **Last output preview**: Truncated last line(s) of terminal output.
 
 **Session row interactions**:
-- Click: Navigate to the Lanes tab with the associated lane selected and this session focused in the terminal panel.
-- **Close button** (for running sessions): Send SIGTERM to the PTY.
-- **Jump to Lane button**: Switch to the Lanes tab and select this session's lane.
+- Click: Select session and show terminal view / details in adjacent panes.
+- **Close button** (for running sessions): Dispose the PTY (sends SIGTERM).
+- **Jump to Lane button**: Navigate to the Lanes tab and select this session's lane.
+- **Transcript button**: View raw transcript for ended sessions.
 
 ### Lane Terminal Panel
 
@@ -197,7 +200,13 @@ Inside the Lanes tab, each lane has a "Terminals" sub-tab that shows sessions sc
 - For running sessions: Interactive — user can type commands and see output in real-time.
 - For ended sessions: Read-only — shows the captured transcript.
 
-**Create new terminal button**: Spawns a new PTY in this lane's worktree directory and creates a corresponding session record.
+**Quick launch buttons**: One-click launch for common agent tools (Claude Code, Codex) and a plain Shell. A settings cog in the terminal area allows:
+- Toggle "launch with context" vs "without context" defaults
+- Manage the quick buttons (add/remove custom commands)
+
+**Close button per tab**: Running sessions have an explicit close (kill) button per tab/session.
+
+**Session summary**: Sessions are labeled by a short, human-readable goal/intent (not internal IDs or jargon).
 
 ### Terminal View
 
@@ -244,17 +253,21 @@ When a session ends, ADE computes a delta and displays it as a card below or bes
 - Change type grouping: Modified, Added, and Deleted files shown separately.
 - Potential issues: Lines from the transcript matching failure patterns (error keywords, stack traces, non-zero exit codes).
 
-### Tiling Layout (Future)
+### Tiling Layout
 
-A future enhancement will allow multiple terminals to be visible simultaneously in a tiled grid layout.
+A lightweight tiling mode allows multiple running terminals to be visible simultaneously in a tiled grid layout.
 
-**Planned capabilities**:
-- Split the terminal area horizontally or vertically.
-- Each tile shows a different session's terminal.
-- Drag tiles to rearrange.
-- Resize tiles by dragging dividers.
-- Keyboard shortcuts to navigate between tiles.
-- Grid view: Overview of all running terminals as small tiles, click to focus.
+**Current capabilities** (Phase 8, `TilingLayout.tsx`):
+- Toggle between a tab view (single focused session) and a tiling grid view.
+- Recursive binary tree layout: sessions are split into a balanced tree with alternating horizontal/vertical directions at each depth level.
+- Each tile shows a running session terminal with focus ring, title overlay (visible on hover for running sessions), and close button.
+- Ended sessions display title, status, and exit code in a centered placeholder.
+- Split panes use `react-resizable-panels` with proportional sizing based on leaf count.
+- Tile focus: click a tile to set it as active (highlighted with accent ring).
+
+**Deferred enhancements**:
+- Full drag-to-rearrange of tiles.
+- Keyboard navigation between tiles beyond the global focus model.
 
 ### Session Lifecycle
 
@@ -298,7 +311,7 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 
 3. **Exit**: When the PTY process exits (user types `exit`, process terminates, or is killed), the `ade.pty.exit` event fires. The session record is updated with `status: 'ended'`, `ended_at`, `exit_code`, and `head_sha_end`.
 
-4. **Delta Computation**: The session service computes the delta by running `git diff --stat` between `head_sha_start` and the current working tree state. It also scans the transcript for lines matching failure patterns (configurable regex). The delta is stored in the `session_deltas` table.
+4. **Delta Computation**: The session service computes the delta by running `git diff --stat` between `head_sha_start` and the current working tree state. It also scans the transcript for lines matching failure patterns (configurable regex). In parallel it generates a deterministic one-line `summary` (ANSI-stripped) and stores it on the session record. The delta is stored in the `session_deltas` table.
 
 5. **Trigger**: The job engine is notified that a session has ended. It enqueues a pack refresh job for the lane, ensuring that pack data stays current with the latest changes.
 
@@ -310,8 +323,10 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 
 | Service | Responsibility |
 |---------|---------------|
-| `ptyService` | Creates PTY instances via `node-pty`. Manages the lifecycle of PTY processes (spawn, write, resize, dispose). Streams PTY output to the renderer via IPC events. Captures all output to transcript files at `.ade/transcripts/`. Tracks active PTYs for cleanup on application exit. |
-| `sessionService` | CRUD operations for session records in the database. Creates session records when PTYs are spawned. Updates records on PTY exit. Queries sessions by lane, status, or date range. Computes deltas after session end. Provides transcript access (tail, search). |
+| `ptyService` | Creates PTY instances via `node-pty`. Manages the lifecycle of PTY processes (spawn, write, resize, dispose). Streams PTY output to the renderer via IPC events. Captures all output to transcript files at `.ade/transcripts/`. Tracks active PTYs for cleanup on application exit. On session end, generates deterministic summary via `sessionSummary.ts` and strips ANSI via `ansiStrip.ts`. |
+| `sessionService` | CRUD operations for session records in the database. Creates session records when PTYs are spawned. Updates records on PTY exit (with status: completed/failed/disposed). Queries sessions by lane, status, or date range. Computes deltas after session end. Provides transcript access (tail, search). Supports `updateMeta` for goal and tool type. |
+| `ansiStrip.ts` | Utility for stripping ANSI escape sequences (CSI, OSC, charset, two-char escapes), carriage returns, and backspace rewrites from terminal output. Used by ptyService and pack generation. |
+| `sessionSummary.ts` | Deterministic session summary generator. Detects likely commands from transcript prompts, parses test output (Jest, Vitest, pytest), identifies failure hints. Produces one-line summaries like `Ran npm test (PASS, 31 tests, 1.2s)`. |
 | `jobEngine` | Receives session-end notifications and enqueues appropriate jobs (pack refresh, checkpoint creation). Manages job scheduling and execution. |
 
 ### IPC Channels
@@ -336,54 +351,63 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.sessions.list` | `(args: { laneId?: string, status?: string, limit?: number }) => TerminalSessionSummary[]` | List sessions with optional filters. Returns summaries (no transcript content). |
+| `ade.sessions.list` | `(args: { laneId?: string, status?: TerminalSessionStatus, limit?: number }) => TerminalSessionSummary[]` | List sessions with optional filters. Returns summaries (no transcript content). |
 | `ade.sessions.get` | `(sessionId: string) => TerminalSessionDetail \| null` | Get full session details including metadata, delta, and transcript path. |
+| `ade.sessions.updateMeta` | `(args: UpdateSessionMetaArgs) => void` | Update session goal, tool type, or other metadata. |
 | `ade.sessions.readTranscriptTail` | `(args: { sessionId: string, lines?: number }) => string` | Read the last N lines of a session's transcript. Used for the "last output preview" in session lists. |
 | `ade.sessions.getDelta` | `(sessionId: string) => SessionDeltaSummary \| null` | Get the computed delta for an ended session. Returns null if the session is still running or delta hasn't been computed yet. |
 
 **Type definitions**:
 
 ```typescript
-interface PtyCreateResult {
+type PtyCreateResult = {
   ptyId: string;
   sessionId: string;
-}
+};
 
-interface TerminalSessionSummary {
+type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
+
+type TerminalToolType = "shell" | "claude" | "codex" | "cursor" | "aider" | "continue" | "other";
+
+type TerminalSessionSummary = {
   id: string;
   laneId: string;
   laneName: string;
+  ptyId: string | null;
+  tracked: boolean;
+  pinned: boolean;
+  goal: string | null;
+  toolType: TerminalToolType | null;
   title: string;
-  status: 'running' | 'ended';
+  status: TerminalSessionStatus;
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
-  lastOutputPreview: string | null;
-}
-
-interface TerminalSessionDetail extends TerminalSessionSummary {
-  ptyId: string | null;
   transcriptPath: string;
   headShaStart: string | null;
   headShaEnd: string | null;
-  delta: SessionDeltaSummary | null;
-}
+  lastOutputPreview: string | null;
+  summary: string | null;
+};
 
-interface SessionDeltaSummary {
+type TerminalSessionDetail = TerminalSessionSummary & {
+  // Reserved for future expansion
+};
+
+type SessionDeltaSummary = {
   sessionId: string;
   laneId: string;
+  startedAt: string;
+  endedAt: string | null;
+  headShaStart: string | null;
+  headShaEnd: string | null;
   filesChanged: number;
   insertions: number;
   deletions: number;
-  touchedFiles: Array<{
-    path: string;
-    insertions: number;
-    deletions: number;
-    changeType: 'M' | 'A' | 'D';
-  }>;
+  touchedFiles: string[];
   failureLines: string[];
-  computedAt: string;
-}
+  computedAt: string | null;
+};
 ```
 
 ### Data Streaming Architecture
@@ -439,6 +463,7 @@ Delta computation runs asynchronously after a session ends. The algorithm:
 5. Scan the transcript file for lines matching configurable failure patterns:
    - Common patterns: `Error:`, `FAIL`, `TypeError`, `panic`, `Exception`, stack trace indicators.
    - The failure pattern list is configurable in `.ade/ade.yaml`.
+   - Captured failure lines are ANSI-stripped, normalized (carriage returns/backspaces), and de-duplicated before storage.
 6. Store the computed delta in the `session_deltas` table.
 
 ---
@@ -452,14 +477,19 @@ terminal_sessions (
   id                  TEXT PRIMARY KEY,       -- UUID
   lane_id             TEXT NOT NULL,          -- FK to lanes table
   pty_id              TEXT,                   -- PTY identifier (null after PTY is disposed)
+  tracked             INTEGER NOT NULL DEFAULT 1, -- 1 = tracked (transcript capture + delta), 0 = untracked
+  pinned              INTEGER NOT NULL DEFAULT 0, -- 1 = pinned (always visible in session list)
+  goal                TEXT,                   -- User-provided goal/intent string
+  tool_type           TEXT,                   -- 'shell' | 'claude' | 'codex' | 'cursor' | 'aider' | 'continue' | 'other'
   title               TEXT NOT NULL,          -- User-provided or auto-generated title
-  status              TEXT NOT NULL,          -- 'running' | 'ended'
+  status              TEXT NOT NULL,          -- 'running' | 'completed' | 'failed' | 'disposed'
   started_at          TEXT NOT NULL,          -- ISO 8601 timestamp
   ended_at            TEXT,                   -- ISO 8601 timestamp, null if still running
   exit_code           INTEGER,               -- Process exit code, null if still running
   transcript_path     TEXT NOT NULL,          -- Path to transcript file
   head_sha_start      TEXT,                   -- Git HEAD SHA when session started
   head_sha_end        TEXT,                   -- Git HEAD SHA when session ended
+  summary             TEXT,                   -- Deterministic one-line summary (ANSI-stripped). Null while running.
   last_output_preview TEXT,                   -- Last few lines of output (for list display)
   FOREIGN KEY (lane_id) REFERENCES lanes(id)
 )
@@ -538,19 +568,30 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-019 | Last output preview in session rows | DONE |
 | TERM-020 | Session end triggers pack refresh job | DONE |
 
-### Phase 4 — Advanced Features (TODO)
+### Phase 4 — Advanced Features
 
 | ID | Task | Status |
 |----|------|--------|
-| TERM-021 | Tiling layout for multiple terminals | TODO |
-| TERM-022 | Split horizontal/vertical | TODO |
-| TERM-023 | Drag to rearrange tiles | TODO |
-| TERM-024 | Terminal theme sync (dark/light) | DONE |
-| TERM-025 | Session goal/purpose tagging | TODO |
-| TERM-026 | Tool type detection (Claude, Cursor, etc.) | TODO |
-| TERM-027 | Session transcript search | TODO |
+| TERM-021 | Tiling layout for multiple terminals | DONE — Phase 8 (`TilingLayout.tsx` with `react-resizable-panels`, recursive binary tree layout) |
+| TERM-022 | Split horizontal/vertical | DONE — Phase 8 (alternating horizontal/vertical splits based on tree depth in TilingLayout) |
+| TERM-023 | Drag to rearrange tiles | PARTIAL — resizable split panes implemented; full drag-to-rearrange deferred to Phase 9 |
+| TERM-024 | Terminal theme sync (dark/light) | DONE — Phase 8 (light/dark xterm themes derived from app theme in `TerminalView.tsx`) |
+| TERM-025 | Session goal/purpose tagging | DONE — Phase 8 (`goal` field on session records, displayed in session labels and delta cards) |
+| TERM-026 | Tool type detection (Claude, Cursor, etc.) | DONE — Phase 8 (`toolType` field: shell/claude/codex/cursor/aider/continue/other; set via launch profiles or `updateMeta`) |
+| TERM-027 | Session transcript search | TODO — **moved to Phase 9** |
 | TERM-028 | Transcript upload opt-in (hosted mirror) | DONE — Phase 6 (toggle in SettingsPage, conditional upload in `hostedAgentService.syncTranscripts()`) |
-| TERM-029 | Checkpoint creation on session end | TODO |
-| TERM-030 | Pin important sessions | TODO |
-| TERM-031 | Grid view (multi-terminal overview) | TODO |
+| TERM-029 | Checkpoint creation on session end | DONE — Phase 8 (checkpoints created via packService on session end; indexed in SQLite `checkpoints` table) |
+| TERM-030 | Pin important sessions | DONE — Phase 8 (`pinned` column on session records; pinned sessions stay visible in list) |
+| TERM-031 | Grid view (multi-terminal overview) | DONE — Phase 8 (tiling grid view via `TilingLayout.tsx`, toggled from tab view in `LaneTerminalsPanel`) |
 | TERM-032 | Untracked session mode | DONE |
+
+### Phase 8 Additions
+
+| ID | Task | Status |
+|----|------|--------|
+| TERM-033 | PaneTilingLayout for TerminalsPage | DONE — Phase 8 (3-pane layout: sessions, terminal, details) |
+| TERM-034 | Quick-launch terminal profiles (Claude/Codex/Shell) | DONE — Phase 8 (one-click launch buttons in LaneTerminalsPanel, configurable via `ade.terminalProfiles.*`) |
+| TERM-035 | Session summary generator (`sessionSummary.ts`) | DONE — Phase 8 (deterministic summaries with Jest/Vitest/pytest detection, command extraction, failure hints) |
+| TERM-036 | ANSI strip utility (`ansiStrip.ts`) | DONE — Phase 8 (CSI/OSC/charset/backspace stripping, used for previews and summaries) |
+| TERM-037 | Session update meta IPC (`ade.sessions.updateMeta`) | DONE — Phase 8 (update goal, tool type post-creation) |
+| TERM-038 | xterm viewport safety patches | DONE — Phase 8 (patch `_innerRefresh` and `syncScrollArea` to prevent teardown crashes in `TerminalView.tsx`) |

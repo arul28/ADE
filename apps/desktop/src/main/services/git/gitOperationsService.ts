@@ -1,10 +1,14 @@
 import path from "node:path";
 import { runGit, runGitOrThrow } from "./git";
+import { detectConflictKind, parseNameOnly } from "./gitConflictState";
 import type {
   GitActionResult,
+  GitBatchFileActionArgs,
+  GitBranchSummary,
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
@@ -14,7 +18,8 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
-  GitSyncMode
+  GitSyncMode,
+  LaneType
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
@@ -24,7 +29,18 @@ type LaneInfo = {
   baseRef: string;
   branchRef: string;
   worktreePath: string;
+  laneType: LaneType;
 };
+
+function localBranchNameFromRemoteRef(ref: string): string {
+  const normalized = ref.trim();
+  const slashIndex = normalized.indexOf("/");
+  return slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
+}
+
+function isUnsupportedIgnoreOtherWorktreesError(message: string): boolean {
+  return /unknown option.*ignore-other-worktrees|usage:\s*git\s+checkout\b/i.test(message);
+}
 
 function ensureRelativeRepoPath(relPath: string): string {
   const normalized = relPath.trim().replace(/\\/g, "/");
@@ -59,6 +75,13 @@ async function isUntrackedFile(worktreePath: string, relPath: string): Promise<b
   if (res.exitCode !== 0) return false;
   const lines = res.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   return lines.some((line) => line.startsWith("??"));
+}
+
+async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
+  const res = await runGit(["rev-parse", "--absolute-git-dir"], { cwd: worktreePath, timeoutMs: 8_000 });
+  if (res.exitCode !== 0) return null;
+  const dir = res.stdout.trim();
+  return dir.length ? dir : null;
 }
 
 export function createGitOperationsService({
@@ -180,12 +203,36 @@ export function createGitOperationsService({
 
     await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
 
+    const treatConflictAsSuccess = async (expected: Exclude<GitConflictState["kind"], null>): Promise<boolean> => {
+      const gitDir = await getAbsoluteGitDir(lane.worktreePath);
+      if (!gitDir) return false;
+      const kind = detectConflictKind(gitDir);
+      if (kind !== expected) return false;
+      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      if (unmergedRes.exitCode !== 0) return false;
+      return parseNameOnly(unmergedRes.stdout).length > 0;
+    };
+
     if (mode === "rebase") {
-      await runGitOrThrow(["rebase", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-      return;
+      const res = await runGit(["rebase", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+      if (res.exitCode === 0) return;
+      if (await treatConflictAsSuccess("rebase")) {
+        logger.info("git.sync_rebase_conflict", { laneRef: lane.branchRef, baseRef });
+        return;
+      }
+      throw new Error((res.stderr || res.stdout).trim() || "Failed to rebase");
     }
 
-    await runGitOrThrow(["merge", "--no-edit", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    const res = await runGit(["merge", "--no-edit", baseRef], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    if (res.exitCode === 0) return;
+    if (await treatConflictAsSuccess("merge")) {
+      logger.info("git.sync_merge_conflict", { laneRef: lane.branchRef, baseRef });
+      return;
+    }
+    throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
 
   return {
@@ -198,6 +245,36 @@ export function createGitOperationsService({
         metadata: { path: filePath },
         fn: async (lane) => {
           await runGitOrThrow(["add", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+        }
+      });
+      return action;
+    },
+
+    async stageAll(args: GitBatchFileActionArgs): Promise<GitActionResult> {
+      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_stage_all",
+        reason: "stage_all",
+        metadata: { count: filePaths.length },
+        fn: async (lane) => {
+          if (filePaths.length === 0) return;
+          await runGitOrThrow(["add", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+        }
+      });
+      return action;
+    },
+
+    async unstageAll(args: GitBatchFileActionArgs): Promise<GitActionResult> {
+      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_unstage_all",
+        reason: "unstage_all",
+        metadata: { count: filePaths.length },
+        fn: async (lane) => {
+          if (filePaths.length === 0) return;
+          await runGitOrThrow(["restore", "--staged", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -282,6 +359,27 @@ export function createGitOperationsService({
         { cwd: lane.worktreePath, timeoutMs: 15_000 }
       );
 
+      // Determine which commits are unpushed by comparing with upstream.
+      let unpushedShas: Set<string> | null = null;
+      const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      if (upstreamRes.exitCode === 0) {
+        const upstream = upstreamRes.stdout.trim();
+        if (upstream.length) {
+          const unpushedRes = await runGit(["log", "--format=%H", `${upstream}..HEAD`], {
+            cwd: lane.worktreePath,
+            timeoutMs: 15_000
+          });
+          if (unpushedRes.exitCode === 0) {
+            unpushedShas = new Set(
+              unpushedRes.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
+            );
+          }
+        }
+      }
+
       const rows = out
         .split("\n")
         .map((line) => line.trim())
@@ -299,7 +397,8 @@ export function createGitOperationsService({
             parents,
             authorName: authorName ?? "",
             authoredAt: authoredAt ?? "",
-            subject: subject ?? ""
+            subject: subject ?? "",
+            pushed: unpushedShas ? !unpushedShas.has(sha) : false
           };
         })
         .filter((entry): entry is GitCommitSummary => entry != null);
@@ -508,6 +607,202 @@ export function createGitOperationsService({
             cmd.push("--force-with-lease");
           }
           await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        }
+      });
+      return action;
+    },
+
+    async getConflictState(args: { laneId: string }): Promise<GitConflictState> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const gitDir = await getAbsoluteGitDir(lane.worktreePath);
+      const kind = gitDir ? detectConflictKind(gitDir) : null;
+
+      const unmergedRes = await runGit(["diff", "--name-only", "--diff-filter=U"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      const conflictedFiles = unmergedRes.exitCode === 0 ? parseNameOnly(unmergedRes.stdout) : [];
+      const inProgress = kind != null;
+
+      return {
+        laneId,
+        kind,
+        inProgress,
+        conflictedFiles,
+        canContinue: inProgress && conflictedFiles.length === 0,
+        canAbort: inProgress
+      };
+    },
+
+    async rebaseContinue(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_rebase_continue",
+        reason: "rebase_continue",
+        fn: async (lane) => {
+          await runGitOrThrow(["-c", "core.editor=true", "rebase", "--continue"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 300_000
+          });
+        }
+      });
+      return action;
+    },
+
+    async rebaseAbort(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_rebase_abort",
+        reason: "rebase_abort",
+        fn: async (lane) => {
+          await runGitOrThrow(["rebase", "--abort"], { cwd: lane.worktreePath, timeoutMs: 300_000 });
+        }
+      });
+      return action;
+    },
+
+    async mergeContinue(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_merge_continue",
+        reason: "merge_continue",
+        fn: async (lane) => {
+          const res = await runGit(["-c", "core.editor=true", "merge", "--continue"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 300_000
+          });
+          if (res.exitCode === 0) return;
+
+          const combined = `${res.stderr ?? ""}\n${res.stdout ?? ""}`.trim();
+          // Older git versions don't support `merge --continue`. In that case,
+          // finishing a merge is equivalent to committing the merge result.
+          if (/unknown option.*--continue|usage:\\s*git\\s+merge\\b/i.test(combined)) {
+            await runGitOrThrow(["-c", "core.editor=true", "commit", "--no-edit"], {
+              cwd: lane.worktreePath,
+              timeoutMs: 300_000
+            });
+            return;
+          }
+
+          throw new Error(combined || "Failed to continue merge");
+        }
+      });
+      return action;
+    },
+
+    async mergeAbort(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_merge_abort",
+        reason: "merge_abort",
+        fn: async (lane) => {
+          await runGitOrThrow(["merge", "--abort"], { cwd: lane.worktreePath, timeoutMs: 300_000 });
+        }
+      });
+      return action;
+    },
+
+    async listBranches(args: { laneId: string }): Promise<GitBranchSummary[]> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const out = await runGitOrThrow(
+        ["for-each-ref", "--sort=refname", "--format=%(refname)\t%(refname:short)\t%(HEAD)\t%(upstream:short)", "refs/heads", "refs/remotes"],
+        { cwd: lane.worktreePath, timeoutMs: 15_000 }
+      );
+
+      const localBranches = new Map<string, GitBranchSummary>();
+      const remoteBranches: GitBranchSummary[] = [];
+
+      out
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean)
+        .forEach((line) => {
+          const parts = line.split("\t");
+          const fullRef = parts[0]?.trim() ?? "";
+          const shortRef = parts[1]?.trim() ?? "";
+          if (!fullRef || !shortRef) return;
+
+          if (fullRef.startsWith("refs/heads/")) {
+            const isCurrent = (parts[2]?.trim() ?? "") === "*";
+            const upstream = parts[3]?.trim() || null;
+            localBranches.set(shortRef, { name: shortRef, isCurrent, isRemote: false, upstream });
+            return;
+          }
+
+          if (fullRef.startsWith("refs/remotes/")) {
+            if (shortRef.endsWith("/HEAD")) return;
+            remoteBranches.push({
+              name: shortRef,
+              isCurrent: false,
+              isRemote: true,
+              upstream: null
+            });
+          }
+        });
+
+      const localNames = new Set(localBranches.keys());
+      const dedupedRemotes = remoteBranches.filter((branch) => {
+        const localCandidate = localBranchNameFromRemoteRef(branch.name);
+        return !localNames.has(localCandidate);
+      });
+
+      const sortedLocals = Array.from(localBranches.values()).sort((a, b) => {
+        if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      const sortedRemotes = dedupedRemotes.sort((a, b) => a.name.localeCompare(b.name));
+
+      return [...sortedLocals, ...sortedRemotes];
+    },
+
+    async checkoutBranch(args: { laneId: string; branchName: string }): Promise<GitActionResult> {
+      const branchName = args.branchName.trim();
+      if (!branchName.length) throw new Error("Branch name is required");
+
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      if (lane.laneType !== "primary") {
+        throw new Error("Branch checkout is only supported on the primary lane");
+      }
+
+      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
+        cwd: lane.worktreePath,
+        timeoutMs: 8_000
+      }).then((res) => res.exitCode === 0);
+      const remoteExists = !localExists
+        ? await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/${branchName}`], {
+          cwd: lane.worktreePath,
+          timeoutMs: 8_000
+        }).then((res) => res.exitCode === 0)
+        : false;
+
+      const trackRemoteBranch = !localExists && remoteExists;
+      const resolvedBranchRef = trackRemoteBranch ? localBranchNameFromRemoteRef(branchName) : branchName;
+
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_checkout_branch",
+        reason: "checkout_branch",
+        metadata: { branchName, trackRemoteBranch },
+        fn: async (l) => {
+          const preferredCmd = trackRemoteBranch
+            ? ["checkout", "--track", "--ignore-other-worktrees", branchName]
+            : ["checkout", "--ignore-other-worktrees", branchName];
+          const fallbackCmd = trackRemoteBranch
+            ? ["checkout", "--track", branchName]
+            : ["checkout", branchName];
+
+          const preferredRes = await runGit(preferredCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
+          if (preferredRes.exitCode !== 0) {
+            const combined = `${preferredRes.stderr ?? ""}\n${preferredRes.stdout ?? ""}`.trim();
+            if (isUnsupportedIgnoreOtherWorktreesError(combined)) {
+              await runGitOrThrow(fallbackCmd, { cwd: l.worktreePath, timeoutMs: 60_000 });
+            } else {
+              throw new Error(combined || `Failed to checkout branch '${branchName}'`);
+            }
+          }
+          laneService.updateBranchRef(args.laneId, resolvedBranchRef);
         }
       });
       return action;

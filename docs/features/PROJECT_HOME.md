@@ -1,6 +1,6 @@
 # Run — Command Center
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -32,7 +32,9 @@
   - [Phase 1 — Core Process Management (DONE)](#phase-1--core-process-management-done)
   - [Phase 2 — Test Suites (DONE)](#phase-2--test-suites-done)
   - [Phase 3 — Config Editor (DONE)](#phase-3--config-editor-done)
-  - [Phase 4 — Advanced Features (TODO)](#phase-4--advanced-features-todo)
+  - [Phase 4 — Real-Time Streaming & Keyboard (DONE)](#phase-4--real-time-streaming--keyboard-done)
+  - [Phase 5 — Advanced Features (PARTIAL)](#phase-5--advanced-features-partial)
+  - [Phase 6 — Run Tab Enhancements (PARTIAL)](#phase-6--run-tab-enhancements-partial)
 
 ---
 
@@ -41,6 +43,8 @@
 The **Run tab** (denoted by a ▶ play/pause icon in the nav rail) serves as the global command center for running everything related to your project. It functions as a SoloTerm-style process manager combined with a test runner, CI/CD sync engine, agent CLI tool registry, and configuration editor. The core idea: any command your development stack needs — from starting services to running tests to executing agent skills — should be one button press away.
 
 This feature matters because modern projects depend on a constellation of background services — dev servers, databases, API gateways, watchers, compilers — that must be started, monitored, and stopped in concert. Without a centralized control plane, developers resort to scattered terminal tabs, manual startup scripts, and guesswork about which services are running. Project Home eliminates this friction by making every managed process, test suite, and configuration knob visible and controllable from one surface.
+
+**Current status**: Core process management (Phases 1-4) is **fully implemented** — process spawning, lifecycle management, readiness checks, dependency resolution, stack buttons, test suites, config editor, keyboard shortcuts, and real-time streaming. Phase 5 (Advanced Features) is **partially complete** — restart policies, health monitoring, test suite tags, and config diff/export are done; environment variable editor and test result diff remain. Phase 6 (Run Tab Enhancements) is **partially complete** — the Run tab rename, lane selector, CI/CD scan/import/sync, and agent tools detection are done; AI-suggested run prompts, agent commands viewer/editor, and quick-launch are still TODO.
 
 ---
 
@@ -147,7 +151,7 @@ The Agent Tools section in the Run tab:
 
 ### Layout
 
-The Project Home page is organized as a vertical stack of sections, each collapsible:
+The Run page uses `PaneTilingLayout` with four resizable panes (overview, processes, tests, config). The layout is user-customizable with drag-to-resize gutters:
 
 ```
 +-------------------------------------------------------------------+
@@ -308,9 +312,10 @@ stopped ──► starting ──► running ──► stopping ──► exited
 - **Port check**: Periodically attempt a TCP connection to the configured port.
 - **Log regex**: Watch stdout for a line matching a configured regular expression (e.g., "Server listening on port").
 
-**Restart policies**:
+**Restart policies** (`ProcessRestartPolicy`):
 - `never`: Do not restart automatically (default).
-- `on-failure`: Restart automatically if the process crashes (with backoff).
+- `on-failure`: Restart automatically if the process exits with a non-zero code (with backoff).
+- `on_crash`: Alias for `on-failure` — restart on non-zero exit.
 - `always`: Restart automatically on any exit (with backoff).
 
 **Dependencies**: Processes can declare dependencies on other processes. When starting, ADE resolves the dependency graph and starts processes in topological order, waiting for each dependency's readiness before starting its dependents.
@@ -390,25 +395,20 @@ stopped ──► starting ──► running ──► stopping ──► exited
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.cicd.scan` | `() => CiWorkflow[]` | Scan for CI/CD workflow files and parse jobs |
-| `ade.cicd.import` | `(args: { jobs: CiJobImport[] }) => void` | Import selected CI jobs as run definitions |
-| `ade.cicd.detectChanges` | `() => CiChangesSummary` | Check if CI files changed since last import |
+| `ade.ci.scan` | `() => CiScanResult` | Scan for CI/CD workflow files (GitHub Actions, GitLab CI, CircleCI, Jenkins) and parse jobs with safety classification |
+| `ade.ci.import` | `(args: { jobs: CiJobImport[], mode: 'import' \| 'sync' }) => void` | Import or sync selected CI jobs as process/test definitions. Sync mode updates existing definitions. |
 
 **Agent tools**:
 
 | Channel | Signature | Description |
 |---------|-----------|-------------|
-| `ade.agentTools.detect` | `() => AgentTool[]` | Detect installed agent CLI tools |
-| `ade.agentTools.getCommands` | `(args: { toolId: string }) => AgentCommand[]` | List commands/skills for a specific tool |
-| `ade.agentTools.launch` | `(args: { toolId: string, laneId: string }) => PtyCreateResult` | Launch agent tool in a terminal for a lane |
+| `ade.agentTools.detect` | `() => AgentTool[]` | Detect installed agent CLI tools (Claude Code, Codex, Cursor, Aider, Continue) |
+
+*Note*: `getCommands` and `launch` channels are planned (PROJ-039, PROJ-041) but not yet registered.
 
 **AI suggestions**:
 
-| Channel | Signature | Description |
-|---------|-----------|-------------|
-| `ade.suggestions.getRunPrompts` | `() => RunPromptSuggestion[]` | Get AI-suggested run prompt definitions |
-| `ade.suggestions.accept` | `(args: { suggestionId: string }) => void` | Accept a suggestion and add to config |
-| `ade.suggestions.dismiss` | `(args: { suggestionId: string }) => void` | Dismiss a suggestion |
+*Note*: AI suggestion channels (`ade.suggestions.*`) are planned (PROJ-035, PROJ-042) but not yet registered.
 
 ---
 
@@ -505,28 +505,28 @@ test_runs (
 | PROJ-024 | Real-time process event streaming | DONE |
 | PROJ-025 | Real-time test event streaming | DONE |
 
-### Phase 5 — Advanced Features (TODO)
+### Phase 5 — Advanced Features (PARTIAL)
 
 | ID | Task | Status |
 |----|------|--------|
-| PROJ-026 | Process restart policies (on-failure, always) | TODO |
-| PROJ-027 | Process health monitoring (periodic readiness) | TODO |
+| PROJ-026 | Process restart policies (never, on-failure, always, on_crash) | DONE |
+| PROJ-027 | Process health monitoring (periodic readiness re-checks, degraded state) | DONE |
 | PROJ-028 | Process environment variable editor | TODO |
-| PROJ-029 | Test suite tags and filtering | TODO |
+| PROJ-029 | Test suite tags and filtering (unit, lint, integration, e2e, custom) | DONE |
 | PROJ-030 | Test result diff (compare runs) | TODO |
-| PROJ-031 | Config diff viewer (before save) | TODO |
-| PROJ-032 | Config import/export | TODO |
+| PROJ-031 | Config diff viewer (diffAgainstDisk IPC) | DONE |
+| PROJ-032 | Config export (projectExportConfig IPC) | DONE |
 
-### Phase 6 — Run Tab Enhancements (TODO)
+### Phase 6 — Run Tab Enhancements (PARTIAL)
 
 | ID | Task | Status |
 |----|------|--------|
 | PROJ-033 | Tab rename to "Run" with play/pause nav icon | DONE |
 | PROJ-034 | Lane selector for command execution context | DONE |
 | PROJ-035 | AI-suggested run prompts (detect new suites/apps/services on merge) | TODO |
-| PROJ-036 | CI/CD workflow scan and import (GitHub Actions, GitLab CI, etc.) | TODO |
-| PROJ-037 | CI/CD sync mode (auto-detect workflow file changes, suggest updates) | TODO |
-| PROJ-038 | Agent CLI tools detection (Claude Code, Codex, Cursor, Aider, Continue) | TODO |
+| PROJ-036 | CI/CD workflow scan and import (GitHub Actions, GitLab CI, CircleCI, Jenkins) | DONE |
+| PROJ-037 | CI/CD sync mode (computeCiScanDiff for detecting workflow changes, import vs sync modes) | DONE |
+| PROJ-038 | Agent CLI tools detection (agentToolsDetect IPC) | DONE |
 | PROJ-039 | Agent commands and skills viewer (read .claude/commands/, etc.) | TODO |
 | PROJ-040 | Agent command editing (add/edit/delete commands and skills in-app) | TODO |
 | PROJ-041 | Agent tool quick-launch (open tracked terminal with tool in selected lane) | TODO |

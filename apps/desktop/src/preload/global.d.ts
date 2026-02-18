@@ -3,8 +3,19 @@ import type {
   ApplyConflictProposalArgs,
   AttachLaneArgs,
   AppInfo,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
   ArchiveLaneArgs,
   ConflictProposal,
+  ConflictExternalResolverRunSummary,
+  ConflictProposalPreview,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
+  ContextInstallGeneratedDocsArgs,
+  ContextOpenDocArgs,
+  ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -46,18 +57,44 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorCleanupSummaryV1,
+  HostedMirrorDeleteResult,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
+  AgentTool,
+  AutomationsEventPayload,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunDetail,
+  AutomationParseNaturalLanguageRequest,
+  AutomationParseNaturalLanguageResult,
+  AutomationValidateDraftRequest,
+  AutomationValidateDraftResult,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+  AutomationSimulateRequest,
+  AutomationSimulateResult,
+  KeybindingOverride,
+  KeybindingsSnapshot,
+  OnboardingDetectionResult,
+  OnboardingExistingLaneCandidate,
+  OnboardingStatus,
+  CiScanResult,
+  CiImportRequest,
+  CiImportResult,
+  ExportConfigBundleResult,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitBatchFileActionArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -78,6 +115,7 @@ import type {
   LandResult,
   ListOverlapsArgs,
   LaneSummary,
+  ImportBranchLaneArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
   ListLanesArgs,
@@ -85,7 +123,17 @@ import type {
   ListSessionsArgs,
   ListTestRunsArgs,
   OperationRecord,
+  PackExport,
+  PackEvent,
+  PackHeadVersion,
   PackSummary,
+  PackVersion,
+  PackVersionSummary,
+  Checkpoint,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GetConflictExportArgs,
+  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -97,6 +145,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
   PtyDataEvent,
@@ -107,14 +156,22 @@ import type {
   ReparentLaneResult,
   RestackArgs,
   RestackResult,
+  RestackSuggestion,
+  RestackSuggestionsEventPayload,
   RiskMatrixEntry,
   RunTestSuiteArgs,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
+  RunExternalConflictResolverArgs,
+  ListExternalConflictResolverRunsArgs,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
   SessionDeltaSummary,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
+  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   TestEvent,
   TestRunSummary,
@@ -134,15 +191,57 @@ declare global {
         getInfo: () => Promise<AppInfo>;
         getProject: () => Promise<ProjectInfo>;
         openExternal: (url: string) => Promise<void>;
+        revealPath: (path: string) => Promise<void>;
       };
       project: {
         openRepo: () => Promise<ProjectInfo>;
         openAdeFolder: () => Promise<void>;
+        clearLocalData: (args?: ClearLocalAdeDataArgs) => Promise<ClearLocalAdeDataResult>;
+        exportConfig: () => Promise<ExportConfigBundleResult>;
+        listRecent: () => Promise<RecentProjectSummary[]>;
+        switchToPath: (rootPath: string) => Promise<ProjectInfo>;
+        forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
+        onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
+      };
+      keybindings: {
+        get: () => Promise<KeybindingsSnapshot>;
+        set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
+      };
+      agentTools: {
+        detect: () => Promise<AgentTool[]>;
+      };
+      terminalProfiles: {
+        get: () => Promise<TerminalProfilesSnapshot>;
+        set: (snapshot: TerminalProfilesSnapshot) => Promise<TerminalProfilesSnapshot>;
+      };
+      onboarding: {
+        getStatus: () => Promise<OnboardingStatus>;
+        detectDefaults: () => Promise<OnboardingDetectionResult>;
+        detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
+        generateInitialPacks: (args?: { laneIds?: string[] }) => Promise<void>;
+        complete: () => Promise<OnboardingStatus>;
+      };
+      ci: {
+        scan: () => Promise<CiScanResult>;
+        import: (req: CiImportRequest) => Promise<CiImportResult>;
+      };
+      automations: {
+        list: () => Promise<AutomationRuleSummary[]>;
+        toggle: (args: { id: string; enabled: boolean }) => Promise<AutomationRuleSummary[]>;
+        triggerManually: (args: { id: string; laneId?: string | null }) => Promise<AutomationRun>;
+        getHistory: (args: { id: string; limit?: number }) => Promise<AutomationRun[]>;
+        getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
+        parseNaturalLanguage: (req: AutomationParseNaturalLanguageRequest) => Promise<AutomationParseNaturalLanguageResult>;
+        validateDraft: (req: AutomationValidateDraftRequest) => Promise<AutomationValidateDraftResult>;
+        saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;
+        simulate: (req: AutomationSimulateRequest) => Promise<AutomationSimulateResult>;
+        onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         create: (args: CreateLaneArgs) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
+        importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs) => Promise<void>;
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
@@ -152,11 +251,16 @@ declare global {
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
         restack: (args: RestackArgs) => Promise<RestackResult>;
+        listRestackSuggestions: () => Promise<RestackSuggestion[]>;
+        dismissRestackSuggestion: (args: { laneId: string }) => Promise<void>;
+        deferRestackSuggestion: (args: { laneId: string; minutes: number }) => Promise<void>;
+        onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
       };
       sessions: {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
+        updateMeta: (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null }) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
       };
@@ -190,7 +294,9 @@ declare global {
       };
       git: {
         stageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        stageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
         unstageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        unstageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
         discardFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         restoreStagedFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;
@@ -207,6 +313,13 @@ declare global {
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
+        getConflictState: (laneId: string) => Promise<GitConflictState>;
+        rebaseContinue: (laneId: string) => Promise<GitActionResult>;
+        rebaseAbort: (laneId: string) => Promise<GitActionResult>;
+        mergeContinue: (laneId: string) => Promise<GitActionResult>;
+        mergeAbort: (laneId: string) => Promise<GitActionResult>;
+        listBranches: (args: import("../shared/types").GitListBranchesArgs) => Promise<import("../shared/types").GitBranchSummary[]>;
+        checkoutBranch: (args: import("../shared/types").GitCheckoutBranchArgs) => Promise<GitActionResult>;
       };
       conflicts: {
         getLaneStatus: (args: GetLaneConflictStatusArgs) => Promise<ConflictStatus>;
@@ -216,17 +329,50 @@ declare global {
         runPrediction: (args?: RunConflictPredictionArgs) => Promise<BatchAssessmentResult>;
         getBatchAssessment: () => Promise<BatchAssessmentResult>;
         listProposals: (laneId: string) => Promise<ConflictProposal[]>;
+        prepareProposal: (args: PrepareConflictProposalArgs) => Promise<ConflictProposalPreview>;
         requestProposal: (args: RequestConflictProposalArgs) => Promise<ConflictProposal>;
         applyProposal: (args: ApplyConflictProposalArgs) => Promise<ConflictProposal>;
         undoProposal: (args: UndoConflictProposalArgs) => Promise<ConflictProposal>;
+        runExternalResolver: (args: RunExternalConflictResolverArgs) => Promise<ConflictExternalResolverRunSummary>;
+        listExternalResolverRuns: (args?: ListExternalConflictResolverRunsArgs) => Promise<ConflictExternalResolverRunSummary[]>;
+        commitExternalResolverRun: (args: CommitExternalConflictResolverRunArgs) => Promise<CommitExternalConflictResolverRunResult>;
+        prepareResolverSession: (args: import("../shared/types").PrepareResolverSessionArgs) => Promise<import("../shared/types").PrepareResolverSessionResult>;
+        finalizeResolverSession: (args: import("../shared/types").FinalizeResolverSessionArgs) => Promise<import("../shared/types").ConflictExternalResolverRunSummary>;
+        suggestResolverTarget: (args: import("../shared/types").SuggestResolverTargetArgs) => Promise<import("../shared/types").SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
+      };
+      context: {
+        getStatus: () => Promise<ContextStatus>;
+        generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
+        prepareDocGeneration: (args: ContextPrepareDocGenArgs) => Promise<ContextPrepareDocGenResult>;
+        installGeneratedDocs: (args: ContextInstallGeneratedDocsArgs) => Promise<ContextGenerateDocsResult>;
+        openDoc: (args: ContextOpenDocArgs) => Promise<void>;
       };
       packs: {
         getProjectPack: () => Promise<PackSummary>;
         getLanePack: (laneId: string) => Promise<PackSummary>;
+        getFeaturePack: (featureKey: string) => Promise<PackSummary>;
+        getConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
+        getPlanPack: (laneId: string) => Promise<PackSummary>;
+        getProjectExport: (args: GetProjectExportArgs) => Promise<PackExport>;
+        getLaneExport: (args: GetLaneExportArgs) => Promise<PackExport>;
+        getConflictExport: (args: GetConflictExportArgs) => Promise<PackExport>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
+        refreshProjectPack: (args?: { laneId?: string | null }) => Promise<PackSummary>;
+        refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
+        refreshConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
+        savePlanPack: (args: { laneId: string; body: string }) => Promise<PackSummary>;
         applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
         generateNarrative: (laneId: string) => Promise<PackSummary>;
+        listVersions: (args: { packKey: string; limit?: number }) => Promise<PackVersionSummary[]>;
+        getVersion: (versionId: string) => Promise<PackVersion>;
+        diffVersions: (args: { fromId: string; toId: string }) => Promise<string>;
+        updateNarrative: (args: { packKey: string; narrative: string }) => Promise<PackSummary>;
+        listEvents: (args: { packKey: string; limit?: number }) => Promise<PackEvent[]>;
+        listEventsSince: (args: ListPackEventsSinceArgs) => Promise<PackEvent[]>;
+        listCheckpoints: (args?: { laneId?: string; limit?: number }) => Promise<Checkpoint[]>;
+        getHeadVersion: (packKey: string) => Promise<PackHeadVersion>;
+        onEvent: (cb: (ev: PackEvent) => void) => () => void;
       };
       github: {
         getStatus: () => Promise<GitHubStatus>;
@@ -247,6 +393,11 @@ declare global {
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
+        createStacked: (args: import("../shared/types").CreateStackedPrsArgs) => Promise<import("../shared/types").CreateStackedPrsResult>;
+        createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
+        landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
+        getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
+        listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
       };
       hosted: {
@@ -256,6 +407,8 @@ declare global {
         signIn: (args?: HostedSignInArgs) => Promise<HostedSignInResult>;
         signOut: () => Promise<void>;
         syncMirror: (args?: HostedMirrorSyncArgs) => Promise<HostedMirrorSyncResult>;
+        cleanMirrorData: () => Promise<HostedMirrorCleanupSummaryV1>;
+        deleteMirrorData: () => Promise<HostedMirrorDeleteResult>;
         submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
         getJob: (jobId: string) => Promise<HostedJobStatusResult>;
         getArtifact: (artifactId: string) => Promise<HostedArtifactResult>;
@@ -272,6 +425,10 @@ declare global {
       layout: {
         get: (layoutId: string) => Promise<DockLayout | null>;
         set: (layoutId: string, layout: DockLayout) => Promise<void>;
+      };
+      tilingTree: {
+        get: (layoutId: string) => Promise<unknown>;
+        set: (layoutId: string, tree: unknown) => Promise<void>;
       };
       graphState: {
         get: (projectId: string) => Promise<GraphPersistedState | null>;

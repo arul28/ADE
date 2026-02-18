@@ -258,8 +258,40 @@ export function createLaneService({
     );
   };
 
+  const syncPrimaryLaneBranchRef = async (): Promise<void> => {
+    const primary = db.get<{
+      id: string;
+      worktree_path: string;
+      base_ref: string;
+      branch_ref: string;
+    }>(
+      `
+        select id, worktree_path, base_ref, branch_ref
+        from lanes
+        where project_id = ? and lane_type = 'primary' and status != 'archived'
+        limit 1
+      `,
+      [projectId]
+    );
+    if (!primary) return;
+
+    const branchRes = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: primary.worktree_path,
+      timeoutMs: 8_000
+    });
+    if (branchRes.exitCode !== 0) return;
+    const detectedBranchRef = branchRes.stdout.trim();
+    if (!detectedBranchRef || detectedBranchRef === "HEAD" || detectedBranchRef === primary.branch_ref) return;
+
+    db.run(
+      "update lanes set branch_ref = ? where id = ? and project_id = ?",
+      [detectedBranchRef, primary.id, projectId]
+    );
+  };
+
   const listLanes = async ({ includeArchived = false }: { includeArchived?: boolean } = {}): Promise<LaneSummary[]> => {
     await ensurePrimaryLane();
+    await syncPrimaryLaneBranchRef();
 
     const rows = getAllLaneRows(includeArchived);
     const contextRows = getAllLaneRows(true);
@@ -280,7 +312,30 @@ export function createLaneService({
       const row = rowsById.get(laneId);
       if (!row) return { dirty: false, ahead: 0, behind: 0 };
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-      const baseRef = parent?.branch_ref ?? row.base_ref;
+      let baseRef = parent?.branch_ref ?? row.base_ref;
+
+      // For primary lanes with no parent, compare against the upstream tracking ref
+      // instead of base_ref (which equals branchRef, giving 0 behind).
+      if (!parent && row.lane_type === "primary") {
+        const upstreamRes = await runGit(
+          ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
+          { cwd: row.worktree_path, timeoutMs: 5_000 }
+        );
+        if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+          baseRef = upstreamRes.stdout.trim();
+        } else {
+          // Fallback: try origin/<branch>
+          const originRes = await runGit(
+            ["rev-parse", "--verify", `origin/${row.branch_ref}`],
+            { cwd: row.worktree_path, timeoutMs: 5_000 }
+          );
+          if (originRes.exitCode === 0 && originRes.stdout.trim()) {
+            baseRef = originRes.stdout.trim();
+          }
+          // else: keep row.base_ref as final fallback
+        }
+      }
+
       const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref);
       statusCache.set(laneId, status);
       return status;
@@ -390,6 +445,27 @@ export function createLaneService({
         const parent = getLaneRow(parentLaneId);
         if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
         if (parent.status === "archived") throw new Error("Parent lane is archived");
+
+        // If parent is the primary lane, ensure it's in sync with remote.
+        if (parent.lane_type === "primary") {
+          await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: 60_000 });
+          const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+          if (upstreamRes.exitCode === 0) {
+            const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+              cwd: parent.worktree_path,
+              timeoutMs: 10_000
+            });
+            if (behindRes.exitCode === 0) {
+              const behindCount = parseInt(behindRes.stdout.trim(), 10);
+              if (behindCount > 0) {
+                throw new Error(
+                  `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
+                );
+              }
+            }
+          }
+        }
+
         const parentHeadSha = await getHeadSha(parent.worktree_path);
         if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
         return await createWorktreeLane({
@@ -401,11 +477,17 @@ export function createLaneService({
         });
       }
 
+      // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
+      const headRes = await runGit(["rev-parse", defaultBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
+      const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
+        ? headRes.stdout.trim()
+        : defaultBaseRef;
+
       return await createWorktreeLane({
         name,
         description,
         baseRef: defaultBaseRef,
-        startPoint: defaultBaseRef,
+        startPoint,
         parentLaneId: null
       });
     },
@@ -414,6 +496,27 @@ export function createLaneService({
       const parent = getLaneRow(args.parentLaneId);
       if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
       if (parent.status === "archived") throw new Error("Parent lane is archived");
+
+      // If parent is the primary lane, ensure it's in sync with remote.
+      if (parent.lane_type === "primary") {
+        await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: 60_000 });
+        const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
+        if (upstreamRes.exitCode === 0) {
+          const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+            cwd: parent.worktree_path,
+            timeoutMs: 10_000
+          });
+          if (behindRes.exitCode === 0) {
+            const behindCount = parseInt(behindRes.stdout.trim(), 10);
+            if (behindCount > 0) {
+              throw new Error(
+                `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
+              );
+            }
+          }
+        }
+      }
+
       const parentHeadSha = await getHeadSha(parent.worktree_path);
       if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
       return await createWorktreeLane({
@@ -422,6 +525,84 @@ export function createLaneService({
         baseRef: parent.branch_ref,
         startPoint: parentHeadSha,
         parentLaneId: parent.id
+      });
+    },
+
+    async importBranch(args: { branchRef: string; name?: string; description?: string; parentLaneId?: string | null }): Promise<LaneSummary> {
+      const branchRef = (args.branchRef ?? "").trim();
+      if (!branchRef) throw new Error("branchRef is required");
+      if (branchRef.includes("\0")) throw new Error("Invalid branchRef");
+
+      // Ensure branch exists locally.
+      await runGitOrThrow(["rev-parse", "--verify", branchRef], { cwd: projectRoot, timeoutMs: 12_000 });
+
+      // Prevent duplicates.
+      const existing = db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, branchRef]
+      );
+      if (existing?.id) {
+        throw new Error(`Lane already exists for branch '${branchRef}'`);
+      }
+
+      const laneId = randomUUID();
+      const now = new Date().toISOString();
+      const displayName = (args.name ?? "").trim() || branchRef;
+      const slug = slugify(displayName);
+      const suffix = laneId.slice(0, 8);
+      const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
+
+      // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
+      await runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
+        cwd: projectRoot,
+        timeoutMs: 60_000
+      });
+
+      const parentLaneIdRaw = typeof args.parentLaneId === "string" ? args.parentLaneId.trim() : "";
+      const parentLaneId = parentLaneIdRaw.length ? parentLaneIdRaw : null;
+      const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
+      if (parentLaneId && !parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
+      if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
+
+      const baseRef = parent?.branch_ref ?? defaultBaseRef;
+
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          )
+          values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
+        `,
+        [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, now]
+      );
+
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Failed to import lane: ${laneId}`);
+      const rowsById = getRowsById(true);
+      const status = await computeLaneStatus(worktreePath, baseRef, branchRef);
+      const parentStatus = parent ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
+
+      if (onHeadChanged) {
+        try {
+          const postHeadSha = await getHeadSha(worktreePath);
+          onHeadChanged({
+            laneId,
+            reason: "import_branch",
+            preHeadSha: null,
+            postHeadSha
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      return toLaneSummary({
+        row,
+        status,
+        parentStatus,
+        childCount: 0,
+        stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
       });
     },
 
@@ -866,10 +1047,14 @@ export function createLaneService({
       return row.worktree_path;
     },
 
-    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string } {
+    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType } {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
-      return { baseRef: row.base_ref, branchRef: row.branch_ref, worktreePath: row.worktree_path };
+      return { baseRef: row.base_ref, branchRef: row.branch_ref, worktreePath: row.worktree_path, laneType: row.lane_type };
+    },
+
+    updateBranchRef(laneId: string, branchRef: string): void {
+      db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [branchRef, laneId, projectId]);
     },
 
     getFilesWorkspaces(): Array<{

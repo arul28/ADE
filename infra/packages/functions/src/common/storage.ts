@@ -84,3 +84,58 @@ export async function deletePrefix(args: { bucket: string; prefix: string }): Pr
 
   return deleted;
 }
+
+export async function listObjectsByPrefix(args: {
+  bucket: string;
+  prefix: string;
+  maxKeys?: number;
+}): Promise<Array<{ key: string; size: number; lastModified: string | null }>> {
+  const out: Array<{ key: string; size: number; lastModified: string | null }> = [];
+  let continuationToken: string | undefined;
+  const cap = typeof args.maxKeys === "number" && args.maxKeys > 0 ? Math.floor(args.maxKeys) : 10_000;
+
+  while (true) {
+    const listed = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: args.bucket,
+        Prefix: args.prefix,
+        ContinuationToken: continuationToken,
+        MaxKeys: Math.min(1000, Math.max(1, cap - out.length))
+      })
+    );
+    for (const entry of listed.Contents ?? []) {
+      const key = entry.Key;
+      if (!key) continue;
+      out.push({
+        key,
+        size: Number(entry.Size ?? 0) || 0,
+        lastModified: entry.LastModified ? entry.LastModified.toISOString() : null
+      });
+      if (out.length >= cap) return out;
+    }
+
+    if (!listed.IsTruncated || !listed.NextContinuationToken) break;
+    continuationToken = listed.NextContinuationToken;
+  }
+
+  return out;
+}
+
+export async function deleteObjects(args: { bucket: string; keys: string[] }): Promise<number> {
+  const keys = args.keys.filter((key) => typeof key === "string" && key.trim().length > 0);
+  if (!keys.length) return 0;
+  let deleted = 0;
+  for (let i = 0; i < keys.length; i += 1000) {
+    const batch = keys.slice(i, i + 1000);
+    await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: args.bucket,
+        Delete: {
+          Objects: batch.map((Key) => ({ Key }))
+        }
+      })
+    );
+    deleted += batch.length;
+  }
+  return deleted;
+}

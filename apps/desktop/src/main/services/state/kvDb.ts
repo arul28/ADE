@@ -189,6 +189,9 @@ function migrate(db: Database) {
       lane_id text not null,
       pty_id text,
       tracked integer not null default 1,
+      goal text,
+      tool_type text,
+      pinned integer not null default 0,
       title text not null,
       started_at text not null,
       ended_at text,
@@ -198,10 +201,15 @@ function migrate(db: Database) {
       head_sha_end text,
       status text not null,
       last_output_preview text,
+      summary text,
       foreign key(lane_id) references lanes(id)
     )
   `);
   addColumnIfMissing(db, "terminal_sessions", "tracked integer not null default 1", "tracked");
+  addColumnIfMissing(db, "terminal_sessions", "goal text", "goal");
+  addColumnIfMissing(db, "terminal_sessions", "tool_type text", "tool_type");
+  addColumnIfMissing(db, "terminal_sessions", "pinned integer not null default 0", "pinned");
+  addColumnIfMissing(db, "terminal_sessions", "summary text", "summary");
   createIndexIfColumnsExist(
     db,
     "create index if not exists idx_terminal_sessions_lane_id on terminal_sessions(lane_id)",
@@ -581,6 +589,179 @@ function migrate(db: Database) {
     "pull_requests",
     ["project_id"]
   );
+
+  // Phase 8 pack versioning + checkpoints.
+  db.run(`
+    create table if not exists checkpoints (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      session_id text,
+      sha text not null,
+      diff_stat_json text,
+      pack_event_ids_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(session_id) references terminal_sessions(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_checkpoints_project_created on checkpoints(project_id, created_at)",
+    "checkpoints",
+    ["project_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_checkpoints_lane_created on checkpoints(lane_id, created_at)",
+    "checkpoints",
+    ["lane_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists pack_events (
+      id text primary key,
+      project_id text not null,
+      pack_key text not null,
+      event_type text not null,
+      payload_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_pack_events_project_created on pack_events(project_id, created_at)",
+    "pack_events",
+    ["project_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_pack_events_pack_key_created on pack_events(project_id, pack_key, created_at)",
+    "pack_events",
+    ["project_id", "pack_key", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists pack_versions (
+      id text primary key,
+      project_id text not null,
+      pack_key text not null,
+      version_number integer not null,
+      content_hash text not null,
+      rendered_path text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_pack_versions_project_pack on pack_versions(project_id, pack_key)",
+    "pack_versions",
+    ["project_id", "pack_key"]
+  );
+  db.run(
+    "create unique index if not exists idx_pack_versions_project_pack_version on pack_versions(project_id, pack_key, version_number)"
+  );
+
+  db.run(`
+    create table if not exists pack_heads (
+      project_id text not null,
+      pack_key text not null,
+      current_version_id text not null,
+      updated_at text not null,
+      primary key(project_id, pack_key),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_pack_heads_project on pack_heads(project_id)",
+    "pack_heads",
+    ["project_id"]
+  );
+
+  // Phase 8 automations run logs.
+  db.run(`
+    create table if not exists automation_runs (
+      id text primary key,
+      project_id text not null,
+      automation_id text not null,
+      trigger_type text not null,
+      started_at text not null,
+      ended_at text,
+      status text not null,
+      actions_completed integer not null default 0,
+      actions_total integer not null,
+      error_message text,
+      trigger_metadata text,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_automation_runs_project_started on automation_runs(project_id, started_at)",
+    "automation_runs",
+    ["project_id", "started_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_automation_runs_project_automation on automation_runs(project_id, automation_id)",
+    "automation_runs",
+    ["project_id", "automation_id"]
+  );
+
+  db.run(`
+    create table if not exists automation_action_results (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      action_index integer not null,
+      action_type text not null,
+      started_at text not null,
+      ended_at text,
+      status text not null,
+      error_message text,
+      output text,
+      foreign key(project_id) references projects(id),
+      foreign key(run_id) references automation_runs(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_automation_action_results_project_run on automation_action_results(project_id, run_id)",
+    "automation_action_results",
+    ["project_id", "run_id"]
+  );
+
+  // Phase 8+ PR groups (stacked / integration).
+  db.run(`
+    create table if not exists pr_groups (
+      id text primary key,
+      project_id text not null,
+      group_type text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_pr_groups_project on pr_groups(project_id)");
+
+  db.run(`
+    create table if not exists pr_group_members (
+      id text primary key,
+      group_id text not null,
+      pr_id text not null,
+      lane_id text not null,
+      position integer not null,
+      role text not null,
+      foreign key(group_id) references pr_groups(id),
+      foreign key(pr_id) references pull_requests(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
+  db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

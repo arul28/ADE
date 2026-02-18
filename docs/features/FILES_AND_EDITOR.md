@@ -1,6 +1,6 @@
 # Files & Editor — IDE-Style Workbench
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -24,9 +24,9 @@
   - [File Watching Architecture](#file-watching-architecture)
 - [Data Model](#data-model)
 - [Implementation Tracking](#implementation-tracking)
-  - [Phase 1 — File Tree & Basic Editor (TODO)](#phase-1--file-tree--basic-editor-todo)
-  - [Phase 2 — Diff & Conflict Modes (TODO)](#phase-2--diff--conflict-modes-todo)
-  - [Phase 3 — Advanced Editor Features (TODO)](#phase-3--advanced-editor-features-todo)
+  - [Phase 1 — File Tree & Basic Editor (DONE)](#phase-1--file-tree--basic-editor-done)
+  - [Phase 2 — Diff & Conflict Modes (DONE)](#phase-2--diff--conflict-modes-done)
+  - [Phase 3 — Advanced Editor Features (DONE)](#phase-3--advanced-editor-features-done)
 
 ---
 
@@ -36,7 +36,7 @@ The **Files tab** provides an IDE-like file explorer and editor for browsing and
 
 This feature matters because ADE's primary value proposition is keeping developers in a single tool. While the Lanes tab handles git operations and the Terminals tab provides shell access, the Files tab closes the loop by enabling direct code inspection and editing. Without it, developers must context-switch to an external editor for simple edits, breaking the workflow that ADE is designed to streamline.
 
-**Current status**: This feature is **implemented and working**. The full Files tab — file explorer, Monaco editor, diff modes, conflict resolution, file watching, quick open, and cross-file search — has been built. A small number of refinement tasks remain (file-type icons, Zed styling polish).
+**Current status**: This feature is **fully implemented**. The full Files tab — file explorer, Monaco editor, diff modes, conflict resolution, file watching, quick open (Cmd+P), cross-file search (Cmd+Shift+F), file-type icons, Zed-inspired styling, context menus with git operations (stage/unstage/discard), and protected branch warnings — is complete. All IPC channels are registered and functional.
 
 **Design reference**: The Files tab draws heavy inspiration from [Zed](https://zed.dev)'s simple, minimal IDE interface. Zed's approach — a clean file tree, lightweight tabs, fast file switching, and a focus on keyboard-driven workflows — is the target aesthetic. The file explorer should feel snappy and uncluttered, avoiding the visual weight of VS Code's explorer. Specifically: single-click to preview, double-click to pin-open, minimal chrome around the editor, and a flat file tree with subtle indentation guides rather than heavy tree lines.
 
@@ -148,6 +148,7 @@ The file explorer is a tree view of files and directories in the selected worksp
 | Open | Open file in the editor |
 | Diff | Open file in diff mode (staged vs. unstaged) |
 | Stage | Stage file (equivalent to `git add`) |
+| Unstage | Unstage file (equivalent to `git reset HEAD`) |
 | Discard | Discard changes (revert to HEAD) |
 | Copy Path | Copy absolute file path to clipboard |
 | Copy Relative Path | Copy path relative to workspace root |
@@ -228,24 +229,26 @@ The Files tab includes several safeguards to prevent accidental data loss:
 
 | Service | Status | Responsibility |
 |---------|--------|---------------|
-| `fileService` | Exists | Atomic file writes (write to temp + rename). Used by the editor for save operations. |
+| `fileService` | Exists | Atomic file writes (write to temp + rename). File tree listing with `.gitignore` support. File watching for external changes. Quick open and cross-file search. |
 | `diffService` | Exists | Diff computation for staged vs. unstaged, commit comparisons. Used by diff mode. |
-| File tree listing service | **New (needed)** | Recursive directory listing with `.gitignore` support. Returns a tree structure for the file explorer. Must handle large directories efficiently via lazy loading. |
-| File watching service | **New (needed)** | Watches the workspace directory for external changes using `fs.watch` or `chokidar`. Notifies the renderer when files are created, modified, or deleted, so the file tree and open editors can update. |
 
 ### IPC Channels
 
 | Channel | Signature | Status | Description |
 |---------|-----------|--------|-------------|
-| `ade.files.listTree` | `(args: { rootPath: string, depth?: number }) => FileTreeNode[]` | New | List directory contents as a tree structure. Respects `.gitignore`. Supports depth limiting for lazy loading. |
-| `ade.files.readFile` | `(args: { filePath: string, encoding?: string }) => FileContent` | New | Read file contents. Returns content, encoding, size, and language ID for syntax highlighting. |
+| `ade.files.listWorkspaces` | `() => WorkspaceInfo[]` | Exists | List available workspaces (primary, lane worktrees, attached) |
+| `ade.files.listTree` | `(args: { rootPath: string, depth?: number }) => FileTreeNode[]` | Exists | List directory contents as a tree structure. Respects `.gitignore`. Supports depth limiting for lazy loading. |
+| `ade.files.readFile` | `(args: { filePath: string, encoding?: string }) => FileContent` | Exists | Read file contents. Returns content, encoding, size, and language ID for syntax highlighting. |
 | `ade.files.writeTextAtomic` | `(args: { filePath: string, content: string }) => void` | Exists | Atomically write text content to a file. |
-| `ade.files.watchChanges` | `(args: { rootPath: string }) => void` | New | Start watching a directory for changes. Emits events via `ade.files.change` channel. |
-| `ade.files.stopWatching` | `(args: { rootPath: string }) => void` | New | Stop watching a directory. |
-| `ade.files.createFile` | `(args: { filePath: string, content?: string }) => void` | New | Create a new file. |
-| `ade.files.createDirectory` | `(args: { dirPath: string }) => void` | New | Create a new directory. |
-| `ade.files.rename` | `(args: { oldPath: string, newPath: string }) => void` | New | Rename a file or directory. |
-| `ade.files.delete` | `(args: { path: string }) => void` | New | Delete a file or directory. |
+| `ade.files.writeText` | `(args: { filePath: string, content: string }) => void` | Exists | Write text content to a file (non-atomic). |
+| `ade.files.watchChanges` | `(args: { rootPath: string }) => void` | Exists | Start watching a directory for changes. Emits events via `ade.files.change` channel. |
+| `ade.files.stopWatching` | `(args: { rootPath: string }) => void` | Exists | Stop watching a directory. |
+| `ade.files.createFile` | `(args: { filePath: string, content?: string }) => void` | Exists | Create a new file. |
+| `ade.files.createDirectory` | `(args: { dirPath: string }) => void` | Exists | Create a new directory. |
+| `ade.files.rename` | `(args: { oldPath: string, newPath: string }) => void` | Exists | Rename a file or directory. |
+| `ade.files.delete` | `(args: { path: string }) => void` | Exists | Delete a file or directory. |
+| `ade.files.quickOpen` | `(args: { rootPath: string, query: string }) => FileMatch[]` | Exists | Fuzzy file search for quick open (Cmd+P). |
+| `ade.files.searchText` | `(args: { rootPath: string, query: string, options?: SearchOptions }) => SearchResult[]` | Exists | Cross-file text search (Cmd+Shift+F). |
 
 **File change events** (streamed via `ade.files.change`):
 - `created`: A new file or directory was created.

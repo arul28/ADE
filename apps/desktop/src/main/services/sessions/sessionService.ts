@@ -1,8 +1,22 @@
 import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
-import type { TerminalSessionDetail, TerminalSessionStatus, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  TerminalSessionDetail,
+  TerminalSessionStatus,
+  TerminalSessionSummary,
+  TerminalToolType,
+  UpdateSessionMetaArgs
+} from "../../../shared/types";
+import { stripAnsi } from "../../utils/ansiStrip";
 
 export function createSessionService({ db }: { db: AdeDb }) {
+  const normalizeToolType = (raw: unknown): TerminalToolType | null => {
+    const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+    if (!value) return null;
+    const allowed: TerminalToolType[] = ["shell", "claude", "codex", "cursor", "aider", "continue", "other"];
+    return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
+  };
+
   const list = ({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
@@ -26,6 +40,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
       laneName: string;
       ptyId: string | null;
       tracked: number;
+      pinned: number;
+      goal: string | null;
+      toolType: string | null;
       title: string;
       status: TerminalSessionStatus;
       startedAt: string;
@@ -35,6 +52,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       headShaStart: string | null;
       headShaEnd: string | null;
       lastOutputPreview: string | null;
+      summary: string | null;
     }>(
       `
         select
@@ -43,6 +61,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
           l.name as laneName,
           s.pty_id as ptyId,
           s.tracked as tracked,
+          s.pinned as pinned,
+          s.goal as goal,
+          s.tool_type as toolType,
           s.title as title,
           s.status as status,
           s.started_at as startedAt,
@@ -51,7 +72,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
           s.transcript_path as transcriptPath,
           s.head_sha_start as headShaStart,
           s.head_sha_end as headShaEnd,
-          s.last_output_preview as lastOutputPreview
+          s.last_output_preview as lastOutputPreview,
+          s.summary as summary
         from terminal_sessions s
         join lanes l on l.id = s.lane_id
         ${whereSql}
@@ -61,7 +83,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       params
     );
 
-    return rows.map((row) => ({ ...row, tracked: row.tracked === 1 })) as TerminalSessionSummary[];
+    return rows.map((row) => ({
+      ...row,
+      tracked: row.tracked === 1,
+      pinned: row.pinned === 1,
+      goal: row.goal ?? null,
+      toolType: normalizeToolType(row.toolType),
+      summary: row.summary ?? null
+    })) as TerminalSessionSummary[];
   };
 
   return {
@@ -97,6 +126,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
             l.name as laneName,
             s.pty_id as ptyId,
             s.tracked as tracked,
+            s.pinned as pinned,
+            s.goal as goal,
+            s.tool_type as toolType,
             s.title as title,
             s.status as status,
             s.started_at as startedAt,
@@ -105,7 +137,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
             s.transcript_path as transcriptPath,
             s.head_sha_start as headShaStart,
             s.head_sha_end as headShaEnd,
-            s.last_output_preview as lastOutputPreview
+            s.last_output_preview as lastOutputPreview,
+            s.summary as summary
           from terminal_sessions s
           join lanes l on l.id = s.lane_id
           where s.id = ?
@@ -113,7 +146,46 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `,
         [sessionId]
       );
-      return row ? ({ ...row, tracked: (row as any).tracked === 1 } as TerminalSessionDetail) : null;
+      return row
+        ? ({
+            ...row,
+            tracked: (row as any).tracked === 1,
+            pinned: (row as any).pinned === 1,
+            goal: (row as any).goal ?? null,
+            toolType: normalizeToolType((row as any).toolType)
+          } as TerminalSessionDetail)
+        : null;
+    },
+
+    updateMeta(args: UpdateSessionMetaArgs): TerminalSessionSummary | null {
+      const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return null;
+
+      const sets: string[] = [];
+      const params: (string | number | null)[] = [];
+
+      if (typeof args.pinned === "boolean") {
+        sets.push("pinned = ?");
+        params.push(args.pinned ? 1 : 0);
+      }
+
+      if (args.goal !== undefined) {
+        sets.push("goal = ?");
+        params.push(args.goal == null ? null : String(args.goal));
+      }
+
+      if (args.toolType !== undefined) {
+        const normalized = normalizeToolType(args.toolType);
+        sets.push("tool_type = ?");
+        params.push(normalized);
+      }
+
+      if (sets.length) {
+        params.push(sessionId);
+        db.run(`update terminal_sessions set ${sets.join(", ")} where id = ?`, params);
+      }
+
+      return this.get(sessionId);
     },
 
     create({
@@ -137,8 +209,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null)
+            head_sha_start, head_sha_end, status, last_output_preview, summary
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null)
         `,
         [sessionId, laneId, ptyId, tracked ? 1 : 0, title, startedAt, transcriptPath]
       );
@@ -154,6 +226,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     setLastOutputPreview(sessionId: string, preview: string): void {
       db.run("update terminal_sessions set last_output_preview = ? where id = ?", [preview, sessionId]);
+    },
+
+    setSummary(sessionId: string, summary: string | null): void {
+      db.run("update terminal_sessions set summary = ? where id = ?", [summary, sessionId]);
     },
 
     end({
@@ -185,7 +261,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         try {
           const buf = Buffer.alloc(size - start);
           fs.readSync(fd, buf, 0, buf.length, start);
-          return buf.toString("utf8");
+          return stripAnsi(buf.toString("utf8"));
         } finally {
           fs.closeSync(fd);
         }

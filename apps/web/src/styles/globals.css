@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+@theme {
+  --radius-xl: 26px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+
+  --font-sans: "Plus Jakarta Sans";
+  --font-mono: "JetBrains Mono";
+}
+
+:root {
+  /* Enforced Dark Mode for "Slick" Aesthetic */
+  --bg: 240 10% 3.9%; /* Zin-950/Black */
+  --fg: 0 0% 98%;     /* White */
+
+  --card: 240 10% 6%;
+  --card-fg: 0 0% 98%;
+
+  --muted: 240 3.7% 15.9%;
+  --muted-fg: 240 5% 64.9%;
+
+  --border: 240 3.7% 15.9%;
+
+  --accent: 217 91% 60%; /* Vibrant Blue/Indigo */
+  --accent-2: 262 83% 58%; /* Purple */
+  --accent-fg: 0 0% 100%;
+
+  --radius-xl: 1rem;
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  color: hsl(var(--fg));
+  background-color: hsl(var(--bg));
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+
+  /* Soft, Apple-ish atmosphere without going full "neon SaaS". */
+  background-image:
+    radial-gradient(1200px 700px at 18% 0%, rgba(27, 118, 255, 0.12), transparent 58%),
+    radial-gradient(900px 600px at 86% 8%, rgba(85, 211, 255, 0.14), transparent 56%),
+    radial-gradient(900px 600px at 22% 82%, rgba(180, 255, 122, 0.10), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.36));
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.14;
+  background-image: radial-gradient(circle at 1px 1px, rgba(27, 118, 255, 0.22) 1px, transparent 0);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(780px 520px at 18% 0%, black, transparent 70%);
+  -webkit-mask-image: radial-gradient(780px 520px at 18% 0%, black, transparent 70%);
+}
+
+::selection {
+  background: rgba(27, 118, 255, 0.18);
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .float-slow {
+    animation: none;
+  }
+}
+
+/* Utilities used across components */
+.glass {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, white 74%, transparent),
+    color-mix(in srgb, white 62%, transparent)
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid color-mix(in srgb, hsl(var(--accent)) 70%, white 30%);
+  outline-offset: 3px;
+}
+
+@keyframes ade-float {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.float-slow {
+  animation: ade-float 9s var(--ease-out) infinite;
+}
+
+details[open] summary .ade-details-chevron {
+  transform: rotate(90deg);
+}

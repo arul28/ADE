@@ -1,50 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Folder, Plus, Search, X } from "lucide-react";
+import { Folder, FolderSearch, Plus, Search, Trash2, X } from "lucide-react";
 import { Button } from "../ui/Button";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-
-type RecentProject = { name: string; rootPath: string };
-
-const STORAGE_KEY = "ade.recentProjects";
-const MAX_RECENT = 8;
-
-function loadRecentProjects(): RecentProject[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p: unknown): p is RecentProject =>
-      typeof p === "object" && p !== null && typeof (p as RecentProject).name === "string" && typeof (p as RecentProject).rootPath === "string"
-    ).slice(0, MAX_RECENT);
-  } catch {
-    return [];
-  }
-}
-
-function saveRecentProjects(projects: RecentProject[]) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(projects.slice(0, MAX_RECENT)));
-  } catch {
-    // ignore
-  }
-}
-
-function addToRecent(project: RecentProject) {
-  const existing = loadRecentProjects();
-  const filtered = existing.filter((p) => p.rootPath !== project.rootPath);
-  const next = [project, ...filtered].slice(0, MAX_RECENT);
-  saveRecentProjects(next);
-  return next;
-}
-
-function removeFromRecent(rootPath: string) {
-  const existing = loadRecentProjects();
-  const next = existing.filter((p) => p.rootPath !== rootPath);
-  saveRecentProjects(next);
-  return next;
-}
+import type { RecentProjectSummary } from "../../../shared/types";
 
 export function TopBar({
   onOpenCommandPalette,
@@ -55,75 +14,135 @@ export function TopBar({
 }) {
   const project = useAppStore((s) => s.project);
   const openRepo = useAppStore((s) => s.openRepo);
-  const [recentProjects, setRecentProjects] = useState<RecentProject[]>(loadRecentProjects);
+  const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
+  const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
 
-  // When project changes, add it to recent list
+  const fetchRecent = useCallback(() => {
+    window.ade.project
+      .listRecent()
+      .then((rows) => setRecentProjects(rows))
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
-    if (project?.rootPath && project?.displayName) {
-      const next = addToRecent({ name: project.displayName, rootPath: project.rootPath });
-      setRecentProjects(next);
-    }
-  }, [project?.rootPath, project?.displayName]);
+    fetchRecent();
+  }, [project?.rootPath, fetchRecent]);
+
+  // Re-fetch when app regains focus (catches external deletions).
+  useEffect(() => {
+    const onFocus = () => fetchRecent();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [fetchRecent]);
+
+  // Re-fetch when the main process reports a missing project.
+  useEffect(() => {
+    const unsub = window.ade.project.onMissing(() => fetchRecent());
+    return unsub;
+  }, [fetchRecent]);
 
   const handleOpenNew = useCallback(() => {
     openRepo().catch(() => {});
   }, [openRepo]);
 
   const handleSwitchProject = useCallback((rootPath: string) => {
-    // If it's already the current project, do nothing
     if (project?.rootPath === rootPath) return;
-    // Open the project - openRepo will show file dialog, but we can try to hint
-    // For now, trigger the dialog. Full path-based switching needs backend support.
-    openRepo().catch(() => {});
-  }, [project?.rootPath, openRepo]);
+    switchProjectToPath(rootPath).catch(() => {});
+  }, [project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
-    // Don't allow removing the current project
     if (project?.rootPath === rootPath) return;
-    const next = removeFromRecent(rootPath);
-    setRecentProjects(next);
+    window.ade.project
+      .forgetRecent(rootPath)
+      .then((rows) => setRecentProjects(rows))
+      .catch(() => {});
   }, [project?.rootPath]);
 
-  return (
-    <header className="flex h-[44px] items-center gap-3 border-b border-border bg-bg px-3">
-      {/* Branding */}
-      <div className="text-sm font-bold tracking-tight shrink-0">ADE</div>
+  const handleRelocate = useCallback((oldPath: string) => {
+    setRelocatingPath(oldPath);
+    window.ade.project
+      .openRepo()
+      .then((newProject) => {
+        // After relocating, remove the stale entry and refresh
+        window.ade.project
+          .forgetRecent(oldPath)
+          .then((rows) => setRecentProjects(rows))
+          .catch(() => {});
+        switchProjectToPath(newProject.rootPath).catch(() => {});
+      })
+      .catch(() => {})
+      .finally(() => setRelocatingPath(null));
+  }, [switchProjectToPath]);
 
-      <div className="h-5 w-px bg-border shrink-0" />
+  return (
+    <header className="flex h-[48px] items-center gap-3 ade-panel-header px-4">
+      {/* Branding */}
+      <div className="text-sm font-bold tracking-tight shrink-0 text-fg/90">ADE</div>
+
+      <div className="h-3.5 w-px bg-border/15 shrink-0" />
 
       {/* Project tabs */}
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         {recentProjects.length === 0 && !project ? (
           <button
             type="button"
-            className="flex items-center gap-1.5 rounded border border-dashed border-border px-2 py-1 text-xs text-muted-fg hover:border-accent hover:text-fg transition-colors"
+            className="flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs text-muted-fg hover:bg-muted/40 hover:text-fg transition-all"
             onClick={handleOpenNew}
           >
-            <Folder className="h-3 w-3" />
+            <Folder className="h-3.5 w-3.5" />
             Open a project
           </button>
         ) : (
           <>
             {recentProjects.map((rp) => {
               const isCurrent = project?.rootPath === rp.rootPath;
+              const isMissing = !rp.exists;
               const canClose = !isCurrent;
               return (
                 <div
                   key={rp.rootPath}
                   className={cn(
-                    "group inline-flex max-w-[200px] shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs transition-colors",
-                    isCurrent
-                      ? "border-accent bg-accent/15 text-fg"
-                      : "border-border bg-card/70 text-muted-fg hover:border-muted-fg hover:text-fg cursor-pointer"
+                    "group inline-flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-all",
+                    isMissing
+                      ? "opacity-50 text-muted-fg"
+                      : isCurrent
+                        ? "bg-accent/10 text-fg shadow-card"
+                        : "text-muted-fg hover:bg-muted/40 hover:text-fg cursor-pointer"
                   )}
-                  onClick={() => handleSwitchProject(rp.rootPath)}
-                  title={rp.rootPath}
+                  onClick={() => {
+                    if (!isMissing) handleSwitchProject(rp.rootPath);
+                  }}
+                  title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                 >
-                  <Folder className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{rp.name}</span>
-                  {canClose ? (
+                  <Folder className={cn("h-3 w-3 shrink-0", isMissing && "text-red-400")} />
+                  <span className={cn("truncate", isMissing && "line-through")}>{rp.displayName}</span>
+                  {isMissing ? (
+                    <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <span
+                        className="inline-flex h-4 w-4 items-center justify-center rounded-md hover:bg-muted/70 cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRelocate(rp.rootPath);
+                        }}
+                        title="Relocate project"
+                      >
+                        <FolderSearch className="h-2.5 w-2.5" />
+                      </span>
+                      <span
+                        className="inline-flex h-4 w-4 items-center justify-center rounded-md hover:bg-red-500/20 cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRemoveTab(rp.rootPath);
+                        }}
+                        title="Remove from list"
+                      >
+                        <Trash2 className="h-2.5 w-2.5 text-red-400" />
+                      </span>
+                    </span>
+                  ) : canClose ? (
                     <span
-                      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-muted/70"
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-md opacity-0 group-hover:opacity-100 hover:bg-muted/70 transition-opacity"
                       onClick={(e) => {
                         e.stopPropagation();
                         handleRemoveTab(rp.rootPath);
@@ -142,16 +161,16 @@ export function TopBar({
         {/* Add project tab */}
         <button
           type="button"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-dashed border-border text-muted-fg hover:border-accent hover:text-fg transition-colors"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-muted-fg/50 hover:bg-muted/30 hover:text-fg transition-all"
           onClick={handleOpenNew}
           title="Open another project"
         >
-          <Plus className="h-3 w-3" />
+          <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
 
       {/* Command palette */}
-      <Button variant="ghost" size="sm" className="shrink-0" onClick={onOpenCommandPalette} title="Command palette">
+      <Button variant="ghost" size="sm" className="shrink-0 rounded-lg" onClick={onOpenCommandPalette} title="Command palette">
         <Search className="h-3.5 w-3.5" />
         <span className="hidden sm:inline text-xs">Commands</span>
         <span className="hidden md:inline text-[10px] text-muted-fg">{commandHint}</span>

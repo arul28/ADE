@@ -37,10 +37,17 @@ type ManagedProcessEntry = {
   readinessRegex: RegExp | null;
   readinessTimeout: NodeJS.Timeout | null;
   readinessInterval: NodeJS.Timeout | null;
+  healthFailures: number;
+  healthInterval: NodeJS.Timeout | null;
+  restartAttempts: number;
   gracefulKillTimeout: NodeJS.Timeout | null;
 };
 
 const READINESS_TIMEOUT_MS = 15_000;
+const HEALTH_CHECK_INTERVAL_MS = 2_500;
+const HEALTH_DEGRADED_AFTER_FAILURES = 2;
+const RESTART_BACKOFF_BASE_MS = 400;
+const RESTART_BACKOFF_MAX_MS = 30_000;
 
 function clampMaxBytes(maxBytes: number | undefined, fallback: number): number {
   if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes)) return fallback;
@@ -225,6 +232,14 @@ export function createProcessService({
     }
   };
 
+  const clearHealthTimers = (entry: ManagedProcessEntry) => {
+    if (entry.healthInterval) {
+      clearInterval(entry.healthInterval);
+      entry.healthInterval = null;
+    }
+    entry.healthFailures = 0;
+  };
+
   const clearKillTimer = (entry: ManagedProcessEntry) => {
     if (entry.gracefulKillTimeout) {
       clearTimeout(entry.gracefulKillTimeout);
@@ -294,6 +309,9 @@ export function createProcessService({
       readinessRegex: null,
       readinessTimeout: null,
       readinessInterval: null,
+      healthFailures: 0,
+      healthInterval: null,
+      restartAttempts: 0,
       gracefulKillTimeout: null
     };
     entries.set(k, entry);
@@ -337,6 +355,38 @@ export function createProcessService({
     entry.runtime.readiness = "ready";
     if (entry.runtime.status === "starting") entry.runtime.status = "running";
     emitRuntime(entry);
+
+    // Periodically re-check readiness for port-based processes so we can reflect degraded/recovered states.
+    clearHealthTimers(entry);
+    if (entry.definition?.readiness.type === "port") {
+      const port = entry.definition.readiness.port;
+      entry.healthInterval = setInterval(() => {
+        if (!entry.child) return;
+        if (entry.runtime.status !== "running" && entry.runtime.status !== "degraded") return;
+        void checkPortReady(port)
+          .then((ok) => {
+            if (!entry.child) return;
+            if (ok) {
+              if (entry.runtime.readiness !== "ready" || entry.runtime.status === "degraded") {
+                entry.runtime.readiness = "ready";
+                entry.runtime.status = "running";
+                emitRuntime(entry);
+              }
+              entry.healthFailures = 0;
+              return;
+            }
+
+            entry.healthFailures += 1;
+            if (entry.healthFailures < HEALTH_DEGRADED_AFTER_FAILURES) return;
+            if (entry.runtime.status !== "degraded" || entry.runtime.readiness !== "not_ready") {
+              entry.runtime.readiness = "not_ready";
+              entry.runtime.status = "degraded";
+              emitRuntime(entry);
+            }
+          })
+          .catch(() => {});
+      }, HEALTH_CHECK_INTERVAL_MS);
+    }
   };
 
   const markReadinessFailed = (entry: ManagedProcessEntry) => {
@@ -389,6 +439,7 @@ export function createProcessService({
 
   const handleProcessExit = (entry: ManagedProcessEntry, processId: string, exitCode: number | null) => {
     clearReadinessTimers(entry);
+    clearHealthTimers(entry);
     clearKillTimer(entry);
     const endedAt = nowIso();
 
@@ -406,7 +457,8 @@ export function createProcessService({
       entry.logStream = null;
     }
 
-    const reason = entry.stopIntent ?? (exitCode === 0 ? "stopped" : "crashed");
+    const stopIntent = entry.stopIntent;
+    const reason = stopIntent ?? (exitCode === 0 ? "stopped" : "crashed");
     const runtimeStatus: ProcessRuntimeStatus = reason === "crashed" ? "crashed" : "exited";
 
     entry.child = null;
@@ -434,12 +486,31 @@ export function createProcessService({
       return;
     }
 
-    if (reason === "crashed" && entry.definition?.restart === "on_crash") {
+    const policy = entry.definition?.restart ?? "never";
+    const shouldAutoRestart =
+      policy === "always" ||
+      ((policy === "on-failure" || policy === "on_crash") && (exitCode == null || exitCode !== 0));
+
+    if (reason === "crashed" || reason === "stopped") {
+      // Reset restart backoff if the process stayed up for a while.
+      const startedAt = entry.runtime.startedAt;
+      const startedAtMs = startedAt ? Date.parse(startedAt) : NaN;
+      const endedAtMs = Date.parse(endedAt);
+      if (Number.isFinite(startedAtMs) && Number.isFinite(endedAtMs)) {
+        if (endedAtMs - startedAtMs > 60_000) entry.restartAttempts = 0;
+      }
+    }
+
+    if (!stopIntent && (reason === "crashed" || reason === "stopped") && shouldAutoRestart) {
+      entry.restartAttempts += 1;
+      const attempt = Math.min(8, Math.max(1, entry.restartAttempts));
+      const delayMs = Math.min(RESTART_BACKOFF_MAX_MS, RESTART_BACKOFF_BASE_MS * Math.pow(2, attempt - 1));
+      const jitter = Math.floor(Math.random() * 250);
       setTimeout(() => {
         void startById(entry.laneId, processId, { skipTrust: true }).catch((err) => {
           logger.warn("process.auto_restart_failed", { laneId: entry.laneId, processId, err: String(err) });
         });
-      }, 600);
+      }, delayMs + jitter);
     }
   };
 

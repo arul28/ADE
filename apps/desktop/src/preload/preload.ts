@@ -5,8 +5,31 @@ import type {
   ApplyConflictProposalArgs,
   AttachLaneArgs,
   AppInfo,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
   ArchiveLaneArgs,
+  AutomationRuleSummary,
+  AutomationRun,
+  AutomationRunDetail,
+  AutomationParseNaturalLanguageRequest,
+  AutomationParseNaturalLanguageResult,
+  AutomationValidateDraftRequest,
+  AutomationValidateDraftResult,
+  AutomationSaveDraftRequest,
+  AutomationSaveDraftResult,
+  AutomationSimulateRequest,
+  AutomationSimulateResult,
+  AutomationsEventPayload,
+  ConflictExternalResolverRunSummary,
   ConflictProposal,
+  ConflictProposalPreview,
+  ContextGenerateDocsArgs,
+  ContextGenerateDocsResult,
+  ContextPrepareDocGenArgs,
+  ContextPrepareDocGenResult,
+  ContextInstallGeneratedDocsArgs,
+  ContextOpenDocArgs,
+  ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
   ConflictStatus,
@@ -38,9 +61,14 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitConflictState,
   GitGetCommitMessageArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitBatchFileActionArgs,
+  GitBranchSummary,
+  GitListBranchesArgs,
+  GitCheckoutBranchArgs,
   GitPushArgs,
   GitRevertArgs,
   GitStashPushArgs,
@@ -64,6 +92,7 @@ import type {
   GetFileDiffArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
+  ExportConfigBundleResult,
   HostedArtifactResult,
   HostedBootstrapConfig,
   HostedGitHubAppStatus,
@@ -73,21 +102,43 @@ import type {
   HostedJobStatusResult,
   HostedJobSubmissionArgs,
   HostedJobSubmissionResult,
+  HostedMirrorDeleteResult,
+  HostedMirrorCleanupSummaryV1,
   HostedMirrorSyncArgs,
   HostedMirrorSyncResult,
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
+  AgentTool,
+  KeybindingOverride,
+  KeybindingsSnapshot,
+  OnboardingDetectionResult,
+  OnboardingExistingLaneCandidate,
+  OnboardingStatus,
+  CiScanResult,
+  CiImportRequest,
+  CiImportResult,
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
+  ImportBranchLaneArgs,
   ListOperationsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
   OperationRecord,
+  PackEvent,
+  PackExport,
+  PackHeadVersion,
   PackSummary,
+  PackVersion,
+  PackVersionSummary,
+  Checkpoint,
+  GetLaneExportArgs,
+  GetProjectExportArgs,
+  GetConflictExportArgs,
+  ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
   ProcessEvent,
@@ -99,26 +150,47 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
   PtyDataEvent,
   PtyExitEvent,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
+  RunExternalConflictResolverArgs,
+  ListExternalConflictResolverRunsArgs,
+  CommitExternalConflictResolverRunArgs,
+  CommitExternalConflictResolverRunResult,
+  PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   UndoConflictProposalArgs,
+  PrepareResolverSessionArgs,
+  PrepareResolverSessionResult,
+  FinalizeResolverSessionArgs,
+  SuggestResolverTargetArgs,
+  SuggestResolverTargetResult,
+  CreateStackedPrsArgs,
+  CreateStackedPrsResult,
+  CreateIntegrationPrArgs,
+  CreateIntegrationPrResult,
+  LandStackEnhancedArgs,
+  PrConflictAnalysis,
+  PrWithConflicts,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   ReparentLaneArgs,
   ReparentLaneResult,
   RestackArgs,
   RestackResult,
+  RestackSuggestion,
+  RestackSuggestionsEventPayload,
   UpdateLaneAppearanceArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
+  TerminalProfilesSnapshot,
   TerminalSessionSummary,
   TestEvent,
   TestRunSummary,
@@ -131,16 +203,79 @@ contextBridge.exposeInMainWorld("ade", {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject),
-    openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url })
+    openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url }),
+    revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path })
   },
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
-    openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder)
+    openAdeFolder: async (): Promise<void> => ipcRenderer.invoke(IPC.projectOpenAdeFolder),
+    clearLocalData: async (args: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> =>
+      ipcRenderer.invoke(IPC.projectClearLocalData, args),
+    exportConfig: async (): Promise<ExportConfigBundleResult> => ipcRenderer.invoke(IPC.projectExportConfig),
+    listRecent: async (): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectListRecent),
+    switchToPath: async (rootPath: string): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+    forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> => ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
+    onMissing: (cb: (data: { rootPath: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { rootPath: string }) => cb(payload);
+      ipcRenderer.on(IPC.projectMissing, listener);
+      return () => ipcRenderer.removeListener(IPC.projectMissing, listener);
+    }
+  },
+  keybindings: {
+    get: async (): Promise<KeybindingsSnapshot> => ipcRenderer.invoke(IPC.keybindingsGet),
+    set: async (overrides: KeybindingOverride[]): Promise<KeybindingsSnapshot> =>
+      ipcRenderer.invoke(IPC.keybindingsSet, { overrides })
+  },
+  agentTools: {
+    detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
+  },
+  terminalProfiles: {
+    get: async (): Promise<TerminalProfilesSnapshot> => ipcRenderer.invoke(IPC.terminalProfilesGet),
+    set: async (snapshot: TerminalProfilesSnapshot): Promise<TerminalProfilesSnapshot> =>
+      ipcRenderer.invoke(IPC.terminalProfilesSet, snapshot)
+  },
+  onboarding: {
+    getStatus: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingGetStatus),
+    detectDefaults: async (): Promise<OnboardingDetectionResult> => ipcRenderer.invoke(IPC.onboardingDetectDefaults),
+    detectExistingLanes: async (): Promise<OnboardingExistingLaneCandidate[]> =>
+      ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
+    generateInitialPacks: async (args: { laneIds?: string[] } = {}): Promise<void> =>
+      ipcRenderer.invoke(IPC.onboardingGenerateInitialPacks, args),
+    complete: async (): Promise<OnboardingStatus> => ipcRenderer.invoke(IPC.onboardingComplete)
+  },
+  ci: {
+    scan: async (): Promise<CiScanResult> => ipcRenderer.invoke(IPC.ciScan),
+    import: async (req: CiImportRequest): Promise<CiImportResult> => ipcRenderer.invoke(IPC.ciImport, req)
+  },
+  automations: {
+    list: async (): Promise<AutomationRuleSummary[]> => ipcRenderer.invoke(IPC.automationsList),
+    toggle: async (args: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> =>
+      ipcRenderer.invoke(IPC.automationsToggle, args),
+    triggerManually: async (args: { id: string; laneId?: string | null }): Promise<AutomationRun> =>
+      ipcRenderer.invoke(IPC.automationsTriggerManually, args),
+    getHistory: async (args: { id: string; limit?: number }): Promise<AutomationRun[]> =>
+      ipcRenderer.invoke(IPC.automationsGetHistory, args),
+    getRunDetail: async (runId: string): Promise<AutomationRunDetail | null> =>
+      ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
+    parseNaturalLanguage: async (req: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> =>
+      ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
+    validateDraft: async (req: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> =>
+      ipcRenderer.invoke(IPC.automationsValidateDraft, req),
+    saveDraft: async (req: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> =>
+      ipcRenderer.invoke(IPC.automationsSaveDraft, req),
+    simulate: async (req: AutomationSimulateRequest): Promise<AutomationSimulateResult> =>
+      ipcRenderer.invoke(IPC.automationsSimulate, req),
+    onEvent: (cb: (ev: AutomationsEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: AutomationsEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.automationsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
+    }
   },
   lanes: {
     list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesList, args),
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreate, args),
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesCreateChild, args),
+    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesImportBranch, args),
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => ipcRenderer.invoke(IPC.lanesAttach, args),
     rename: async (args: RenameLaneArgs): Promise<void> => ipcRenderer.invoke(IPC.lanesRename, args),
     reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => ipcRenderer.invoke(IPC.lanesReparent, args),
@@ -152,6 +287,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
     getChildren: async (laneId: string): Promise<LaneSummary[]> => ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
     restack: async (args: RestackArgs): Promise<RestackResult> => ipcRenderer.invoke(IPC.lanesRestack, args),
+    listRestackSuggestions: async (): Promise<RestackSuggestion[]> => ipcRenderer.invoke(IPC.lanesListRestackSuggestions),
+    dismissRestackSuggestion: async (args: { laneId: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDismissRestackSuggestion, args),
+    deferRestackSuggestion: async (args: { laneId: string; minutes: number }): Promise<void> =>
+      ipcRenderer.invoke(IPC.lanesDeferRestackSuggestion, args),
+    onRestackSuggestionsEvent: (cb: (ev: RestackSuggestionsEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RestackSuggestionsEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.lanesRestackSuggestionsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.lanesRestackSuggestionsEvent, listener);
+    },
     openFolder: async (args: { laneId: string }): Promise<void> => ipcRenderer.invoke(IPC.lanesOpenFolder, args)
   },
   sessions: {
@@ -159,6 +304,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsList, args),
     get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
       ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
+    updateMeta: async (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null }): Promise<TerminalSessionSummary | null> =>
+      ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
     readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
@@ -209,7 +356,9 @@ contextBridge.exposeInMainWorld("ade", {
   },
   git: {
     stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStageFile, args),
+    stageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStageAll, args),
     unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitUnstageFile, args),
+    unstageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitUnstageAll, args),
     discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitDiscardFile, args),
     restoreStagedFile: async (args: GitFileActionArgs): Promise<GitActionResult> =>
       ipcRenderer.invoke(IPC.gitRestoreStagedFile, args),
@@ -230,7 +379,21 @@ contextBridge.exposeInMainWorld("ade", {
     stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashDrop, args),
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),
-    push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args)
+    push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args),
+    getConflictState: async (laneId: string): Promise<GitConflictState> =>
+      ipcRenderer.invoke(IPC.gitGetConflictState, { laneId }),
+    rebaseContinue: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId }),
+    rebaseAbort: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId }),
+    mergeContinue: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitMergeContinue, { laneId }),
+    mergeAbort: async (laneId: string): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitMergeAbort, { laneId }),
+    listBranches: async (args: GitListBranchesArgs): Promise<GitBranchSummary[]> =>
+      ipcRenderer.invoke(IPC.gitListBranches, args),
+    checkoutBranch: async (args: GitCheckoutBranchArgs): Promise<GitActionResult> =>
+      ipcRenderer.invoke(IPC.gitCheckoutBranch, args)
   },
   conflicts: {
     getLaneStatus: async (args: GetLaneConflictStatusArgs): Promise<ConflictStatus> =>
@@ -245,26 +408,89 @@ contextBridge.exposeInMainWorld("ade", {
     getBatchAssessment: async (): Promise<BatchAssessmentResult> => ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
     listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
       ipcRenderer.invoke(IPC.conflictsListProposals, { laneId }),
+    prepareProposal: async (args: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> =>
+      ipcRenderer.invoke(IPC.conflictsPrepareProposal, args),
     requestProposal: async (args: RequestConflictProposalArgs): Promise<ConflictProposal> =>
       ipcRenderer.invoke(IPC.conflictsRequestProposal, args),
     applyProposal: async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> =>
       ipcRenderer.invoke(IPC.conflictsApplyProposal, args),
     undoProposal: async (args: UndoConflictProposalArgs): Promise<ConflictProposal> =>
       ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
+    runExternalResolver: async (args: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsRunExternalResolver, args),
+    listExternalResolverRuns: async (args: ListExternalConflictResolverRunsArgs = {}): Promise<ConflictExternalResolverRunSummary[]> =>
+      ipcRenderer.invoke(IPC.conflictsListExternalResolverRuns, args),
+    commitExternalResolverRun: async (args: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> =>
+      ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
+    prepareResolverSession: (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> =>
+      ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
+    finalizeResolverSession: (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> =>
+      ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
+    suggestResolverTarget: (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> =>
+      ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ConflictEventPayload) => cb(payload);
       ipcRenderer.on(IPC.conflictsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.conflictsEvent, listener);
     }
   },
+  context: {
+    getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
+    generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
+      ipcRenderer.invoke(IPC.contextGenerateDocs, args),
+    prepareDocGeneration: async (args: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> =>
+      ipcRenderer.invoke(IPC.contextPrepareDocGeneration, args),
+    installGeneratedDocs: async (args: ContextInstallGeneratedDocsArgs): Promise<ContextGenerateDocsResult> =>
+      ipcRenderer.invoke(IPC.contextInstallGeneratedDocs, args),
+    openDoc: async (args: ContextOpenDocArgs): Promise<void> => ipcRenderer.invoke(IPC.contextOpenDoc, args)
+  },
   packs: {
     getProjectPack: async (): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetProjectPack),
     getLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetLanePack, { laneId }),
+    getFeaturePack: async (featureKey: string): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsGetFeaturePack, { featureKey }),
+    getConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsGetConflictPack, args),
+    getPlanPack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetPlanPack, { laneId }),
+    getProjectExport: async (args: GetProjectExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetProjectExport, args),
+    getLaneExport: async (args: GetLaneExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetLaneExport, args),
+    getConflictExport: async (args: GetConflictExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetConflictExport, args),
     refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
+    refreshProjectPack: async (args: { laneId?: string | null } = {}): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshProjectPack, args),
+    refreshFeaturePack: async (featureKey: string): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshFeaturePack, { featureKey }),
+    refreshConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshConflictPack, args),
+    savePlanPack: async (args: { laneId: string; body: string }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsSavePlanPack, args),
     applyHostedNarrative: async (args: { laneId: string; narrative: string }): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args),
     generateNarrative: async (laneId: string): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsGenerateNarrative, { laneId })
+      ipcRenderer.invoke(IPC.packsGenerateNarrative, { laneId }),
+    listVersions: async (args: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> =>
+      ipcRenderer.invoke(IPC.packsListVersions, args),
+    getVersion: async (versionId: string): Promise<PackVersion> => ipcRenderer.invoke(IPC.packsGetVersion, { versionId }),
+    diffVersions: async (args: { fromId: string; toId: string }): Promise<string> =>
+      ipcRenderer.invoke(IPC.packsDiffVersions, args),
+    updateNarrative: async (args: { packKey: string; narrative: string }): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsUpdateNarrative, args),
+    listEvents: async (args: { packKey: string; limit?: number }): Promise<PackEvent[]> =>
+      ipcRenderer.invoke(IPC.packsListEvents, args),
+    listEventsSince: async (args: ListPackEventsSinceArgs): Promise<PackEvent[]> =>
+      ipcRenderer.invoke(IPC.packsListEventsSince, args),
+    listCheckpoints: async (args: { laneId?: string; limit?: number } = {}): Promise<Checkpoint[]> =>
+      ipcRenderer.invoke(IPC.packsListCheckpoints, args),
+    getHeadVersion: async (packKey: string): Promise<PackHeadVersion> =>
+      ipcRenderer.invoke(IPC.packsGetHeadVersion, { packKey }),
+    onEvent: (cb: (ev: PackEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: PackEvent) => cb(payload);
+      ipcRenderer.on(IPC.packsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.packsEvent, listener);
+    }
   },
   github: {
     getStatus: async (): Promise<GitHubStatus> => ipcRenderer.invoke(IPC.githubGetStatus),
@@ -286,6 +512,16 @@ contextBridge.exposeInMainWorld("ade", {
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
     openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
+    createStacked: (args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> =>
+      ipcRenderer.invoke(IPC.prsCreateStacked, args),
+    createIntegration: (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> =>
+      ipcRenderer.invoke(IPC.prsCreateIntegration, args),
+    landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
+      ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
+    getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
+      ipcRenderer.invoke(IPC.prsGetConflictAnalysis, prId),
+    listWithConflicts: (): Promise<PrWithConflicts[]> =>
+      ipcRenderer.invoke(IPC.prsListWithConflicts),
     onEvent: (cb: (ev: PrEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);
@@ -300,6 +536,9 @@ contextBridge.exposeInMainWorld("ade", {
     signOut: async (): Promise<void> => ipcRenderer.invoke(IPC.hostedSignOut),
     syncMirror: async (args: HostedMirrorSyncArgs = {}): Promise<HostedMirrorSyncResult> =>
       ipcRenderer.invoke(IPC.hostedSyncMirror, args),
+    cleanMirrorData: async (): Promise<HostedMirrorCleanupSummaryV1> =>
+      ipcRenderer.invoke(IPC.hostedCleanMirrorData),
+    deleteMirrorData: async (): Promise<HostedMirrorDeleteResult> => ipcRenderer.invoke(IPC.hostedDeleteMirrorData),
     submitJob: async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> =>
       ipcRenderer.invoke(IPC.hostedSubmitJob, args),
     getJob: async (jobId: string): Promise<HostedJobStatusResult> =>
@@ -321,6 +560,11 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (layoutId: string): Promise<DockLayout | null> => ipcRenderer.invoke(IPC.layoutGet, { layoutId }),
     set: async (layoutId: string, layout: DockLayout): Promise<void> =>
       ipcRenderer.invoke(IPC.layoutSet, { layoutId, layout })
+  },
+  tilingTree: {
+    get: async (layoutId: string): Promise<unknown> => ipcRenderer.invoke(IPC.tilingTreeGet, { layoutId }),
+    set: async (layoutId: string, tree: unknown): Promise<void> =>
+      ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree })
   },
   graphState: {
     get: async (projectId: string): Promise<GraphPersistedState | null> =>

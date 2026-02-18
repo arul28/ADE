@@ -1,6 +1,6 @@
 # Cloud Backend Architecture (AWS)
 
-> Last updated: 2026-02-12
+> Last updated: 2026-02-16
 
 The ADE cloud backend is a fully serverless AWS stack for hosted mirror sync and async job processing.
 
@@ -11,7 +11,7 @@ The ADE cloud backend is a fully serverless AWS stack for hosted mirror sync and
 The cloud backend serves two primary functions:
 
 1. Mirror storage: receive and store read-only lane snapshots (content-addressed blobs + manifests).
-2. Job processing: run asynchronous hosted jobs (narratives, conflict proposals, PR drafting) against mirrored data.
+2. Job processing: run asynchronous hosted jobs (narratives, conflict proposals, PR drafting) against **bounded desktop exports**, optionally delivered via mirror references.
 
 The backend uses API Gateway, Lambda, DynamoDB, S3, and SQS in AWS. Authentication is handled by Clerk OAuth/JWT, with API Gateway JWT validation.
 
@@ -90,9 +90,12 @@ All protected routes require `Authorization: Bearer <token>` with Clerk-issued J
 | `GET` | `/projects/:id` | Read project metadata |
 | `POST` | `/projects/:id/upload` | Upload blob batch |
 | `POST` | `/projects/:id/lanes/:lid/manifest` | Upsert lane manifest |
+| `POST` | `/projects/:id/packs/manifest` | Upsert packs manifest (discoverable pack blobs) |
+| `POST` | `/projects/:id/transcripts/manifest` | Upsert transcripts manifest (discoverable transcript blobs) |
 | `POST` | `/projects/:id/jobs` | Submit hosted job |
 | `GET` | `/projects/:id/jobs/:jid` | Poll job status |
 | `GET` | `/projects/:id/artifacts/:aid` | Fetch artifact content |
+| `POST` | `/projects/:id/mirror/cleanup` | Run reachability-based mirror cleanup |
 | `DELETE` | `/projects/:id` | Delete hosted project data |
 
 ### DynamoDB Tables
@@ -112,6 +115,25 @@ All protected routes require `Authorization: Bearer <token>` with Clerk-issued J
 - `ade-<stage>-artifacts-<accountId>`
 
 All buckets are private and encrypted at rest.
+
+---
+
+## How Job Context Works (Inline vs Mirror Ref)
+
+Hosted jobs accept `params` (arbitrary JSON) which ADE uses to build LLM prompts.
+
+ADE supports two delivery modes:
+
+1. **Inline params**: Desktop sends bounded exports (for example `LaneExportStandard` as `packBody`) directly in the job submission `params`. This works even if mirror sync is disabled.
+2. **Mirror ref params**: Desktop uploads the full `params` JSON as a content-addressed blob to S3 (via `/projects/:id/upload`) and submits a small `params` object containing:
+   - `__adeContextRef` (sha256 + metadata)
+   - `__adeContextInline` (a reduced inline fallback)
+
+The worker resolves `__adeContextRef` before building prompts. If resolution fails, it falls back to `__adeContextInline`.
+
+### Why DynamoDB Exists If Mirror Can Hold Context
+
+DynamoDB stores durable job metadata (status transitions, error details, metrics) and small request parameters. Mirror refs keep those request records small while still allowing richer context to live in S3 when needed.
 
 ### Queue + Worker
 
@@ -166,3 +188,82 @@ ADE is deployed in a shared AWS account. Safety constraints:
 ## Implementation Status
 
 Phase 6 cloud stack and desktop hosted path are implemented in this repository with Clerk-based auth replacing Cognito.
+
+---
+
+## 2026-02-16 Hardening Addendum
+
+### Mirror lifecycle and cleanup
+
+The backend now enforces bounded mirror growth with a reachability-based cleanup path:
+
+1. Load active manifest references (`lane`, `packs`, `transcripts`, `project`).
+2. Parse reachable blob digests from manifests.
+3. Scan blob objects with scan caps (`maxObjectsScanned`, `maxBytesScanned`).
+4. Mark stale, unreachable digests as orphan candidates (grace window).
+5. Delete only capped orphan batches (`maxDelete`).
+6. Return cleanup telemetry in response payload.
+
+New cleanup telemetry fields:
+
+- `mirrorReachableBlobs`
+- `mirrorOrphanedBlobs`
+- `mirrorDeleted`
+- `mirrorReclaimedBytes`
+- `cleanupResult`
+- `cleanupError`
+
+New endpoint:
+
+- `POST /projects/:id/mirror/cleanup`
+
+### Job resolution behavior (worker)
+
+- Worker resolves `__adeContextRef` first.
+- On missing ref object, worker falls back to `__adeContextInline`.
+- Worker records context source in job metrics (`mirror` | `inline` | `inline_fallback`).
+- Conflict jobs with incomplete file context return structured insufficient-context artifacts instead of speculative patches.
+
+### Why this improves reliability and cost
+
+- Reliability:
+  - Context provenance is explicit and auditable end-to-end.
+  - Fallbacks are deterministic with warning surfaces.
+  - Conflict jobs avoid unsafe patch speculation when evidence is incomplete.
+- Cost:
+  - Orphan blob cleanup prevents unbounded S3 growth.
+  - Scan/delete caps keep cleanup predictable and safe.
+
+---
+
+## 2026-02-16 Addendum — Narrative Timing + Inline/Mirror Decision Framing
+
+### End-to-end flow (authoritative)
+
+`repo change -> pack refresh -> context export decision -> job submission -> worker context resolution -> prompt build -> model -> artifact -> pack event`
+
+### Mirror vs inline matrix (operational)
+
+- Inline: default for bounded narrative/project exports and mirror-independent reliability.
+- Mirror-ref: used for large payloads, conflict-heavy submissions, or mirror-preferred policy.
+- Inline fallback is always included for mirror-ref jobs to prevent hard failures.
+
+ADE does **not** default to full-repo mirror context for every job. This is intentional:
+
+- lower request variance
+- deterministic bounded prompts
+- better failure explainability
+
+### Phase telemetry
+
+Hosted narrative calls now track:
+
+- submit start + submit duration
+- queue wait duration
+- poll duration
+- artifact fetch duration
+- total duration
+- explicit timeout reason codes
+
+These are surfaced to desktop status (`contextTelemetry`) and persisted in narrative pack events for postmortems.
+

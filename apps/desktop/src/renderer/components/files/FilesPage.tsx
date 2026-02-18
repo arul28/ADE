@@ -31,6 +31,9 @@ import type {
 import { Button } from "../ui/Button";
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
 import { useAppStore } from "../../state/appStore";
+import { PaneTilingLayout } from "../ui/PaneTilingLayout";
+import { revealLabel } from "../../lib/platform";
+import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
 
 type OpenTab = {
   path: string;
@@ -211,6 +214,40 @@ function changeStatusClasses(changeStatus: FileTreeNode["changeStatus"]): { dot:
   return { dot: "bg-border", text: "text-muted-fg" };
 }
 
+/* ---- Floating-pane tiling layout for Files ---- */
+
+const FILES_TILING_TREE: PaneSplit = {
+  type: "split",
+  direction: "horizontal",
+  children: [
+    {
+      node: { type: "pane", id: "explorer" },
+      defaultSize: 22,
+      minSize: 12
+    },
+    {
+      node: {
+        type: "split",
+        direction: "vertical",
+        children: [
+          {
+            node: { type: "pane", id: "editor" },
+            defaultSize: 65,
+            minSize: 25
+          },
+          {
+            node: { type: "pane", id: "search" },
+            defaultSize: 35,
+            minSize: 10
+          }
+        ]
+      },
+      defaultSize: 78,
+      minSize: 40
+    }
+  ]
+};
+
 export function FilesPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -222,7 +259,6 @@ export function FilesPage() {
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
-  const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; key: string } | null>(null);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
@@ -669,12 +705,6 @@ export function FilesPage() {
         return;
       }
 
-      if (mod && e.key.toLowerCase() === "b") {
-        e.preventDefault();
-        setExplorerCollapsed((v) => !v);
-        return;
-      }
-
       if (isTextInput) return;
 
       if (e.key === "F2") {
@@ -934,101 +964,55 @@ export function FilesPage() {
     fn().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
-  return (
-    <div className="relative flex h-full min-h-0 flex-col rounded-lg border border-border bg-card/60 backdrop-blur">
-      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="text-sm font-semibold">Files</div>
-          <select
-            value={workspaceId}
-            onChange={(e) => switchWorkspace(e.target.value)}
-            className="h-8 rounded border border-border bg-card/70 px-2 text-xs"
-          >
-            {workspaces.map((ws) => (
-              <option key={ws.id} value={ws.id}>
-                {ws.name} ({ws.kind})
-              </option>
-            ))}
-          </select>
-          {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-            <span className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-900">
-              <AlertTriangle className="h-3 w-3" />
-              Primary workspace is read-only
-            </span>
-          ) : null}
-        </div>
+  /* ---- Pane configs for the floating tiling layout ---- */
 
-        <div className="flex items-center gap-2">
-          {activeWorkspace?.isReadOnlyByDefault ? (
-            <Button size="sm" variant="outline" onClick={() => setAllowPrimaryEdit((v) => !v)}>
-              {allowPrimaryEdit ? "Disable edits" : "Trust and enable edits"}
-            </Button>
-          ) : null}
-          <Button size="sm" variant="outline" onClick={() => navigate("/lanes")}>Jump to Lanes</Button>
-          <Button size="sm" variant="outline" onClick={() => navigate("/conflicts")}>Jump to Conflicts</Button>
-          <Button size="sm" variant="outline" onClick={() => setMode("edit")}>Edit</Button>
-          <Button size="sm" variant="outline" onClick={() => setMode("diff")}>Diff</Button>
-          <Button size="sm" variant="outline" onClick={() => setMode("conflict")}>Conflict</Button>
-          <Button size="sm" onClick={() => saveActive().catch(() => {})} disabled={!activeTab || !canEdit || activeTab.isBinary}>
-            <Save className="h-4 w-4" />
+  const paneConfigs: Record<string, PaneConfig> = useMemo(() => ({
+    explorer: {
+      title: "Explorer",
+      icon: FolderOpen,
+      meta: activeWorkspace?.name,
+      minimizable: true,
+      headerActions: (
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="ghost" title="New file" className="h-5 w-5 p-0" onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+            <FilePlus2 className="h-3 w-3" />
+          </Button>
+          <Button size="sm" variant="ghost" title="New folder" className="h-5 w-5 p-0" onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+            <FolderPlus className="h-3 w-3" />
+          </Button>
+        </div>
+      ),
+      bodyClassName: "overflow-auto",
+      children: renderTree(tree)
+    },
+    editor: {
+      title: "Editor",
+      icon: FileCode2,
+      meta: activeTabPath ? activeTabPath.split("/").pop() : undefined,
+      minimizable: true,
+      headerActions: (
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setMode("edit")}>Edit</Button>
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setMode("diff")}>Diff</Button>
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setMode("conflict")}>Conflict</Button>
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => saveActive().catch(() => {})} disabled={!activeTab || !canEdit || activeTab.isBinary}>
+            <Save className="h-3 w-3 mr-0.5" />
             Save
           </Button>
         </div>
-      </div>
-
-      {(activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace) ? (
-        <div className={cx(
-          "flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs",
-          activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit
-            ? "border-amber-300 bg-amber-50 text-amber-900"
-            : "border-orange-300 bg-orange-50 text-orange-900"
-        )}>
-          {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-            <span>
-              Editing is disabled for Primary workspace by default. Use <span className="font-semibold">Trust and enable edits</span> to unlock writes.
-            </span>
-          ) : (
-            <span>
-              You are editing directly in Primary workspace. Lane workspaces are safer for branch-scoped edits.
-            </span>
-          )}
-          {suggestedLaneWorkspace ? (
-            <Button size="sm" variant="outline" onClick={() => switchWorkspace(suggestedLaneWorkspace.id)}>
-              Switch to lane: {suggestedLaneWorkspace.name}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-
-      {error ? <div className="border-b border-red-300 bg-red-50 px-3 py-1.5 text-xs text-red-800">{error}</div> : null}
-
-      <div className="flex min-h-0 flex-1">
-        {!explorerCollapsed ? (
-          <div className="w-[280px] shrink-0 border-r border-border bg-card/50">
-            <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5 text-[11px] text-muted-fg">
-              <span>Explorer</span>
-              <div className="flex items-center gap-1">
-                <Button size="sm" variant="ghost" title="New file" onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
-                  <FilePlus2 className="h-3.5 w-3.5" />
-                </Button>
-                <Button size="sm" variant="ghost" title="New folder" onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
-                  <FolderPlus className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-            <div className="h-[calc(100%-28px)] overflow-auto">{renderTree(tree)}</div>
-          </div>
-        ) : null}
-
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center gap-1 border-b border-border px-2 py-1">
+      ),
+      bodyClassName: "flex flex-col",
+      children: (
+        <div className="flex flex-col h-full min-h-0">
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 border-b border-border/10 px-2 py-1 shrink-0">
             {openTabs.map((tab) => {
               const dirty = tab.content !== tab.savedContent;
               return (
-                <div key={tab.path} className={cx("flex items-center gap-1 rounded border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-muted/70" : "border-border bg-card/70")}>
+                <div key={tab.path} className={cx("flex items-center gap-1 rounded-lg border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-muted/70" : "border-border/40 bg-card/40")}>
                   <button className="max-w-[220px] truncate text-left" onClick={() => setActiveTabPath(tab.path)}>
                     {tab.path.split("/").pop()}
-                    {dirty ? " •" : ""}
+                    {dirty ? " \u2022" : ""}
                   </button>
                   <button className="text-muted-fg hover:text-fg" onClick={() => closeTab(tab.path)}>x</button>
                 </div>
@@ -1036,7 +1020,8 @@ export function FilesPage() {
             })}
           </div>
 
-          <div className="flex items-center justify-between border-b border-border px-3 py-1 text-xs text-muted-fg">
+          {/* Breadcrumb + git actions */}
+          <div className="flex items-center justify-between border-b border-border/10 px-3 py-1 text-xs text-muted-fg shrink-0">
             <div>{breadcrumbs.length ? breadcrumbs.join(" > ") : "No file selected"}</div>
             <div className="flex items-center gap-2">
               {activeContextPath && activeContextNodeType === "file" && laneIdForDiff ? (
@@ -1046,12 +1031,10 @@ export function FilesPage() {
                   <Button size="sm" variant="ghost" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Discard</Button>
                 </>
               ) : null}
-              <Button size="sm" variant="ghost" onClick={() => setExplorerCollapsed((v) => !v)}>
-                {explorerCollapsed ? "Show Explorer" : "Hide Explorer"}
-              </Button>
             </div>
           </div>
 
+          {/* Editor content */}
           <div className="min-h-0 flex-1">
             {mode === "edit" ? (
               <div className="h-full">
@@ -1081,7 +1064,7 @@ export function FilesPage() {
               )
             ) : (
               <div className="grid h-full grid-cols-[300px_1fr]">
-                <div className="border-r border-border p-2">
+                <div className="p-2">
                   <div className="mb-2 flex items-center justify-between text-xs font-semibold">
                     <span>Conflict Hunks</span>
                     <span className="text-muted-fg">{resolvedConflictKeys.size}/{conflictHunks.length} resolved</span>
@@ -1090,7 +1073,7 @@ export function FilesPage() {
                     {conflictHunks.map((hunk) => {
                       const resolved = resolvedConflictKeys.has(hunk.key);
                       return (
-                        <div key={hunk.key} className={cx("rounded border bg-card/70 p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border")}>
+                        <div key={hunk.key} className={cx("rounded-xl border bg-card/40 p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
                           <div className="flex items-center justify-between">
                             <span>Lines {hunk.startLine}-{hunk.endLine}</span>
                             {resolved ? <span className="inline-flex items-center gap-1 text-emerald-300"><Sparkles className="h-3 w-3" />Resolved</span> : null}
@@ -1120,11 +1103,135 @@ export function FilesPage() {
             )}
           </div>
         </div>
+      )
+    },
+    search: {
+      title: "Search",
+      icon: Search,
+      meta: searchResults.length > 0 ? `${searchResults.length} results` : undefined,
+      minimizable: true,
+      headerActions: (
+        <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setShowQuickOpen(true)}>
+          Quick Open
+        </Button>
+      ),
+      bodyClassName: "flex flex-col",
+      children: (
+        <div className="flex flex-col h-full min-h-0 p-2">
+          <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2 shrink-0">
+            <Search className="h-3.5 w-3.5 text-muted-fg" />
+            <input
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                if (!showSearch) setShowSearch(true);
+              }}
+              placeholder="Search in files..."
+              className="h-7 w-full bg-transparent text-xs outline-none"
+            />
+          </div>
+          <div className="mt-2 flex-1 min-h-0 overflow-auto rounded-lg">
+            {searchResults.map((item, idx) => (
+              <button
+                key={`${item.path}:${item.line}:${idx}`}
+                className="block w-full px-2 py-1.5 text-left text-xs hover:bg-muted/50 rounded"
+                onClick={() => {
+                  openFile(item.path).catch(() => {});
+                }}
+              >
+                <div className="font-medium truncate">{item.path}:{item.line}:{item.column}</div>
+                <div className="text-muted-fg truncate">{item.preview}</div>
+              </button>
+            ))}
+            {searchQuery.trim() && !searchResults.length ? <div className="px-2 py-2 text-xs text-muted-fg">No matches</div> : null}
+            {!searchQuery.trim() ? <div className="px-2 py-2 text-xs text-muted-fg/60 italic">Type to search across files</div> : null}
+          </div>
+        </div>
+      )
+    }
+  }), [
+    tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab,
+    breadcrumbs, mode, canEdit, editorStatus, laneIdForDiff, activeContextPath,
+    activeContextNodeType, searchQuery, searchResults, showSearch, conflictHunks,
+    resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
+    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen
+  ]);
+
+  return (
+    <div className="relative flex h-full min-h-0 flex-col">
+      {/* Header bar */}
+      <div className="flex items-center justify-between gap-2 border-b border-border/15 px-3 py-2 shrink-0 bg-card/30">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="text-sm font-semibold">Files</div>
+          <select
+            value={workspaceId}
+            onChange={(e) => switchWorkspace(e.target.value)}
+            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+          >
+            {workspaces.map((ws) => (
+              <option key={ws.id} value={ws.id}>
+                {ws.name} ({ws.kind})
+              </option>
+            ))}
+          </select>
+          {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
+            <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-900">
+              <AlertTriangle className="h-3 w-3" />
+              Primary workspace is read-only
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {activeWorkspace?.isReadOnlyByDefault ? (
+            <Button size="sm" variant="outline" onClick={() => setAllowPrimaryEdit((v) => !v)}>
+              {allowPrimaryEdit ? "Disable edits" : "Trust and enable edits"}
+            </Button>
+          ) : null}
+          <Button size="sm" variant="outline" onClick={() => navigate("/lanes")}>Jump to Lanes</Button>
+          <Button size="sm" variant="outline" onClick={() => navigate("/conflicts")}>Jump to Conflicts</Button>
+        </div>
       </div>
 
+      {(activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace) ? (
+        <div className={cx(
+          "flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs shrink-0",
+          activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit
+            ? "border-amber-500/30 bg-amber-500/10 text-amber-900"
+            : "border-orange-500/30 bg-orange-500/10 text-orange-900"
+        )}>
+          {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
+            <span>
+              Editing is disabled for Primary workspace by default. Use <span className="font-semibold">Trust and enable edits</span> to unlock writes.
+            </span>
+          ) : (
+            <span>
+              You are editing directly in Primary workspace. Lane workspaces are safer for branch-scoped edits.
+            </span>
+          )}
+          {suggestedLaneWorkspace ? (
+            <Button size="sm" variant="outline" onClick={() => switchWorkspace(suggestedLaneWorkspace.id)}>
+              Switch to lane: {suggestedLaneWorkspace.name}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {error ? <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-800 shrink-0">{error}</div> : null}
+
+      {/* Floating pane tiling area */}
+      <div className="flex-1 min-h-0">
+        <PaneTilingLayout
+          layoutId="files:tiling:v3"
+          tree={FILES_TILING_TREE}
+          panes={paneConfigs}
+        />
+      </div>
+
+      {/* Context menu overlay */}
       {contextMenu ? (
         <div
-          className="fixed z-40 min-w-[190px] rounded border border-border bg-card/95 p-1 shadow-2xl backdrop-blur"
+          className="fixed z-40 min-w-[190px] rounded-xl bg-[--color-surface-overlay] p-1 shadow-float backdrop-blur-xl"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
@@ -1149,6 +1256,12 @@ export function FilesPage() {
             setContextMenu(null);
             navigator.clipboard.writeText(contextMenu.nodePath).catch(() => {});
           }}>Copy Path</button>
+          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+            setContextMenu(null);
+            if (activeWorkspace) {
+              window.ade.app.revealPath(`${activeWorkspace.rootPath}/${contextMenu.nodePath}`).catch(() => {});
+            }
+          }}>{revealLabel}</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => createFileAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))}>New File</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => createDirectoryAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))}>New Folder</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => renamePath(contextMenu.nodePath))}>Rename</button>
@@ -1156,10 +1269,11 @@ export function FilesPage() {
         </div>
       ) : null}
 
+      {/* Quick Open overlay */}
       {showQuickOpen ? (
         <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/40 pt-20">
-          <div className="w-[640px] rounded-lg border border-border bg-card p-3 shadow-2xl">
-            <div className="flex items-center gap-2 rounded border border-border bg-card/70 px-2">
+          <div className="w-[640px] rounded-2xl bg-[--color-surface-overlay] p-3 shadow-float backdrop-blur-xl">
+            <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2">
               <Search className="h-4 w-4 text-muted-fg" />
               <input
                 autoFocus
@@ -1170,11 +1284,11 @@ export function FilesPage() {
               />
               <Button size="sm" variant="ghost" onClick={() => setShowQuickOpen(false)}>Esc</Button>
             </div>
-            <div className="mt-2 max-h-[40vh] overflow-auto rounded border border-border">
+            <div className="mt-2 max-h-[40vh] overflow-auto rounded-lg bg-muted/20">
               {quickOpenResults.map((item) => (
                 <button
                   key={item.path}
-                  className="block w-full border-b border-border px-3 py-2 text-left text-xs hover:bg-muted/50"
+                  className="block w-full px-3 py-2 text-left text-xs hover:bg-muted/50"
                   onClick={() => {
                     openFile(item.path).catch(() => {});
                     setShowQuickOpen(false);
@@ -1189,43 +1303,10 @@ export function FilesPage() {
         </div>
       ) : null}
 
-      {showSearch ? (
-        <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/40 pt-20">
-          <div className="w-[760px] rounded-lg border border-border bg-card p-3 shadow-2xl">
-            <div className="flex items-center gap-2 rounded border border-border bg-card/70 px-2">
-              <Search className="h-4 w-4 text-muted-fg" />
-              <input
-                autoFocus
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search in files (Ctrl/Cmd+Shift+F)"
-                className="h-9 w-full bg-transparent text-sm outline-none"
-              />
-              <Button size="sm" variant="ghost" onClick={() => setShowSearch(false)}>Esc</Button>
-            </div>
-            <div className="mt-2 max-h-[40vh] overflow-auto rounded border border-border">
-              {searchResults.map((item, idx) => (
-                <button
-                  key={`${item.path}:${item.line}:${idx}`}
-                  className="block w-full border-b border-border px-3 py-2 text-left text-xs hover:bg-muted/50"
-                  onClick={() => {
-                    openFile(item.path).catch(() => {});
-                    setShowSearch(false);
-                  }}
-                >
-                  <div className="font-medium">{item.path}:{item.line}:{item.column}</div>
-                  <div className="text-muted-fg">{item.preview}</div>
-                </button>
-              ))}
-              {!searchResults.length ? <div className="px-3 py-2 text-xs text-muted-fg">No matches</div> : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
+      {/* Text prompt modal */}
       {textPrompt ? (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-[min(520px,100%)] rounded border border-border bg-card p-3 shadow-2xl">
+          <div className="w-[min(520px,100%)] rounded-2xl bg-[--color-surface-overlay] p-3 shadow-float backdrop-blur-xl">
             <div className="mb-1 text-sm font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? <div className="mb-2 text-xs text-muted-fg">{textPrompt.message}</div> : null}
             <input
@@ -1248,7 +1329,7 @@ export function FilesPage() {
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="h-9 w-full rounded border border-border bg-bg px-2 text-sm outline-none"
+              className="h-9 w-full rounded-lg bg-muted/20 bg-bg px-2 text-sm outline-none"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-300">{textPromptError}</div> : null}
             <div className="mt-3 flex justify-end gap-2">
@@ -1325,7 +1406,7 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-2 py-1">
+      <div className="flex items-center gap-2 border-b border-border/10 px-2 py-1">
         <Button size="sm" variant="outline" onClick={() => setMode("unstaged")}>Unstaged</Button>
         <Button size="sm" variant="outline" onClick={() => setMode("staged")}>Staged</Button>
         <Button size="sm" variant="outline" onClick={() => setMode("commit")}>Commit</Button>
@@ -1334,7 +1415,7 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
           <select
             value={compareRef}
             onChange={(e) => setCompareRef(e.target.value)}
-            className="h-8 rounded border border-border bg-card/70 px-2 text-xs"
+            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
           >
             {commits.map((commit) => (
               <option key={commit.sha} value={commit.sha}>

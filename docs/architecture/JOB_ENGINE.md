@@ -1,6 +1,6 @@
 # Job Engine Architecture
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -13,6 +13,8 @@
    - [Queue State Machine](#queue-state-machine)
    - [Job Types](#job-types)
    - [Lane Refresh Pipeline](#lane-refresh-pipeline)
+   - [Auto-Narrative Generation](#auto-narrative-generation)
+   - [Conflict Prediction Queue](#conflict-prediction-queue)
    - [Coalescing Behavior](#coalescing-behavior)
    - [Failure Handling](#failure-handling)
 4. [Integration Points](#integration-points)
@@ -22,9 +24,9 @@
 
 ## Overview
 
-The Job Engine is ADE's background task scheduling system. It processes asynchronous work triggered by system events -- primarily terminal session endings and git HEAD changes -- ensuring that context packs remain current without blocking the user's interactive workflow.
+The Job Engine is ADE's background task scheduling system. It processes asynchronous work triggered by system events -- terminal session endings, git HEAD changes, and lane dirty state changes -- ensuring that context packs remain current and conflict predictions stay fresh without blocking the user's interactive workflow.
 
-The engine is deliberately simple in its current implementation: an in-process queue with per-lane deduplication. This simplicity is intentional. ADE's workload characteristics (infrequent triggers, short-duration jobs, single-machine execution) do not warrant the complexity of a full job framework. The design leaves room for future evolution toward more sophisticated scheduling as the Hosted Agent integration and conflict prediction features are added.
+The engine is an in-process queue with per-lane deduplication for pack refreshes and a debounced conflict prediction queue. After each deterministic pack refresh, the engine optionally triggers AI narrative generation (via Hosted or BYOK providers) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
 
 ---
 
@@ -66,18 +68,38 @@ The job engine is implemented in `jobEngine.ts` and created via the `createJobEn
 ```typescript
 export function createJobEngine({
   logger,
-  packService
+  packService,
+  conflictService,
+  hostedAgentService,
+  projectConfigService,
+  byokLlmService
 }: {
   logger: Logger;
   packService: ReturnType<typeof createPackService>;
+  conflictService?: ReturnType<typeof createConflictService>;
+  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService>;
+  byokLlmService?: ReturnType<typeof createByokLlmService>;
 }) {
   const laneQueue = new Map<string, LaneQueueState>();
+  const dirtyLaneQueue = new Set<string>();
   // ...
-  return { enqueueLaneRefresh, onSessionEnded, onHeadChanged };
+  return {
+    enqueueLaneRefresh,
+    onSessionEnded,
+    onHeadChanged,
+    onLaneDirtyChanged,
+    runConflictPredictionNow,
+    dispose
+  };
 }
 ```
 
-The engine maintains a `Map<string, LaneQueueState>` keyed by lane ID. Each entry tracks whether a job is currently running for that lane and whether a subsequent request is pending.
+The engine maintains:
+- A `Map<string, LaneQueueState>` keyed by lane ID for pack refresh coalescing.
+- A `Set<string>` (`dirtyLaneQueue`) for debounced conflict prediction.
+- A periodic conflict prediction timer (every 120 seconds).
+- Optional references to `conflictService`, `hostedAgentService`, `projectConfigService`, and `byokLlmService` for auto-narrative generation and conflict prediction.
 
 ### Queue State Machine
 
@@ -142,18 +164,15 @@ type RefreshRequest = {
 | Job Type | Trigger | Action |
 |----------|---------|--------|
 | `RefreshLanePack` | Session end, HEAD change | Compute session delta, regenerate lane pack markdown, update project pack |
+| `AutoNarrative` | After `RefreshLanePack` (when AI provider is configured) | Generate AI narrative via Hosted or BYOK, apply via marker-based replacement |
+| `PredictConflicts` | HEAD change, lane dirty change (debounced 900-1500ms), periodic (120s) | Run dry-merge simulation across lane pairs via conflictService |
+| `RunAutomation` | User-defined trigger (HEAD change, manual, etc.) | Execute automation action scripts via automationService (Phase 8) |
 
-#### Planned
+#### Not Yet Implemented
 
 | Job Type | Trigger | Action |
 |----------|---------|--------|
-| `CreateCheckpoint` | Session end | Create immutable snapshot with SHA, diff stat, pack event IDs |
-| `MaterializeProjectPack` | Lane pack update, config change | Rebuild project-level context pack |
-| `MaterializeFeaturePack` | Lane pack update (feature-scoped) | Rebuild feature/issue-scoped pack |
-| `MaterializeConflictPack` | Conflict prediction complete | Rebuild conflict resolution context |
-| `PredictConflicts` | HEAD change, staged changes (debounced) | Run dry-merge simulation across lane pairs |
 | `SyncToHostedMirror` | Pack update, checkpoint creation | Upload changed blobs and manifest to cloud |
-| `RunAutomation` | User-defined trigger | Execute automation action script |
 
 ### Lane Refresh Pipeline
 
@@ -184,16 +203,33 @@ runLaneRefresh(laneId)
 
 The lane pack is always refreshed first because the project pack references lane summaries. Both operations are tracked as separate entries in the operations table.
 
-The planned full pipeline (future implementation):
+### Auto-Narrative Generation
 
-```
-Session End
-  --> CreateCheckpoint
-  --> RefreshLanePack
-  --> MaterializeProjectPack (if project pack stale)
-  --> PredictConflicts
-  --> SyncToHostedMirror (if hosted agent enabled)
-```
+After the deterministic lane+project pack refresh completes, the job engine checks `projectConfigService` for the active provider mode. If the mode is not `guest`, the engine fires an async (non-blocking) narrative generation flow:
+
+1. Build a `LaneExportStandard` and `ProjectExportLite` from the pack service.
+2. Clip and redact both exports (lane: 220K chars max, project: 120K chars max).
+3. Assemble a `projectContext` payload including the project export, pack key refs, omission metadata, and assumption flags.
+4. For `hosted` mode: call `hostedAgentService.requestLaneNarrative()` with callbacks for job submission and status updates.
+5. For `byok` mode: call `byokLlmService.generateLaneNarrative()` with the combined lane+project export body.
+6. Apply the returned narrative via `packService.applyHostedNarrative()` with metadata (jobId, timing, provider, model).
+7. Record `narrative_requested` and `narrative_failed` pack events for telemetry.
+
+The narrative flow runs in a detached `void (async () => { ... })()` so it does not block the lane refresh completion.
+
+### Conflict Prediction Queue
+
+The job engine manages a separate debounced conflict prediction queue:
+
+- `dirtyLaneQueue: Set<string>` — lanes that need per-lane prediction.
+- `fullConflictPredictionQueued: boolean` — when true, runs a full project-wide prediction instead of per-lane.
+- **Debounce**: Conflict prediction requests are debounced with configurable delay (default 1200ms for session events, 1500ms for HEAD changes, 900ms for dirty changes).
+- **Periodic**: A `setInterval` timer runs full conflict prediction every 120 seconds.
+- **Initial**: On engine creation, a full prediction is queued with 2000ms debounce.
+
+When the debounce timer fires:
+- If `fullConflictPredictionQueued` is true, calls `conflictService.runPrediction({})` (all lanes).
+- Otherwise, iterates `dirtyLaneQueue` and calls `conflictService.runPrediction({ laneId })` for each.
 
 ### Coalescing Behavior
 
@@ -278,9 +314,11 @@ try {
 | Source | Event | Handler |
 |--------|-------|---------|
 | PTY Service | Session ended | `jobEngine.onSessionEnded({ laneId, sessionId })` |
-| Git Operations Service | HEAD SHA changed | `jobEngine.onHeadChanged({ laneId, reason })` |
+| Head Watcher (main.ts) | HEAD SHA changed | `jobEngine.onHeadChanged({ laneId, reason })` |
+| File Service / Git Service | Lane dirty state changed | `jobEngine.onLaneDirtyChanged({ laneId, reason })` |
+| IPC (Renderer) | Manual conflict prediction | `jobEngine.runConflictPredictionNow({ laneId? })` |
 
-Both event sources call the job engine from within their own service callbacks. The PTY service fires `onSessionEnded` after recording the session end in the database. The git service fires `onHeadChanged` after the operation tracking wrapper detects that the HEAD SHA changed.
+The PTY service fires `onSessionEnded` after recording the session end in the database. The head watcher in `main.ts` polls for HEAD changes and routes them to `jobEngine.onHeadChanged`, `automationService`, and `restackSuggestionService`. Lane dirty changes trigger conflict prediction with a shorter debounce (900ms).
 
 ### Job Executors (Downstream)
 
@@ -288,13 +326,24 @@ Both event sources call the job engine from within their own service callbacks. 
 |----------|----------|-----------|
 | Pack Service | `RefreshLanePack` | `packService.refreshLanePack()` |
 | Pack Service | `RefreshProjectPack` | `packService.refreshProjectPack()` |
+| Pack Service | `AutoNarrative` (apply) | `packService.applyHostedNarrative()`, `packService.recordEvent()` |
+| Hosted Agent Service | `AutoNarrative` (hosted) | `hostedAgentService.requestLaneNarrative()` |
+| BYOK LLM Service | `AutoNarrative` (byok) | `byokLlmService.generateLaneNarrative()` |
+| Conflict Service | `PredictConflicts` | `conflictService.runPrediction()` |
 
 ### Wiring in main.ts
 
 The job engine is wired into the event flow during service initialization:
 
 ```typescript
-const jobEngine = createJobEngine({ logger, packService });
+const jobEngine = createJobEngine({
+  logger,
+  packService,
+  conflictService,
+  hostedAgentService,
+  projectConfigService,
+  byokLlmService
+});
 
 const ptyService = createPtyService({
   // ...
@@ -304,12 +353,12 @@ const ptyService = createPtyService({
   // ...
 });
 
-const gitService = createGitOperationsService({
-  // ...
-  onHeadChanged: ({ laneId, reason }) => {
-    jobEngine.onHeadChanged({ laneId, reason });
-  }
-});
+// Head watcher in main.ts routes HEAD changes to multiple consumers:
+const handleHeadChanged = ({ laneId, reason }) => {
+  jobEngine.onHeadChanged({ laneId, reason });
+  automationService.onHeadChanged({ laneId, reason });
+  restackSuggestionService?.evaluate({ laneId });
+};
 ```
 
 ### Future Integration Points
@@ -317,10 +366,8 @@ const gitService = createGitOperationsService({
 | Service | Direction | Purpose |
 |---------|-----------|---------|
 | Hosted Agent Service | Downstream | `SyncToHostedMirror` job pushes pack snapshots to cloud |
-| Conflict Prediction Service | Downstream | `PredictConflicts` job runs dry-merge simulations |
 | Automation Service | Downstream | `RunAutomation` job executes user-defined scripts |
 | Checkpoint Service | Downstream | `CreateCheckpoint` job creates immutable snapshots |
-| IPC (Renderer) | Upstream | Manual refresh triggers from the UI |
 
 ---
 
@@ -328,15 +375,25 @@ const gitService = createGitOperationsService({
 
 ### Completed
 
-- Job engine factory (`createJobEngine`) with dependency injection
+- Job engine factory (`createJobEngine`) with 6-dependency injection (logger, packService, conflictService?, hostedAgentService?, projectConfigService?, byokLlmService?)
 - Per-lane queue with `Map<string, LaneQueueState>` structure
 - Coalescing logic (latest request replaces pending request)
 - Sequential execution per lane (no concurrent jobs for same lane)
 - `onSessionEnded` handler for PTY session end events
-- `onHeadChanged` handler for git operation HEAD changes
+- `onHeadChanged` handler for HEAD changes (triggers both lane refresh and conflict prediction)
+- `onLaneDirtyChanged` handler for lane dirty state changes (triggers conflict prediction with 900ms debounce)
+- `runConflictPredictionNow` for on-demand conflict prediction from UI
 - Lane pack + project pack refresh pipeline
+- Auto-narrative generation (hosted + BYOK) with non-blocking async execution after lane refresh
+- Narrative telemetry: `narrative_requested` and `narrative_failed` pack events with context delivery metadata
+- Conflict prediction queue with debounced execution (900ms-1500ms depending on trigger)
+- Periodic conflict prediction timer (every 120 seconds)
+- Initial conflict prediction on engine creation (2000ms debounce)
+- `dispose()` method for cleaning up timers on shutdown
 - Structured error logging for failed jobs
-- Integration wiring in `main.ts`
+- Integration wiring in `main.ts` with head watcher routing
+- Automation jobs: `automationService` triggers job execution on HEAD changes and other events (Phase 8)
+- Auto-narrative pipeline: deterministic pack refresh followed by async AI narrative generation (hosted + BYOK)
 
 ### Not Yet Implemented
 
@@ -346,10 +403,7 @@ const gitService = createGitOperationsService({
 - **Concurrent lane processing**: Currently all jobs are serialized per lane; different lanes could process concurrently
 - **Job cancellation**: Ability to cancel a running job (e.g., when switching projects)
 - **Job metrics**: Tracking execution time, success rate, queue depth
-- **Checkpoint jobs**: `CreateCheckpoint` at session boundaries
+- **Checkpoint jobs**: Checkpoints exist at session boundaries, but not yet as a standalone job type (partially done)
 - **Feature/conflict pack materialization**: `MaterializeFeaturePack`, `MaterializeConflictPack`
-- **Conflict prediction jobs**: `PredictConflicts` with dry-merge simulation
-- **Hosted sync jobs**: `SyncToHostedMirror` for cloud agent integration
-- **Automation jobs**: `RunAutomation` for user-defined triggers
-- **Debounced triggers**: Rate-limiting for high-frequency events (staged changes)
+- **Hosted sync jobs**: `SyncToHostedMirror` for cloud agent integration (as standalone job type)
 - **Health monitoring**: Alerting on elevated failure rates

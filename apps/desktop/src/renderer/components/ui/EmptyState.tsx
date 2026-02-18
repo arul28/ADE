@@ -11,10 +11,9 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cn("rounded-lg border border-border bg-card/70 p-6 text-card-fg", className)}>
-      <div className="text-sm font-semibold">{title}</div>
-      {description ? <div className="mt-1 text-sm text-muted-fg">{description}</div> : null}
+    <div className={cn("rounded-2xl shadow-panel bg-[--color-surface-raised] p-10 text-center", className)}>
+      <div className="text-sm font-semibold text-fg/70">{title}</div>
+      {description ? <div className="mt-2 text-sm text-muted-fg/70">{description}</div> : null}
     </div>
   );
 }
-

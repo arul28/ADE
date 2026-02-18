@@ -5,9 +5,13 @@
   "type": "module",
   "main": "electron.cjs",
   "scripts": {
+    "generate:bootstrap": "node scripts/generate-bootstrap-defaults.cjs",
+    "prebuild": "npm run generate:bootstrap",
+    "predev": "npm run generate:bootstrap",
     "dev": "node ./scripts/ensure-electron.cjs && concurrently -k -n renderer,main,electron \"vite --port 5173\" \"tsup --watch\" \"wait-on tcp:5173 && wait-on file:dist/main/main.cjs && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "tsup && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
     "lint": "echo \"(todo)\"",
     "rebuild:native": "electron-rebuild -f -w node-pty"
   },
@@ -20,6 +24,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.563.0",
     "monaco-editor": "^0.55.1",
+    "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -35,6 +40,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^20.11.30",
+    "@types/node-cron": "^3.0.11",
     "@types/react": "^18.2.74",
     "@types/react-dom": "^18.2.24",
     "@types/sql.js": "^1.4.9",
@@ -49,6 +55,7 @@
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
     "vite": "^4.5.3",
+    "vitest": "^0.34.6",
     "wait-on": "^7.2.0"
   }
 }

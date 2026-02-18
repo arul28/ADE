@@ -1,13 +1,22 @@
 @import "tailwindcss";
 
 @theme {
-  --radius-xl: 0px;
-  --radius-lg: 2px;
-  --radius-md: 1px;
-  --radius-sm: 0px;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
 
+  --pane-gap: 6px;
+  --pane-radius: var(--radius-lg);
+  --pane-minimized-height: 36px;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --shadow-card: 0 2px 6px -1px rgb(0 0 0 / 0.08), 0 1px 3px -1px rgb(0 0 0 / 0.06);
+  --shadow-card-hover: 0 6px 12px -2px rgb(0 0 0 / 0.12), 0 3px 6px -3px rgb(0 0 0 / 0.08);
+  --shadow-float: 0 12px 28px -6px rgb(0 0 0 / 0.16), 0 8px 14px -6px rgb(0 0 0 / 0.1);
 }
 
 :root,
@@ -29,6 +38,21 @@
 
   --color-accent: #c22323;
   --color-accent-fg: #ffffff;
+
+  --color-surface-raised: #ffffff;
+  --color-surface-recessed: #f0eae0;
+  --color-surface-overlay: #fdfbf7;
+  --shadow-inset: inset 0 1px 3px 0 rgb(0 0 0 / 0.06);
+  --shadow-separator: inset 0 0 4px 0 rgb(0 0 0 / 0.08);
+  --shadow-panel: 0 1px 4px -1px rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --color-separator: #e8e0d4;
+  --color-separator-active: #c22323;
+  --border-separator: #d3cfc6;
+  --gradient-surface: linear-gradient(180deg, #fdfbf7, #f7f2e9);
+  --gradient-panel: linear-gradient(180deg, #fdfbf7 0%, #f9f4ec 100%);
+  --color-glow: rgba(194, 35, 35, 0.25);
+  --pane-bg: #ffffff;
+  --pane-border: rgba(211, 207, 198, 0.5);
 }
 
 [data-theme="bloomberg"] {
@@ -49,6 +73,25 @@
 
   --color-accent: #ff7a00;
   --color-accent-fg: #000000;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #1c150d;
+  --color-surface-recessed: #0e0a06;
+  --color-surface-overlay: #201810;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.4);
+  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.5);
+  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgb(0 0 0 / 0.3);
+  --color-separator: #1a1208;
+  --color-separator-active: #ff7a00;
+  --border-separator: #403121;
+  --gradient-surface: linear-gradient(180deg, #16110a, #0e0a06);
+  --gradient-panel: linear-gradient(180deg, #1c150d 0%, #16110a 100%);
+  --color-glow: rgba(255, 122, 0, 0.3);
+  --pane-bg: #1c150d;
+  --pane-border: rgba(64, 49, 33, 0.5);
 }
 
 [data-theme="github"] {
@@ -69,6 +112,25 @@
 
   --color-accent: #58a6ff;
   --color-accent-fg: #ffffff;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #161b22;
+  --color-surface-recessed: #090d13;
+  --color-surface-overlay: #1c2333;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.35);
+  --shadow-separator: inset 0 0 5px 0 rgb(0 0 0 / 0.4);
+  --shadow-panel: 0 1px 5px -1px rgba(13, 17, 23, 0.5), 0 1px 2px -1px rgba(88, 166, 255, 0.04);
+  --color-separator: #151c28;
+  --color-separator-active: #58a6ff;
+  --border-separator: #2f3b49;
+  --gradient-surface: linear-gradient(180deg, #111b2c, #0d1117);
+  --gradient-panel: linear-gradient(180deg, #161b22 0%, #111b2c 100%);
+  --color-glow: rgba(88, 166, 255, 0.2);
+  --pane-bg: #161b22;
+  --pane-border: rgba(47, 59, 73, 0.5);
 }
 
 [data-theme="rainbow"] {
@@ -89,6 +151,25 @@
 
   --color-accent: #fb7185;
   --color-accent-fg: #ffffff;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #2a2f3f;
+  --color-surface-recessed: #16181e;
+  --color-surface-overlay: #2e3348;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.35);
+  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.45);
+  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.35), 0 1px 3px -1px rgb(0 0 0 / 0.25);
+  --color-separator: #232838;
+  --color-separator-active: #fb7185;
+  --border-separator: #3e4660;
+  --gradient-surface: linear-gradient(135deg, #252035, #222737);
+  --gradient-panel: linear-gradient(135deg, #2a2f3f 0%, #252035 100%);
+  --color-glow: rgba(251, 113, 133, 0.25);
+  --pane-bg: #2a2f3f;
+  --pane-border: rgba(82, 94, 114, 0.5);
 }
 
 [data-theme="sky"] {
@@ -109,6 +190,21 @@
 
   --color-accent: #2563eb;
   --color-accent-fg: #ffffff;
+
+  --color-surface-raised: #ffffff;
+  --color-surface-recessed: #e4eeff;
+  --color-surface-overlay: #f7faff;
+  --shadow-inset: inset 0 1px 3px 0 rgba(37, 99, 235, 0.06);
+  --shadow-separator: inset 0 0 4px 0 rgba(37, 99, 235, 0.08);
+  --shadow-panel: 0 1px 4px -1px rgba(30, 58, 138, 0.06), 0 1px 2px -1px rgba(37, 99, 235, 0.04);
+  --color-separator: #d6e8ff;
+  --color-separator-active: #2563eb;
+  --border-separator: #b7d5ff;
+  --gradient-surface: linear-gradient(180deg, #f7faff, #edf3ff);
+  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+  --color-glow: rgba(37, 99, 235, 0.2);
+  --pane-bg: #ffffff;
+  --pane-border: rgba(183, 213, 255, 0.5);
 }
 
 [data-theme="pats"] {
@@ -130,9 +226,28 @@
 
   --color-accent: #c60c30;
   --color-accent-fg: #ffffff;
+
+  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
+  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
+  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
+
+  --color-surface-raised: #012a50;
+  --color-surface-recessed: #00132a;
+  --color-surface-overlay: #023060;
+  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.4);
+  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.5);
+  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgba(198, 12, 48, 0.06);
+  --color-separator: #011e3e;
+  --color-separator-active: #c60c30;
+  --border-separator: rgba(198, 12, 48, 0.4);
+  --gradient-surface: linear-gradient(180deg, #012b53, #001a36);
+  --gradient-panel: linear-gradient(180deg, #012a50 0%, #001a36 100%);
+  --color-glow: rgba(198, 12, 48, 0.3);
+  --pane-bg: #012a50;
+  --pane-border: rgba(198, 12, 48, 0.25);
 }
 
-/* 
+/*
  * Base Styles 
  */
 html,
@@ -144,66 +259,517 @@ body {
   margin: 0;
   color: var(--color-fg);
   background-color: var(--color-bg);
-  background-image: linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 86%, black 14%), var(--color-surface));
-  /* 
-   * Fonts:
-   * Body/UI: Monospace for density
-   * Headers: Serif for "Document" feel
-   */
-  font-family: var(--font-mono);
+  background-image: linear-gradient(180deg, var(--color-bg), color-mix(in srgb, var(--color-surface) 40%, var(--color-bg)));
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+  letter-spacing: -0.011em;
 }
 
-/* Headings use Serif */
 h1,
 h2,
 h3,
 h4,
 h5,
 h6 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
-/* Split Pane Separators - "Fold Lines" */
-[data-separator] {
-  background-color: transparent;
+/* Resize Gutter */
+.ade-gutter {
   position: relative;
-  transition: all 0.1s ease;
   z-index: 10;
+  background: var(--color-separator);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-[data-separator].vertical {
-  width: 1px;
+.ade-gutter.vertical {
+  width: 8px;
   cursor: col-resize;
-  background-color: var(--color-border);
+  border-left: 1px solid var(--border-separator);
+  border-right: 1px solid var(--border-separator);
+  box-shadow: var(--shadow-separator);
 }
 
-[data-separator].horizontal {
-  height: 1px;
+.ade-gutter.horizontal {
+  height: 8px;
   cursor: row-resize;
-  background-color: var(--color-border);
+  border-top: 1px solid var(--border-separator);
+  border-bottom: 1px solid var(--border-separator);
+  box-shadow: var(--shadow-separator);
 }
 
-/* Hover effect to make it easier to grab */
-[data-separator]::after {
+.ade-gutter::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  background-color: transparent;
+}
+
+.ade-gutter .ade-gutter-handle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.ade-gutter .ade-gutter-pill {
+  border-radius: 999px;
+  background: var(--border-separator);
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-gutter.vertical .ade-gutter-pill {
+  width: 4px;
+  height: 28px;
+}
+
+.ade-gutter.horizontal .ade-gutter-pill {
+  width: 28px;
+  height: 4px;
+}
+
+.ade-gutter:hover .ade-gutter-pill {
+  opacity: 1;
+  background: var(--color-separator-active);
+}
+
+.ade-gutter[data-resize-handle-active] .ade-gutter-pill,
+.ade-gutter.dragging .ade-gutter-pill {
+  opacity: 1;
+  background: var(--color-separator-active);
+  box-shadow: 0 0 8px 2px var(--color-glow);
+}
+
+.ade-gutter:hover {
+  background: color-mix(in srgb, var(--color-separator-active) 12%, var(--color-separator));
+}
+
+.ade-gutter[data-resize-handle-active],
+.ade-gutter.dragging {
+  background: color-mix(in srgb, var(--color-separator-active) 18%, var(--color-separator));
+}
+
+/* Floating Pane System */
+.ade-pane-container {
+  display: flex;
+  gap: var(--pane-gap);
+  padding: var(--pane-gap);
+  height: 100%;
+  min-height: 0;
+}
+
+.ade-floating-pane {
+  background: var(--pane-bg);
+  border-radius: var(--pane-radius);
+  border: 1px solid var(--pane-border);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  transition: box-shadow 0.2s ease;
+}
+
+.ade-floating-pane:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+.ade-floating-pane.dragging {
+  border-color: var(--color-separator-active);
+  box-shadow: var(--shadow-card-hover), 0 0 0 2px var(--color-glow);
+  opacity: 0.95;
+}
+
+.ade-floating-pane.drop-target {
+  border-color: var(--color-separator-active);
+  box-shadow: 0 0 12px var(--color-glow);
+}
+
+.ade-floating-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  min-height: 32px;
+  background: var(--gradient-panel);
+  border-bottom: 1px solid var(--pane-border);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.ade-floating-pane-header .ade-pane-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-fg);
+  opacity: 0.8;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+
+.ade-floating-pane.minimized {
+  max-height: var(--pane-minimized-height);
+  overflow: hidden;
+}
+
+/* Minimized pane header gets a stronger visual identity */
+.ade-floating-pane-header-minimized {
+  background: color-mix(in srgb, var(--color-separator-active) 8%, var(--gradient-panel));
+  border-bottom: 1px solid color-mix(in srgb, var(--color-separator-active) 20%, var(--pane-border));
+  min-height: 36px;
+}
+
+.ade-floating-pane-header-minimized .ade-pane-title {
+  opacity: 1;
+  font-weight: 700;
+}
+
+/* Drop zone overlay for edge-split drag targets */
+.ade-drop-zone-overlay {
+  position: absolute;
+  pointer-events: none;
+  border-radius: var(--pane-radius);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  border: 2px dashed color-mix(in srgb, var(--color-accent) 35%, transparent);
+  z-index: 5;
+}
+
+/* Thinner, transparent gutters inside floating pane containers */
+.ade-pane-gutter.vertical { width: 8px; cursor: col-resize; background: transparent; border: none; box-shadow: none; }
+.ade-pane-gutter.horizontal { height: 8px; cursor: row-resize; background: transparent; border: none; box-shadow: none; }
+.ade-pane-gutter { position: relative; z-index: 10; }
+.ade-pane-gutter::after { content: ""; position: absolute; inset: -10px; }
+.ade-pane-gutter::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--color-separator) 72%, transparent);
+  opacity: 0.45;
+  transition: opacity 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ade-pane-gutter.vertical::before { width: 2px; height: 24px; }
+.ade-pane-gutter.horizontal::before { width: 24px; height: 2px; }
+.ade-pane-gutter:hover,
+.ade-pane-gutter[data-resize-handle-active] {
+  background: color-mix(in srgb, var(--color-separator-active) 8%, transparent);
+  border-radius: 4px;
+}
+.ade-pane-gutter:hover::before,
+.ade-pane-gutter[data-resize-handle-active]::before {
+  opacity: 1;
+  background: var(--color-separator-active);
+  box-shadow: 0 0 8px 1px var(--color-glow);
+}
+.ade-pane-gutter .ade-gutter-pill { display: none; }
+
+/* Lane divider: prominent separator between split lane columns */
+.ade-lane-divider {
+  position: relative;
+  z-index: 12;
+  background: color-mix(in srgb, var(--color-separator-active) 15%, var(--color-surface-recessed));
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ade-lane-divider.vertical {
+  width: 14px;
+  cursor: col-resize;
+  border-left: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+  border-right: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+}
+
+.ade-lane-divider.horizontal {
+  height: 14px;
+  cursor: row-resize;
+  border-top: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+  border-bottom: 1px solid color-mix(in srgb, var(--color-separator-active) 30%, var(--border-separator));
+}
+
+.ade-lane-divider::after {
   content: "";
   position: absolute;
   inset: -4px;
-  /* Hit area */
-  background-color: transparent;
 }
 
-[data-separator]:hover,
-[data-separator][data-dragging] {
-  background-color: var(--color-accent);
+/* Lane divider indicator dots */
+.ade-lane-divider::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  pointer-events: none;
+  background: var(--color-separator-active);
+  opacity: 0.5;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
 }
 
-/* Scrollbars - Minimal */
+.ade-lane-divider.vertical::before {
+  width: 3px;
+  height: 32px;
+}
+
+.ade-lane-divider.horizontal::before {
+  width: 32px;
+  height: 3px;
+}
+
+.ade-lane-divider:hover {
+  background: color-mix(in srgb, var(--color-separator-active) 25%, var(--color-surface-recessed));
+}
+
+.ade-lane-divider:hover::before {
+  opacity: 1;
+  box-shadow: 0 0 10px 2px var(--color-glow);
+}
+
+.ade-lane-divider[data-resize-handle-active] {
+  background: color-mix(in srgb, var(--color-separator-active) 30%, var(--color-surface-recessed));
+}
+
+.ade-lane-divider[data-resize-handle-active]::before {
+  opacity: 1;
+  box-shadow: 0 0 14px 3px var(--color-glow);
+}
+
+/* Tiling surface: recessed background behind floating panes */
+.ade-tiling-surface {
+  background: var(--color-surface-recessed);
+  padding: var(--pane-gap);
+}
+
+/* Panel Header */
+.ade-panel-header {
+  background: var(--gradient-surface);
+  border-bottom: 1px solid var(--border-separator);
+}
+
+/* Per-Theme Unique Effects */
+
+/* E-Paper: paper fiber texture in recessed areas */
+[data-theme="e-paper"] .ade-surface-recessed,
+:root .ade-surface-recessed {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.01) 2px,
+    rgba(0, 0, 0, 0.01) 4px
+  );
+}
+
+/* Bloomberg: scan-line texture in content wells; amber glow on separators */
+[data-theme="bloomberg"] .ade-floating-pane {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 1px,
+    rgba(255, 200, 122, 0.015) 1px,
+    rgba(255, 200, 122, 0.015) 2px
+  );
+}
+
+[data-theme="bloomberg"] .ade-surface-recessed {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 1px,
+    rgba(255, 200, 122, 0.02) 1px,
+    rgba(255, 200, 122, 0.02) 2px
+  );
+}
+
+/* Rainbow: diagonal gradients; glow on gutter hover */
+[data-theme="rainbow"] .ade-gutter:hover .ade-gutter-pill {
+  background: linear-gradient(180deg, #fb7185, #c084fc);
+  box-shadow: 0 0 10px 2px rgba(192, 132, 252, 0.3);
+}
+
+[data-theme="rainbow"] .ade-panel-header {
+  backdrop-filter: blur(12px);
+}
+
+[data-theme="rainbow"] .ade-floating-pane-header {
+  backdrop-filter: blur(8px);
+}
+
+/* Pats: red glow on active separators; metallic border highlight */
+[data-theme="pats"] .ade-gutter[data-resize-handle-active] .ade-gutter-pill,
+[data-theme="pats"] .ade-gutter.dragging .ade-gutter-pill {
+  box-shadow: 0 0 12px 3px rgba(198, 12, 48, 0.4);
+}
+
+[data-theme="pats"] .ade-gutter {
+  border-color: rgba(207, 224, 243, 0.08);
+}
+
+[data-theme="pats"] .ade-floating-pane:hover {
+  border-color: rgba(198, 12, 48, 0.4);
+  box-shadow: var(--shadow-card-hover), 0 0 12px -3px rgba(198, 12, 48, 0.2);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Theme: Minimized pane header, lane divider, tiling surface
+   ═══════════════════════════════════════════════════════════ */
+
+/* --- E-Paper: ink accent on minimized headers; dotted lane divider --- */
+[data-theme="e-paper"] .ade-floating-pane-header-minimized,
+:root .ade-floating-pane-header-minimized {
+  background: linear-gradient(90deg, rgba(194, 35, 35, 0.06), transparent 60%);
+  border-left: 3px solid rgba(194, 35, 35, 0.35);
+}
+
+[data-theme="e-paper"] .ade-lane-divider::before,
+:root .ade-lane-divider::before {
+  background: repeating-linear-gradient(
+    180deg,
+    var(--color-separator-active),
+    var(--color-separator-active) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+  border-radius: 1px;
+}
+
+[data-theme="e-paper"] .ade-tiling-surface,
+:root .ade-tiling-surface {
+  background-image: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0, 0, 0, 0.008) 2px, rgba(0, 0, 0, 0.008) 4px
+  );
+}
+
+/* --- Bloomberg: amber scan-line header; bright amber lane divider --- */
+[data-theme="bloomberg"] .ade-floating-pane-header-minimized {
+  background: linear-gradient(90deg, rgba(255, 122, 0, 0.12), rgba(255, 200, 122, 0.04) 70%);
+  border-left: 3px solid rgba(255, 122, 0, 0.5);
+}
+
+[data-theme="bloomberg"] .ade-lane-divider {
+  background: rgba(255, 122, 0, 0.08);
+}
+
+[data-theme="bloomberg"] .ade-lane-divider::before {
+  background: rgba(255, 122, 0, 0.7);
+  box-shadow: 0 0 6px 1px rgba(255, 122, 0, 0.3);
+}
+
+[data-theme="bloomberg"] .ade-lane-divider:hover::before {
+  box-shadow: 0 0 12px 3px rgba(255, 122, 0, 0.5);
+}
+
+[data-theme="bloomberg"] .ade-floating-pane.minimized {
+  background-image: repeating-linear-gradient(
+    0deg, transparent, transparent 1px,
+    rgba(255, 200, 122, 0.02) 1px, rgba(255, 200, 122, 0.02) 2px
+  );
+}
+
+/* --- GitHub: blue accent minimized headers; blue lane divider --- */
+[data-theme="github"] .ade-floating-pane-header-minimized {
+  background: linear-gradient(90deg, rgba(88, 166, 255, 0.1), transparent 60%);
+  border-left: 3px solid rgba(88, 166, 255, 0.4);
+}
+
+[data-theme="github"] .ade-lane-divider {
+  background: rgba(88, 166, 255, 0.06);
+}
+
+[data-theme="github"] .ade-lane-divider::before {
+  background: rgba(88, 166, 255, 0.6);
+}
+
+[data-theme="github"] .ade-lane-divider:hover::before {
+  box-shadow: 0 0 10px 2px rgba(88, 166, 255, 0.35);
+}
+
+[data-theme="github"] .ade-tiling-surface {
+  background: linear-gradient(180deg, #090d13 0%, #0d1117 100%);
+}
+
+/* --- Rainbow: gradient minimized accent; rainbow lane divider --- */
+[data-theme="rainbow"] .ade-floating-pane-header-minimized {
+  background: linear-gradient(90deg, rgba(251, 113, 133, 0.12), rgba(192, 132, 252, 0.08) 60%, transparent);
+  border-left: 3px solid rgba(251, 113, 133, 0.5);
+}
+
+[data-theme="rainbow"] .ade-lane-divider::before {
+  background: linear-gradient(180deg, #fb7185, #a78bfa, #38bdf8);
+  opacity: 0.6;
+}
+
+[data-theme="rainbow"] .ade-lane-divider:hover::before {
+  opacity: 1;
+  box-shadow: 0 0 12px 2px rgba(192, 132, 252, 0.4);
+}
+
+[data-theme="rainbow"] .ade-floating-pane.minimized .ade-floating-pane-header-minimized {
+  backdrop-filter: blur(8px);
+}
+
+[data-theme="rainbow"] .ade-tiling-surface {
+  background: linear-gradient(135deg, var(--color-surface-recessed), color-mix(in srgb, #252035 80%, #1b1f23));
+}
+
+/* --- Sky: crisp blue minimized headers; sky-blue lane divider --- */
+[data-theme="sky"] .ade-floating-pane-header-minimized {
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.08), transparent 60%);
+  border-left: 3px solid rgba(37, 99, 235, 0.35);
+}
+
+[data-theme="sky"] .ade-lane-divider {
+  background: rgba(37, 99, 235, 0.05);
+}
+
+[data-theme="sky"] .ade-lane-divider::before {
+  background: rgba(37, 99, 235, 0.45);
+}
+
+[data-theme="sky"] .ade-lane-divider:hover::before {
+  box-shadow: 0 0 10px 2px rgba(37, 99, 235, 0.25);
+}
+
+[data-theme="sky"] .ade-tiling-surface {
+  background: linear-gradient(180deg, #e4eeff 0%, #f0f6ff 100%);
+}
+
+/* --- Pats: patriot red minimized headers; red/silver lane divider --- */
+[data-theme="pats"] .ade-floating-pane-header-minimized {
+  background: linear-gradient(90deg, rgba(198, 12, 48, 0.12), transparent 60%);
+  border-left: 3px solid rgba(198, 12, 48, 0.5);
+}
+
+[data-theme="pats"] .ade-lane-divider {
+  background: rgba(198, 12, 48, 0.08);
+  border-color: rgba(198, 12, 48, 0.2);
+}
+
+[data-theme="pats"] .ade-lane-divider::before {
+  background: rgba(198, 12, 48, 0.6);
+}
+
+[data-theme="pats"] .ade-lane-divider:hover::before {
+  box-shadow: 0 0 14px 3px rgba(198, 12, 48, 0.45);
+}
+
+[data-theme="pats"] .ade-floating-pane.minimized {
+  border-color: rgba(198, 12, 48, 0.15);
+}
+
+/* Scrollbars */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -211,14 +777,14 @@ h6 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: var(--color-border);
-  border: 3px solid var(--color-bg);
-  /* Creates padding effect */
+  background-color: color-mix(in srgb, var(--color-border) 30%, transparent);
+  border: 2px solid transparent;
+  background-clip: content-box;
   border-radius: 99px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-muted-fg);
+  background-color: color-mix(in srgb, var(--color-muted-fg) 45%, transparent);
 }
 
 .ade-conflict-ours-line {
@@ -459,4 +1025,413 @@ h6 {
 
 .ade-drop-preview-pop {
   animation: ade-drop-preview-pop 160ms ease-out;
+}
+
+/* Status dot pulse for running terminals */
+@keyframes ade-status-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+
+.ade-status-pulse {
+  animation: ade-status-pulse 2s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Theme: Unique Visual Aesthetics
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────
+   1. E-PAPER  –  warm paper grain, ink borders, sepia tints
+   ───────────────────────────────────────────────────────── */
+
+/* Paper-grain texture overlay on panes */
+[data-theme="e-paper"] .ade-floating-pane,
+:root .ade-floating-pane {
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      rgba(139, 119, 90, 0.012) 3px,
+      rgba(139, 119, 90, 0.012) 4px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 5px,
+      rgba(139, 119, 90, 0.008) 5px,
+      rgba(139, 119, 90, 0.008) 6px
+    );
+}
+
+/* Warm serif-influenced header */
+[data-theme="e-paper"] .ade-floating-pane-header,
+:root .ade-floating-pane-header {
+  background: linear-gradient(180deg, rgba(247, 242, 233, 0.9), rgba(240, 234, 224, 0.95));
+}
+
+[data-theme="e-paper"] .ade-floating-pane-header .ade-pane-title,
+:root .ade-floating-pane-header .ade-pane-title {
+  font-family: var(--font-serif);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+/* Warm sepia-tinted scrollbar tracks */
+[data-theme="e-paper"] ::-webkit-scrollbar-track,
+:root ::-webkit-scrollbar-track {
+  background-color: rgba(211, 195, 170, 0.12);
+}
+
+[data-theme="e-paper"] ::-webkit-scrollbar-thumb,
+:root ::-webkit-scrollbar-thumb {
+  background-color: rgba(160, 140, 110, 0.25);
+}
+
+[data-theme="e-paper"] ::-webkit-scrollbar-thumb:hover,
+:root ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(140, 115, 85, 0.4);
+}
+
+/* Ink-like borders on cards / panes */
+[data-theme="e-paper"] .ade-floating-pane {
+  border-color: rgba(80, 65, 45, 0.18);
+  box-shadow:
+    var(--shadow-card),
+    inset 0 0 0 0.5px rgba(80, 65, 45, 0.08);
+}
+
+/* ─────────────────────────────────────────────────────────
+   2. BLOOMBERG  –  hard edges, CRT glow, grid lines, mono
+   ───────────────────────────────────────────────────────── */
+
+/* Hard-edged terminal corners */
+[data-theme="bloomberg"] .ade-floating-pane {
+  --pane-radius: 4px;
+  border-radius: 4px;
+}
+
+[data-theme="bloomberg"] .ade-drop-zone-overlay {
+  border-radius: 4px;
+}
+
+/* Monospace pane title with amber CRT glow */
+[data-theme="bloomberg"] .ade-floating-pane-header {
+  font-family: var(--font-mono);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 1px,
+      rgba(255, 200, 122, 0.025) 1px,
+      rgba(255, 200, 122, 0.025) 2px
+    ),
+    var(--gradient-panel);
+}
+
+[data-theme="bloomberg"] .ade-floating-pane-header .ade-pane-title {
+  font-family: var(--font-mono);
+  text-shadow: 0 0 6px rgba(255, 122, 0, 0.35), 0 0 2px rgba(255, 200, 122, 0.2);
+  letter-spacing: 0.04em;
+}
+
+/* Grid-line background on tiling surface */
+[data-theme="bloomberg"] .ade-tiling-surface {
+  background-color: var(--color-surface-recessed);
+  background-image:
+    linear-gradient(rgba(255, 200, 122, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 200, 122, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Reduce all border-radius for terminal feel */
+[data-theme="bloomberg"] .ade-gutter .ade-gutter-pill {
+  border-radius: 2px;
+}
+
+[data-theme="bloomberg"] .ade-pane-gutter::before {
+  border-radius: 1px;
+}
+
+[data-theme="bloomberg"] .ade-floating-pane-header-minimized {
+  border-radius: 0;
+}
+
+/* ─────────────────────────────────────────────────────────
+   3. GITHUB  –  crisp borders, blue accents, clean design
+   ───────────────────────────────────────────────────────── */
+
+/* Crisp borders with subtle blue header underline */
+[data-theme="github"] .ade-floating-pane {
+  border-color: rgba(47, 59, 73, 0.7);
+  box-shadow: var(--shadow-card), 0 0 0 0.5px rgba(47, 59, 73, 0.3);
+}
+
+[data-theme="github"] .ade-floating-pane-header {
+  background: linear-gradient(180deg, rgba(22, 27, 34, 0.95), rgba(17, 27, 44, 0.98));
+  border-bottom: 1px solid rgba(47, 59, 73, 0.6);
+  box-shadow: inset 0 -1px 0 0 rgba(88, 166, 255, 0.12);
+}
+
+/* Blue glow ring on focus-within */
+[data-theme="github"] .ade-floating-pane:focus-within {
+  border-color: rgba(88, 166, 255, 0.4);
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 2px rgba(88, 166, 255, 0.15),
+    0 0 12px -3px rgba(88, 166, 255, 0.2);
+}
+
+/* Crisp, sharp pane title */
+[data-theme="github"] .ade-floating-pane-header .ade-pane-title {
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* ─────────────────────────────────────────────────────────
+   4. RAINBOW  –  gradient borders, glassmorphism, neon glow
+   ───────────────────────────────────────────────────────── */
+
+/* Gradient border effect via inset box-shadow */
+[data-theme="rainbow"] .ade-floating-pane {
+  border-color: rgba(192, 132, 252, 0.2);
+  box-shadow:
+    var(--shadow-card),
+    inset 0 1px 0 0 rgba(251, 113, 133, 0.12),
+    inset 0 -1px 0 0 rgba(56, 189, 248, 0.1),
+    inset 1px 0 0 0 rgba(192, 132, 252, 0.08),
+    inset -1px 0 0 0 rgba(251, 113, 133, 0.08);
+}
+
+/* Glassmorphism header */
+[data-theme="rainbow"] .ade-floating-pane-header {
+  background: rgba(42, 47, 63, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(192, 132, 252, 0.12);
+}
+
+/* Animated gradient tiling surface */
+@keyframes ade-rainbow-surface-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+[data-theme="rainbow"] .ade-tiling-surface {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, #252035 94%, #fb7185),
+      color-mix(in srgb, #1b1f23 94%, #c084fc),
+      color-mix(in srgb, #222737 94%, #38bdf8),
+      color-mix(in srgb, #252035 94%, #fb7185)
+    );
+  background-size: 300% 300%;
+  animation: ade-rainbow-surface-shift 20s ease-in-out infinite;
+}
+
+/* Neon glow on hover */
+[data-theme="rainbow"] .ade-floating-pane:hover {
+  border-color: rgba(192, 132, 252, 0.35);
+  box-shadow:
+    var(--shadow-card-hover),
+    0 0 16px -4px rgba(251, 113, 133, 0.2),
+    0 0 16px -4px rgba(192, 132, 252, 0.15),
+    inset 0 1px 0 0 rgba(251, 113, 133, 0.15),
+    inset 0 -1px 0 0 rgba(56, 189, 248, 0.12);
+}
+
+/* Multi-color gradient on gutter hover pill */
+[data-theme="rainbow"] .ade-pane-gutter:hover::before,
+[data-theme="rainbow"] .ade-pane-gutter[data-resize-handle-active]::before {
+  background: linear-gradient(180deg, #fb7185, #c084fc, #38bdf8);
+  box-shadow: 0 0 10px 2px rgba(192, 132, 252, 0.35);
+}
+
+/* Rainbow pane title shimmer */
+[data-theme="rainbow"] .ade-floating-pane-header .ade-pane-title {
+  background: linear-gradient(90deg, var(--color-fg), rgba(192, 132, 252, 0.8), var(--color-fg));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ─────────────────────────────────────────────────────────
+   5. SKY  –  frosted glass, flat design, teal accents
+   ───────────────────────────────────────────────────────── */
+
+/* Frosted glass panes with very light shadows */
+[data-theme="sky"] .ade-floating-pane {
+  background: rgba(247, 250, 255, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 1px 3px -1px rgba(30, 58, 138, 0.06);
+  border-color: rgba(183, 213, 255, 0.5);
+}
+
+[data-theme="sky"] .ade-floating-pane:hover {
+  box-shadow: 0 2px 6px -1px rgba(30, 58, 138, 0.08);
+}
+
+/* Almost flat - reduce all shadows */
+[data-theme="sky"] .ade-floating-pane.dragging {
+  box-shadow:
+    0 2px 8px -2px rgba(30, 58, 138, 0.1),
+    0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+[data-theme="sky"] .ade-floating-pane.drop-target {
+  box-shadow: 0 0 8px -2px rgba(37, 99, 235, 0.2);
+}
+
+/* Teal accent on interactive hover states */
+[data-theme="sky"] .ade-gutter:hover .ade-gutter-pill {
+  background: var(--color-secondary);
+}
+
+[data-theme="sky"] .ade-gutter[data-resize-handle-active] .ade-gutter-pill,
+[data-theme="sky"] .ade-gutter.dragging .ade-gutter-pill {
+  background: var(--color-secondary);
+  box-shadow: 0 0 8px 2px rgba(20, 184, 166, 0.25);
+}
+
+[data-theme="sky"] .ade-pane-gutter:hover::before,
+[data-theme="sky"] .ade-pane-gutter[data-resize-handle-active]::before {
+  background: var(--color-secondary);
+  box-shadow: 0 0 6px 1px rgba(20, 184, 166, 0.2);
+}
+
+/* Clean minimal scrollbars */
+[data-theme="sky"] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+[data-theme="sky"] ::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+[data-theme="sky"] ::-webkit-scrollbar-thumb {
+  background-color: rgba(37, 99, 235, 0.15);
+  border: 1px solid transparent;
+  background-clip: content-box;
+  border-radius: 99px;
+}
+
+[data-theme="sky"] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(37, 99, 235, 0.25);
+}
+
+/* Subtle blue-tinted shadows on everything */
+[data-theme="sky"] .ade-floating-pane-header {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(247, 250, 255, 0.9));
+  border-bottom: 1px solid rgba(183, 213, 255, 0.4);
+  box-shadow: 0 1px 2px -1px rgba(30, 58, 138, 0.04);
+}
+
+[data-theme="sky"] .ade-panel-header {
+  box-shadow: 0 1px 2px -1px rgba(30, 58, 138, 0.04);
+}
+
+/* ─────────────────────────────────────────────────────────
+   6. PATS  –  metallic silver, red stripe, bold & patriotic
+   ───────────────────────────────────────────────────────── */
+
+/* Metallic silver shimmer on header */
+@keyframes ade-pats-silver-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+[data-theme="pats"] .ade-floating-pane-header {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(207, 224, 243, 0) 0%,
+      rgba(207, 224, 243, 0.06) 25%,
+      rgba(207, 224, 243, 0.12) 50%,
+      rgba(207, 224, 243, 0.06) 75%,
+      rgba(207, 224, 243, 0) 100%
+    ),
+    var(--gradient-panel);
+  background-size: 200% 100%, 100% 100%;
+  animation: ade-pats-silver-shimmer 6s linear infinite;
+  border-bottom: 1px solid rgba(207, 224, 243, 0.1);
+}
+
+/* Red accent stripe on pane top border */
+[data-theme="pats"] .ade-floating-pane {
+  border-top: 2px solid rgba(198, 12, 48, 0.6);
+}
+
+/* Bold high-contrast text */
+[data-theme="pats"] .ade-floating-pane-header .ade-pane-title {
+  font-weight: 800;
+  color: var(--color-fg);
+  opacity: 0.95;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* Silver border accents on cards */
+[data-theme="pats"] .ade-floating-pane {
+  box-shadow:
+    var(--shadow-card),
+    inset 0 0 0 0.5px rgba(207, 224, 243, 0.08);
+}
+
+/* Navy-to-darker gradient on tiling surface */
+[data-theme="pats"] .ade-tiling-surface {
+  background: linear-gradient(180deg, #001a36 0%, #000e1f 60%, #00080f 100%);
+}
+
+/* Silver gutter accents */
+[data-theme="pats"] .ade-gutter .ade-gutter-pill {
+  background: linear-gradient(180deg, rgba(207, 224, 243, 0.4), rgba(198, 12, 48, 0.5));
+}
+
+[data-theme="pats"] .ade-lane-divider {
+  border-color: rgba(207, 224, 243, 0.08);
+}
+
+/* Patriotic hover: red glow with silver edge */
+[data-theme="pats"] .ade-floating-pane:hover {
+  border-top-color: rgba(198, 12, 48, 0.8);
+  box-shadow:
+    var(--shadow-card-hover),
+    0 -2px 8px -2px rgba(198, 12, 48, 0.2),
+    inset 0 0 0 0.5px rgba(207, 224, 243, 0.1);
+}
+
+/* Opaque dropdown background utility */
+.ade-dropdown-opaque {
+  background-color: var(--color-bg);
+}
+
+.ade-dropdown-opaque::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-bg);
+  border-radius: inherit;
+  z-index: -1;
 }

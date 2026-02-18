@@ -1,6 +1,6 @@
 # Conflicts — Radar, Prediction & Resolution
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -36,7 +36,7 @@ proactive, guided workflow. Developers can see at a glance which lanes are safe 
 merge, which ones are drifting from the base branch, and which pairs of lanes are
 on a collision course.
 
-**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5, merged in `codex/ade-phase-4-5` branch). Resolution proposals via hosted agent are planned for Phase 6.
+**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via hosted agent (diff preview, apply, undo) are **implemented** (Phase 6). External CLI resolution (Codex/Claude), active merge/rebase conflict management, restack suggestion integration, merge-plan workflows, and integration lane creation are **implemented** (Phase 8).
 
 ---
 
@@ -76,9 +76,19 @@ list of conflicting files, or a full diff of the merged state.
 ### Resolution Proposal
 
 An LLM-generated suggested fix for a predicted or active conflict. The hosted
-agent receives a Conflict Pack containing both sides of the conflict, the common
-base state, and overlapping file contents, then produces a resolution diff with
-a confidence score.
+agent (or BYOK provider) receives **bounded context exports** (not raw pack dumps)
+and produces a resolution diff with a confidence score.
+
+Context inputs (default):
+- `LaneExportLite` for the lane
+- `LaneExportLite` for the peer lane (when peer conflicts are being resolved)
+- `ConflictExportStandard` for the specific conflict pack
+
+All outbound AI payloads must be token-budgeted and redacted.
+
+Hosted context delivery note:
+
+- For conflict jobs, ADE may deliver context by mirror-ref (content-addressed `__adeContextRef`) with a reduced inline fallback. This prevents large diffs from silently breaking hosted job submissions while keeping behavior deterministic and observable.
 
 ### Conflict Pack
 
@@ -89,6 +99,20 @@ A context bundle assembled for conflict resolution. Contains:
 - Full list of overlapping files
 - Commit history for the overlapping regions
 - Lane pack summaries for both sides (developer intent context)
+
+Storage:
+- Conflict pack v2 markdown: `.ade/packs/conflicts/v2/<laneId>__<peerKey>.md`
+- Conflict prediction summaries (deterministic): `.ade/packs/conflicts/predictions/<laneId>.json`
+- AI consumption should use exports (`ConflictExport*`, `LaneExport*`), not raw files.
+
+Prediction summary packs are versioned by schema evolution (unknown fields are ignored). Newer payloads may include:
+
+- `predictionAt`, `lastRecomputedAt`
+- `stalePolicy.ttlMs`
+- coverage metadata: `strategy`, `truncated`, `pairwisePairsComputed`, `pairwisePairsTotal`
+- `openConflictSummaries` (peer label, risk, last seen, risk signals)
+
+Conflict exports may additionally include a `## Conflict Lineage` JSON section (schema `ade.conflictLineage.v1`) to surface prediction provenance and unresolved resolution state.
 
 ---
 
@@ -119,47 +143,53 @@ providing at-a-glance integration health without leaving the main workflow.
 
 A dedicated tab providing the full conflict management interface.
 
-**Layout (3-panel)**:
+**Layout (4-pane tiling via `PaneTilingLayout`)**:
 
 ```
 +-------------------+---------------------------+---------------------+
-|                   |                           |                     |
-|   Lane List       |   Conflict Summary /      |   Resolution        |
-|   (left sidebar)  |   Risk Matrix             |   Proposals         |
-|                   |   (center)                |   (right panel)     |
-|                   |                           |                     |
+|                   |  Conflict Detail           |                     |
+|   Lane List       |  (summary / merge sim)    |   Risk Matrix       |
+|   (~22%)          |  (~55% of center)         |   (~30%)            |
+|                   +---------------------------+                     |
+|                   |  Resolution               |                     |
+|                   |  (proposals / external)   |                     |
+|                   |  (~45% of center)         |                     |
 +-------------------+---------------------------+---------------------+
 ```
+
+The layout uses `PaneTilingLayout` (a recursive `react-resizable-panels` tree), making all pane dividers draggable. Pane sizes are persisted across sessions.
 
 **Left panel — Lane list with conflict status**:
 
-- All active lanes displayed with their conflict status badges
-- Sort by: risk level (highest first), lane name, last updated
+- All active lanes displayed with their conflict status badges (colored left border + status dot)
+- Sort by: risk level (highest first), then lane name
 - Click a lane to populate the center panel with its conflict summary
-- Lane count badges: total lanes, lanes with conflicts, lanes merge-ready
+- **Status filter chips** at the top: conflict / at-risk / clean / unknown — click to toggle filtering. Each chip shows the count of lanes in that category.
+- Restack suggestion badges appear on lanes whose parent has advanced (amber "restack" chip with behind-count tooltip)
 
-**Center panel — Conflict summary** (for selected lane):
+**Center-top pane — Conflict detail** (for selected lane):
 
-- **Overlapping files**: List of files modified in both this lane and base or
-  peer lanes, with modification type (content change, rename, delete)
-- **Coarse conflict type**: Content conflict, rename/rename, delete/modify,
-  add/add — categorized per overlapping file
-- **Base drift**: Number of commits base has advanced since branch point;
-  files changed in base that overlap with lane changes
-- **Peer overlaps**: Which other lanes touch the same files, with risk level
-- **Last prediction**: Timestamp of most recent dry-merge run
+- **Lane header**: Branch ref, base ref, parent lane (if stacked), with Open Folder and Refresh buttons
+- **Restack suggestion**: When a lane's parent has advanced, an amber banner offers "Restack now", "Defer 1h", "Defer 1d", and "Dismiss" actions
+- **Active Merge/Rebase panel**: Detects in-progress git merge or rebase via `git.getConflictState`. Shows conflicted file list (with red dots), Continue button (enabled when all conflicts resolved), and Abort button (with "type ABORT" confirmation dialog). When a merge-plan merge is paused on conflicts, the panel shows which source lane is blocked.
+- **Conflict summary** (`ConflictSummary` component): Lane status, overlapping file count, peer conflict count, last predicted timestamp, and per-peer overlap cards with risk level coloring and file lists
+- **Merge simulation panel** (`MergeSimulationPanel` component): Select two lanes (or lane + base), run simulation, see outcome (clean/conflict/error), diff stats, and per-file conflict marker previews via `ConflictFileDiff`
+- Toggle between **summary view** and **matrix view** (via view mode buttons)
 
-**Center panel — Risk matrix** (toggle view):
+**Right pane — Risk matrix** (`RiskMatrix` component):
 
-- Pairwise grid of all active lanes
+- Pairwise grid of all active lanes (always visible in right pane)
 - Each cell colored by risk level:
-  - **White/light gray**: No overlap
-  - **Light green**: Minimal overlap, no predicted conflict
-  - **Yellow**: File overlap detected, but dry-merge is clean
-  - **Orange**: Dry-merge predicts conflicts
-  - **Red**: Active conflicts
+  - **Gray (`bg-card`)**: No overlap
+  - **Light green (`bg-emerald-500/20`)**: Low overlap, no predicted conflict
+  - **Amber (`bg-amber-500/25`)**: Medium file overlap
+  - **Red (`bg-red-500/30`)**: High risk or active conflicts
+- Stale cells show a clock icon and reduced opacity with "Last computed N minutes ago" tooltip
+- **Animated transitions**: cells animate on entry, flash on risk level increase/decrease
+- **Progress indicator**: during batch computation, shows "Computing X/Y pairs..." with ETA
 - Click a cell to see details of the overlap between those two lanes
 - Diagonal cells show lane-to-base risk
+- **Hover tooltip** (`RiskTooltip` component): shows overlapping file paths (up to 10, with "+N more" indicator)
 
 **Merge simulation panel** (activated from summary or matrix):
 
@@ -170,18 +200,32 @@ A dedicated tab providing the full conflict management interface.
   - **Error**: Simulation could not complete (e.g., unrelated histories)
 - Action buttons: "Open in diff viewer", "Generate resolution proposal"
 
-**Right panel — Resolution proposals**:
+**Center-bottom pane — Resolution**:
 
-- List of LLM-generated proposals for the selected conflict
-- Each proposal shows:
-  - Confidence score (0.0 to 1.0, displayed as percentage)
-  - Source: "hosted agent" or "local heuristic"
-  - Summary of the proposed resolution approach
-  - Diff preview (collapsed by default, expandable)
-- Actions per proposal:
-  - **Preview**: Full diff view of the proposed resolution
-  - **Apply**: Apply the resolution diff, creating an operation record
-  - **Reject**: Mark as rejected (for feedback/training)
+The resolution pane provides three resolution paths:
+
+**1. Merge one-by-one (merge plan)**:
+- Select a target lane and check source lanes to merge sequentially
+- Stack-aware ordering: child lanes are sorted by depth then creation time
+- Each merge runs `git merge --no-edit <source-branch>` on the target
+- If conflicts occur, the plan pauses — user resolves and clicks Continue
+- Integration lane creation: create a child lane from a base lane to use as the merge target
+
+**2. AI resolution proposals (Hosted/BYOK)**:
+- Prepare proposal: refreshes packs, builds bounded context (`LaneExportLite` + `ConflictExportStandard`), shows preview with context digest, file count, and token budget
+- Send proposal: submits to hosted agent or BYOK provider
+- Each proposal shows: confidence %, source, explanation, and diff patch
+- Apply mode: unstaged / staged / commit (with custom commit message)
+- "Apply + Continue" option: applies patch then auto-continues merge/rebase if no conflicts remain
+- Undo: reverse-applies the patch via `git apply -R`
+
+**3. External CLI resolver (Codex/Claude)**:
+- One-click buttons to run external CLI (Codex or Claude) with deterministic prompt + context refs
+- ADE builds pack references (project pack, lane packs, conflict packs, context docs), validates context completeness
+- If context is insufficient, blocks with explicit gap messages (`status=blocked`)
+- Run history shows: provider, status, summary, patch path, warnings, context gaps
+- Commit button: stages and commits the external resolver's changes with a generated commit message
+- Run artifacts stored at `.ade/packs/external-resolver-runs/<runId>/`
 
 ### Conflict Workflow
 
@@ -204,8 +248,9 @@ The typical workflow for managing conflicts in ADE:
    including conflict markers for conflicting files.
 
 5. **Resolution**: For active or predicted conflicts, the developer can request
-   a resolution proposal from the hosted agent. The agent receives a Conflict
-   Pack with full context and produces a resolution diff.
+   a resolution proposal from the hosted agent (or BYOK). The provider receives
+   bounded exports (`LaneExportLite` + `ConflictExportStandard`) and produces a
+   resolution diff.
 
 6. **Apply**: The developer previews the proposal diff, optionally edits it,
    and applies it. The application is recorded as an operation in the history
@@ -227,12 +272,15 @@ The typical workflow for managing conflicts in ADE:
 | `gitService` | Exists | Provides `git merge-tree` execution, temp index operations, diff computation |
 | `jobEngine` | Exists | Triggers periodic conflict prediction jobs, manages job queue and deduplication |
 | `operationService` | Exists | Records resolution applications as operations for history/undo |
-| `packService` | Exists | Generates Conflict Packs for hosted agent consumption |
+| `packService` | Exists | Generates conflict packs and bounded exports (`LaneExport*`, `ConflictExport*`) used for AI proposal jobs |
 
-**Hosted agent integration** (planned):
+**Hosted / BYOK integration** (implemented):
 
 - Job type: `ProposeConflictResolution`
-- Input: Conflict Pack (both sides, base, overlapping files, lane context)
+- Input: bounded exports (token-budgeted):
+  - `LaneExportLite` (lane)
+  - `LaneExportLite` (peer lane, optional)
+  - `ConflictExportStandard`
 - Output: Resolution diff with confidence score and explanation
 - Runs asynchronously; result stored as a `conflict_proposal` record
 
@@ -241,11 +289,41 @@ The typical workflow for managing conflicts in ADE:
 | Channel | Signature | Description |
 |---------|-----------|-------------|
 | `ade.conflicts.getLaneStatus` | `(laneId: string) => ConflictStatus` | Get conflict status for a single lane |
-| `ade.conflicts.listOverlaps` | `(laneId: string) => ConflictOverlap[]` | List file overlaps for a lane against base and peers |
+| `ade.conflicts.listOverlaps` | `(args: { laneId: string }) => ConflictOverlap[]` | List file overlaps for a lane against base and peers |
 | `ade.conflicts.getRiskMatrix` | `() => RiskMatrixEntry[]` | Get the full pairwise risk matrix for all active lanes |
 | `ade.conflicts.simulateMerge` | `(args: { laneAId: string; laneBId?: string }) => MergeSimulationResult` | Simulate merge between two lanes or lane-to-base |
-| `ade.conflicts.getProposals` | `(laneId: string) => ConflictProposal[]` | Get resolution proposals for a lane's conflicts |
-| `ade.conflicts.applyProposal` | `(args: { proposalId: string; laneId: string }) => GitActionResult` | Apply a resolution proposal and record the operation |
+| `ade.conflicts.runPrediction` | `(args: RunConflictPredictionArgs) => void` | Trigger conflict prediction for a specific lane or pair |
+| `ade.conflicts.getBatchAssessment` | `() => BatchAssessmentResult` | Get batch assessment: lane statuses, risk matrix, overlaps, and progress |
+| `ade.conflicts.listProposals` | `(laneId: string) => ConflictProposal[]` | Get resolution proposals for a lane's conflicts |
+| `ade.conflicts.prepareProposal` | `(args: PrepareConflictProposalArgs) => ConflictProposalPreview` | Prepare AI proposal: refresh packs, build context, return preview |
+| `ade.conflicts.requestProposal` | `(args: RequestConflictProposalArgs) => void` | Submit prepared proposal to hosted/BYOK provider |
+| `ade.conflicts.applyProposal` | `(args: ApplyConflictProposalArgs) => GitActionResult` | Apply a resolution proposal (unstaged/staged/commit mode) |
+| `ade.conflicts.undoProposal` | `(args: UndoConflictProposalArgs) => GitActionResult` | Reverse-apply a proposal via `git apply -R` |
+| `ade.conflicts.runExternalResolver` | `(args: RunExternalConflictResolverArgs) => ConflictExternalResolverRunSummary` | Run external CLI resolver (Codex/Claude) with context |
+| `ade.conflicts.listExternalResolverRuns` | `(args: { laneId: string; limit?: number }) => ConflictExternalResolverRunSummary[]` | List external resolver run history for a lane |
+| `ade.conflicts.commitExternalResolverRun` | `(args: { runId: string }) => CommitExternalConflictResolverRunResult` | Commit changes from an external resolver run |
+| `ade.conflicts.event` | Event stream | Conflict prediction events: `prediction-progress` and `prediction-updated` |
+
+**Git conflict state channels** (used by ConflictsPage):
+
+| Channel | Signature | Description |
+|---------|-----------|-------------|
+| `ade.git.getConflictState` | `(laneId: string) => GitConflictState` | Detect active merge/rebase state and conflicted files |
+| `ade.git.rebaseContinue` | `(laneId: string) => GitActionResult` | Continue an in-progress rebase |
+| `ade.git.rebaseAbort` | `(laneId: string) => GitActionResult` | Abort an in-progress rebase |
+| `ade.git.mergeContinue` | `(laneId: string) => GitActionResult` | Continue an in-progress merge |
+| `ade.git.mergeAbort` | `(laneId: string) => GitActionResult` | Abort an in-progress merge |
+
+### Conflict Exports (For AI / Orchestrators)
+
+Conflicts are sent to AI providers via **bounded pack exports**, not raw pack dumps.
+
+- `ade.packs.getLaneExport({ laneId, level: "lite" | "standard" | "deep" })`
+- `ade.packs.getConflictExport({ laneId, peerLaneId?, level: "lite" | "standard" | "deep" })`
+
+Recommended defaults:
+- proposals: `LaneExportLite` + `ConflictExportStandard`
+- narrative / broader lane updates: `LaneExportStandard`
 
 ### Conflict Prediction Engine
 
@@ -255,15 +333,22 @@ The prediction engine operates in two modes:
 
 ```
 Job Engine tick →
-  For each active lane:
+  For each active lane (always):
     1. Run git merge-tree <base> <lane-HEAD>
-    2. Parse result for conflicts
-    3. Store prediction record
+    2. Parse result for conflicts + overlap
+3. Store prediction record
     4. Update lane conflict status
-  For each pair of active lanes (optional, configurable):
-    1. Run git merge-tree <lane-A-HEAD> <lane-B-HEAD>
-    2. Store pairwise prediction
-    3. Update risk matrix
+
+  For lane-vs-lane (scaled for large workspaces):
+    1. Compute a cheap overlap heuristic (touched files since base)
+    2. Prefilter to likely-conflicting pairs (top peers per lane)
+    3. Run git merge-tree only for those high-likelihood pairs
+    4. Persist partial-coverage metadata:
+       - `truncated: true`
+       - `strategy: "prefilter-overlap"`
+       - `pairwisePairsComputed` / `pairwisePairsTotal`
+
+  Full pairwise matrices are available on-demand (e.g. per-lane predictions or small selected sets).
 ```
 
 **Realtime mode** (triggered on changes):
@@ -376,17 +461,20 @@ interface ConflictProposal {
 
 ## Implementation Tracking
 
-Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `codex/ade-phase-4-5` branch, commit `65b7a6b`). Resolution proposals are deferred to Phase 6.
+Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5–6).
 
 ### What's Built
 
 | Component | Details |
 |-----------|---------|
-| `conflictService.ts` | 1064 lines — full conflict prediction engine, pairwise risk computation, merge simulation, batch assessment |
-| Conflict UI (6 components) | `ConflictsPage.tsx`, `ConflictFileDiff.tsx`, `RiskMatrix.tsx`, `RiskTooltip.tsx`, `extensionToLanguage.ts`, lane-level conflict badges |
+| `conflictService.ts` | ~1800 lines — full conflict prediction engine, pairwise risk computation, merge simulation, batch assessment, external CLI resolver, proposal lifecycle, integration lane support |
+| `gitConflictState.ts` | Git conflict state detection (`detectConflictKind` — checks for `rebase-apply`, `rebase-merge`, `MERGE_HEAD` in git dir) |
+| Conflict UI (7 components) | `ConflictsPage.tsx` (~1500 lines, 4-pane PaneTilingLayout), `ConflictFileDiff.tsx`, `ConflictSummary.tsx`, `MergeSimulationPanel.tsx`, `RiskMatrix.tsx` (with animated transitions and progress), `RiskTooltip.tsx`, `extensionToLanguage.ts` |
 | Job engine integration | Periodic prediction jobs via `processService`, configurable intervals |
-| Database schema | `conflict_predictions` table with SHA tracking and expiry; `conflict_proposals` table ready for Phase 6 |
+| Database schema | `conflict_predictions` + `conflict_proposals` tables with SHA tracking, expiry, and proposal lifecycle |
 | Git merge-tree integration | Dry-merge via `git merge-tree` for zero-side-effect conflict detection |
+| External resolver infrastructure | Run artifacts at `.ade/packs/external-resolver-runs/<runId>/`, JSON run records (`ade.conflictExternalRun.v1`), pack ref building, context gap detection, commit workflow |
+| Restack suggestion integration | `restackSuggestionService.ts` — detects parent-advanced children, dismiss/defer/emit lifecycle, integrated into ConflictsPage |
 | Phase 4/5 gap resolution | G3 (risk tooltip hover details), G4 (conflict file diff language detection), G5 (batch conflict assessment) — all resolved |
 
 ### Prediction Engine
@@ -439,9 +527,28 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 
 | ID | Task | Status |
 |----|------|--------|
-| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | TODO — **moved to Phase 7** (requires Phase 4 stacks + Phase 6 PRs) |
+| CONF-022 | Stack-aware conflict resolution (resolve parent lane first) | DONE — Phase 7 (ConflictsPage restack suggestions + merge-plan workflows with stack-aware ordering) |
 | CONF-023 | Batch conflict assessment (all-lanes report) | DONE (batch conflict assessment implemented) |
 | CONF-024 | Conflict notification/alerts (in-app and system) | TODO — **moved to Phase 9** |
+
+### Phase 8 — Active Conflict Management & External Resolution
+
+| ID | Task | Status |
+|----|------|--------|
+| CONF-025 | Active merge/rebase detection (`GitConflictState` via `gitConflictState.ts`) | DONE — Phase 8 (detects merge/rebase-in-progress, conflicted files, canContinue/canAbort) |
+| CONF-026 | Merge continue/abort from ConflictsPage | DONE — Phase 8 (Continue + Abort buttons with confirmation dialog) |
+| CONF-027 | External CLI resolver (Codex/Claude) | DONE — Phase 8 (`runExternalResolver` in conflictService, pack ref building, context validation, insufficient-context blocking) |
+| CONF-028 | External resolver commit workflow | DONE — Phase 8 (`commitExternalResolverRun` — stage + commit with generated message) |
+| CONF-029 | External resolver run history | DONE — Phase 8 (`listExternalResolverRuns`, run artifacts at `.ade/packs/external-resolver-runs/`) |
+| CONF-030 | Merge-plan UI (sequential multi-lane merge) | DONE — Phase 8 (target lane selection, source checkboxes, stack-depth ordering, pause on conflicts) |
+| CONF-031 | Integration lane creation from Conflicts tab | DONE — Phase 8 (create child lane as merge target, auto-selects and initializes merge plan) |
+| CONF-032 | Restack suggestion integration in Conflicts tab | DONE — Phase 8 (restack banner with Restack Now / Defer / Dismiss, via `restackSuggestionService`) |
+| CONF-033 | PaneTilingLayout for Conflicts page | DONE — Phase 8 (4-pane layout: lanes, conflict-detail, resolution, risk-matrix) |
+| CONF-034 | Proposal apply modes (unstaged/staged/commit) | DONE — Phase 8 (radio selector for apply mode, optional commit message) |
+| CONF-035 | Proposal apply + auto-continue | DONE — Phase 8 (apply patch then auto-continue rebase/merge if canContinue) |
+| CONF-036 | Batch assessment progress tracking | DONE — Phase 8 (real-time progress events: completedPairs/totalPairs with ETA in RiskMatrix) |
+| CONF-037 | Risk matrix staleness indicators | DONE — Phase 8 (stale cells show clock icon, reduced opacity, "Last computed N min ago" tooltip) |
+| CONF-038 | Risk matrix animated transitions | DONE — Phase 8 (entry animation, risk increase/decrease flash, skeleton loading) |
 
 ---
 
@@ -451,6 +558,86 @@ Core prediction, UI, and simulation tasks are **DONE** (Phase 5, merged in `code
 
 **Phase 6 (Hosted Agent) completed**: CONF-017 through CONF-021 (LLM-powered resolution proposals) are fully implemented. The desktop hosted agent service submits `ProposeConflictResolution` jobs to the cloud, polls for results, and presents proposals in the Conflicts tab with diff preview, confidence scoring, apply (with operation record), and undo capabilities.
 
+**Phase 8 (Active Conflict Management) completed**: CONF-025 through CONF-038. Active merge/rebase conflict detection and management, external CLI resolution (Codex/Claude) with context validation and commit workflow, merge-plan sequential merge UI, integration lane creation, restack suggestions, PaneTilingLayout, proposal apply modes, batch progress tracking, and risk matrix animations are all operational.
+
 **Remaining tasks** are scheduled as follows:
-- **Phase 7 (Workspace Graph)**: CONF-022 (stack-aware conflict resolution)
 - **Phase 9 (Advanced Features)**: CONF-024 (conflict notifications)
+
+---
+
+## 2026-02-16 Addendum — Conflict Context Integrity Rules
+
+### Conflict context payload (hosted/BYOK)
+
+Conflict jobs now carry a richer scoped context envelope:
+
+- `relevantFilesForConflict[]`
+- `fileContexts[]` with:
+  - `path`
+  - side snapshots/excerpts (`base`, `left`, `right`)
+  - hunk metadata and selection reason
+- freshness:
+  - `predictionAgeMs`
+  - `predictionStalenessMs`
+  - `stalePolicy.ttlMs`
+  - `pairwisePairsComputed`
+  - `pairwisePairsTotal`
+
+### Omission and clipping signaling
+
+If context is clipped/omitted, reasons are explicit, for example:
+
+- `omitted:path_count_limit`
+- `omitted:byte_cap`
+- `omitted:no_text_context`
+- `omitted:binary`
+- `omitted:secret-filter`
+
+### Insufficient-context guard (no speculative patches)
+
+When patch risk is high and required file context is incomplete:
+
+- set `insufficientContext=true`
+- include `insufficientReasons[]`
+- do not emit speculative patch
+- return explicit data-gap output instead
+
+### Conflict prompt contract
+
+Conflict prompts now enforce this exact output structure:
+
+1. `ResolutionStrategy`
+2. `RelevantEvidence`
+3. `Scope`
+4. `Patch`
+5. `Confidence`
+6. `Assumptions`
+7. `Unknowns`
+8. `InsufficientContext`
+
+If `InsufficientContext=true`, patch output must be empty.
+
+---
+
+## 2026-02-16 Addendum — External CLI Resolution Primary Path
+
+Conflict resolution generation now defaults to **external local CLIs** (Codex or Claude) while ADE remains the context system of record.
+
+### Primary path
+
+1. ADE refreshes lane/conflict packs and builds bounded conflict context.
+2. ADE validates context completeness (`relevantFilesForConflict` + `fileContexts`).
+3. ADE executes external CLI with deterministic prompt + context refs.
+4. ADE captures stdout/stderr, summary, and patch artifact path under `.ade/packs/external-resolver-runs/<runId>/`.
+5. ADE exposes run history via IPC and the Conflicts UI.
+
+### CWD policy
+
+- Single-lane merge: run in the **source lane** worktree.
+- Multi-lane merge: create/use **Integration lane**, run there.
+
+### Safety policy
+
+- If context is insufficient, ADE blocks speculative patch generation (`status=blocked`) and records explicit gap messages.
+- Hosted/BYOK proposal APIs remain for compatibility, but they are deprecated as the primary resolution UX path.
+

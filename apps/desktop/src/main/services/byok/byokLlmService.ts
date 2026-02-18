@@ -1,6 +1,7 @@
 import type { ProviderMode } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import { redactSecrets } from "../../utils/redaction";
 
 type ByokProvider = "openai" | "anthropic" | "gemini";
 
@@ -21,23 +22,6 @@ function asString(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function redactSecrets(text: string): string {
-  let output = text;
-  output = output.replace(
-    /((?:api[_-]?key|token|secret|password)\s*[:=]\s*)(["']?)[^\s"']{6,}\2/gi,
-    "$1<redacted>"
-  );
-  output = output.replace(
-    /-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/g,
-    "<redacted-private-key>"
-  );
-  output = output.replace(
-    /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
-    "<redacted-token>"
-  );
-  return output;
 }
 
 function asPrettyJson(value: unknown): string {
@@ -150,15 +134,11 @@ function parseByokConfig(providerMode: ProviderMode, rawProviders: unknown): Byo
   const providers = isRecord(rawProviders) ? rawProviders : {};
   const byok = isRecord(providers.byok) ? providers.byok : {};
 
-  const providerRaw = asString(byok.provider).toLowerCase();
-  const provider: ByokProvider =
-    providerRaw === "openai" || providerRaw === "anthropic" || providerRaw === "gemini"
-      ? (providerRaw as ByokProvider)
-      : "";
-
-  if (!provider) {
+  const providerRaw = asString(byok.provider).trim().toLowerCase();
+  if (providerRaw !== "openai" && providerRaw !== "anthropic" && providerRaw !== "gemini") {
     throw new Error("BYOK provider is invalid. Supported providers are: openai, anthropic, gemini.");
   }
+  const provider = providerRaw as ByokProvider;
 
   const model = asString(byok.model).trim();
   const nextModel =

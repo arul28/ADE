@@ -1,0 +1,228 @@
+import React, { useEffect, useRef, useState } from "react";
+import { FolderOpen, Save } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Group, Panel } from "react-resizable-panels";
+import { EmptyState } from "../ui/EmptyState";
+import { Button } from "../ui/Button";
+import { Chip } from "../ui/Chip";
+import { cn } from "../ui/cn";
+import { ResizeGutter } from "../ui/ResizeGutter";
+import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
+import type { FileDiff, GitCommitSummary } from "../../../shared/types";
+
+export function LaneDiffPane({
+  laneId,
+  selectedPath,
+  selectedFileMode,
+  selectedCommit
+}: {
+  laneId: string | null;
+  selectedPath: string | null;
+  selectedFileMode: "staged" | "unstaged" | null;
+  selectedCommit: GitCommitSummary | null;
+}) {
+  const navigate = useNavigate();
+  const diffRef = useRef<MonacoDiffHandle | null>(null);
+
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [commitFiles, setCommitFiles] = useState<string[]>([]);
+  const [selectedCommitFilePath, setSelectedCommitFilePath] = useState<string | null>(null);
+  const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+
+  // Load diff for selected working tree file
+  useEffect(() => {
+    setDiff(null);
+    if (!laneId || !selectedPath || !selectedFileMode) return;
+    window.ade.diff
+      .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
+      .then((value) => setDiff(value))
+      .catch(() => setDiff(null));
+  }, [laneId, selectedPath, selectedFileMode]);
+
+  // Load commit file list
+  useEffect(() => {
+    setCommitFiles([]);
+    setSelectedCommitFilePath(null);
+    setCommitDiff(null);
+    if (!laneId || !selectedCommit) return;
+
+    let cancelled = false;
+    window.ade.git
+      .listCommitFiles({ laneId, commitSha: selectedCommit.sha })
+      .then((files) => {
+        if (cancelled) return;
+        setCommitFiles(files);
+        setSelectedCommitFilePath(files[0] ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCommitFiles([]);
+        setSelectedCommitFilePath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId, selectedCommit]);
+
+  // Load commit file diff
+  useEffect(() => {
+    setCommitDiff(null);
+    if (!laneId || !selectedCommit || !selectedCommitFilePath) return;
+    let cancelled = false;
+    window.ade.diff
+      .getFile({
+        laneId,
+        path: selectedCommitFilePath,
+        mode: "commit",
+        compareRef: selectedCommit.sha,
+        compareTo: "parent"
+      })
+      .then((value) => {
+        if (!cancelled) setCommitDiff(value);
+      })
+      .catch(() => {
+        if (!cancelled) setCommitDiff(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId, selectedCommit, selectedCommitFilePath]);
+
+  // Commit diff view
+  if (selectedCommit && laneId) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="flex items-center justify-between gap-2 px-2 py-1 bg-card/30 shrink-0">
+          <div className="min-w-0 flex items-center gap-2 text-[11px]">
+            <span className="text-muted-fg">Commit</span>
+            <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
+            <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
+          </div>
+          <Chip className="text-[10px]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
+        </div>
+        <div className="flex-1 min-h-0">
+          <Group
+            id={`diff-pane-commit:${selectedCommit.sha}`}
+            orientation="horizontal"
+            className="h-full min-h-0"
+          >
+            <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="26%" className="min-w-0 bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex items-center justify-between bg-card/30 px-2 py-1 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-muted-fg/70">Files</span>
+                    <Chip className="h-4 px-1 text-[10px]">{commitFiles.length}</Chip>
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 overflow-auto p-1 space-y-0.5">
+                  {commitFiles.length ? (
+                    commitFiles.map((file) => (
+                      <button
+                        key={file}
+                        type="button"
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] transition-colors",
+                          selectedCommitFilePath === file
+                            ? "bg-accent/10 text-fg shadow-card"
+                            : "text-muted-fg hover:bg-muted/30 hover:text-fg"
+                        )}
+                        onClick={() => setSelectedCommitFilePath(file)}
+                        title={file}
+                      >
+                        <span className="truncate">{file}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-3 text-center text-[11px] text-muted-fg opacity-60 italic">
+                      Loading files...
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Panel>
+            <ResizeGutter orientation="vertical" />
+            <Panel id="diff-pane-commit-content" minSize="30%" defaultSize="74%" className="min-w-0">
+              {!selectedCommitFilePath ? (
+                <div className="flex h-full items-center justify-center p-3">
+                  <EmptyState title="No files found" description="This commit may be empty." />
+                </div>
+              ) : !commitDiff ? (
+                <div className="flex h-full items-center justify-center text-xs text-muted-fg">Loading diff...</div>
+              ) : (
+                <MonacoDiffView diff={commitDiff} editable={false} className="h-full" />
+              )}
+            </Panel>
+          </Group>
+        </div>
+      </div>
+    );
+  }
+
+  // Working tree file diff
+  if (selectedPath && diff && laneId) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="flex items-center justify-between px-2 py-1 bg-card/30 shrink-0">
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
+            <span className="text-muted-fg">/</span>
+            <span className="font-semibold">{diff.path}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {selectedFileMode === "unstaged" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 px-1 text-[10px]"
+                onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
+                title="Open in Files tab"
+              >
+                <FolderOpen className="h-3 w-3 mr-0.5" />
+                Files
+              </Button>
+            ) : null}
+            {selectedFileMode === "unstaged" && !diff.isBinary ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 px-1 text-[10px]"
+                disabled={busyAction != null}
+                onClick={() => {
+                  const text = diffRef.current?.getModifiedValue();
+                  if (text == null) return;
+                  setBusyAction("save");
+                  window.ade.files
+                    .writeTextAtomic({ laneId, path: selectedPath, text })
+                    .then(() => {
+                      // Reload diff
+                      return window.ade.diff.getFile({ laneId, path: selectedPath, mode: "unstaged" });
+                    })
+                    .then((value) => setDiff(value))
+                    .catch(() => {})
+                    .finally(() => setBusyAction(null));
+                }}
+              >
+                <Save className="h-3 w-3 mr-0.5" />
+                Save
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <MonacoDiffView ref={diffRef} diff={diff} editable={selectedFileMode === "unstaged"} className="flex-1" />
+      </div>
+    );
+  }
+
+  // Loading state
+  if (selectedPath && !diff) {
+    return <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading diff...</div>;
+  }
+
+  // Empty state
+  return (
+    <div className="flex h-full items-center justify-center p-3">
+      <EmptyState title="Select a file or commit" description="Choose a changed file or pick a commit from the timeline." />
+    </div>
+  );
+}

@@ -1,6 +1,6 @@
 # Packs — Context, History & Narratives
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-16
 
 ---
 
@@ -30,6 +30,10 @@
   - [Filesystem Layout](#filesystem-layout)
   - [Type Definitions](#type-definitions)
 - [Implementation Tracking](#implementation-tracking)
+  - [Bounded Export System](#bounded-export-system)
+  - [Pack Retention & Cleanup](#pack-retention--cleanup)
+  - [Orchestrator Delta Consumption](#orchestrator-delta-consumption)
+  - [Auto-Narrative Pipeline](#auto-narrative-pipeline)
 
 ---
 
@@ -50,9 +54,9 @@ Packs operate at multiple scopes:
 
 - **Project packs** provide a global view of project activity across all lanes.
 - **Lane packs** capture per-lane execution context with session-level detail.
-- **Feature packs** (future) aggregate context for a specific feature across lanes.
-- **Conflict packs** (future) bundle resolution context for merge conflicts.
-- **Plan packs** (future) version implementation planning documents.
+- **Feature packs** aggregate context for a specific feature tag across lanes.
+- **Conflict packs** bundle overlap + merge-tree context for a lane vs base or a lane vs peer.
+- **Plan packs** store versioned planning documents per lane.
 
 Each pack contains two sections: a **deterministic section** with machine-generated
 facts (file changes, diff stats, test results) and a **narrative section** with
@@ -60,9 +64,12 @@ human-readable summaries (initially template-based, eventually LLM-generated).
 
 **Current status**: Core pack functionality (generation, storage, display, refresh)
 is **implemented and working**. LLM-powered narratives, pack sync to hosted mirror,
-and pack privacy controls (redaction) are **implemented** (Phase 6). Advanced features
-(checkpoints, versioning, event logging) are planned for **Phase 8**. Pack retention
-and cleanup policy is planned for **Phase 7**.
+and pack privacy controls (redaction) are **implemented** (Phase 6). Packs V2 features
+(checkpoints, versioning, event logging) are **implemented** (Phase 8). Pack retention
+and cleanup policy is **implemented** (Phase 7/8).
+
+**Contract**: For stable, orchestrator-friendly context artifacts (markers, headers, exports, deltas), see:
+- `docs/architecture/CONTEXT_CONTRACT.md`
 
 ---
 
@@ -83,7 +90,7 @@ Checkpoints are the atoms of pack history. Each lane pack is built from its
 sequence of checkpoints, and navigating between checkpoints allows replaying
 the development timeline.
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented. Checkpoints are created at session boundaries and indexed for browsing.
 
 ### Pack Event
 
@@ -100,7 +107,17 @@ Event types:
 | `refresh_triggered` | Manual or automatic refresh | `{ trigger, packType }` |
 | `version_created` | Pack snapshot saved | `{ versionId, versionNumber }` |
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented. Pack events are append-only, stored in SQLite, and surfaced as a human-readable activity feed in the UI.
+
+Event payloads may additionally include standardized selection metadata (backward compatible; consumers must be null-safe):
+
+- `importance`: `low` | `medium` | `high`
+- `importanceScore`: numeric (0-1)
+- `category`: `session` | `narrative` | `conflict` | `branch` | `pack`
+- `entityIds`: string[]
+- `entityRefs`: `{ kind, id }`[]
+- `actionType`: string
+- `rationale`: string | null
 
 ### Pack Version
 
@@ -113,7 +130,7 @@ saved as markdown files with a content hash, enabling:
 
 Each version has a monotonically increasing version number within its pack scope.
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented. Versions are immutable snapshots with content hashes and a built-in diff viewer.
 
 ### Pack Head
 
@@ -125,7 +142,7 @@ This separation between immutable versions and mutable heads enables concurrent
 access: readers always see a consistent snapshot, and writers create new versions
 without disturbing readers.
 
-**Status**: Planned, not yet implemented.
+**Status**: Implemented via `packs_index` + version pointers. The UI reads the current pack and can diff prior versions.
 
 ### Pack Types
 
@@ -133,9 +150,9 @@ without disturbing readers.
 |------|-------|---------|--------|
 | **Project Pack** | Entire project | High-level overview of all lanes, recent activity, project goals, aggregate stats | Implemented |
 | **Lane Pack** | Single lane | Per-lane execution context — sessions, commits, file changes, test results, narrative | Implemented |
-| **Feature Pack** | Feature/issue | All work related to a specific feature across lanes. Aggregates lane packs by feature tag. | Planned |
-| **Conflict Pack** | Merge conflict | Both sides of a conflict, base state, overlapping files, resolution proposals. Context for conflict resolution. | Planned |
-| **Plan Pack** | Implementation plan | Versioned planning document. Tracks iterations of scope, approach, and task breakdown. | Planned |
+| **Feature Pack** | Feature/issue | All work related to a specific feature across lanes. Aggregates lane packs by feature tag. | Implemented |
+| **Conflict Pack** | Merge conflict | Lane-vs-base or lane-vs-peer overlap context (merge-tree output + file overlaps) used for proposals. | Implemented |
+| **Plan Pack** | Implementation plan | Versioned planning document per lane. | Implemented |
 
 ---
 
@@ -146,41 +163,54 @@ without disturbing readers.
 Accessible from the Lanes tab as a "Packs" sub-tab, the Pack Viewer displays
 pack content with interactive features.
 
-**Layout**:
+**Layout** (lane inspector):
 
 ```
 +---------------------------------------------------+
-|  Pack Viewer                          [Refresh ↻]  |
-+-------------------------+-------------------------+
-|                         |                         |
-|  Project Pack           |  Lane Pack              |
-|                         |  (for selected lane)    |
-|  ## Project Overview    |                         |
-|  Active lanes: 3        |  ## Lane: feature/auth  |
-|  Recent activity: ...   |  Branch: feature/auth   |
-|                         |  Sessions: 4            |
-|  ## Lane Summary        |                         |
-|  - feature/auth (3c)    |  ## Changes             |
-|  - feature/ui (1c)      |  +42 / -12, 8 files    |
-|  - bugfix/login (2c)    |                         |
-|                         |  ## Narrative            |
-|                         |  Implemented the auth... |
-|                         |                         |
-+-------------------------+-------------------------+
+|  Pack Viewer   [Lane|Project]  [Refresh] [AI...]   |
++---------------------------------------------------+
+|                                                   |
+|  (Selected pack body as readable markdown text)    |
+|                                                   |
++---------------------------------------------------+
 |  Freshness: ● Up to date    Last refresh: 2m ago  |
 +---------------------------------------------------+
 ```
 
 **Features**:
 
-- **Side-by-side view**: Project pack on the left, lane pack on the right
-- **Rendered markdown**: Pack content displayed as formatted markdown with
-  syntax highlighting for code blocks
-- **Refresh button**: Manually trigger pack regeneration for the current lane
-  (and project pack if stale)
-- **Freshness indicator**: Badge showing how current the pack is (see below)
-- **Edit button** (future): Edit the narrative section to override auto-generated
-  content
+- **Two clear pack scopes**: A toggle switches between the Project pack and the selected Lane pack.
+- **Refresh button**: Triggers deterministic pack regeneration (always available).
+- **AI details button**: Re-runs AI pack details on demand (lane pack only). AI details also refresh automatically in the background after deterministic refresh when Hosted/BYOK is enabled.
+- **Activity feed**: Human-readable pack events (refreshes, AI updates, failures) with deep links into the History tab.
+- **Versions + diff**: Immutable snapshots with a built-in diff viewer.
+
+---
+
+## Hosted Context Delivery (What the Cloud Jobs Actually Consume)
+
+Hosted jobs (narratives, conflict proposals, PR drafts) consume **bounded exports** (for example `LaneExportStandard`) by default.
+
+There are two delivery modes:
+
+1. **Inline**: the export(s) are embedded directly in the job payload `params` (works without mirror sync).
+2. **Mirror-ref**: for large/conflict jobs or when configured, ADE uploads the canonical JSON `params` as a content-addressed blob and submits a small `__adeContextRef` plus a reduced `__adeContextInline` fallback.
+
+This is intentionally deterministic and observable:
+
+- Pack events like `narrative_requested` record the delivery mode and reason code.
+- Settings exposes the hosted context delivery mode (Auto/Inline/Mirror Preferred).
+
+### Expected Behavior Matrix
+
+| Scenario | Mirror Sync | Hosted Job Context | Notes |
+|----------|------------|-------------------|------|
+| New lane with active session | optional | inline bounded export | Works even if mirror is disabled |
+| Stale mirror (no recent sync) | stale | inline bounded export | Jobs do not silently depend on mirror freshness |
+| Mirror disabled / no remoteProjectId | no | inline bounded export | Hosted jobs do not depend on mirror |
+| Conflict-heavy lane | optional | mirror-ref preferred (auto) | Inline fallback is reduced to keep payload compact |
+| Mirror-ref fetch fails (rare) | any | inline fallback | Worker emits `job.context_ref_failed` and proceeds with reduced fallback |
+| Periodic handoff via delta | optional | delta digest + bounded export | Deltas remain compact/deterministic |
 
 ### Pack Freshness Indicator
 
@@ -246,6 +276,87 @@ failures. Key changes focused on the auth module with new login and
 session handling logic.
 ```
 
+**Lane Pack structure** (review-focused handoff document):
+
+```markdown
+```json
+{
+  "schema": "ade.context.v1",
+  "packKey": "lane:lane-123",
+  "packType": "lane",
+  "laneId": "lane-123",
+  "baseRef": "main",
+  "headSha": "abc12345",
+  "deterministicUpdatedAt": "2026-02-14T12:00:00Z",
+  "narrativeUpdatedAt": null,
+  "providerMode": "hosted"
+}
+```
+
+# Lane: feature-auth
+> Branch: `feature/auth` | Base: `main` | HEAD: `abc12345` | clean · ahead 2 · behind 0
+
+## What Changed
+- Modified authentication middleware (src/auth/).
+- Added rate limiting to API routes (src/api/routes/).
+
+## Why
+<!-- ADE_INTENT_START -->
+Intent not set — click to add.
+<!-- ADE_INTENT_END -->
+
+Inferred from commits:
+- Add rate limiting to API routes
+- Fix flaky auth tests
+
+## Task Spec
+<!-- ADE_TASK_SPEC_START -->
+- Problem: (what is broken / missing?)
+- Scope: (what is in / out)
+- Acceptance:
+  - [ ] (checklist)
+- Constraints: (conventions, APIs, patterns)
+- Dependencies: (parent lane, merges required)
+<!-- ADE_TASK_SPEC_END -->
+
+## Validation
+- Tests: PASS (2 suites, 31 tests, 1.2s) · command: `npm test`
+- Lint: NOT RUN
+
+## Key Files (10 files touched)
+| File | Change |
+|------|--------|
+| `src/auth/middleware.ts` | +45/-12 |
+
+## Errors & Issues
+No errors detected.
+
+## Sessions (4 total, 1 running)
+| When | Tool | Goal | Result | Delta |
+|------|------|------|--------|-------|
+| 14:32 | shell | "run tests" | exit 0 | +45/-12 |
+
+## Open Questions / Next Steps
+- 2 tests failing in auth suite — investigate before merge
+<!-- ADE_TODOS_START -->
+- (add notes/todos here)
+<!-- ADE_TODOS_END -->
+
+## Narrative
+<!-- ADE_NARRATIVE_START -->
+AI narrative not yet generated.
+<!-- ADE_NARRATIVE_END -->
+
+---
+*Updated: 2026-02-14T12:00:00Z | Trigger: session_end | Provider: hosted | [View history →](ade://packs/versions/lane:... )*
+```
+
+Notes:
+- The `ADE_INTENT_*`, `ADE_TASK_SPEC_*`, `ADE_TODOS_*`, and `ADE_NARRATIVE_*` markers are preserved so users (and orchestrators) can edit intent/task spec/todos/narrative without ADE losing those sections on deterministic refresh.
+- Any transcript-derived lines (errors, session output previews) are ANSI-stripped and de-duplicated before inclusion.
+- The Sessions section includes "Recent summaries" when `sessionHighlights` are available. Each highlight includes `summarySource` (explicit_final_block or heuristic_tail), `summaryConfidence` (high or medium), and optional `summaryOmissionTags` for clipped extractions.
+- The lane pack header JSON fence includes `graph` (dependency graph envelope), `dependencyState` (dependency freshness), and `conflictState` (conflict prediction state) when available.
+
 ### Update Pipeline
 
 Pack updates follow an automated pipeline triggered by session lifecycle events:
@@ -254,7 +365,7 @@ Pack updates follow an automated pipeline triggered by session lifecycle events:
 Session End
   │
   ▼
-Checkpoint Created (future)
+Checkpoint Created
   │
   ▼
 Lane Pack Refreshed
@@ -268,11 +379,11 @@ Project Pack Refreshed (if stale)
   │  - Updates project-level overview
   │
   ▼
-Conflict Prediction Triggered (future)
+Conflict Prediction Triggered
   │  - Uses updated pack data for context
   │
   ▼
-Hosted Mirror Synced (if enabled, future)
+Hosted Mirror Synced (if enabled)
     - Pack content pushed to cloud for hosted agent access
 ```
 
@@ -308,8 +419,13 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 
 | Service | Status | Responsibility |
 |---------|--------|----------------|
-| `packService` | **Exists, implemented** | Generates deterministic pack content (diff stats, file lists). Reads/writes pack markdown files to `.ade/packs/`. Manages pack index in SQLite. |
-| `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. |
+| `packService` | **Exists, implemented** | Generates deterministic pack content (diff stats, file lists). Reads/writes pack markdown files to `.ade/packs/`. Manages pack index in SQLite. Provides bounded exports via `getLaneExport`, `getProjectExport`, `getConflictExport`. |
+| `packExports` | **Exists, implemented** | Token-budgeted export engine. Builds Lite/Standard/Deep exports for lanes, projects, and conflicts. Enforces token budgets (~4 chars/token heuristic), extracts marker-based sections, and includes conflict risk summaries. See `docs/architecture/CONTEXT_CONTRACT.md`. |
+| `packSections` | **Exists, implemented** | Stable marker-based section manipulation. Functions: `extractBetweenMarkers`, `replaceBetweenMarkers`, `upsertSectionByHeading`. Enables non-truncating narrative updates and backward-compatible legacy pack upgrades. |
+| `lanePackTemplate` | **Exists, implemented** | Renders deterministic lane pack markdown from raw data. Produces structured markdown with machine-readable header, all marker-bounded sections (intent, task spec, todos, narrative), sessions table with session highlights (summarySource, summaryConfidence, omission tags), validation, errors, key files, and audit footer. |
+| `transcriptInsights` | **Exists, implemented** | Parses high-signal terminal output for structured summaries. Returns `summarySource` (`explicit_final_block` or `heuristic_tail`), `summaryConfidence` (`high` or `medium`), and deterministic omission tags for clipped extractions. |
+| `redaction` | **Exists, implemented** | Secret redaction for exports. `redactSecrets()` strips API keys, tokens, private keys, GitHub PATs. `redactSecretsDeep()` recursively scans complex objects. Applied to all outbound AI payloads. |
+| `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. After deterministic refresh, automatically generates AI narratives when Hosted/BYOK is configured. |
 | `sessionService` | Exists | Provides session delta data (commands, exit codes, failure lines) for pack generation. |
 | `gitService` | Exists | Provides git diff stats, commit history, and file change information for deterministic sections. |
 | `operationService` | Exists | Records pack refresh operations in the history timeline. |
@@ -320,17 +436,30 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 |---------|-----------|-------------|
 | `ade.packs.getProjectPack` | `() => PackSummary` | Get the current project pack content and metadata |
 | `ade.packs.getLanePack` | `(laneId: string) => PackSummary` | Get the current lane pack content and metadata |
-| `ade.packs.refreshLanePack` | `(laneId: string) => PackSummary` | Manually trigger a lane pack refresh and return the updated pack |
+| `ade.packs.getFeaturePack` | `(featureKey: string) => PackSummary` | Get a feature pack |
+| `ade.packs.getConflictPack` | `(args: { laneId: string; peerLaneId?: string \| null }) => PackSummary` | Get a conflict pack (v2 markdown) |
+| `ade.packs.getPlanPack` | `(laneId: string) => PackSummary` | Get a plan pack |
+| `ade.packs.getProjectExport` | `(args: { level: "lite" \| "standard" \| "deep" }) => PackExport` | Build a bounded project export |
+| `ade.packs.getLaneExport` | `(args: { laneId: string; level: "lite" \| "standard" \| "deep" }) => PackExport` | Build a bounded lane export |
+| `ade.packs.getConflictExport` | `(args: { laneId: string; peerLaneId?: string \| null; level: "lite" \| "standard" \| "deep" }) => PackExport` | Build a bounded conflict export |
+| `ade.packs.refreshLanePack` | `(laneId: string) => PackSummary` | Refresh deterministic lane pack content |
+| `ade.packs.refreshProjectPack` | `(args: { laneId?: string \| null }) => PackSummary` | Refresh deterministic project pack content |
+| `ade.packs.refreshFeaturePack` | `(featureKey: string) => PackSummary` | Refresh a feature pack |
+| `ade.packs.refreshConflictPack` | `(args: { laneId: string; peerLaneId?: string \| null }) => PackSummary` | Refresh a conflict pack |
+| `ade.packs.savePlanPack` | `(args: { laneId: string; body: string }) => PackSummary` | Save/update a plan pack |
+| `ade.packs.generateNarrative` | `(laneId: string) => PackSummary` | Request an AI narrative update (Hosted/BYOK) |
+| `ade.packs.applyHostedNarrative` | `(args: { laneId: string; narrative: string; jobId?: string }) => PackSummary` | Apply an AI narrative result to a lane pack |
+| `ade.packs.updateNarrative` | `(args: { packKey: string; narrative: string }) => PackSummary` | Manual narrative edit (marker-based) |
+| `ade.packs.listVersions` | `(args: { packKey: string; limit?: number }) => PackVersionSummary[]` | List pack versions |
+| `ade.packs.getVersion` | `(versionId: string) => PackVersion` | Fetch a specific version |
+| `ade.packs.diffVersions` | `(args: { fromId: string; toId: string }) => string` | Diff two versions |
+| `ade.packs.getHeadVersion` | `(args: { packKey: string }) => PackVersionSummary \| null` | Fetch the current head version metadata |
+| `ade.packs.listEvents` | `(args: { packKey: string; limit?: number }) => PackEvent[]` | List pack events |
+| `ade.packs.listEventsSince` | `(args: { packKey: string; sinceIso: string; limit?: number }) => PackEvent[]` | Delta feed for orchestrators |
+| `ade.packs.listCheckpoints` | `(args: { laneId: string; limit?: number }) => Checkpoint[]` | List lane checkpoints |
 
-**Planned (future)**:
-
-| Channel | Signature | Description |
-|---------|-----------|-------------|
-| `ade.packs.listVersions` | `(packKey: string) => PackVersionSummary[]` | List all versions of a pack |
-| `ade.packs.getVersion` | `(versionId: string) => PackVersion` | Get a specific pack version |
-| `ade.packs.diffVersions` | `(args: { fromId: string; toId: string }) => string` | Diff two pack versions |
-| `ade.packs.updateNarrative` | `(args: { packKey: string; narrative: string }) => PackSummary` | Manually edit the narrative section |
-| `ade.packs.listEvents` | `(args: { packKey: string; limit: number }) => PackEvent[]` | List pack events for audit trail |
+Pack events are also broadcast over:
+- `ade.packs.event` (renderer subscription channel)
 
 ### Pack Generation Pipeline
 
@@ -351,13 +480,15 @@ refreshLanePack(laneId):
      b. Format file list with per-file stats
      c. Format session summaries
      d. Format failure lines (if any)
-  5. Generate narrative section:
-     a. Current: Template-based ("Modified N files in M sessions...")
-     b. Future: LLM-generated from deterministic data + commit messages
-  6. Combine sections into pack markdown
-  7. Write to .ade/packs/lane-<laneId>.md
-  8. Update packs_index in SQLite
-  9. Record pack.refresh operation in history
+  5. Preserve marker-based user/orchestrator sections:
+     a. Intent (`ADE_INTENT_*`)
+     b. Task Spec (`ADE_TASK_SPEC_*`)
+     c. Todos (`ADE_TODOS_*`)
+     d. Narrative (`ADE_NARRATIVE_*`)
+  6. Combine deterministic + preserved marker sections into pack markdown
+  7. Write to `.ade/packs/lanes/<laneId>/lane_pack.md`
+  8. Update packs_index in SQLite + create an immutable pack version snapshot
+  9. Record pack events (refresh/version/checkpoint)
   10. Return PackSummary
 ```
 
@@ -379,51 +510,47 @@ no LLM involvement. This ensures it is always accurate and reproducible.
 
 ### Narrative Generation
 
-**Current implementation** (template-based):
+Narrative updates are **optional** and provider-driven, but packs remain fully useful in Guest Mode.
 
-The narrative section uses string templates populated with data from the
-deterministic section:
+**Guest Mode (no AI provider)**:
+- Deterministic packs refresh normally.
+- Narrative content is a placeholder and is preserved between `ADE_NARRATIVE_START/END`.
 
-```
-"Modified {fileCount} files across {sessionCount} sessions.
-{insertions} lines added, {deletions} lines removed.
-Key changes in: {topFiles.join(', ')}."
-```
+**Hosted / BYOK (AI enabled)**:
+- AI jobs consume **bounded exports**, not raw lane pack markdown:
+  - Narrative generation uses `LaneExportStandard` by default.
+- Exports are **redacted** before leaving the local machine.
+- Narrative updates are applied via **marker-based replacement** between:
+  - `<!-- ADE_NARRATIVE_START -->` / `<!-- ADE_NARRATIVE_END -->`
+  - This preserves any footer/metadata/sections outside the narrative region.
 
-**Future implementation** (LLM-powered):
+Hosted is a remote gateway and may be self-hosted by setting:
+- `providers.hosted.apiBaseUrl` in `.ade/local.yaml`
 
-The hosted agent receives the deterministic section plus commit messages and
-generates a human-quality narrative. The narrative includes:
-
-- High-level summary of what was accomplished
-- Key decisions and their rationale (inferred from commit messages)
-- Notable patterns (e.g., "iterative test-fix cycle on auth module")
-- Open questions or incomplete work (inferred from TODOs, partial implementations)
-
-The LLM narrative is always paired with the deterministic section, so readers
-can verify claims against the raw data.
+Diagnostics should reference `apiBaseUrl` and `remoteProjectId` (no AWS-specific assumptions).
 
 ---
 
 ## Data Model
 
-### Current Tables
+### Tables (Implemented)
 
 ```sql
 -- Index of all packs, tracking metadata and freshness
 packs_index (
-  pack_key TEXT PRIMARY KEY,       -- Unique key: 'project-<id>' or 'lane-<id>'
+  pack_key TEXT PRIMARY KEY,       -- Stable key: 'project' | 'lane:<laneId>' | 'feature:<key>' | 'conflict:<laneId>:<peerKey>' | 'plan:<laneId>'
   project_id TEXT NOT NULL,        -- FK to projects table
   lane_id TEXT,                    -- FK to lanes table (NULL for project packs)
-  pack_type TEXT NOT NULL,         -- 'project' | 'lane'
+  pack_type TEXT NOT NULL,         -- 'project' | 'lane' | 'feature' | 'conflict' | 'plan'
   pack_path TEXT NOT NULL,         -- Filesystem path to the pack markdown file
   deterministic_updated_at TEXT,   -- When the deterministic section was last regenerated
   narrative_updated_at TEXT,       -- When the narrative section was last updated
-  last_head_sha TEXT               -- Git HEAD SHA at the time of last pack generation
+  last_head_sha TEXT,              -- Git HEAD SHA at the time of last pack generation
+  metadata_json TEXT               -- JSON metadata (safe, non-secret)
 )
 ```
 
-### Future Tables
+### Additional Tables (Implemented)
 
 ```sql
 -- Immutable snapshots at session boundaries
@@ -476,69 +603,75 @@ CREATE UNIQUE INDEX idx_pack_versions_key_number ON pack_versions(pack_key, vers
 
 ```
 .ade/packs/
-├── project-<projectId>.md           # Current project pack (rendered markdown)
-├── lane-<laneId>.md                 # Current lane pack for each active lane
-├── versions/                        # Immutable pack version snapshots (future)
-│   ├── <versionId>.md               # Each version stored by UUID
-│   └── ...
-├── heads/                           # Head pointer files (future)
-│   ├── project-<projectId>.json     # { currentVersionId, updatedAt }
-│   └── lane-<laneId>.json
-└── current/                         # Symlinks to current versions (future)
-    ├── project-<projectId>.md → ../versions/<versionId>.md
-    └── lane-<laneId>.md → ../versions/<versionId>.md
+├── project_pack.md                  # Current project pack
+├── lanes/
+│   └── <laneId>/
+│       └── lane_pack.md             # Current lane pack
+├── features/
+│   └── <featureKey>/
+│       └── feature_pack.md
+├── plans/
+│   └── <laneId>/
+│       └── plan_pack.md
+├── conflicts/
+│   ├── predictions/
+│   │   └── <laneId>.json            # Lane conflict prediction summary (deterministic)
+│   └── v2/
+│       └── <laneId>__<peerKey>.md   # Conflict pack v2 markdown
+└── versions/
+    └── <versionId>.md               # Immutable rendered snapshot (by UUID)
 
 .ade/history/
-├── checkpoints/                     # Checkpoint data files (future)
-│   ├── <checkpointId>.json          # { sha, diffStat, packEventIds, ... }
-│   └── ...
-└── events/                          # Pack event log files (future)
-    ├── <year-month>/                # Partitioned by month for manageability
-    │   ├── <eventId>.json
-    │   └── ...
-    └── ...
+├── checkpoints/
+│   └── <checkpointId>.json
+└── events/
+    └── YYYY-MM/
+        └── <eventId>.json
+
+.ade/ade.db                          # SQLite durable index (packs, versions, events, checkpoints)
 ```
 
 ### Type Definitions
 
 ```typescript
-interface PackSummary {
-  type: 'project' | 'lane';
-  path: string;                      // Filesystem path to the pack file
-  exists: boolean;                   // Whether the pack file exists on disk
-  deterministicUpdatedAt: string | null;  // ISO 8601
-  narrativeUpdatedAt: string | null;      // ISO 8601
-  lastHeadSha: string | null;       // Git SHA at last generation
-  body: string;                      // Full markdown content of the pack
-}
+type PackSummary = {
+  packKey: string;
+  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  path: string;
+  exists: boolean;
+  deterministicUpdatedAt: string | null;
+  narrativeUpdatedAt: string | null;
+  lastHeadSha: string | null;
+  versionId: string | null;
+  versionNumber: number | null;
+  contentHash: string | null;
+  metadata?: Record<string, unknown> | null;
+  body: string;
+};
 
-interface PackVersionSummary {
+type PackVersionSummary = {
   id: string;
   packKey: string;
+  packType: "project" | "lane" | "feature" | "conflict" | "plan";
   versionNumber: number;
   contentHash: string;
   createdAt: string;
-}
+};
 
-interface PackVersion {
-  id: string;
-  packKey: string;
-  versionNumber: number;
-  contentHash: string;
+type PackVersion = PackVersionSummary & {
   renderedPath: string;
-  body: string;                      // Full markdown content of this version
-  createdAt: string;
-}
+  body: string;
+};
 
-interface PackEvent {
+type PackEvent = {
   id: string;
   packKey: string;
   eventType: string;
   payload: Record<string, unknown>;
   createdAt: string;
-}
+};
 
-interface Checkpoint {
+type Checkpoint = {
   id: string;
   laneId: string;
   sessionId: string | null;
@@ -551,24 +684,19 @@ interface Checkpoint {
   };
   packEventIds: string[];
   createdAt: string;
-}
+};
 
-interface PackFreshness {
-  status: 'current' | 'slightly-stale' | 'stale';
-  packSha: string | null;
-  headSha: string;
-  commitsBehind: number;
-}
-
-interface PackRefreshJob {
-  id: string;
+type PackExport = {
   packKey: string;
-  laneId: string;
-  trigger: 'session-end' | 'manual' | 'scheduled';
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  createdAt: string;
-  completedAt: string | null;
-}
+  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  level: "lite" | "standard" | "deep";
+  header: Record<string, unknown>; // `ade.context.v1` header fence content
+  content: string;                 // Bounded export markdown (includes header fence + markers)
+  approxTokens: number;
+  maxTokens: number;
+  truncated: boolean;
+  warnings: string[];
+};
 ```
 
 ---
@@ -587,45 +715,45 @@ interface PackRefreshJob {
 | PACK-006 | Pack files on filesystem (`.ade/packs/` directory) | DONE |
 | PACK-007 | Job engine triggers pack refresh on session end | DONE |
 | PACK-008 | Job deduplication for pack refreshes (one refresh per lane) | DONE |
-| PACK-009 | Pack viewer component (side-by-side project + lane packs) | DONE |
+| PACK-009 | Pack viewer component (lane/project toggle + activity + versions) | DONE |
 | PACK-010 | Pack freshness indicator (green/yellow/red badge) | DONE |
 | PACK-011 | Manual pack refresh button | DONE |
 
 ### Checkpoints & Event Logging
 
-These tasks are planned for **Phase 8**.
+Implemented (Phase 8).
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-012 | Checkpoint creation at session boundaries | TODO — **Phase 8** |
-| PACK-013 | Checkpoint storage and indexing (SQLite + filesystem) | TODO — **Phase 8** |
-| PACK-014 | Pack event logging (append-only event log) | TODO — **Phase 8** |
+| PACK-012 | Checkpoint creation at session boundaries | DONE — Phase 8 |
+| PACK-013 | Checkpoint storage and indexing (SQLite + filesystem) | DONE — Phase 8 |
+| PACK-014 | Pack event logging (append-only event log) | DONE — Phase 8 |
 
 ### Versioning System
 
-These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
+Implemented (Phase 8).
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-015 | Pack version snapshots (immutable rendered files) | TODO — **Phase 8** |
-| PACK-016 | Pack head pointers (mutable, atomic updates) | TODO — **Phase 8** |
-| PACK-022 | Pack diff (compare two versions side by side) | TODO — **Phase 8** |
+| PACK-015 | Pack version snapshots (immutable rendered files) | DONE — Phase 8 |
+| PACK-016 | Pack head pointers (mutable, atomic updates) | DONE — Phase 8 |
+| PACK-022 | Pack diff (compare two versions side by side) | DONE — Phase 8 |
 
 ### Additional Pack Types
 
-These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
+Implemented (Phase 8).
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | TODO — **Phase 8** |
-| PACK-018 | Conflict pack type (resolution context bundle) | TODO — **Phase 8** |
-| PACK-019 | Plan pack type (versioned planning documents) | TODO — **Phase 8** |
+| PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | DONE — Phase 8 |
+| PACK-018 | Conflict pack type (resolution context bundle) | DONE — Phase 8 |
+| PACK-019 | Plan pack type (versioned planning documents) | DONE — Phase 8 |
 
 ### Narrative & Intelligence
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-020 | Narrative editing (user override of auto-generated content) | TODO — **Phase 8** |
+| PACK-020 | Narrative editing (user override of auto-generated content) | DONE — Phase 8 |
 | PACK-021 | LLM-powered narrative generation (hosted agent integration) | DONE — Phase 6 (`hostedAgentService.requestLaneNarrative()`, cloud `NarrativeGeneration` job worker) |
 
 ### Operations & Management
@@ -633,19 +761,203 @@ These tasks are planned for **Phase 8** (Automations + Onboarding + Packs V2).
 | ID | Task | Status |
 |----|------|--------|
 | PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | DONE — Phase 6 (`hostedAgentService.syncPacks()`, uploaded via mirror sync pipeline) |
-| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | TODO — **moved to Phase 7** (not yet implemented) |
+| PACK-024 | Pack retention and cleanup policy (age-based, count-based) | DONE — Phase 7 (implemented in pack service) |
 | PACK-025 | Pack privacy controls (redaction rules for sensitive content) | DONE — Phase 6 (`redactSecrets()` in desktop + cloud, exclude patterns for `.env`/creds/keys) |
-| PACK-026 | Pack export (standalone markdown file with all context) | TODO — **Phase 9** (Advanced Features) |
+| PACK-026 | Token-budgeted pack exports (Lite/Standard/Deep) for orchestrators + AI jobs | DONE — bounded exports via `ade.packs.getLaneExport/getProjectExport/getConflictExport` |
 
 ### Initial Pack Generation
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-027 | Initial project pack bootstrap (codebase scan + git history analysis) | TODO — **Phase 8** (Onboarding) |
-| PACK-028 | Documentation-seeded pack generation (import existing docs for richer Project Pack) | TODO — **Phase 8** (Onboarding) |
-| PACK-029 | Existing lane pack hydration (generate Lane Packs for pre-existing branches) | TODO — **Phase 8** (Onboarding) |
+| PACK-027 | Initial project pack bootstrap (repo map + git history seed) | DONE — Phase 8 |
+| PACK-028 | Documentation-seeded pack generation (docs index + bootstrap context) | DONE — Phase 8 |
+| PACK-029 | Existing lane pack hydration (generate Lane Packs for existing lanes) | DONE — Phase 8 |
 | PACK-030 | Guest mode template narratives (template-based fallback when no LLM provider) | DONE (Phase 3) |
+
+### Bounded Export System
+
+Bounded exports are the primary interface for AI jobs and orchestrators. They provide token-budgeted, redacted views of packs designed for consumption by LLM prompts and agent context windows.
+
+**Architecture**: See `docs/architecture/CONTEXT_CONTRACT.md` for the full contract specification. Constants are defined in `apps/desktop/src/shared/contextContract.ts`.
+
+**Export Levels**:
+
+| Level | Token Budget | Use Case | Included Sections |
+|-------|-------------|----------|------------------|
+| **Lite** | ~800 tokens | Quick agent spawn, status check | Header, Task Spec, Intent, What Changed (summary), Conflict Risk Summary, Errors (top 3) |
+| **Standard** | ~2,800 tokens | Narrative generation, orchestrator steps | All Lite sections + Validation, Sessions table, Key Files, Next Steps, Todos |
+| **Deep** | ~8,000 tokens | On-demand deep analysis | All Standard sections + Narrative text, extended file list, extended sessions |
+
+**Export API**:
+- `ade.packs.getLaneExport({ laneId, level })` — lane-scoped export
+- `ade.packs.getProjectExport({ level })` — project-scoped export
+- `ade.packs.getConflictExport({ laneId, peerLaneId?, level })` — conflict-scoped export
+
+**Export Structure** (`PackExport` type):
+```typescript
+type PackExport = {
+  packKey: string;               // e.g. "lane:lane-123"
+  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  level: "lite" | "standard" | "deep";
+  header: Record<string, unknown>; // ade.context.v1 header fence content
+  content: string;               // Bounded export markdown (includes header fence + markers)
+  approxTokens: number;          // Approximate token count
+  maxTokens: number;             // Budget limit for this level
+  truncated: boolean;            // Whether any section was truncated
+  warnings: string[];            // Truncation warnings, missing data notes
+};
+```
+
+**Security**: All exports are passed through `redactSecrets()` before leaving the local machine. This strips API keys, tokens, private keys, and GitHub PATs regardless of provider mode.
+
+**Machine-Readable Header**: Every export includes a JSON code fence at the top with schema `ade.context.v1`, containing identity, scope, git snapshot, version metadata, and provider info. Consumers can parse the header programmatically for routing and auditing.
+
+**Conflict Risk Summary**: Lane exports always include a bounded conflict risk summary derived from the latest prediction data (status, top risky peers, last prediction time, coverage info when truncated).
+
+### Pack Retention & Cleanup
+
+Packs are cleaned up automatically to prevent unbounded disk growth.
+
+**Retention policy**:
+
+| Parameter | Value |
+|-----------|-------|
+| Active lane retention | Indefinite (always kept) |
+| Max archived lanes | 25 most recent (by archive time) |
+| Age limit for archived | 14 days |
+| Cleanup interval | Every 60 minutes (hourly) |
+
+**Cleanup logic**:
+1. Active lanes: all pack files retained indefinitely.
+2. Archived lanes: sorted by archive time (newest first). Keep newest 25 by count; delete if older than 14 days OR not in the top 25.
+3. Associated conflict predictions and v2 conflict packs are cleaned alongside their lane packs.
+4. Cleanup runs asynchronously after `refreshLanePack()` completes (non-blocking).
+
+### Orchestrator Delta Consumption
+
+Orchestrators and agents can consume pack changes incrementally using the delta feed pattern:
+
+```
+1. Track cursor: sinceIso timestamp from last checkpoint
+2. Read new pack events:
+   await ade.packs.listEventsSince({ packKey, sinceIso, limit: 200 })
+3. If material change detected:
+   - Fetch head version: ade.packs.getHeadVersion({ packKey })
+   - Diff against last-seen: ade.packs.diffVersions({ fromId, toId })
+4. For agent context:
+   - Get bounded export: ade.packs.getLaneExport({ laneId, level: "lite" })
+   - Secrets are redacted automatically
+   - Send to agent
+```
+
+**Why bounded exports instead of full packs?** Agents consume token-budgeted exports, not raw pack markdown. This keeps context windows clean, enables incremental updates via diffs, and allows Lite/Standard by default with Deep on-demand.
+
+### Auto-Narrative Pipeline
+
+When a Hosted or BYOK provider is configured, the job engine automatically generates AI narratives after every deterministic pack refresh:
+
+```
+Deterministic Pack Refresh Complete
+  ↓
+IF providerMode = "hosted" or "byok":
+  ↓
+  Build LaneExportStandard (~2,800 tokens)
+    ↓
+  Redact all secrets
+    ↓
+  Submit AI job (narrative_requested event)
+    ↓
+  Poll for completion
+    ↓
+  Apply narrative via marker-based replacement
+  (between ADE_NARRATIVE_START / ADE_NARRATIVE_END)
+    ↓
+  Create new pack version + narrative_update event
+    ↓
+ELSE IF providerMode = "guest":
+  Narrative stays as template placeholder
+```
+
+Narrative metadata is recorded in the pack event payload: `providerMode`, `jobId`, `provider`, `model`, `inputTokens`, `outputTokens`, `latencyMs`, `exportLevel`, `approxTokens`.
 
 ### Current State
 
-> **Note**: The pack service currently generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for all local workflows. LLM-powered narratives will be introduced when the LLM gateway is available in Phase 6, and integrated into the pack pipeline in Phase 8.
+> **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a Hosted or BYOK provider is configured and available, narrative updates can be applied and are recorded as pack events and immutable version snapshots. Bounded exports (Lite/Standard/Deep) are available for orchestrator and AI consumption.
+
+---
+
+## 2026-02-16 Addendum — Context Freshness + Omission Metadata
+
+### Global docs freshness tracking
+
+Project context now fingerprints core docs and refreshes bootstrap context when docs change.
+
+Tracked paths include:
+
+- `docs/PRD.md`
+- `docs/architecture/*`
+- `docs/features/*`
+
+Manifest metadata now includes:
+
+- `contextFingerprint`
+- `contextVersion`
+- `lastDocsRefreshAt`
+- `docsStaleReason` (when docs cannot be refreshed/read)
+
+### Deterministic omission metadata
+
+Pack exports and deltas now carry optional omission metadata:
+
+- `clipReason`
+- `omittedSections`
+
+These fields are additive and backward compatible. Legacy consumers can ignore them.
+
+### Conflict freshness metadata in lane manifests
+
+Lane manifests now include conflict freshness signals:
+
+- `lastConflictRefreshAt`
+- `predictionStalenessMs`
+- `stalePolicy.ttlMs`
+- `pairwisePairsComputed`
+- `pairwisePairsTotal`
+- `unresolvedResolutionState`
+
+### UI connections
+
+- Lane inspector `Packs` view shows refreshed exports and omission warnings.
+- Settings `Hosted` view surfaces mirror sync/cleanup status and context fallback counters.
+
+---
+
+## 2026-02-16 Addendum — Context Hardening
+
+### Structured terminal summaries
+
+Lane pack generation now parses high-signal final terminal summaries and records:
+
+- `summarySource` (`explicit_final_block` or `heuristic_tail`)
+- `summaryConfidence` (`high` or `medium`)
+- deterministic omission tags for clipped summary/file extraction
+
+These markers are included in the `## Sessions` section and preserved in pack history.
+
+### Project/global context in narratives
+
+Narrative jobs now include:
+
+- `LaneExportStandard` (`packBody`)
+- `ProjectExportLite` (`projectContext`)
+- omission metadata and context refs (`projectContextRefs`, `projectContextMeta`)
+
+### ADE-managed minimized docs
+
+ADE now maintains first-class context docs:
+
+- `docs/PRD.ade.md`
+- `docs/architecture/ARCHITECTURE.ade.md`
+
+Model-facing context prefers these minimized docs when present. If canonical docs are too large, deterministic generation emits explicit `omitted_due_size` notes.
+
