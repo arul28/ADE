@@ -455,11 +455,11 @@ export function TerminalsPage() {
                     size="sm"
                     onClick={() => {
                       selectLane(selectedSession.laneId);
-                      navigate(`/lanes?laneId=${encodeURIComponent(selectedSession.laneId)}&inspectorTab=packs`);
+                      navigate(`/lanes?laneId=${encodeURIComponent(selectedSession.laneId)}&inspectorTab=context`);
                     }}
-                    title="Open lane pack"
+                    title="Open lane context"
                   >
-                    Packs
+                    Context
                   </Button>
                 </div>
               </div>

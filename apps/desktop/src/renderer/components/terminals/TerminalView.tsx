@@ -132,6 +132,8 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       return true;
     };
 
+    let hasFittedOnce = false;
+
     const doFit = () => {
       if (cancelled) return;
       if (!ensureOpen()) return;
@@ -145,10 +147,17 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       }
       const next = { cols: term.cols, rows: term.rows };
       if (!Number.isFinite(next.cols) || !Number.isFinite(next.rows) || next.cols <= 0 || next.rows <= 0) return;
+      hasFittedOnce = true;
       const prev = lastDimsRef.current;
       if (!prev || prev.cols !== next.cols || prev.rows !== next.rows) {
         lastDimsRef.current = next;
         window.ade.pty.resize({ ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
+      }
+      // Force xterm to redraw all visible rows to prevent stale/garbled content.
+      try {
+        term.refresh(0, term.rows - 1);
+      } catch {
+        // Ignore if terminal was disposed.
       }
     };
 
@@ -161,25 +170,44 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       });
     };
 
-    // Allow layout to settle before first fit (helps in StrictMode/dev + tab switching).
+    // Allow layout to settle before first fit. Use staggered delays to
+    // handle complex layouts (PaneTilingLayout, route transitions) that
+    // may not have final dimensions on the first animation frame.
+    let settleTimer1: ReturnType<typeof setTimeout> | null = null;
+    let settleTimer2: ReturnType<typeof setTimeout> | null = null;
     initialRafId = requestAnimationFrame(() => {
       initialRafId = null;
-      scheduleFit();
+      requestAnimationFrame(() => {
+        doFit();
+        // Additional delayed fits to catch late layout settling after route changes.
+        settleTimer1 = setTimeout(() => { settleTimer1 = null; doFit(); }, 120);
+        settleTimer2 = setTimeout(() => { settleTimer2 = null; doFit(); }, 350);
+      });
     });
 
-    // Try to hydrate recent output so switching tabs doesn't feel like losing context.
-    window.ade.sessions
-      .readTranscriptTail({ sessionId, maxBytes: 80_000 })
-      .then((text) => {
-        if (cancelled) return;
-        if (!text.trim().length) return;
-        try {
-          term.write(text);
-        } catch {
-          // Ignore writes after disposal/unmount.
-        }
-      })
-      .catch(() => {});
+    // Hydrate recent output AFTER initial fit so text wraps to correct column width.
+    // We wait until the first successful fit (hasFittedOnce) before writing, retrying
+    // briefly if layout hasn't settled yet.
+    const hydrateTranscript = () => {
+      window.ade.sessions
+        .readTranscriptTail({ sessionId, maxBytes: 80_000 })
+        .then((text) => {
+          if (cancelled) return;
+          if (!text.trim().length) return;
+          try {
+            term.write(text);
+            // Redraw after hydration to ensure correct rendering.
+            requestAnimationFrame(() => {
+              try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
+            });
+          } catch {
+            // Ignore writes after disposal/unmount.
+          }
+        })
+        .catch(() => {});
+    };
+    // Wait a short moment for the initial fit to complete before hydrating.
+    const hydrateTimer = setTimeout(() => { if (!cancelled) hydrateTranscript(); }, 180);
 
     const dataSub = term.onData((data) => {
       if (cancelled) return;
@@ -191,8 +219,10 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       const mod = isMac ? ev.metaKey : ev.ctrlKey;
       const key = ev.key.toLowerCase();
 
+      if (ev.type !== "keydown") return true;
+
       // Cmd+V: handle paste
-      if (mod && key === "v" && ev.type === "keydown") {
+      if (mod && key === "v") {
         navigator.clipboard
           .readText()
           .then((text) => {
@@ -204,7 +234,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       }
 
       // Cmd+C: copy if selection exists, otherwise let xterm handle (SIGINT)
-      if (mod && key === "c" && ev.type === "keydown") {
+      if (mod && key === "c") {
         const selection = term.getSelection();
         if (selection) {
           navigator.clipboard.writeText(selection).catch(() => {});
@@ -212,6 +242,27 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         }
         // No selection - let xterm send SIGINT
         return true;
+      }
+
+      // Shift+Enter: send newline (same as Enter)
+      if (ev.shiftKey && ev.key === "Enter") {
+        ev.preventDefault();
+        window.ade.pty.write({ ptyId, data: "\r" }).catch(() => {});
+        return false;
+      }
+
+      // Option+Backspace (Mac): delete previous word
+      if (isMac && ev.altKey && ev.key === "Backspace") {
+        ev.preventDefault();
+        window.ade.pty.write({ ptyId, data: "\x1b\x7f" }).catch(() => {});
+        return false;
+      }
+
+      // Cmd+Backspace (Mac): delete to beginning of line
+      if (isMac && ev.metaKey && ev.key === "Backspace") {
+        ev.preventDefault();
+        window.ade.pty.write({ ptyId, data: "\x15" }).catch(() => {});
+        return false;
       }
 
       // Let ALL other keys pass through to xterm
@@ -242,32 +293,62 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     const intObs = new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        if (entry.isIntersecting) scheduleFit();
+        if (entry.isIntersecting) {
+          // Double-RAF to let layout fully settle before refitting.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => { doFit(); });
+          });
+        }
       }
     });
     intObs.observe(el);
 
-    // Watch for visibility changes via CSS class toggling (invisible/pointer-events-none)
+    // Re-fit when app regains focus or document becomes visible again
+    // (handles navigating away from the tab and coming back).
+    const onVisibilityChange = () => {
+      if (cancelled || document.hidden) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { doFit(); });
+      });
+    };
+    const onWindowFocus = () => {
+      if (cancelled) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { doFit(); });
+      });
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onWindowFocus);
+
+    // Watch for visibility changes via CSS class toggling (invisible/pointer-events-none).
+    // Walk up to 4 ancestor levels to catch visibility toggling at any wrapper level
+    // (e.g. PaneTilingLayout panels, tab content wrappers, route containers).
     const mutObs = new MutationObserver(() => {
       if (cancelled) return;
-      // Check if our container is currently visible
-      const parentEl = el.parentElement;
-      if (!parentEl) return;
-      const isHidden = parentEl.classList.contains('invisible');
-      if (!isHidden && el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) {
-        // Terminal just became visible - schedule a double-RAF fit
+      // Check if our container is currently visible (no ancestor has 'invisible')
+      let ancestor: HTMLElement | null = el.parentElement;
+      while (ancestor) {
+        if (ancestor.classList.contains('invisible')) return; // still hidden
+        ancestor = ancestor.parentElement;
+        // Only walk a few levels to avoid perf cost
+        if (ancestor && ancestor === document.body) break;
+      }
+      if (el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) {
+        // Terminal just became visible - schedule a staggered fit
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            doFit();
-          });
+          requestAnimationFrame(() => { doFit(); });
         });
       }
     });
 
-    // Observe the parent element for class changes
-    const parentEl = el.parentElement;
-    if (parentEl) {
-      mutObs.observe(parentEl, { attributes: true, attributeFilter: ['class'] });
+    // Observe up to 4 ancestor elements for class changes to catch visibility toggling
+    // at any wrapper level in the component hierarchy.
+    const observedAncestors: HTMLElement[] = [];
+    let ancestor: HTMLElement | null = el.parentElement;
+    for (let depth = 0; depth < 4 && ancestor; depth++) {
+      observedAncestors.push(ancestor);
+      mutObs.observe(ancestor, { attributes: true, attributeFilter: ['class', 'style'] });
+      ancestor = ancestor.parentElement;
     }
 
     termRef.current = term;
@@ -276,40 +357,20 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
 
     return () => {
       cancelled = true;
-      if (initialRafId != null) {
-        cancelAnimationFrame(initialRafId);
-      }
-      if (fitRafId != null) {
-        cancelAnimationFrame(fitRafId);
-      }
-      try {
-        unsubData();
-        unsubExit();
-      } catch {
-        // ignore
-      }
-      try {
-        dataSub.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        obs.disconnect();
-      } catch {
-        // ignore
-      }
-      try {
-        intObs.disconnect();
-      } catch {
-        // ignore
-      }
+      if (initialRafId != null) cancelAnimationFrame(initialRafId);
+      if (fitRafId != null) cancelAnimationFrame(fitRafId);
+      if (settleTimer1 != null) clearTimeout(settleTimer1);
+      if (settleTimer2 != null) clearTimeout(settleTimer2);
+      clearTimeout(hydrateTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onWindowFocus);
+      try { unsubData(); unsubExit(); } catch { /* ignore */ }
+      try { dataSub.dispose(); } catch { /* ignore */ }
+      try { obs.disconnect(); } catch { /* ignore */ }
+      try { intObs.disconnect(); } catch { /* ignore */ }
       try { mutObs.disconnect(); } catch { /* ignore */ }
       cancelViewportRaf(term);
-      try {
-        term.dispose();
-      } catch {
-        // ignore
-      }
+      try { term.dispose(); } catch { /* ignore */ }
       termRef.current = null;
       fitRef.current = null;
       resizeObsRef.current = null;

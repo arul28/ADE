@@ -417,6 +417,9 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             <Button size="sm" variant="outline" className="h-7" onClick={() => void window.ade.prs.openInGitHub(pr.id)}>
               Open in GitHub
             </Button>
+            <Button size="sm" variant="outline" className="h-7" onClick={() => navigate("/prs")}>
+              Open PRs Tab
+            </Button>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" className="h-7" onClick={() => void updateDescription()} disabled={loading}>

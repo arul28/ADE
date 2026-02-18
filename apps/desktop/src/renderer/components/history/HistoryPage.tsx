@@ -334,10 +334,10 @@ export function HistoryPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selected.laneId!)}&inspectorTab=packs`)}
-                  title="Open lane packs"
+                  onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selected.laneId!)}&inspectorTab=context`)}
+                  title="Open lane context"
                 >
-                  Open packs
+                  Open context
                 </Button>
               </div>
             ) : null}

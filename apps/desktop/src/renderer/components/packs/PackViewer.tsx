@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import * as Dialog from "@radix-ui/react-dialog";
-import { RefreshCw, Sparkles } from "lucide-react";
-import type { HostedBootstrapConfig, HostedJobStatusResult, HostedStatus, PackEvent, PackSummary, PackVersionSummary } from "../../../shared/types";
+import { RefreshCw } from "lucide-react";
+import type { HostedBootstrapConfig, HostedJobStatusResult, HostedStatus, PackSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -41,52 +40,6 @@ function PackBody({ pack }: { pack: PackSummary | null }) {
   );
 }
 
-function formatPackEvent(ev: PackEvent): { title: string; detail: string; tone: "neutral" | "good" | "warn" | "bad" } {
-  const payload = ev.payload ?? {};
-  const trigger = typeof payload.trigger === "string" ? payload.trigger : typeof payload.reason === "string" ? payload.reason : null;
-  const providerMode = typeof payload.providerMode === "string" ? payload.providerMode : null;
-  const error = typeof payload.error === "string" ? payload.error : null;
-  const jobId = typeof payload.jobId === "string" ? (payload.jobId as string) : null;
-  const jobStatus = typeof payload.status === "string" ? (payload.status as string) : null;
-
-  if (ev.eventType === "refresh_triggered") {
-    return { title: "Pack refreshed", detail: trigger ? `trigger: ${trigger}` : "deterministic refresh", tone: "good" };
-  }
-  if (ev.eventType === "narrative_requested") {
-    return {
-      title: "AI update requested",
-      detail: `${providerMode ? `provider: ${providerMode}` : "provider: ?"}${jobId ? ` · job ${shortId(jobId)}` : ""}${jobStatus ? ` · ${jobStatus}` : ""}${trigger ? ` · trigger: ${trigger}` : ""}`,
-      tone: "neutral"
-    };
-  }
-  if (ev.eventType === "narrative_update") {
-    const provider = typeof payload.provider === "string" ? payload.provider : null;
-    const model = typeof payload.model === "string" ? payload.model : null;
-    const jobId = typeof payload.jobId === "string" ? payload.jobId : null;
-    const suffix = provider || model ? `${provider ?? "hosted"}${model ? ` · ${model}` : ""}` : jobId ? `job ${jobId}` : "updated";
-    if (provider === "mock") {
-      return {
-        title: "AI details updated (mock)",
-        detail: "Hosted backend is in mock mode. Configure the hosted LLM secret/env to enable Gemini Flash.",
-        tone: "warn"
-      };
-    }
-    return { title: "AI details updated", detail: suffix, tone: "good" };
-  }
-  if (ev.eventType === "narrative_failed") {
-    const suffix = `${jobId ? `job ${shortId(jobId)} · ` : ""}${error ?? "unknown error"}`;
-    return { title: "AI update failed", detail: suffix, tone: "bad" };
-  }
-  if (ev.eventType === "version_created") {
-    const vn = payload.versionNumber;
-    return { title: `Version saved${typeof vn === "number" ? ` (v${vn})` : ""}`, detail: "snapshot recorded", tone: "neutral" };
-  }
-  if (ev.eventType === "checkpoint") {
-    return { title: "Checkpoint recorded", detail: "session boundary captured", tone: "neutral" };
-  }
-  return { title: ev.eventType, detail: "", tone: "neutral" };
-}
-
 function hostedReadiness(
   status: HostedStatus | null,
   error: string | null,
@@ -117,6 +70,8 @@ function hostedReadiness(
   return null;
 }
 
+const AI_COOLDOWN_MS = 30_000;
+
 export function PackViewer({ laneId }: { laneId: string | null }) {
   const navigate = useNavigate();
   const providerMode = useAppStore((s) => s.providerMode);
@@ -126,7 +81,6 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
   const [projectPack, setProjectPack] = useState<PackSummary | null>(null);
 
   const [refreshBusy, setRefreshBusy] = useState(false);
-  const [aiBusy, setAiBusy] = useState(false);
   const [aiQueued, setAiQueued] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -137,25 +91,13 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
 
   const [aiJob, setAiJob] = useState<AiJobState | null>(null);
 
-  const [versionsDialogOpen, setVersionsDialogOpen] = useState(false);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versions, setVersions] = useState<PackVersionSummary[]>([]);
-  const [fromVersionId, setFromVersionId] = useState<string | null>(null);
-  const [toVersionId, setToVersionId] = useState<string | null>(null);
-  const [diffBusy, setDiffBusy] = useState(false);
-  const [diffText, setDiffText] = useState<string | null>(null);
-
-  const [eventsDialogOpen, setEventsDialogOpen] = useState(false);
-  const [eventsLoading, setEventsLoading] = useState(false);
-  const [events, setEvents] = useState<PackEvent[]>([]);
-
   const activePack = scope === "project" ? projectPack : lanePack;
-  const activePackKey = activePack?.packKey ?? null;
   const activeMeta = (activePack?.metadata ?? null) as Record<string, unknown> | null;
 
   const lanePackKey = laneId ? `lane:${laneId}` : null;
 
   const refreshTimers = useRef<{ lane?: number | null; project?: number | null }>({});
+  const lastAiTriggerRef = useRef<number>(0);
 
   const fetchLanePack = async () => {
     if (!laneId) return;
@@ -185,7 +127,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     }, 120);
   };
 
-  const refreshDeterministic = async () => {
+  const refreshCombined = async () => {
     setRefreshBusy(true);
     setError(null);
     try {
@@ -196,81 +138,28 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
         if (!laneId) return;
         const pack = await window.ade.packs.refreshLanePack(laneId);
         setLanePack(pack);
-        // Manual lane refresh also refreshes project pack in main.
         await fetchProjectPack().catch(() => {});
+
+        // Rate-limited AI narrative
+        const now = Date.now();
+        if (providerMode !== "guest" && now - lastAiTriggerRef.current >= AI_COOLDOWN_MS) {
+          lastAiTriggerRef.current = now;
+          setAiQueued(true);
+          setAiError(null);
+          try {
+            const aiPack = await window.ade.packs.generateNarrative(laneId);
+            setLanePack(aiPack);
+          } catch (err) {
+            setAiError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setAiQueued(false);
+          }
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshBusy(false);
-    }
-  };
-
-  const updateWithAi = async () => {
-    if (!laneId) return;
-    setAiBusy(true);
-    setAiQueued(true);
-    setAiError(null);
-    setError(null);
-    try {
-      const pack = await window.ade.packs.generateNarrative(laneId);
-      setLanePack(pack);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setAiError(message);
-    } finally {
-      setAiBusy(false);
-      setAiQueued(false);
-    }
-  };
-
-  const openVersions = async () => {
-    if (!activePackKey) return;
-    setVersionsDialogOpen(true);
-    setVersionsLoading(true);
-    setDiffText(null);
-    setError(null);
-    try {
-      const list = await window.ade.packs.listVersions({ packKey: activePackKey, limit: 60 });
-      setVersions(list);
-      setFromVersionId(list[1]?.id ?? list[0]?.id ?? null);
-      setToVersionId(list[0]?.id ?? null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setVersions([]);
-    } finally {
-      setVersionsLoading(false);
-    }
-  };
-
-  const runDiff = async () => {
-    if (!fromVersionId || !toVersionId) return;
-    if (fromVersionId === toVersionId) return;
-    setDiffBusy(true);
-    setError(null);
-    try {
-      const out = await window.ade.packs.diffVersions({ fromId: fromVersionId, toId: toVersionId });
-      setDiffText(out.trim().length ? out : "(no diff)");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDiffBusy(false);
-    }
-  };
-
-  const openActivity = async () => {
-    if (!activePackKey) return;
-    setEventsDialogOpen(true);
-    setEventsLoading(true);
-    setError(null);
-    try {
-      const list = await window.ade.packs.listEvents({ packKey: activePackKey, limit: 120 });
-      setEvents(list);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setEvents([]);
-    } finally {
-      setEventsLoading(false);
     }
   };
 
@@ -404,9 +293,6 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     if (providerMode === "hosted") {
       const ready = hostedReadiness(hostedStatus, hostedError, aiJob);
       if (ready) return ready;
-      if (aiBusy && !aiJob) {
-        return { tone: "neutral" as const, message: "Submitting job…" };
-      }
       if (aiJob?.jobId) {
         const elapsedSec = Math.max(0, Math.floor((Date.now() - aiJob.statusSinceMs) / 1000));
         if (aiJob.status === "queued") {
@@ -423,18 +309,18 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
         }
       }
       if (aiQueued) {
-        return { tone: "neutral" as const, message: "AI update queued… (this will update automatically after pack refresh)." };
+        return { tone: "neutral" as const, message: "AI update queued…" };
       }
-      return { tone: "neutral" as const, message: "AI details update automatically after pack refresh. Use the button to re-run on demand." };
+      return null;
     }
     if (providerMode === "byok") {
       if (aiQueued) {
-        return { tone: "neutral" as const, message: "AI update queued… (this will update automatically after pack refresh)." };
+        return { tone: "neutral" as const, message: "AI update queued…" };
       }
-      return { tone: "neutral" as const, message: "BYOK enabled. AI details update automatically after pack refresh (if configured). Use the button to re-run on demand." };
+      return null;
     }
     return null;
-  }, [scope, providerMode, hostedStatus, hostedError, aiQueued, aiJob, aiBusy]);
+  }, [scope, providerMode, hostedStatus, hostedError, aiQueued, aiJob]);
 
   const aiMetaHint = useMemo(() => {
     if (scope !== "lane") return null;
@@ -514,10 +400,10 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-lg bg-muted/30 p-0.5">
+          <div className="flex items-center rounded-lg border border-border/40 bg-card/50 p-0.5">
             <button
               type="button"
-              className={cn(scopeTrigger, scope === "lane" ? "bg-muted text-fg shadow-sm" : "text-muted-fg hover:bg-muted/50 hover:text-fg")}
+              className={cn(scopeTrigger, scope === "lane" ? "bg-muted text-fg shadow-sm border border-accent/40" : "text-muted-fg hover:bg-muted/50 hover:text-fg border border-transparent")}
               onClick={() => setScope("lane")}
               title="Lane pack"
             >
@@ -525,7 +411,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
             </button>
             <button
               type="button"
-              className={cn(scopeTrigger, scope === "project" ? "bg-muted text-fg shadow-sm" : "text-muted-fg hover:bg-muted/50 hover:text-fg")}
+              className={cn(scopeTrigger, scope === "project" ? "bg-muted text-fg shadow-sm border border-accent/40" : "text-muted-fg hover:bg-muted/50 hover:text-fg border border-transparent")}
               onClick={() => setScope("project")}
               title="Project pack"
             >
@@ -536,29 +422,12 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" title="Refresh deterministic pack" onClick={() => refreshDeterministic().catch(() => {})}>
+          <Button variant="ghost" size="sm" title="Refresh pack (includes AI narrative)" onClick={() => refreshCombined().catch(() => {})} disabled={refreshBusy}>
             <RefreshCw className={cn("h-4 w-4", refreshBusy && "animate-spin")} />
             {refreshBusy ? "Refreshing" : "Refresh"}
           </Button>
-
-          {scope === "lane" ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={aiBusy || aiQueued || providerMode === "guest"}
-              title={providerMode === "guest" ? "Enable Hosted/BYOK to use AI details" : "Update pack details with AI"}
-              onClick={() => void updateWithAi()}
-            >
-              <Sparkles className={cn("h-4 w-4", (aiBusy || aiQueued) && "animate-pulse")} />
-              {aiBusy || aiQueued ? "Updating…" : "Update pack details with AI"}
-            </Button>
-          ) : null}
-
-          <Button variant="outline" size="sm" disabled={!activePackKey} onClick={() => void openActivity()}>
-            Activity
-          </Button>
-          <Button variant="outline" size="sm" disabled={!activePackKey} onClick={() => void openVersions()}>
-            Versions
+          <Button variant="outline" size="sm" onClick={() => navigate("/context")}>
+            Open Context Tab
           </Button>
         </div>
       </div>
@@ -657,145 +526,6 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
 
       <PackBody pack={activePack} />
       {activePack?.path ? <div className="truncate text-[11px] text-muted-fg">{activePack.path}</div> : null}
-
-      <Dialog.Root open={versionsDialogOpen} onOpenChange={(open) => setVersionsDialogOpen(open)}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <Dialog.Title className="text-sm font-semibold">Pack Versions</Dialog.Title>
-              <Dialog.Close asChild>
-                <Button variant="ghost" size="sm">
-                  Close
-                </Button>
-              </Dialog.Close>
-            </div>
-            {versionsLoading ? (
-              <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">Loading versions…</div>
-            ) : (
-              <div className="grid min-h-0 grid-cols-[320px_1fr] gap-3">
-                <div className="max-h-[65vh] overflow-auto rounded-lg bg-card/30 p-2">
-                  {versions.length === 0 ? (
-                    <div className="p-2 text-xs text-muted-fg">No versions recorded yet.</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {versions.map((v) => (
-                        <div key={v.id} className="rounded-lg bg-muted/20 p-2 text-xs">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="font-semibold text-fg">v{v.versionNumber}</div>
-                            <div className="text-[11px] text-muted-fg">{new Date(v.createdAt).toLocaleString()}</div>
-                          </div>
-                          <div className="mt-1 text-[11px] text-muted-fg font-mono break-all">{v.contentHash.slice(0, 12)}</div>
-                          <div className="mt-2 grid grid-cols-2 gap-2">
-                            <label className="flex items-center gap-2 text-[11px] text-muted-fg">
-                              <input type="radio" name="fromVersion" checked={fromVersionId === v.id} onChange={() => setFromVersionId(v.id)} />
-                              from
-                            </label>
-                            <label className="flex items-center gap-2 text-[11px] text-muted-fg">
-                              <input type="radio" name="toVersion" checked={toVersionId === v.id} onChange={() => setToVersionId(v.id)} />
-                              to
-                            </label>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="max-h-[65vh] overflow-auto rounded-lg bg-card/30 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs text-muted-fg">Diff</div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={diffBusy || !fromVersionId || !toVersionId || fromVersionId === toVersionId}
-                      onClick={() => void runDiff()}
-                    >
-                      {diffBusy ? "Diffing…" : "Run Diff"}
-                    </Button>
-                  </div>
-                  {diffText ? (
-                    <pre className="mt-2 max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-[11px] leading-relaxed text-fg">
-                      {diffText}
-                    </pre>
-                  ) : (
-                    <div className="mt-2 text-xs text-muted-fg">Select two versions and run diff.</div>
-                  )}
-                </div>
-              </div>
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
-
-      <Dialog.Root open={eventsDialogOpen} onOpenChange={(open) => setEventsDialogOpen(open)}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <Dialog.Title className="text-sm font-semibold">Activity</Dialog.Title>
-              <Dialog.Close asChild>
-                <Button variant="ghost" size="sm">
-                  Close
-                </Button>
-              </Dialog.Close>
-            </div>
-            {eventsLoading ? (
-              <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">Loading activity…</div>
-            ) : events.length === 0 ? (
-              <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">No activity recorded yet.</div>
-            ) : (
-              <div className="max-h-[70vh] overflow-auto rounded-lg bg-card/30">
-                <div className="divide-y divide-border/10">
-                  {events.map((ev) => {
-                    const formatted = formatPackEvent(ev);
-                    const opId = typeof ev.payload?.operationId === "string" ? (ev.payload.operationId as string) : null;
-                    return (
-                      <div key={ev.id} className="px-3 py-2 text-xs">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div
-                              className={cn(
-                                "font-semibold",
-                                formatted.tone === "bad"
-                                  ? "text-red-200"
-                                  : formatted.tone === "warn"
-                                    ? "text-amber-200"
-                                    : formatted.tone === "good"
-                                      ? "text-emerald-200"
-                                      : "text-fg"
-                              )}
-                            >
-                              {formatted.title}
-                            </div>
-                            {formatted.detail ? <div className="mt-0.5 text-[11px] text-muted-fg">{formatted.detail}</div> : null}
-                          </div>
-                          <div className="shrink-0 text-right text-[11px] text-muted-fg">
-                            <div>{new Date(ev.createdAt).toLocaleString()}</div>
-                            {opId ? (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="mt-1 h-6 px-2 text-[11px]"
-                                onClick={() => {
-                                  setEventsDialogOpen(false);
-                                  navigate(`/history?operationId=${encodeURIComponent(opId)}`);
-                                }}
-                                title="View operation in History"
-                              >
-                                View operation
-                              </Button>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
     </div>
   );
 }

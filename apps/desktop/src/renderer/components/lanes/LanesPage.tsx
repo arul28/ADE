@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Pin, Play, Plus, Search, Terminal, X } from "lucide-react";
+import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Pin, Plus, Search, Terminal, X } from "lucide-react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -93,16 +93,6 @@ function mergeUnique(...lists: string[][]): string[] {
     }
   }
   return out;
-}
-
-function toggleFilterToken(query: string, token: string): string {
-  const normalizedToken = token.toLowerCase().trim();
-  if (!normalizedToken.length) return query;
-  const tokens = query.trim().split(/\s+/).map((part) => part.toLowerCase()).filter(Boolean);
-  const next = new Set(tokens);
-  if (next.has(normalizedToken)) next.delete(normalizedToken);
-  else next.add(normalizedToken);
-  return Array.from(next).join(" ");
 }
 
 function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, token: string): boolean {
@@ -281,6 +271,9 @@ export function LanesPage() {
   const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
+  const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
+  const addLaneDropdownRef = useRef<HTMLDivElement>(null);
+
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
@@ -344,6 +337,17 @@ export function LanesPage() {
     return () => document.removeEventListener("mousedown", handler);
   }, [branchDropdownOpen]);
 
+  useEffect(() => {
+    if (!addLaneDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (addLaneDropdownRef.current && !addLaneDropdownRef.current.contains(e.target as Node)) {
+        setAddLaneDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [addLaneDropdownOpen]);
+
   /* ---- Conflict loading ---- */
 
   const loadConflictStatuses = useCallback(async () => {
@@ -401,7 +405,7 @@ export function LanesPage() {
     const inspectorTab = params.get("inspectorTab");
     if (laneId) {
       selectLane(laneId);
-      if (inspectorTab === "terminals" || inspectorTab === "packs" || inspectorTab === "stack" || inspectorTab === "merge") {
+      if (inspectorTab === "terminals" || inspectorTab === "context" || inspectorTab === "stack" || inspectorTab === "merge") {
         setLaneInspectorTab(laneId, inspectorTab);
       }
       if (params.get("focus") === "single") {
@@ -551,10 +555,6 @@ export function LanesPage() {
   }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId]);
 
   /* ---- Lane management actions ---- */
-
-  const activeFilterTokens = useMemo(() => {
-    return new Set(laneFilter.trim().toLowerCase().split(/\s+/).filter(Boolean));
-  }, [laneFilter]);
 
   const currentPrimaryBranch = useMemo(
     () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
@@ -927,93 +927,57 @@ export function LanesPage() {
               </button>
             ) : null}
           </div>
-          <Button
-            size="sm"
-            variant={activeFilterTokens.has("is:dirty") ? "primary" : "outline"}
-            className="h-7 px-2 text-[11px]"
-            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:dirty"))}
-          >
-            dirty
-          </Button>
-          <Button
-            size="sm"
-            variant={activeFilterTokens.has("is:pinned") ? "primary" : "outline"}
-            className="h-7 px-2 text-[11px]"
-            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:pinned"))}
-          >
-            pinned
-          </Button>
-          <Button
-            size="sm"
-            variant={activeFilterTokens.has("type:worktree") ? "primary" : "outline"}
-            className="h-7 px-2 text-[11px]"
-            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "type:worktree"))}
-          >
-            worktree
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7"
-            disabled={!canManageLane}
-            onClick={() => {
-              setLaneActionError(null);
-              setDeleteForce(false);
-              setDeleteMode("worktree");
-              setDeleteRemoteName("origin");
-              setDeleteConfirmText("");
-              setManageOpen(true);
-            }}
-            title={canManageLane ? `Manage ${managedLane?.name}` : "Select a non-primary lane to manage"}
-          >
-            Manage lane
-          </Button>
-
-          <div className="h-4 w-px bg-border/20" />
-
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => {
-            setCreateLaneName("");
-            setCreateParentLaneId("");
-            setCreateAsChild(false);
-            setCreateBaseBranch("");
-            const primary = lanes.find((l) => l.laneType === "primary");
-            if (primary) {
-              window.ade.git.listBranches({ laneId: primary.id })
-                .then((branches) => {
-                  setCreateBranches(branches);
-                  const current = branches.find((b) => b.isCurrent && !b.isRemote);
-                  if (current) setCreateBaseBranch(current.name);
-                })
-                .catch(() => {});
-            }
-            setCreateOpen(true);
-          }}>
-            <Plus className="h-3 w-3 mr-0.5" /> Lane
-          </Button>
-          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => { setAttachName(""); setAttachPath(""); setAttachOpen(true); }}>
-            <Link2 className="h-3 w-3 mr-0.5" /> Attach
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            className="h-7 px-2 text-[11px]"
-            disabled={!selectedLaneId}
-            onClick={() => {
-              if (!selectedLaneId) return;
-              window.ade.pty
-                .create({ laneId: selectedLaneId, cols: 100, rows: 30, title: "Shell" })
-                .then(({ sessionId }) => {
-                  focusSession(sessionId);
-                  navigate(`/lanes?laneId=${encodeURIComponent(selectedLaneId)}&sessionId=${encodeURIComponent(sessionId)}`);
-                })
-                .catch(() => {});
-            }}
-          >
-            <Play className="h-3 w-3 mr-0.5" /> Terminal
-          </Button>
+          {/* Add Lane dropdown */}
+          <div className="relative" ref={addLaneDropdownRef}>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
+              <Plus className="h-3 w-3 mr-0.5" /> Lane <ChevronDown className="h-3 w-3 ml-0.5 opacity-60" />
+            </Button>
+            {addLaneDropdownOpen ? (
+              <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+                  onClick={() => {
+                    setAddLaneDropdownOpen(false);
+                    setCreateLaneName("");
+                    setCreateParentLaneId("");
+                    setCreateAsChild(false);
+                    setCreateBaseBranch("");
+                    const primary = lanes.find((l) => l.laneType === "primary");
+                    if (primary) {
+                      window.ade.git.listBranches({ laneId: primary.id })
+                        .then((branches) => {
+                          setCreateBranches(branches);
+                          const current = branches.find((b) => b.isCurrent && !b.isRemote);
+                          if (current) setCreateBaseBranch(current.name);
+                        })
+                        .catch(() => {});
+                    }
+                    setCreateOpen(true);
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Create new lane
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+                  onClick={() => {
+                    setAddLaneDropdownOpen(false);
+                    setAttachName("");
+                    setAttachPath("");
+                    setAttachOpen(true);
+                  }}
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  Add existing worktree as lane
+                </button>
+              </div>
+            ) : null}
+          </div>
 
           <div className="ml-auto text-[11px] text-muted-fg">
-            {filteredLanes.length}/{sortedLanes.length} · shift-click split · j/k move · [ ] cycle · / filter
+            {filteredLanes.length}/{sortedLanes.length} · shift-click split
           </div>
         </div>
       </div>
@@ -1035,7 +999,7 @@ export function LanesPage() {
               key={lane.id}
               type="button"
               className={cn(
-                "inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-xs transition-colors",
+                "group inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-xs transition-colors",
                 isSelected
                   ? "bg-accent/20 text-fg shadow-card ring-1 ring-accent/40 font-semibold"
                   : isVisible
@@ -1055,9 +1019,7 @@ export function LanesPage() {
             >
               {isPrimary ? (
                 <Home className="h-3.5 w-3.5 text-emerald-700" />
-              ) : (
-                <Pin className={cn("h-3.5 w-3.5", isPinned ? "text-amber-700" : "text-muted-fg/60")} />
-              )}
+              ) : null}
               <span className={cn("h-2.5 w-2.5 rounded-full", conflictDotClass(conflictStatus?.status))} />
               <span className="truncate">{lane.name}</span>
               {isPrimary ? <span className="rounded-lg bg-emerald-500/15 px-1 text-[10px] text-emerald-700">{lane.branchRef}</span> : null}
@@ -1078,8 +1040,10 @@ export function LanesPage() {
               {!isPrimary ? (
                 <span
                   className={cn(
-                    "inline-flex h-4 w-4 items-center justify-center rounded-lg",
-                    isPinned ? "bg-amber-100 text-amber-800" : "text-muted-fg hover:text-fg"
+                    "inline-flex h-4 w-4 items-center justify-center rounded-lg transition-opacity",
+                    isPinned
+                      ? "bg-amber-100 text-amber-800 opacity-100"
+                      : "text-muted-fg hover:text-fg opacity-0 group-hover:opacity-100"
                   )}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -1208,18 +1172,20 @@ export function LanesPage() {
 
       {/* Fullscreen lane overlay */}
       {expandedLaneId && lanesById.has(expandedLaneId) ? (
-        <div className="fixed inset-0 z-[80] bg-bg flex flex-col">
-          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold">{lanesById.get(expandedLaneId)?.name}</span>
-              <span className="text-xs text-muted-fg">Fullscreen</span>
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => setExpandedLaneId(null)} title="Exit fullscreen (Esc)">
+        <div className="fixed inset-0 z-[100] bg-bg flex flex-col">
+          <div className="absolute top-2 right-3 z-10">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-xl bg-bg/80 backdrop-blur-sm shadow-card hover:bg-muted/60"
+              onClick={() => setExpandedLaneId(null)}
+              title="Exit fullscreen (Esc)"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>
           <PaneTilingLayout
-            layoutId={`lanes:tiling:v3:fullscreen:${expandedLaneId}`}
+            layoutId={`lanes:tiling:v3:${expandedLaneId}`}
             tree={LANES_TILING_TREE}
             panes={getPaneConfigs(expandedLaneId)}
             className="flex-1 min-h-0"
@@ -1248,6 +1214,19 @@ export function LanesPage() {
                 }}>Copy Path</button>
               </>
             ) : null}
+            {ctxLane && ctxLane.laneType !== "primary" ? (
+              <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+                const ctxLaneId = laneContextMenu.laneId;
+                setLaneContextMenu(null);
+                selectLane(ctxLaneId);
+                setLaneActionError(null);
+                setDeleteForce(false);
+                setDeleteMode("worktree");
+                setDeleteRemoteName("origin");
+                setDeleteConfirmText("");
+                setManageOpen(true);
+              }}>Manage Lane</button>
+            ) : null}
           </div>
         );
       })() : null}
@@ -1255,7 +1234,7 @@ export function LanesPage() {
       {/* Manage Lane dialog */}
       <Dialog.Root open={manageOpen} onOpenChange={setManageOpen}>
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
           <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
             <div className="mb-4 flex items-center justify-between gap-3">
               <Dialog.Title className="text-lg font-semibold">Manage lane</Dialog.Title>
@@ -1326,7 +1305,7 @@ export function LanesPage() {
       {/* Create Lane dialog */}
       <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
           <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
@@ -1437,7 +1416,7 @@ export function LanesPage() {
       {/* Attach Lane dialog */}
       <Dialog.Root open={attachOpen} onOpenChange={setAttachOpen}>
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
           <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Attach lane</Dialog.Title>
