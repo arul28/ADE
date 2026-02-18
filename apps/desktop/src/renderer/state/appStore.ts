@@ -49,7 +49,7 @@ type AppState = {
   switchProjectToPath: (rootPath: string) => Promise<void>;
 };
 
-export type LaneInspectorTab = "terminals" | "packs" | "stack" | "merge";
+export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,

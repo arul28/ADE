@@ -191,8 +191,10 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       const mod = isMac ? ev.metaKey : ev.ctrlKey;
       const key = ev.key.toLowerCase();
 
+      if (ev.type !== "keydown") return true;
+
       // Cmd+V: handle paste
-      if (mod && key === "v" && ev.type === "keydown") {
+      if (mod && key === "v") {
         navigator.clipboard
           .readText()
           .then((text) => {
@@ -204,7 +206,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       }
 
       // Cmd+C: copy if selection exists, otherwise let xterm handle (SIGINT)
-      if (mod && key === "c" && ev.type === "keydown") {
+      if (mod && key === "c") {
         const selection = term.getSelection();
         if (selection) {
           navigator.clipboard.writeText(selection).catch(() => {});
@@ -212,6 +214,27 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         }
         // No selection - let xterm send SIGINT
         return true;
+      }
+
+      // Shift+Enter: send newline (same as Enter)
+      if (ev.shiftKey && ev.key === "Enter") {
+        ev.preventDefault();
+        window.ade.pty.write({ ptyId, data: "\r" }).catch(() => {});
+        return false;
+      }
+
+      // Option+Backspace (Mac): delete previous word
+      if (isMac && ev.altKey && ev.key === "Backspace") {
+        ev.preventDefault();
+        window.ade.pty.write({ ptyId, data: "\x1b\x7f" }).catch(() => {});
+        return false;
+      }
+
+      // Cmd+Backspace (Mac): delete to beginning of line
+      if (isMac && ev.metaKey && ev.key === "Backspace") {
+        ev.preventDefault();
+        window.ade.pty.write({ ptyId, data: "\x15" }).catch(() => {});
+        return false;
       }
 
       // Let ALL other keys pass through to xterm

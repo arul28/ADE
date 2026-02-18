@@ -95,16 +95,6 @@ function mergeUnique(...lists: string[][]): string[] {
   return out;
 }
 
-function toggleFilterToken(query: string, token: string): string {
-  const normalizedToken = token.toLowerCase().trim();
-  if (!normalizedToken.length) return query;
-  const tokens = query.trim().split(/\s+/).map((part) => part.toLowerCase()).filter(Boolean);
-  const next = new Set(tokens);
-  if (next.has(normalizedToken)) next.delete(normalizedToken);
-  else next.add(normalizedToken);
-  return Array.from(next).join(" ");
-}
-
 function matchesLaneFilterToken(lane: LaneSummary, isPinned: boolean, token: string): boolean {
   const normalized = token.trim().toLowerCase();
   if (!normalized.length) return true;
@@ -401,7 +391,7 @@ export function LanesPage() {
     const inspectorTab = params.get("inspectorTab");
     if (laneId) {
       selectLane(laneId);
-      if (inspectorTab === "terminals" || inspectorTab === "packs" || inspectorTab === "stack" || inspectorTab === "merge") {
+      if (inspectorTab === "terminals" || inspectorTab === "context" || inspectorTab === "stack" || inspectorTab === "merge") {
         setLaneInspectorTab(laneId, inspectorTab);
       }
       if (params.get("focus") === "single") {
@@ -551,10 +541,6 @@ export function LanesPage() {
   }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId]);
 
   /* ---- Lane management actions ---- */
-
-  const activeFilterTokens = useMemo(() => {
-    return new Set(laneFilter.trim().toLowerCase().split(/\s+/).filter(Boolean));
-  }, [laneFilter]);
 
   const currentPrimaryBranch = useMemo(
     () => primaryBranches.find((branch) => branch.isCurrent)?.name ?? primaryLane?.branchRef ?? "",
@@ -927,50 +913,6 @@ export function LanesPage() {
               </button>
             ) : null}
           </div>
-          <Button
-            size="sm"
-            variant={activeFilterTokens.has("is:dirty") ? "primary" : "outline"}
-            className="h-7 px-2 text-[11px]"
-            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:dirty"))}
-          >
-            dirty
-          </Button>
-          <Button
-            size="sm"
-            variant={activeFilterTokens.has("is:pinned") ? "primary" : "outline"}
-            className="h-7 px-2 text-[11px]"
-            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "is:pinned"))}
-          >
-            pinned
-          </Button>
-          <Button
-            size="sm"
-            variant={activeFilterTokens.has("type:worktree") ? "primary" : "outline"}
-            className="h-7 px-2 text-[11px]"
-            onClick={() => setLaneFilter((prev) => toggleFilterToken(prev, "type:worktree"))}
-          >
-            worktree
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7"
-            disabled={!canManageLane}
-            onClick={() => {
-              setLaneActionError(null);
-              setDeleteForce(false);
-              setDeleteMode("worktree");
-              setDeleteRemoteName("origin");
-              setDeleteConfirmText("");
-              setManageOpen(true);
-            }}
-            title={canManageLane ? `Manage ${managedLane?.name}` : "Select a non-primary lane to manage"}
-          >
-            Manage lane
-          </Button>
-
-          <div className="h-4 w-px bg-border/20" />
-
           <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => {
             setCreateLaneName("");
             setCreateParentLaneId("");
@@ -1247,6 +1189,19 @@ export function LanesPage() {
                   navigator.clipboard.writeText(ctxLane.worktreePath).catch(() => {});
                 }}>Copy Path</button>
               </>
+            ) : null}
+            {ctxLane && ctxLane.laneType !== "primary" ? (
+              <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+                const ctxLaneId = laneContextMenu.laneId;
+                setLaneContextMenu(null);
+                selectLane(ctxLaneId);
+                setLaneActionError(null);
+                setDeleteForce(false);
+                setDeleteMode("worktree");
+                setDeleteRemoteName("origin");
+                setDeleteConfirmText("");
+                setManageOpen(true);
+              }}>Manage Lane</button>
             ) : null}
           </div>
         );

@@ -406,8 +406,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 const laneId = aiFailure.laneId;
                 if (!laneId) return;
                 selectLane(laneId);
-                setLaneInspectorTab(laneId, "packs");
-                window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&inspectorTab=packs`;
+                setLaneInspectorTab(laneId, "context");
+                window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&inspectorTab=context`;
               }}
               title="Open lane packs"
             >
