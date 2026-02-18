@@ -266,6 +266,16 @@ body {
   letter-spacing: -0.011em;
 }
 
+/* Keep xterm glyph metrics isolated from global typography rules. */
+.xterm,
+.xterm .xterm-helper-textarea,
+.xterm .xterm-char-measure-element {
+  letter-spacing: 0 !important;
+  font-feature-settings: normal !important;
+  font-variant-ligatures: none !important;
+  font-kerning: none;
+}
+
 h1,
 h2,
 h3,

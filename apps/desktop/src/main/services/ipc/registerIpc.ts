@@ -723,12 +723,16 @@ export function registerIpc({
     return ctx.sessionService.updateMeta(arg);
   });
 
-  ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number }): Promise<string> => {
+  ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number; raw?: boolean }): Promise<string> => {
     const ctx = getCtx();
     const session = ctx.sessionService.get(arg.sessionId);
     if (!session) return "";
     const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(2_000_000, arg.maxBytes)) : 160_000;
-    return ctx.sessionService.readTranscriptTail(session.transcriptPath, maxBytes);
+    const raw = arg.raw === true;
+    return ctx.sessionService.readTranscriptTail(session.transcriptPath, maxBytes, {
+      raw,
+      alignToLineBoundary: raw
+    });
   });
 
   ipcMain.handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {

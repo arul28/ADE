@@ -87,6 +87,32 @@ function cancelViewportRaf(term: Terminal): void {
   }
 }
 
+function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
+  if (!left.length || !right.length) return 0;
+  const cap = Math.min(maxChars, left.length, right.length);
+  for (let size = cap; size > 0; size -= 1) {
+    if (left.slice(left.length - size) === right.slice(0, size)) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+function trimToLikelyTerminalFrameBoundary(raw: string): string {
+  if (!raw.length) return raw;
+  // For full-screen TUIs, replaying from the middle of a control stream can
+  // duplicate regions/cursors. Start from the latest major reset/frame marker.
+  const markers = ["\x1b[H\x1b[2J", "\x1b[2J", "\x1b[3J", "\x1bc", "\x1b[?1049h", "\x1b[?1049l"];
+  let idx = -1;
+  for (const marker of markers) {
+    const markerIdx = raw.lastIndexOf(marker);
+    if (markerIdx > idx) idx = markerIdx;
+  }
+  if (idx <= 0) return raw;
+  if (raw.length - idx < 16) return raw;
+  return raw.slice(idx);
+}
+
 export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; sessionId: string; className?: string }) {
   const appTheme = useAppStore((s) => s.theme);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -133,8 +159,12 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     };
 
     let hasFittedOnce = false;
+    let hydrationCompleted = false;
+    let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    const pendingPtyChunks: string[] = [];
+    let pendingPtyBytes = 0;
 
-    const doFit = () => {
+    const doFit = (options?: { forcePtyResize?: boolean }) => {
       if (cancelled) return;
       if (!ensureOpen()) return;
       if (!el.isConnected) return;
@@ -149,7 +179,8 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       if (!Number.isFinite(next.cols) || !Number.isFinite(next.rows) || next.cols <= 0 || next.rows <= 0) return;
       hasFittedOnce = true;
       const prev = lastDimsRef.current;
-      if (!prev || prev.cols !== next.cols || prev.rows !== next.rows) {
+      const forcePtyResize = options?.forcePtyResize === true;
+      if (!prev || prev.cols !== next.cols || prev.rows !== next.rows || forcePtyResize) {
         lastDimsRef.current = next;
         window.ade.pty.resize({ ptyId, cols: next.cols, rows: next.rows }).catch(() => {});
       }
@@ -185,29 +216,66 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       });
     });
 
-    // Hydrate recent output AFTER initial fit so text wraps to correct column width.
-    // We wait until the first successful fit (hasFittedOnce) before writing, retrying
-    // briefly if layout hasn't settled yet.
+    const flushHydrationData = (tail: string) => {
+      const stabilizedTail = trimToLikelyTerminalFrameBoundary(tail);
+      const pending = pendingPtyChunks.join("");
+      pendingPtyChunks.length = 0;
+      pendingPtyBytes = 0;
+      const overlap = computeSuffixPrefixOverlap(stabilizedTail, pending);
+      let appendPending = true;
+      if (pending.length >= 8_000 && overlap < 64) {
+        const probe = pending.slice(0, Math.min(512, pending.length));
+        if (probe.length >= 64 && stabilizedTail.lastIndexOf(probe) !== -1) {
+          appendPending = false;
+        }
+      }
+      const merged = appendPending ? `${stabilizedTail}${pending.slice(overlap)}` : stabilizedTail;
+      if (!merged.length) return;
+      try {
+        term.write(merged);
+        requestAnimationFrame(() => {
+          try {
+            term.refresh(0, term.rows - 1);
+          } catch {
+            // Ignore if terminal was disposed.
+          }
+        });
+      } catch {
+        // Ignore writes after disposal/unmount.
+      }
+    };
+
     const hydrateTranscript = () => {
       window.ade.sessions
-        .readTranscriptTail({ sessionId, maxBytes: 80_000 })
+        .readTranscriptTail({ sessionId, maxBytes: 80_000, raw: true })
         .then((text) => {
           if (cancelled) return;
-          if (!text.trim().length) return;
-          try {
-            term.write(text);
-            // Redraw after hydration to ensure correct rendering.
-            requestAnimationFrame(() => {
-              try { term.refresh(0, term.rows - 1); } catch { /* ignore */ }
-            });
-          } catch {
-            // Ignore writes after disposal/unmount.
-          }
+          flushHydrationData(text);
+          hydrationCompleted = true;
         })
-        .catch(() => {});
+        .catch(() => {
+          if (cancelled) return;
+          flushHydrationData("");
+          hydrationCompleted = true;
+        });
     };
-    // Wait a short moment for the initial fit to complete before hydrating.
-    const hydrateTimer = setTimeout(() => { if (!cancelled) hydrateTranscript(); }, 180);
+
+    const waitForFirstFitThenHydrate = (attempt: number) => {
+      if (cancelled) return;
+      if (hasFittedOnce || attempt >= 20) {
+        hydrateTranscript();
+        return;
+      }
+      hydrateRetryTimer = setTimeout(() => {
+        hydrateRetryTimer = null;
+        waitForFirstFitThenHydrate(attempt + 1);
+      }, 60);
+    };
+    // Wait for the first successful fit so line wrapping remains stable.
+    const hydrateTimer = setTimeout(() => {
+      if (cancelled) return;
+      waitForFirstFitThenHydrate(0);
+    }, 120);
 
     const dataSub = term.onData((data) => {
       if (cancelled) return;
@@ -272,6 +340,15 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     const unsubData = window.ade.pty.onData((ev) => {
       if (ev.ptyId !== ptyId) return;
       if (cancelled) return;
+      if (!hydrationCompleted) {
+        pendingPtyChunks.push(ev.data);
+        pendingPtyBytes += ev.data.length;
+        while (pendingPtyBytes > 300_000 && pendingPtyChunks.length > 1) {
+          const dropped = pendingPtyChunks.shift();
+          pendingPtyBytes -= dropped?.length ?? 0;
+        }
+        return;
+      }
       try {
         term.write(ev.data);
       } catch {
@@ -296,7 +373,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
         if (entry.isIntersecting) {
           // Double-RAF to let layout fully settle before refitting.
           requestAnimationFrame(() => {
-            requestAnimationFrame(() => { doFit(); });
+            requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
           });
         }
       }
@@ -308,13 +385,13 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     const onVisibilityChange = () => {
       if (cancelled || document.hidden) return;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => { doFit(); });
+        requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
       });
     };
     const onWindowFocus = () => {
       if (cancelled) return;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => { doFit(); });
+        requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
       });
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -336,7 +413,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       if (el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) {
         // Terminal just became visible - schedule a staggered fit
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => { doFit(); });
+          requestAnimationFrame(() => { doFit({ forcePtyResize: true }); });
         });
       }
     });
@@ -362,6 +439,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       if (settleTimer1 != null) clearTimeout(settleTimer1);
       if (settleTimer2 != null) clearTimeout(settleTimer2);
       clearTimeout(hydrateTimer);
+      if (hydrateRetryTimer != null) clearTimeout(hydrateRetryTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
       try { unsubData(); unsubExit(); } catch { /* ignore */ }

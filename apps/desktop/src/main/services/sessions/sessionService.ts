@@ -251,7 +251,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       ]);
     },
 
-    readTranscriptTail(transcriptPath: string, maxBytes: number): string {
+    readTranscriptTail(
+      transcriptPath: string,
+      maxBytes: number,
+      options?: { raw?: boolean; alignToLineBoundary?: boolean }
+    ): string {
       if (!transcriptPath) return "";
       try {
         const stat = fs.statSync(transcriptPath);
@@ -259,9 +263,20 @@ export function createSessionService({ db }: { db: AdeDb }) {
         const start = Math.max(0, size - maxBytes);
         const fd = fs.openSync(transcriptPath, "r");
         try {
-          const buf = Buffer.alloc(size - start);
-          fs.readSync(fd, buf, 0, buf.length, start);
-          return stripAnsi(buf.toString("utf8"));
+          const out = Buffer.alloc(size - start);
+          fs.readSync(fd, out, 0, out.length, start);
+          const alignToLineBoundary = options?.alignToLineBoundary === true;
+          let slice = out;
+          if (alignToLineBoundary && start > 0 && out.length > 0) {
+            // When reading a byte tail, we can start in the middle of a control sequence
+            // or UTF-8 character. Aligning to the next newline avoids replay corruption.
+            const nextNewline = out.indexOf(0x0a);
+            if (nextNewline >= 0 && nextNewline + 1 < out.length) {
+              slice = out.subarray(nextNewline + 1);
+            }
+          }
+          const text = slice.toString("utf8");
+          return options?.raw ? text : stripAnsi(text);
         } finally {
           fs.closeSync(fd);
         }

@@ -986,6 +986,7 @@ export type SearchTranscriptResult = {
 export type ReadTranscriptTailArgs = {
   sessionId: string;
   maxBytes?: number;
+  raw?: boolean;
 };
 
 export type ListLanesArgs = {
