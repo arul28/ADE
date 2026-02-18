@@ -100,6 +100,7 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubStatus,
   CreatePrFromLaneArgs,
@@ -311,6 +312,7 @@ declare global {
         stashPop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
+        getSyncStatus: (args: { laneId: string }) => Promise<GitUpstreamSyncStatus>;
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
         getConflictState: (laneId: string) => Promise<GitConflictState>;

@@ -389,7 +389,8 @@ export function PaneTilingLayout({
             layout[sizeKey] != null ? Number(layout[sizeKey]) : undefined;
           const defaultSize = savedSize ?? child.defaultSize;
           const isSplitNode = child.node.type === "split";
-          const minSize = isSplitNode ? "0.5%" : `${child.minSize ?? 5}%`;
+          const isMinimizedLeaf = child.node.type === "pane" && (minimized[child.node.id] ?? false);
+          const minSize = isSplitNode || isMinimizedLeaf ? "0.5%" : `${child.minSize ?? 5}%`;
 
           return (
             <React.Fragment key={childKey}>

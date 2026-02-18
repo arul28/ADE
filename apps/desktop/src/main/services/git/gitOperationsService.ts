@@ -13,12 +13,14 @@ import type {
   GitListCommitFilesArgs,
   GitFileActionArgs,
   GitPushArgs,
+  GitRecommendedAction,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
   GitSyncMode,
+  GitUpstreamSyncStatus,
   LaneType
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -251,15 +253,15 @@ export function createGitOperationsService({
     },
 
     async stageAll(args: GitBatchFileActionArgs): Promise<GitActionResult> {
-      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const fileCount = Array.isArray(args.paths) ? args.paths.length : 0;
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_stage_all",
         reason: "stage_all",
-        metadata: { count: filePaths.length },
+        metadata: { count: fileCount },
         fn: async (lane) => {
-          if (filePaths.length === 0) return;
-          await runGitOrThrow(["add", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          // Stage against current worktree state to avoid stale or partial path lists.
+          await runGitOrThrow(["add", "-A", "--", "."], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -404,6 +406,77 @@ export function createGitOperationsService({
         .filter((entry): entry is GitCommitSummary => entry != null);
 
       return rows;
+    },
+
+    async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {
+      const lane = laneService.getLaneBaseAndBranch(args.laneId);
+      const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+
+      if (upstreamRes.exitCode !== 0) {
+        return {
+          hasUpstream: false,
+          upstreamRef: null,
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "push"
+        };
+      }
+
+      const upstreamRef = upstreamRes.stdout.trim();
+      if (!upstreamRef.length) {
+        return {
+          hasUpstream: false,
+          upstreamRef: null,
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "push"
+        };
+      }
+
+      const countRes = await runGit(["rev-list", "--left-right", "--count", `${upstreamRef}...HEAD`], {
+        cwd: lane.worktreePath,
+        timeoutMs: 10_000
+      });
+      if (countRes.exitCode !== 0) {
+        return {
+          hasUpstream: true,
+          upstreamRef,
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "none"
+        };
+      }
+
+      const parts = countRes.stdout.trim().split(/\s+/).filter(Boolean);
+      const behind = Number.parseInt(parts[0] ?? "0", 10);
+      const ahead = Number.parseInt(parts[1] ?? "0", 10);
+      const normalizedBehind = Number.isFinite(behind) && behind > 0 ? behind : 0;
+      const normalizedAhead = Number.isFinite(ahead) && ahead > 0 ? ahead : 0;
+      const diverged = normalizedAhead > 0 && normalizedBehind > 0;
+
+      let recommendedAction: GitRecommendedAction = "none";
+      if (normalizedAhead > 0 && normalizedBehind === 0) {
+        recommendedAction = "push";
+      } else if (normalizedBehind > 0 && normalizedAhead === 0) {
+        recommendedAction = "pull";
+      } else if (diverged) {
+        recommendedAction = "pull";
+      }
+
+      return {
+        hasUpstream: true,
+        upstreamRef,
+        ahead: normalizedAhead,
+        behind: normalizedBehind,
+        diverged,
+        recommendedAction
+      };
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {

@@ -87,6 +87,17 @@ function cancelViewportRaf(term: Terminal): void {
   }
 }
 
+function forceSyncScrollArea(term: Terminal): void {
+  try {
+    const core = (term as unknown as XtermCoreLike)._core;
+    const viewport = core?._viewport;
+    if (!viewport) return;
+    viewport.syncScrollArea?.(true);
+  } catch {
+    // Ignore internal access failures across xterm versions.
+  }
+}
+
 function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
   if (!left.length || !right.length) return 0;
   const cap = Math.min(maxChars, left.length, right.length);
@@ -163,6 +174,16 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
     let hydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
     const pendingPtyChunks: string[] = [];
     let pendingPtyBytes = 0;
+    let syncRafId: number | null = null;
+
+    const scheduleViewportSync = () => {
+      if (cancelled) return;
+      if (syncRafId != null) return;
+      syncRafId = requestAnimationFrame(() => {
+        syncRafId = null;
+        forceSyncScrollArea(term);
+      });
+    };
 
     const doFit = (options?: { forcePtyResize?: boolean }) => {
       if (cancelled) return;
@@ -190,6 +211,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       } catch {
         // Ignore if terminal was disposed.
       }
+      scheduleViewportSync();
     };
 
     const scheduleFit = () => {
@@ -239,6 +261,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
           } catch {
             // Ignore if terminal was disposed.
           }
+          scheduleViewportSync();
         });
       } catch {
         // Ignore writes after disposal/unmount.
@@ -354,6 +377,7 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       } catch {
         // Ignore writes after disposal/unmount.
       }
+      scheduleViewportSync();
     });
 
     const unsubExit = window.ade.pty.onExit((ev) => {
@@ -367,6 +391,27 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       scheduleFit();
     });
     obs.observe(el);
+
+    const onWheel = (ev: WheelEvent) => {
+      if (cancelled) return;
+      if (!(ev.target instanceof Node)) return;
+      if (!term.element || !term.element.contains(ev.target)) return;
+      const viewport = term.element.querySelector<HTMLElement>(".xterm-viewport");
+      if (!viewport) return;
+      const viewportScrollable = viewport.scrollHeight > viewport.clientHeight + 1;
+      const hasScrollback = term.buffer.active.baseY > 0;
+      if (viewportScrollable || !hasScrollback) return;
+      const direction = ev.deltaY > 0 ? 1 : -1;
+      const magnitude = Math.max(1, Math.min(12, Math.round(Math.abs(ev.deltaY) / 32)));
+      try {
+        term.scrollLines(direction * magnitude);
+        ev.preventDefault();
+      } catch {
+        // ignore
+      }
+      scheduleViewportSync();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
 
     const intObs = new IntersectionObserver((entries) => {
       for (const entry of entries) {
@@ -440,8 +485,10 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
       if (settleTimer2 != null) clearTimeout(settleTimer2);
       clearTimeout(hydrateTimer);
       if (hydrateRetryTimer != null) clearTimeout(hydrateRetryTimer);
+      if (syncRafId != null) cancelAnimationFrame(syncRafId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
+      el.removeEventListener("wheel", onWheel);
       try { unsubData(); unsubExit(); } catch { /* ignore */ }
       try { dataSub.dispose(); } catch { /* ignore */ }
       try { obs.disconnect(); } catch { /* ignore */ }

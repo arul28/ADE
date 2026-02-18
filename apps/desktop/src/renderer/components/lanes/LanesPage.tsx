@@ -782,6 +782,7 @@ export function LanesPage() {
           <LaneGitActionsPane
             laneId={laneId}
             selectedPath={laneDetail.selectedFilePath}
+            selectedMode={laneDetail.selectedFileMode}
             selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
             onSelectFile={(path, mode) => {
               if (!laneId) return;

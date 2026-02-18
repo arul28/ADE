@@ -74,6 +74,7 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubStatus,
   CreatePrFromLaneArgs,
@@ -378,6 +379,8 @@ contextBridge.exposeInMainWorld("ade", {
     stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashPop, args),
     stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashDrop, args),
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
+    getSyncStatus: async (args: { laneId: string }): Promise<GitUpstreamSyncStatus> =>
+      ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),
     push: async (args: GitPushArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPush, args),
     getConflictState: async (laneId: string): Promise<GitConflictState> =>

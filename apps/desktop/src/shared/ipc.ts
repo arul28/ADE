@@ -81,6 +81,7 @@ export const IPC = {
   gitStashPop: "ade.git.stashPop",
   gitStashDrop: "ade.git.stashDrop",
   gitFetch: "ade.git.fetch",
+  gitGetSyncStatus: "ade.git.getSyncStatus",
   gitSync: "ade.git.sync",
   gitPush: "ade.git.push",
   gitGetConflictState: "ade.git.getConflictState",

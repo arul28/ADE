@@ -61,6 +61,7 @@ import type {
   GitListBranchesArgs,
   GitCheckoutBranchArgs,
   GitPushArgs,
+  GitUpstreamSyncStatus,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -936,6 +937,11 @@ export function registerIpc({
   ipcMain.handle(IPC.gitFetch, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.fetch(arg);
+  });
+
+  ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
+    const ctx = getCtx();
+    return await ctx.gitService.getSyncStatus(arg);
   });
 
   ipcMain.handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Group, Panel } from "react-resizable-panels";
 import {
   ArrowDown,
   Check,
@@ -12,13 +13,16 @@ import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
+import { ResizeGutter } from "../ui/ResizeGutter";
 import { CommitTimeline } from "./CommitTimeline";
 import type {
   DiffChanges,
   FileChange,
   GitCommitSummary,
+  GitRecommendedAction,
   GitStashSummary,
-  GitSyncMode
+  GitSyncMode,
+  GitUpstreamSyncStatus
 } from "../../../shared/types";
 
 type LaneTextPromptState = {
@@ -29,6 +33,12 @@ type LaneTextPromptState = {
   confirmLabel: string;
   validate?: (value: string) => string | null;
   resolve: (value: string | null) => void;
+};
+
+type NextActionHint = {
+  action: GitRecommendedAction;
+  label: string;
+  detail: string;
 };
 
 function formatRelativeTime(ts: string | null): string {
@@ -51,12 +61,14 @@ export function LaneGitActionsPane({
   onSelectFile,
   onSelectCommit,
   selectedPath,
+  selectedMode,
   selectedCommitSha
 }: {
   laneId: string | null;
   onSelectFile: (path: string, mode: "staged" | "unstaged") => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   selectedPath: string | null;
+  selectedMode: "staged" | "unstaged" | null;
   selectedCommitSha: string | null;
 }) {
   const lanes = useAppStore((s) => s.lanes);
@@ -82,6 +94,8 @@ export function LaneGitActionsPane({
   const [syncMode, setSyncMode] = useState<GitSyncMode>("merge");
   const [stashes, setStashes] = useState<GitStashSummary[]>([]);
   const [recentCommits, setRecentCommits] = useState<GitCommitSummary[]>([]);
+  const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(null);
+  const [forcePushSuggested, setForcePushSuggested] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,15 +103,20 @@ export function LaneGitActionsPane({
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [pullDropdownOpen, setPullDropdownOpen] = useState(false);
+  const [pushDropdownOpen, setPushDropdownOpen] = useState(false);
   const [moreDropdownOpen, setMoreDropdownOpen] = useState(false);
   const [showStashes, setShowStashes] = useState(true);
   const pullDropdownRef = useRef<HTMLDivElement>(null);
+  const pushDropdownRef = useRef<HTMLDivElement>(null);
   const moreDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (pullDropdownRef.current && !pullDropdownRef.current.contains(e.target as Node)) {
         setPullDropdownOpen(false);
+      }
+      if (pushDropdownRef.current && !pushDropdownRef.current.contains(e.target as Node)) {
+        setPushDropdownOpen(false);
       }
       if (moreDropdownRef.current && !moreDropdownRef.current.contains(e.target as Node)) {
         setMoreDropdownOpen(false);
@@ -169,21 +188,42 @@ export function LaneGitActionsPane({
   const refreshGitMeta = async () => {
     if (!laneId) return;
     try {
-      const [nextStashes, nextCommits] = await Promise.all([
+      const [nextStashes, nextCommits, nextSyncStatus] = await Promise.all([
         window.ade.git.stashList({ laneId }),
-        window.ade.git.listRecentCommits({ laneId, limit: 20 })
+        window.ade.git.listRecentCommits({ laneId, limit: 20 }),
+        window.ade.git.getSyncStatus({ laneId })
       ]);
       setStashes(nextStashes);
       setRecentCommits(nextCommits);
+      setSyncStatus(nextSyncStatus);
     } catch {
       // best effort
     }
   };
 
-  const refreshAll = async () => {
+  const refreshAll = async (options?: { fetchRemote?: boolean }) => {
+    if (laneId && options?.fetchRemote) {
+      try {
+        await window.ade.git.fetch({ laneId });
+      } catch {
+        // best effort
+      }
+    }
     await Promise.all([refreshChanges(), refreshLanes(), refreshGitMeta()]);
     setCommitTimelineKey((prev) => prev + 1);
   };
+
+  const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
+    const lower = rawMessage.toLowerCase();
+    return lower.includes("non-fast-forward") || lower.includes("failed to push some refs");
+  }, []);
+
+  const formatActionError = useCallback((actionName: string, rawMessage: string): string => {
+    if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(rawMessage)) {
+      return "Push rejected because branch history changed on remote (often after rebase). Use Force Push (lease) for this lane.";
+    }
+    return rawMessage;
+  }, [isNonFastForwardError]);
 
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
     setBusyAction(actionName);
@@ -192,12 +232,18 @@ export function LaneGitActionsPane({
     try {
       await fn();
       await refreshAll();
+      if (actionName === "push" || actionName === "force push" || actionName === "pull" || actionName === "fetch" || actionName === "rebase") {
+        setForcePushSuggested(false);
+      }
       setNotice(`${actionName} completed`);
       setTimeout(() => setNotice(null), 3000);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message === "__ade_cancelled__") return;
-      setError(message);
+      if (actionName === "push" && isNonFastForwardError(message)) {
+        setForcePushSuggested(true);
+      }
+      setError(formatActionError(actionName, message));
     } finally {
       setBusyAction(null);
     }
@@ -207,29 +253,28 @@ export function LaneGitActionsPane({
     setChanges({ staged: [], unstaged: [] });
     setStashes([]);
     setRecentCommits([]);
+    setSyncStatus(null);
+    setForcePushSuggested(false);
     setNotice(null);
     setError(null);
+    setPullDropdownOpen(false);
+    setPushDropdownOpen(false);
+    setMoreDropdownOpen(false);
     if (!laneId) return;
     refreshAll().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [laneId, lane?.branchRef]);
 
-  const unifiedFiles = useMemo(() => {
-    const files: Array<FileChange & { staged: boolean }> = [];
-    const seenPaths = new Set<string>();
-    for (const f of changes.staged) {
-      files.push({ ...f, staged: true });
-      seenPaths.add(f.path);
-    }
-    for (const f of changes.unstaged) {
-      if (!seenPaths.has(f.path)) {
-        files.push({ ...f, staged: false });
-      }
-    }
-    return files;
+  const changedFileCount = useMemo(() => {
+    const paths = new Set<string>();
+    for (const file of changes.staged) paths.add(file.path);
+    for (const file of changes.unstaged) paths.add(file.path);
+    return paths.size;
   }, [changes]);
 
   const stagedCount = changes.staged.length;
   const hasStaged = stagedCount > 0;
+  const stagedPathSet = useMemo(() => new Set(changes.staged.map((file) => file.path)), [changes.staged]);
+  const unstagedPathSet = useMemo(() => new Set(changes.unstaged.map((file) => file.path)), [changes.unstaged]);
 
   const toggleStageFile = async (path: string, isStaged: boolean) => {
     if (!laneId) return;
@@ -255,6 +300,100 @@ export function LaneGitActionsPane({
     });
   };
 
+  const runPush = (forceWithLease: boolean) => {
+    if (!laneId) return;
+    setPushDropdownOpen(false);
+    runAction(forceWithLease ? "force push" : "push", async () => {
+      await window.ade.git.push({ laneId, forceWithLease });
+    });
+  };
+
+  const nextActionHint = useMemo<NextActionHint | null>(() => {
+    if (!laneId) return null;
+    if (forcePushSuggested) {
+      return {
+        action: "force_push_lease",
+        label: "Force Push (lease)",
+        detail: "The previous push was rejected as non-fast-forward."
+      };
+    }
+    if (!syncStatus) return null;
+    if (!syncStatus.hasUpstream) {
+      return {
+        action: "push",
+        label: "Push",
+        detail: "No upstream branch is configured yet. Push to publish this lane."
+      };
+    }
+    if (syncStatus.recommendedAction === "push") {
+      return {
+        action: "push",
+        label: "Push",
+        detail: `${syncStatus.ahead} local commit${syncStatus.ahead === 1 ? "" : "s"} ready to publish.`
+      };
+    }
+    if (syncStatus.recommendedAction === "pull") {
+      if (syncStatus.diverged) {
+        return {
+          action: "pull",
+          label: "Pull",
+          detail: "Branch has diverged from upstream. Pull (rebase) first, or use force push if you intentionally rewrote history."
+        };
+      }
+      return {
+        action: "pull",
+        label: "Pull",
+        detail: `${syncStatus.behind} upstream commit${syncStatus.behind === 1 ? "" : "s"} not in this lane yet.`
+      };
+    }
+    return null;
+  }, [forcePushSuggested, laneId, syncStatus]);
+
+  const pullHighlighted = nextActionHint?.action === "pull";
+  const pushHighlighted = nextActionHint?.action === "push" || nextActionHint?.action === "force_push_lease";
+  const forcePushHighlighted = nextActionHint?.action === "force_push_lease";
+
+  const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
+    const rowSelected = selectedPath === file.path && selectedMode === mode;
+    const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
+    const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
+
+    return (
+      <div
+        key={`${mode}:${file.path}`}
+        className={cn(
+          "group flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer text-[11px]",
+          rowSelected ? "bg-accent/10 text-fg shadow-card" : "hover:bg-muted/30 text-muted-fg hover:text-fg"
+        )}
+        onClick={() => {
+          onSelectCommit(null);
+          onSelectFile(file.path, mode);
+        }}
+      >
+        <button
+          type="button"
+          className="shrink-0 h-3.5 w-3.5 rounded bg-muted/30 flex items-center justify-center hover:bg-accent/10"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleStageFile(file.path, mode === "staged");
+          }}
+          title={mode === "staged" ? "Unstage" : "Stage"}
+        >
+          {mode === "staged" ? <Check className="h-2 w-2 text-accent" /> : null}
+        </button>
+        <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
+          file.kind === "modified" ? "bg-blue-400" :
+            file.kind === "added" ? "bg-emerald-400" :
+              file.kind === "deleted" ? "bg-red-400" : "bg-amber-400"
+        )} />
+        <span className="truncate flex-1">{file.path}</span>
+        {(alsoStaged || alsoUnstaged) ? (
+          <span className="rounded px-1 py-0.5 text-[9px] uppercase tracking-wide bg-amber-500/15 text-amber-700">partial</span>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
@@ -278,7 +417,7 @@ export function LaneGitActionsPane({
 
           <div className="flex-1 min-w-[4px]" />
 
-          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => refreshAll().catch(() => {})} title="Refresh">
+          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})} title="Refresh (fetches remote)">
             <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
           </Button>
 
@@ -288,7 +427,10 @@ export function LaneGitActionsPane({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-6 rounded-r-none border-r-0 px-1.5 text-[11px]"
+                className={cn(
+                  "h-6 rounded-r-none border-r-0 px-1.5 text-[11px]",
+                  pullHighlighted && "ring-2 ring-sky-500/60 bg-sky-500/10 text-sky-700"
+                )}
                 disabled={!laneId || busyAction != null}
                 onClick={() => {
                   if (!laneId) return;
@@ -302,7 +444,7 @@ export function LaneGitActionsPane({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-6 rounded-l-none px-0.5"
+                className={cn("h-6 rounded-l-none px-0.5", pullHighlighted && "ring-2 ring-sky-500/60 bg-sky-500/10 text-sky-700")}
                 onClick={() => setPullDropdownOpen((prev) => !prev)}
               >
                 <ChevronDown className="h-3 w-3" />
@@ -343,16 +485,61 @@ export function LaneGitActionsPane({
             ) : null}
           </div>
 
-          <Button
-            variant="primary"
-            size="sm"
-            className="h-6 px-1.5 text-[11px]"
-            disabled={!laneId || busyAction != null}
-            onClick={() => { if (laneId) runAction("push", async () => { await window.ade.git.push({ laneId }); }); }}
-            title="Push"
-          >
-            <Upload className="h-3 w-3" />
-          </Button>
+          <div className="relative" ref={pushDropdownRef}>
+            <div className="inline-flex">
+              <Button
+                variant="primary"
+                size="sm"
+                className={cn(
+                  "h-6 rounded-r-none px-1.5 text-[11px]",
+                  pushHighlighted && "ring-2 ring-amber-500/60 bg-amber-600 text-white"
+                )}
+                disabled={!laneId || busyAction != null}
+                onClick={() => runPush(false)}
+                title="Push"
+              >
+                <Upload className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                className={cn(
+                  "h-6 rounded-l-none border-l border-white/20 px-0.5",
+                  pushHighlighted && "ring-2 ring-amber-500/60 bg-amber-600 text-white"
+                )}
+                disabled={!laneId || busyAction != null}
+                onClick={() => setPushDropdownOpen((prev) => !prev)}
+                title="Push options"
+              >
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </div>
+            {pushDropdownOpen ? (
+              <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
+                  onClick={() => runPush(false)}
+                >
+                  <span className="w-3 shrink-0" />
+                  <div className="font-medium">Push</div>
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
+                  onClick={() => runPush(true)}
+                >
+                  <span className="w-3 shrink-0" />
+                  <div>
+                    <div className={cn("font-medium", forcePushHighlighted && "text-amber-700")}>
+                      Force Push (lease){forcePushHighlighted ? " · Recommended" : ""}
+                    </div>
+                    <div className="text-[10px] text-muted-fg">Use after rebase or rewritten history</div>
+                  </div>
+                </button>
+              </div>
+            ) : null}
+          </div>
 
           {lane?.parentLaneId ? (
             <Button
@@ -494,172 +681,227 @@ export function LaneGitActionsPane({
         </div>
       </div>
 
-      {/* File list + commit timeline */}
-      <div className="flex-1 min-h-0 flex">
-        {/* Files */}
-        <div className="flex-1 min-w-0 flex flex-col border-r border-border/10">
-          <div className="flex items-center justify-between px-2 py-1 bg-card/30 shrink-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-muted-fg/70">Files</span>
-              <Chip className="text-[10px] h-4 px-1">{unifiedFiles.length}</Chip>
-              {stagedCount > 0 ? (
-                <span className="text-[10px] text-muted-fg">({stagedCount} staged)</span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-1">
+      {nextActionHint ? (
+        <div className={cn(
+          "shrink-0 border-b border-border/15 px-2 py-1 text-[10px] flex items-center gap-2",
+          nextActionHint.action === "pull" && "bg-sky-500/8 text-sky-700",
+          nextActionHint.action === "push" && "bg-emerald-500/8 text-emerald-700",
+          nextActionHint.action === "force_push_lease" && "bg-amber-500/12 text-amber-800"
+        )}>
+          <span className="font-semibold uppercase tracking-wide">Next: {nextActionHint.label}</span>
+          <span className="truncate text-muted-fg">{nextActionHint.detail}</span>
+          <div className="ml-auto flex items-center gap-1">
+            {nextActionHint.action === "pull" ? (
               <button
                 type="button"
-                className="text-[10px] px-1 text-muted-fg hover:text-fg"
-                onClick={() => setShowStashes((prev) => !prev)}
-              >
-                {showStashes ? "Hide stashes" : `Show stashes (${stashes.length})`}
-              </button>
-              {changes.unstaged.length > 0 ? (
-                <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={stageAll}>
-                  Stage All
-                </button>
-              ) : null}
-              {changes.staged.length > 0 ? (
-                <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={unstageAll}>
-                  Unstage All
-                </button>
-              ) : null}
-            </div>
-          </div>
-          {showStashes ? (
-            <div className="shrink-0 border-b border-border/10 bg-card/20 px-2 py-1.5">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] uppercase tracking-wide text-muted-fg">Stashes</span>
-                  <Chip className="h-4 px-1 text-[10px]">{stashes.length}</Chip>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-5 px-1.5 text-[10px]"
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    runAction("stash push", async () => {
-                      const msg = await requestTextInput({ title: "Stash message", placeholder: "optional" });
-                      if (msg == null) throw new Error("__ade_cancelled__");
-                      await window.ade.git.stashPush({ laneId, message: msg || undefined });
-                    });
-                  }}
-                >
-                  Stash now
-                </Button>
-              </div>
-              {stashes.length === 0 ? (
-                <div className="rounded-lg bg-muted/20 px-2 py-1 text-[10px] text-muted-fg">No stashes in this lane.</div>
-              ) : (
-                <div className="space-y-1">
-                  {stashes.slice(0, 4).map((stash) => (
-                    <div key={stash.ref} className="flex items-center gap-2 rounded-lg bg-muted/20 px-2 py-1">
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[11px] text-fg">{stash.subject || stash.ref}</div>
-                        <div className="truncate text-[10px] text-muted-fg">{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded px-1 py-0.5 text-[10px] text-sky-700 hover:bg-sky-500/10"
-                        disabled={!laneId || busyAction != null}
-                        onClick={() => {
-                          if (!laneId) return;
-                          runAction("stash apply", async () => {
-                            await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
-                          });
-                        }}
-                      >
-                        apply
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded px-1 py-0.5 text-[10px] text-amber-700 hover:bg-amber-500/10"
-                        disabled={!laneId || busyAction != null}
-                        onClick={() => {
-                          if (!laneId) return;
-                          runAction("stash pop", async () => {
-                            await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
-                          });
-                        }}
-                      >
-                        pop
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded px-1 py-0.5 text-[10px] text-red-700 hover:bg-red-500/10"
-                        disabled={!laneId || busyAction != null}
-                        onClick={() => {
-                          if (!laneId) return;
-                          runAction("stash drop", async () => {
-                            await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
-                          });
-                        }}
-                      >
-                        drop
-                      </button>
-                    </div>
-                  ))}
-                  {stashes.length > 4 ? (
-                    <div className="text-[10px] text-muted-fg">+{stashes.length - 4} more stash entries.</div>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          ) : null}
-          <div className="flex-1 overflow-auto p-1 space-y-0.5">
-            {unifiedFiles.map((file) => (
-              <div
-                key={file.path}
-                className={cn(
-                  "group flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer text-[11px]",
-                  selectedPath === file.path ? "bg-accent/10 text-fg shadow-card" : "hover:bg-muted/30 text-muted-fg hover:text-fg"
-                )}
+                className="rounded px-1.5 py-0.5 text-[10px] border border-sky-500/30 hover:bg-sky-500/15"
+                disabled={!laneId || busyAction != null}
                 onClick={() => {
-                  onSelectCommit(null);
-                  const mode = file.staged ? "staged" : "unstaged";
-                  onSelectFile(file.path, mode);
+                  if (!laneId) return;
+                  runAction("pull", async () => { await window.ade.git.sync({ laneId, mode: syncMode }); });
                 }}
               >
-                <button
-                  type="button"
-                  className="shrink-0 h-3.5 w-3.5 rounded bg-muted/30 flex items-center justify-center hover:bg-accent/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleStageFile(file.path, file.staged);
-                  }}
-                  title={file.staged ? "Unstage" : "Stage"}
-                >
-                  {file.staged ? <Check className="h-2 w-2 text-accent" /> : null}
-                </button>
-                <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
-                  file.kind === "modified" ? "bg-blue-400" :
-                    file.kind === "added" ? "bg-emerald-400" :
-                      file.kind === "deleted" ? "bg-red-400" : "bg-amber-400"
-                )} />
-                <span className="truncate flex-1">{file.path}</span>
-              </div>
-            ))}
-            {unifiedFiles.length === 0 && (
-              <div className="p-3 text-center text-[11px] text-muted-fg opacity-50 italic">
-                No changes
-              </div>
-            )}
+                Pull now
+              </button>
+            ) : null}
+            {nextActionHint.action === "push" ? (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[10px] border border-emerald-500/30 hover:bg-emerald-500/15"
+                disabled={!laneId || busyAction != null}
+                onClick={() => runPush(false)}
+              >
+                Push now
+              </button>
+            ) : null}
+            {nextActionHint.action === "force_push_lease" ? (
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                disabled={!laneId || busyAction != null}
+                onClick={() => runPush(true)}
+              >
+                Force push now
+              </button>
+            ) : null}
           </div>
         </div>
+      ) : null}
 
-        {/* Commit timeline */}
-        <div className="w-[40%] min-w-[120px] shrink-0">
-          <CommitTimeline
-            laneId={laneId ?? null}
-            selectedSha={selectedCommitSha}
-            refreshTrigger={commitTimelineKey}
-            onSelectCommit={(commit) => {
-              onSelectCommit(commit);
-            }}
-          />
-        </div>
+      {/* File list + commit timeline */}
+      <div className="flex-1 min-h-0">
+        <Group id={`lane-git-sections:${laneId ?? "none"}`} orientation="horizontal" className="h-full w-full min-h-0">
+          <Panel id={`lane-git-files:${laneId ?? "none"}`} defaultSize="58%" minSize="22%" className="min-h-0 min-w-0">
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="flex items-center justify-between px-2 py-1 bg-card/30 shrink-0 border-r border-border/10">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-muted-fg/70">Files</span>
+                  <Chip className="text-[10px] h-4 px-1">{changedFileCount}</Chip>
+                  {stagedCount > 0 ? (
+                    <span className="text-[10px] text-muted-fg">({stagedCount} staged)</span>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="text-[10px] px-1 text-muted-fg hover:text-fg"
+                    onClick={() => setShowStashes((prev) => !prev)}
+                  >
+                    {showStashes ? "Hide stashes" : `Show stashes (${stashes.length})`}
+                  </button>
+                  {changes.unstaged.length > 0 ? (
+                    <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={stageAll}>
+                      Stage All
+                    </button>
+                  ) : null}
+                  {changes.staged.length > 0 ? (
+                    <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={unstageAll}>
+                      Unstage All
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 border-r border-border/10">
+                {showStashes ? (
+                  <Group id={`lane-git-left:${laneId ?? "none"}`} orientation="vertical" className="h-full w-full min-h-0">
+                    <Panel id={`lane-git-stashes:${laneId ?? "none"}`} defaultSize="38%" minSize="14%" className="min-h-0 min-w-0">
+                      <div className="h-full overflow-auto bg-card/20 px-2 py-1.5">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] uppercase tracking-wide text-muted-fg">Stashes</span>
+                            <Chip className="h-4 px-1 text-[10px]">{stashes.length}</Chip>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-5 px-1.5 text-[10px]"
+                            disabled={!laneId || busyAction != null}
+                            onClick={() => {
+                              if (!laneId) return;
+                              runAction("stash push", async () => {
+                                const msg = await requestTextInput({ title: "Stash message", placeholder: "optional" });
+                                if (msg == null) throw new Error("__ade_cancelled__");
+                                await window.ade.git.stashPush({ laneId, message: msg || undefined });
+                              });
+                            }}
+                          >
+                            Stash now
+                          </Button>
+                        </div>
+                        {stashes.length === 0 ? (
+                          <div className="rounded-lg bg-muted/20 px-2 py-1 text-[10px] text-muted-fg">No stashes in this lane.</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {stashes.slice(0, 4).map((stash) => (
+                              <div key={stash.ref} className="flex items-center gap-2 rounded-lg bg-muted/20 px-2 py-1">
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-[11px] text-fg">{stash.subject || stash.ref}</div>
+                                  <div className="truncate text-[10px] text-muted-fg">{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="rounded px-1 py-0.5 text-[10px] text-sky-700 hover:bg-sky-500/10"
+                                  disabled={!laneId || busyAction != null}
+                                  onClick={() => {
+                                    if (!laneId) return;
+                                    runAction("stash apply", async () => {
+                                      await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
+                                    });
+                                  }}
+                                >
+                                  apply
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded px-1 py-0.5 text-[10px] text-amber-700 hover:bg-amber-500/10"
+                                  disabled={!laneId || busyAction != null}
+                                  onClick={() => {
+                                    if (!laneId) return;
+                                    runAction("stash pop", async () => {
+                                      await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                                    });
+                                  }}
+                                >
+                                  pop
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded px-1 py-0.5 text-[10px] text-red-700 hover:bg-red-500/10"
+                                  disabled={!laneId || busyAction != null}
+                                  onClick={() => {
+                                    if (!laneId) return;
+                                    runAction("stash drop", async () => {
+                                      await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                                    });
+                                  }}
+                                >
+                                  drop
+                                </button>
+                              </div>
+                            ))}
+                            {stashes.length > 4 ? (
+                              <div className="text-[10px] text-muted-fg">+{stashes.length - 4} more stash entries.</div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    </Panel>
+                    <ResizeGutter orientation="horizontal" thin />
+                    <Panel id={`lane-git-file-list:${laneId ?? "none"}`} defaultSize="62%" minSize="16%" className="min-h-0 min-w-0">
+                      <div className="h-full overflow-auto p-1 space-y-2">
+                        {changes.staged.length > 0 ? (
+                          <div className="space-y-0.5">
+                            <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
+                            {changes.staged.map((file) => renderFileRow(file, "staged"))}
+                          </div>
+                        ) : null}
+                        {changes.unstaged.length > 0 ? (
+                          <div className="space-y-0.5">
+                            <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
+                            {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
+                          </div>
+                        ) : null}
+                        {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
+                          <div className="p-3 text-center text-[11px] text-muted-fg opacity-50 italic">No changes</div>
+                        ) : null}
+                      </div>
+                    </Panel>
+                  </Group>
+                ) : (
+                  <div className="h-full overflow-auto p-1 space-y-2">
+                    {changes.staged.length > 0 ? (
+                      <div className="space-y-0.5">
+                        <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
+                        {changes.staged.map((file) => renderFileRow(file, "staged"))}
+                      </div>
+                    ) : null}
+                    {changes.unstaged.length > 0 ? (
+                      <div className="space-y-0.5">
+                        <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
+                        {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
+                      </div>
+                    ) : null}
+                    {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
+                      <div className="p-3 text-center text-[11px] text-muted-fg opacity-50 italic">No changes</div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Panel>
+          <ResizeGutter orientation="vertical" thin />
+          <Panel id={`lane-git-commits:${laneId ?? "none"}`} defaultSize="42%" minSize="18%" className="min-h-0 min-w-0">
+            <CommitTimeline
+              laneId={laneId ?? null}
+              selectedSha={selectedCommitSha}
+              refreshTrigger={commitTimelineKey}
+              onSelectCommit={(commit) => {
+                onSelectCommit(commit);
+              }}
+            />
+          </Panel>
+        </Group>
       </div>
 
       {/* Status bar */}

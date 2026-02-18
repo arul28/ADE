@@ -1699,6 +1699,17 @@ export type GitPushArgs = {
   forceWithLease?: boolean;
 };
 
+export type GitRecommendedAction = "none" | "pull" | "push" | "force_push_lease";
+
+export type GitUpstreamSyncStatus = {
+  hasUpstream: boolean;
+  upstreamRef: string | null;
+  ahead: number;
+  behind: number;
+  diverged: boolean;
+  recommendedAction: GitRecommendedAction;
+};
+
 export type GitConflictKind = "merge" | "rebase" | null;
 
 export type GitConflictState = {
