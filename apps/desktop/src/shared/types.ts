@@ -855,6 +855,75 @@ export type ContextStatus = {
   warnings: ContextDocGenerationWarning[];
 };
 
+export type ContextInventoryPackEntry = {
+  packKey: string;
+  packType: PackType;
+  laneId: string | null;
+  deterministicUpdatedAt: string | null;
+  narrativeUpdatedAt: string | null;
+  lastHeadSha: string | null;
+  versionId: string | null;
+  versionNumber: number | null;
+  contentHash: string | null;
+};
+
+export type ContextInventoryCheckpointEntry = {
+  id: string;
+  laneId: string;
+  sessionId: string | null;
+  createdAt: string;
+  sha: string;
+};
+
+export type ContextInventorySessionDeltaEntry = {
+  sessionId: string;
+  laneId: string;
+  startedAt: string;
+  endedAt: string | null;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  computedAt: string | null;
+};
+
+export type ContextInventoryOrchestratorSummary = {
+  activeRuns: number;
+  runningSteps: number;
+  runningAttempts: number;
+  activeClaims: number;
+  expiredClaims: number;
+  snapshots: number;
+  handoffs: number;
+  recentRunIds: string[];
+  recentAttemptIds: string[];
+};
+
+export type ContextInventorySnapshot = {
+  generatedAt: string;
+  packs: {
+    total: number;
+    byType: Partial<Record<PackType, number>>;
+    recent: ContextInventoryPackEntry[];
+  };
+  checkpoints: {
+    total: number;
+    recent: ContextInventoryCheckpointEntry[];
+  };
+  sessionTracking: {
+    trackedSessions: number;
+    untrackedSessions: number;
+    runningSessions: number;
+    recentDeltas: ContextInventorySessionDeltaEntry[];
+  };
+  missions: {
+    total: number;
+    byStatus: Partial<Record<MissionStatus, number>>;
+    openInterventions: number;
+    recentHandoffs: MissionStepHandoff[];
+  };
+  orchestrator: ContextInventoryOrchestratorSummary;
+};
+
 export type ContextDocProvider = "codex" | "claude";
 
 export type ContextGenerateDocsArgs = {
@@ -1784,9 +1853,13 @@ export type GitStashSummary = {
   createdAt: string | null;
 };
 
-export type PackType = "project" | "lane" | "feature" | "conflict" | "plan";
+export type PackType = "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
 
 export type ContextExportLevel = "lite" | "standard" | "deep";
+
+export type OrchestratorContextProfileId = "orchestrator_deterministic_v1" | "orchestrator_narrative_opt_in_v1";
+
+export type OrchestratorContextDocsMode = "digest_refs" | "full_docs";
 
 // Event metadata (standardized keys embedded into PackEvent.payload for selection/digests).
 export type PackEventImportance = "low" | "medium" | "high";
@@ -2020,6 +2093,23 @@ export type PackExport = {
 export type GetLaneExportArgs = { laneId: string; level: ContextExportLevel };
 export type GetProjectExportArgs = { level: ContextExportLevel };
 export type GetConflictExportArgs = { laneId: string; peerLaneId?: string | null; level: ContextExportLevel };
+
+export type GetMissionPackArgs = { missionId: string };
+
+export type RefreshMissionPackArgs = {
+  missionId: string;
+  reason: string;
+  runId?: string | null;
+};
+
+export type OrchestratorContextPolicyProfile = {
+  id: OrchestratorContextProfileId;
+  includeNarrative: boolean;
+  docsMode: OrchestratorContextDocsMode;
+  laneExportLevel: ContextExportLevel;
+  projectExportLevel: ContextExportLevel;
+  maxDocBytes: number;
+};
 
 export type ListPackEventsSinceArgs = { packKey: string; sinceIso: string; limit?: number };
 
@@ -2351,6 +2441,213 @@ export type MissionsEventPayload = {
   missionId?: string;
   reason?: string;
   at: string;
+};
+
+export type OrchestratorRunStatus =
+  | "queued"
+  | "running"
+  | "paused"
+  | "succeeded"
+  | "failed"
+  | "canceled";
+
+export type OrchestratorStepStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "canceled";
+
+export type OrchestratorAttemptStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "canceled";
+
+export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum";
+
+export type OrchestratorExecutorKind = "claude" | "codex" | "gemini" | "shell" | "manual";
+
+export type OrchestratorErrorClass =
+  | "none"
+  | "transient"
+  | "deterministic"
+  | "policy"
+  | "claim_conflict"
+  | "executor_failure"
+  | "canceled"
+  | "resume_recovered";
+
+export type OrchestratorClaimScope = "lane" | "file" | "env";
+
+export type OrchestratorClaimState = "active" | "released" | "expired";
+
+export type OrchestratorDocsRef = {
+  path: string;
+  sha256: string;
+  bytes: number;
+  truncated: boolean;
+  mode: "digest_ref" | "full_body";
+};
+
+export type OrchestratorContextSnapshotCursor = {
+  lanePackKey: string | null;
+  lanePackVersionId: string | null;
+  lanePackVersionNumber: number | null;
+  projectPackKey: string | null;
+  projectPackVersionId: string | null;
+  projectPackVersionNumber: number | null;
+  packDeltaSince: string | null;
+  docs: OrchestratorDocsRef[];
+};
+
+export type OrchestratorRun = {
+  id: string;
+  missionId: string;
+  projectId: string;
+  status: OrchestratorRunStatus;
+  contextProfile: OrchestratorContextProfileId;
+  schedulerState: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastError: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export type OrchestratorStep = {
+  id: string;
+  runId: string;
+  missionStepId: string | null;
+  stepKey: string;
+  stepIndex: number;
+  title: string;
+  laneId: string | null;
+  status: OrchestratorStepStatus;
+  joinPolicy: OrchestratorJoinPolicy;
+  quorumCount: number | null;
+  dependencyStepIds: string[];
+  retryLimit: number;
+  retryCount: number;
+  lastAttemptId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export type OrchestratorAttemptResultEnvelope = {
+  schema: "ade.orchestratorAttempt.v1";
+  success: boolean;
+  summary: string;
+  outputs: Record<string, unknown> | null;
+  warnings: string[];
+  sessionId: string | null;
+  trackedSession: boolean;
+};
+
+export type OrchestratorAttempt = {
+  id: string;
+  runId: string;
+  stepId: string;
+  attemptNumber: number;
+  status: OrchestratorAttemptStatus;
+  executorKind: OrchestratorExecutorKind;
+  executorSessionId: string | null;
+  trackedSessionEnforced: boolean;
+  contextProfile: OrchestratorContextProfileId;
+  contextSnapshotId: string | null;
+  errorClass: OrchestratorErrorClass;
+  errorMessage: string | null;
+  retryBackoffMs: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  resultEnvelope: OrchestratorAttemptResultEnvelope | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export type OrchestratorClaim = {
+  id: string;
+  runId: string;
+  stepId: string | null;
+  attemptId: string | null;
+  ownerId: string;
+  scopeKind: OrchestratorClaimScope;
+  scopeValue: string;
+  state: OrchestratorClaimState;
+  acquiredAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  releasedAt: string | null;
+  policy: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export type OrchestratorContextSnapshot = {
+  id: string;
+  runId: string;
+  stepId: string | null;
+  attemptId: string | null;
+  snapshotType: "run" | "step" | "attempt";
+  contextProfile: OrchestratorContextProfileId;
+  cursor: OrchestratorContextSnapshotCursor;
+  createdAt: string;
+};
+
+export type MissionStepHandoff = {
+  id: string;
+  missionId: string;
+  missionStepId: string | null;
+  runId: string | null;
+  stepId: string | null;
+  attemptId: string | null;
+  handoffType: string;
+  producer: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type StartOrchestratorRunStepPolicy = {
+  includeNarrative?: boolean;
+  includeFullDocs?: boolean;
+  docsMaxBytes?: number;
+  claimScopes?: Array<{
+    scopeKind: OrchestratorClaimScope;
+    scopeValue: string;
+    ttlMs?: number;
+  }>;
+};
+
+export type StartOrchestratorRunStepInput = {
+  missionStepId?: string | null;
+  stepKey: string;
+  title: string;
+  stepIndex: number;
+  laneId?: string | null;
+  dependencyStepKeys?: string[];
+  joinPolicy?: OrchestratorJoinPolicy;
+  quorumCount?: number;
+  retryLimit?: number;
+  executorKind?: OrchestratorExecutorKind;
+  metadata?: Record<string, unknown> | null;
+  policy?: StartOrchestratorRunStepPolicy;
+};
+
+export type StartOrchestratorRunArgs = {
+  missionId: string;
+  runId?: string;
+  contextProfile?: OrchestratorContextProfileId;
+  schedulerState?: string;
+  metadata?: Record<string, unknown> | null;
+  steps: StartOrchestratorRunStepInput[];
 };
 
 export type AutomationPlannerProvider = "codex" | "claude";

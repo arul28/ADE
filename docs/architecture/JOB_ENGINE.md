@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-19
 
 ---
 
@@ -29,6 +29,8 @@
 The Job Engine is ADE's background task scheduling system. It processes asynchronous work triggered by system events -- terminal session endings, git HEAD changes, and lane dirty state changes -- ensuring that context packs remain current and conflict predictions stay fresh without blocking the user's interactive workflow.
 
 The engine is an in-process queue with per-lane deduplication for pack refreshes and a debounced conflict prediction queue. After each deterministic pack refresh, the engine optionally triggers AI narrative generation (via Hosted or BYOK providers) in a non-blocking async flow. Conflict prediction runs on a debounced schedule (900ms-1500ms depending on trigger type) plus a periodic 120-second interval.
+
+Phase 1.5 introduces a separate orchestrator runtime service for mission step scheduling/execution state machines. The job engine remains focused on background context maintenance (packs, narratives, conflict prediction) and does not coordinate orchestrator step transitions.
 
 ---
 
@@ -58,6 +60,10 @@ Jobs for a given lane execute sequentially (one at a time). This avoids race con
 ### Failures Are Logged, Not Propagated
 
 Job failures are captured in the log but do not propagate back to the original event source. A failed pack refresh does not retroactively fail the terminal session that triggered it. This isolation ensures that background processing issues never degrade the user's interactive experience.
+
+### AI Is Advisory In This Pipeline
+
+The deterministic portion of the queue (lane/project pack refresh, checkpoint derivation, conflict prediction scheduling) is code-driven. AI calls are bounded post-processing steps (narrative augmentation) and never become the scheduler or state-machine authority.
 
 ---
 

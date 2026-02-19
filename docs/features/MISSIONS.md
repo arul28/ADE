@@ -14,6 +14,8 @@
   - [Mission Step](#mission-step)
   - [Intervention](#intervention)
   - [Artifact](#artifact)
+  - [Mission Pack](#mission-pack)
+  - [Step Handoff](#step-handoff)
   - [Execution Target](#execution-target)
 - [User Experience](#user-experience)
   - [Phase 1 Surface](#phase-1-surface)
@@ -29,7 +31,8 @@
 - [Data Model](#data-model)
 - [Implementation Tracking](#implementation-tracking)
   - [Phase 1 (Implemented)](#phase-1-implemented)
-  - [Phase 2+ Hooks (Prepared)](#phase-2-hooks-prepared)
+  - [Phase 1.5 (Context Hardening Gate, Implemented)](#phase-15-context-hardening-gate-implemented)
+  - [Phase 2+ Runtime (Next)](#phase-2-runtime-next)
 
 ---
 
@@ -45,7 +48,7 @@ It gives users a fast way to:
 - manage interventions when human input is required,
 - capture outcomes and link artifacts (including PR URLs).
 
-This is the product bridge between today's manual workflow and future orchestrator execution (Phase 2) plus relay/machine routing (Phase 9).
+This is the product bridge between today's manual workflow and orchestrator execution. Phase 1.5 context hardening adds durable mission packs, step handoffs, and orchestrator runtime persistence before full Phase 2 runtime expansion.
 
 ---
 
@@ -93,6 +96,31 @@ Supported artifact types:
 - `patch`
 
 Artifacts support PR handoff, traceability, and post-mission review.
+
+### Mission Pack
+
+A **Mission Pack** is a deterministic mission-level context artifact (`mission:<missionId>`) with immutable versioning and pack events. It snapshots:
+
+- mission metadata and prompt,
+- mission step status progression,
+- artifacts/interventions counts,
+- linked orchestrator runs,
+- recent structured step handoffs.
+
+Mission packs are refreshed on mission mutations and orchestrator run starts to keep mission context resumable and auditable.
+
+### Step Handoff
+
+A **Step Handoff** is a structured record emitted per orchestrated step attempt (`mission_step_handoffs`):
+
+- `attempt_started`
+- `attempt_succeeded`
+- `attempt_failed`
+- `attempt_blocked`
+- `attempt_canceled`
+- `attempt_recovered_after_restart`
+
+Handoffs are machine-readable payloads used for deterministic resume, history replay, and context provenance.
 
 ### Execution Target
 
@@ -232,17 +260,25 @@ Mission updates are event-driven:
 
 This pattern keeps UI reactive while preserving local-first durability.
 
+Mission updates now also trigger mission pack refreshes so mission-level context stays current across sessions.
+
 ---
 
 ## Data Model
 
-Phase 1 adds five mission tables to local SQLite:
+Phase 1 + Phase 1.5 mission/orchestrator persistence adds:
 
 - `missions`
 - `mission_steps`
 - `mission_events`
 - `mission_artifacts`
 - `mission_interventions`
+- `mission_step_handoffs`
+- `orchestrator_runs`
+- `orchestrator_steps`
+- `orchestrator_attempts`
+- `orchestrator_claims`
+- `orchestrator_context_snapshots`
 
 Migration is implemented in:
 
@@ -268,8 +304,15 @@ Lifecycle/transition coverage:
 - Mission event broadcasting and renderer subscriptions are implemented.
 - Migration and lifecycle tests are passing.
 
-### Phase 2+ Hooks (Prepared)
+### Phase 1.5 (Context Hardening Gate, Implemented)
 
-- `executionMode` and `targetMachineId` are stored and surfaced for future orchestrator/relay routing.
-- Mission steps/events provide baseline structure for orchestrator run timeline integration.
-- Intervention workflow is ready for policy and approval-gate integration in later phases.
+- Mission-level pack type (`mission`) is implemented with deterministic version/event/index semantics.
+- Structured mission step handoffs are durable and queryable for every orchestrator step attempt.
+- Orchestrator runtime state tables are implemented (runs, steps, attempts, claims, context snapshots).
+- Claim/lease model, resume recovery path, and tracked-session enforcement are implemented in runtime service/tests.
+
+### Phase 2+ Runtime (Next)
+
+- Expand mission UI with first-class orchestrator run timeline controls and intervention routing.
+- Add executor adapter operations UI (Claude/Codex/Gemini parity) with deterministic orchestration state views.
+- Add merge/integration-lane orchestration path controls tied to conflict resolver chain policy.

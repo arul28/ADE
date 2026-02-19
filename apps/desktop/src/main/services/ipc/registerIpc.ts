@@ -127,18 +127,22 @@ import type {
   PackEvent,
   PackHeadVersion,
   PackSummary,
+  PackType,
   PackVersion,
   PackVersionSummary,
   Checkpoint,
   GetLaneExportArgs,
   GetProjectExportArgs,
   GetConflictExportArgs,
+  GetMissionPackArgs,
+  RefreshMissionPackArgs,
   ContextGenerateDocsArgs,
   ContextGenerateDocsResult,
   ContextPrepareDocGenArgs,
   ContextPrepareDocGenResult,
   ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
+  ContextInventorySnapshot,
   ContextStatus,
   ListPackEventsSinceArgs,
   ProcessActionArgs,
@@ -188,6 +192,8 @@ import type {
   MissionIntervention,
   MissionArtifact,
   MissionStep,
+  MissionStatus,
+  MissionStepHandoff,
   MissionSummary,
   ResolveMissionInterventionArgs,
   CreateMissionArgs
@@ -223,6 +229,7 @@ import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createMissionService } from "../missions/missionService";
+import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
@@ -256,6 +263,7 @@ export type AppContext = {
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   missionService: ReturnType<typeof createMissionService>;
+  orchestratorService: ReturnType<typeof createOrchestratorService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -274,6 +282,348 @@ function clampLayout(layout: DockLayout): DockLayout {
 function escapeCsvCell(value: string | null | undefined): string {
   const input = value ?? "";
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
+}
+
+function parseRecord(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizePackType(value: string): PackType {
+  if (value === "project" || value === "lane" || value === "feature" || value === "conflict" || value === "plan" || value === "mission") {
+    return value;
+  }
+  return "project";
+}
+
+function normalizeMissionStatus(value: string): MissionStatus {
+  if (
+    value === "queued" ||
+    value === "in_progress" ||
+    value === "intervention_required" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "canceled"
+  ) {
+    return value;
+  }
+  return "queued";
+}
+
+function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapshot {
+  const generatedAt = new Date().toISOString();
+
+  const packCountsRows = ctx.db.all<{ pack_type: string; count: number }>(
+    `
+      select pack_type, count(*) as count
+      from packs_index
+      where project_id = ?
+      group by pack_type
+    `,
+    [ctx.projectId]
+  );
+  const packByType: Partial<Record<PackType, number>> = {};
+  for (const row of packCountsRows) {
+    packByType[normalizePackType(row.pack_type)] = Number(row.count ?? 0);
+  }
+
+  const recentPacks = ctx.db
+    .all<{
+      pack_key: string;
+      pack_type: string;
+      lane_id: string | null;
+      deterministic_updated_at: string | null;
+      narrative_updated_at: string | null;
+      last_head_sha: string | null;
+      metadata_json: string | null;
+      version_id: string | null;
+      version_number: number | null;
+      content_hash: string | null;
+    }>(
+      `
+        select
+          p.pack_key,
+          p.pack_type,
+          p.lane_id,
+          p.deterministic_updated_at,
+          p.narrative_updated_at,
+          p.last_head_sha,
+          p.metadata_json,
+          pv.id as version_id,
+          pv.version_number as version_number,
+          pv.content_hash as content_hash
+        from packs_index p
+        left join pack_heads ph
+          on ph.project_id = p.project_id
+         and ph.pack_key = p.pack_key
+        left join pack_versions pv
+          on pv.id = ph.current_version_id
+        where p.project_id = ?
+        order by coalesce(p.deterministic_updated_at, p.narrative_updated_at, '') desc
+        limit 30
+      `,
+      [ctx.projectId]
+    )
+    .map((row) => {
+      const metadata = parseRecord(row.metadata_json);
+      return {
+        packKey: row.pack_key,
+        packType: normalizePackType(row.pack_type),
+        laneId: row.lane_id,
+        deterministicUpdatedAt: row.deterministic_updated_at,
+        narrativeUpdatedAt: row.narrative_updated_at,
+        lastHeadSha: row.last_head_sha,
+        versionId: row.version_id ?? (typeof metadata?.versionId === "string" ? metadata.versionId : null),
+        versionNumber:
+          row.version_number != null
+            ? Number(row.version_number)
+            : Number.isFinite(Number(metadata?.versionNumber))
+              ? Number(metadata?.versionNumber)
+              : null,
+        contentHash: row.content_hash ?? (typeof metadata?.contentHash === "string" ? metadata.contentHash : null)
+      };
+    });
+
+  const checkpointsTotal = Number(
+    ctx.db.get<{ count: number }>("select count(*) as count from checkpoints where project_id = ?", [ctx.projectId])?.count ?? 0
+  );
+  const recentCheckpoints = ctx.db
+    .all<{
+      id: string;
+      lane_id: string;
+      session_id: string | null;
+      created_at: string;
+      sha: string;
+    }>(
+      `
+        select id, lane_id, session_id, created_at, sha
+        from checkpoints
+        where project_id = ?
+        order by created_at desc
+        limit 25
+      `,
+      [ctx.projectId]
+    )
+    .map((row) => ({
+      id: row.id,
+      laneId: row.lane_id,
+      sessionId: row.session_id,
+      createdAt: row.created_at,
+      sha: row.sha
+    }));
+
+  const sessionCounts = ctx.db.get<{
+    tracked_sessions: number;
+    untracked_sessions: number;
+    running_sessions: number;
+  }>(
+    `
+      select
+        sum(case when s.tracked = 1 then 1 else 0 end) as tracked_sessions,
+        sum(case when s.tracked = 0 then 1 else 0 end) as untracked_sessions,
+        sum(case when s.status = 'running' then 1 else 0 end) as running_sessions
+      from terminal_sessions s
+      join lanes l on l.id = s.lane_id
+      where l.project_id = ?
+    `,
+    [ctx.projectId]
+  );
+
+  const recentDeltas = ctx.db
+    .all<{
+      session_id: string;
+      lane_id: string;
+      started_at: string;
+      ended_at: string | null;
+      files_changed: number;
+      insertions: number;
+      deletions: number;
+      computed_at: string | null;
+    }>(
+      `
+        select
+          session_id,
+          lane_id,
+          started_at,
+          ended_at,
+          files_changed,
+          insertions,
+          deletions,
+          computed_at
+        from session_deltas
+        where project_id = ?
+        order by computed_at desc
+        limit 25
+      `,
+      [ctx.projectId]
+    )
+    .map((row) => ({
+      sessionId: row.session_id,
+      laneId: row.lane_id,
+      startedAt: row.started_at,
+      endedAt: row.ended_at,
+      filesChanged: Number(row.files_changed ?? 0),
+      insertions: Number(row.insertions ?? 0),
+      deletions: Number(row.deletions ?? 0),
+      computedAt: row.computed_at
+    }));
+
+  const missionTotal = Number(
+    ctx.db.get<{ count: number }>("select count(*) as count from missions where project_id = ?", [ctx.projectId])?.count ?? 0
+  );
+  const missionStatusRows = ctx.db.all<{ status: string; count: number }>(
+    `
+      select status, count(*) as count
+      from missions
+      where project_id = ?
+      group by status
+    `,
+    [ctx.projectId]
+  );
+  const missionsByStatus: Partial<Record<MissionStatus, number>> = {};
+  for (const row of missionStatusRows) {
+    missionsByStatus[normalizeMissionStatus(row.status)] = Number(row.count ?? 0);
+  }
+  const openInterventions = Number(
+    ctx.db.get<{ count: number }>(
+      "select count(*) as count from mission_interventions where project_id = ? and status = 'open'",
+      [ctx.projectId]
+    )?.count ?? 0
+  );
+  const recentMissionHandoffs = ctx.db
+    .all<{
+      id: string;
+      mission_id: string;
+      mission_step_id: string | null;
+      run_id: string | null;
+      step_id: string | null;
+      attempt_id: string | null;
+      handoff_type: string;
+      producer: string;
+      payload_json: string;
+      created_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          mission_step_id,
+          run_id,
+          step_id,
+          attempt_id,
+          handoff_type,
+          producer,
+          payload_json,
+          created_at
+        from mission_step_handoffs
+        where project_id = ?
+        order by created_at desc
+        limit 20
+      `,
+      [ctx.projectId]
+    )
+    .map(
+      (row): MissionStepHandoff => ({
+        id: row.id,
+        missionId: row.mission_id,
+        missionStepId: row.mission_step_id,
+        runId: row.run_id,
+        stepId: row.step_id,
+        attemptId: row.attempt_id,
+        handoffType: row.handoff_type,
+        producer: row.producer,
+        payload: parseRecord(row.payload_json) ?? {},
+        createdAt: row.created_at
+      })
+    );
+
+  const orchestratorCounts = ctx.db.get<{
+    active_runs: number;
+    running_steps: number;
+    running_attempts: number;
+    active_claims: number;
+    expired_claims: number;
+    snapshots: number;
+    handoffs: number;
+  }>(
+    `
+      select
+        (select count(*) from orchestrator_runs where project_id = ? and status in ('queued', 'running', 'paused')) as active_runs,
+        (select count(*) from orchestrator_steps where project_id = ? and status = 'running') as running_steps,
+        (select count(*) from orchestrator_attempts where project_id = ? and status = 'running') as running_attempts,
+        (select count(*) from orchestrator_claims where project_id = ? and state = 'active') as active_claims,
+        (select count(*) from orchestrator_claims where project_id = ? and state = 'expired') as expired_claims,
+        (select count(*) from orchestrator_context_snapshots where project_id = ?) as snapshots,
+        (select count(*) from mission_step_handoffs where project_id = ? and run_id is not null) as handoffs
+    `,
+    [ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId]
+  );
+  const recentRunIds = ctx.db
+    .all<{ id: string }>(
+      `
+        select id
+        from orchestrator_runs
+        where project_id = ?
+        order by updated_at desc, created_at desc
+        limit 12
+      `,
+      [ctx.projectId]
+    )
+    .map((row) => row.id);
+  const recentAttemptIds = ctx.db
+    .all<{ id: string }>(
+      `
+        select id
+        from orchestrator_attempts
+        where project_id = ?
+        order by created_at desc
+        limit 20
+      `,
+      [ctx.projectId]
+    )
+    .map((row) => row.id);
+
+  return {
+    generatedAt,
+    packs: {
+      total: Object.values(packByType).reduce((sum, value) => sum + Number(value ?? 0), 0),
+      byType: packByType,
+      recent: recentPacks
+    },
+    checkpoints: {
+      total: checkpointsTotal,
+      recent: recentCheckpoints
+    },
+    sessionTracking: {
+      trackedSessions: Number(sessionCounts?.tracked_sessions ?? 0),
+      untrackedSessions: Number(sessionCounts?.untracked_sessions ?? 0),
+      runningSessions: Number(sessionCounts?.running_sessions ?? 0),
+      recentDeltas
+    },
+    missions: {
+      total: missionTotal,
+      byStatus: missionsByStatus,
+      openInterventions,
+      recentHandoffs: recentMissionHandoffs
+    },
+    orchestrator: {
+      activeRuns: Number(orchestratorCounts?.active_runs ?? 0),
+      runningSteps: Number(orchestratorCounts?.running_steps ?? 0),
+      runningAttempts: Number(orchestratorCounts?.running_attempts ?? 0),
+      activeClaims: Number(orchestratorCounts?.active_claims ?? 0),
+      expiredClaims: Number(orchestratorCounts?.expired_claims ?? 0),
+      snapshots: Number(orchestratorCounts?.snapshots ?? 0),
+      handoffs: Number(orchestratorCounts?.handoffs ?? 0),
+      recentRunIds,
+      recentAttemptIds
+    }
+  };
 }
 
 export function registerIpc({
@@ -610,29 +960,94 @@ export function registerIpc({
 
   ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
-    return ctx.missionService.create(arg);
+    const created = ctx.missionService.create(arg);
+    try {
+      await ctx.packService.refreshMissionPack({
+        missionId: created.id,
+        reason: "mission_created"
+      });
+    } catch (error) {
+      ctx.logger.warn("packs.refresh_mission_pack_failed", {
+        missionId: created.id,
+        reason: "mission_created",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return created;
   });
 
   ipcMain.handle(IPC.missionsUpdate, async (_event, arg: UpdateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
-    return ctx.missionService.update(arg);
+    const updated = ctx.missionService.update(arg);
+    try {
+      await ctx.packService.refreshMissionPack({
+        missionId: updated.id,
+        reason: "mission_updated"
+      });
+    } catch (error) {
+      ctx.logger.warn("packs.refresh_mission_pack_failed", {
+        missionId: updated.id,
+        reason: "mission_updated",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return updated;
   });
 
   ipcMain.handle(IPC.missionsUpdateStep, async (_event, arg: UpdateMissionStepArgs): Promise<MissionStep> => {
     const ctx = getCtx();
-    return ctx.missionService.updateStep(arg);
+    const updated = ctx.missionService.updateStep(arg);
+    try {
+      await ctx.packService.refreshMissionPack({
+        missionId: updated.missionId,
+        reason: "mission_step_updated"
+      });
+    } catch (error) {
+      ctx.logger.warn("packs.refresh_mission_pack_failed", {
+        missionId: updated.missionId,
+        reason: "mission_step_updated",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return updated;
   });
 
   ipcMain.handle(IPC.missionsAddArtifact, async (_event, arg: AddMissionArtifactArgs): Promise<MissionArtifact> => {
     const ctx = getCtx();
-    return ctx.missionService.addArtifact(arg);
+    const artifact = ctx.missionService.addArtifact(arg);
+    try {
+      await ctx.packService.refreshMissionPack({
+        missionId: artifact.missionId,
+        reason: "mission_artifact_added"
+      });
+    } catch (error) {
+      ctx.logger.warn("packs.refresh_mission_pack_failed", {
+        missionId: artifact.missionId,
+        reason: "mission_artifact_added",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return artifact;
   });
 
   ipcMain.handle(
     IPC.missionsAddIntervention,
     async (_event, arg: AddMissionInterventionArgs): Promise<MissionIntervention> => {
       const ctx = getCtx();
-      return ctx.missionService.addIntervention(arg);
+      const intervention = ctx.missionService.addIntervention(arg);
+      try {
+        await ctx.packService.refreshMissionPack({
+          missionId: intervention.missionId,
+          reason: "mission_intervention_added"
+        });
+      } catch (error) {
+        ctx.logger.warn("packs.refresh_mission_pack_failed", {
+          missionId: intervention.missionId,
+          reason: "mission_intervention_added",
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return intervention;
     }
   );
 
@@ -640,7 +1055,20 @@ export function registerIpc({
     IPC.missionsResolveIntervention,
     async (_event, arg: ResolveMissionInterventionArgs): Promise<MissionIntervention> => {
       const ctx = getCtx();
-      return ctx.missionService.resolveIntervention(arg);
+      const intervention = ctx.missionService.resolveIntervention(arg);
+      try {
+        await ctx.packService.refreshMissionPack({
+          missionId: intervention.missionId,
+          reason: "mission_intervention_resolved"
+        });
+      } catch (error) {
+        ctx.logger.warn("packs.refresh_mission_pack_failed", {
+          missionId: intervention.missionId,
+          reason: "mission_intervention_resolved",
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return intervention;
     }
   );
 
@@ -1171,6 +1599,11 @@ export function registerIpc({
     };
   });
 
+  ipcMain.handle(IPC.contextGetInventory, async (): Promise<ContextInventorySnapshot> => {
+    const ctx = getCtx();
+    return buildContextInventorySnapshot(ctx);
+  });
+
   ipcMain.handle(IPC.contextGenerateDocs, async (_event, arg: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
     const ctx = getCtx();
     return ctx.packService.generateContextDocs(arg);
@@ -1450,6 +1883,11 @@ export function registerIpc({
     return ctx.packService.getPlanPack(arg.laneId);
   });
 
+  ipcMain.handle(IPC.packsGetMissionPack, async (_event, arg: GetMissionPackArgs): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return ctx.packService.getMissionPack(arg.missionId);
+  });
+
   ipcMain.handle(IPC.packsGetProjectExport, async (_event, arg: GetProjectExportArgs): Promise<PackExport> => {
     const ctx = getCtx();
     return await ctx.packService.getProjectExport(arg);
@@ -1490,6 +1928,15 @@ export function registerIpc({
   ipcMain.handle(IPC.packsSavePlanPack, async (_event, arg: { laneId: string; body: string }): Promise<PackSummary> => {
     const ctx = getCtx();
     return await ctx.packService.savePlanPack({ laneId: arg.laneId, body: arg.body, reason: "manual_save" });
+  });
+
+  ipcMain.handle(IPC.packsRefreshMissionPack, async (_event, arg: RefreshMissionPackArgs): Promise<PackSummary> => {
+    const ctx = getCtx();
+    return await ctx.packService.refreshMissionPack({
+      missionId: arg.missionId,
+      reason: arg.reason ?? "manual_refresh",
+      runId: arg.runId ?? null
+    });
   });
 
   ipcMain.handle(IPC.packsListVersions, async (_event, arg: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> => {

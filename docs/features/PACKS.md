@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-19
 
 ---
 
@@ -59,6 +59,7 @@ Packs operate at multiple scopes:
 - **Feature packs** aggregate context for a specific feature tag across lanes.
 - **Conflict packs** bundle overlap + merge-tree context for a lane vs base or a lane vs peer.
 - **Plan packs** store versioned planning documents per lane.
+- **Mission packs** store mission-level deterministic context snapshots (steps, interventions, orchestrator runs, handoffs).
 
 Each pack contains two sections: a **deterministic section** with machine-generated
 facts (file changes, diff stats, test results) and a **narrative section** with
@@ -155,6 +156,7 @@ without disturbing readers.
 | **Feature Pack** | Feature/issue | All work related to a specific feature across lanes. Aggregates lane packs by feature tag. | Implemented |
 | **Conflict Pack** | Merge conflict | Lane-vs-base or lane-vs-peer overlap context (merge-tree output + file overlaps) used for proposals. | Implemented |
 | **Plan Pack** | Implementation plan | Versioned planning document per lane. | Implemented |
+| **Mission Pack** | Mission | Mission-level context artifact for orchestrator handoff/resume and mission audit history. | Implemented |
 
 ---
 
@@ -441,6 +443,7 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `ade.packs.getFeaturePack` | `(featureKey: string) => PackSummary` | Get a feature pack |
 | `ade.packs.getConflictPack` | `(args: { laneId: string; peerLaneId?: string \| null }) => PackSummary` | Get a conflict pack (v2 markdown) |
 | `ade.packs.getPlanPack` | `(laneId: string) => PackSummary` | Get a plan pack |
+| `ade.packs.getMissionPack` | `(args: { missionId: string }) => PackSummary` | Get a mission pack |
 | `ade.packs.getProjectExport` | `(args: { level: "lite" \| "standard" \| "deep" }) => PackExport` | Build a bounded project export |
 | `ade.packs.getLaneExport` | `(args: { laneId: string; level: "lite" \| "standard" \| "deep" }) => PackExport` | Build a bounded lane export |
 | `ade.packs.getConflictExport` | `(args: { laneId: string; peerLaneId?: string \| null; level: "lite" \| "standard" \| "deep" }) => PackExport` | Build a bounded conflict export |
@@ -449,6 +452,7 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `ade.packs.refreshFeaturePack` | `(featureKey: string) => PackSummary` | Refresh a feature pack |
 | `ade.packs.refreshConflictPack` | `(args: { laneId: string; peerLaneId?: string \| null }) => PackSummary` | Refresh a conflict pack |
 | `ade.packs.savePlanPack` | `(args: { laneId: string; body: string }) => PackSummary` | Save/update a plan pack |
+| `ade.packs.refreshMissionPack` | `(args: { missionId: string; reason: string; runId?: string \| null }) => PackSummary` | Refresh a mission pack |
 | `ade.packs.generateNarrative` | `(laneId: string) => PackSummary` | Request an AI narrative update (Hosted/BYOK) |
 | `ade.packs.applyHostedNarrative` | `(args: { laneId: string; narrative: string; jobId?: string }) => PackSummary` | Apply an AI narrative result to a lane pack |
 | `ade.packs.updateNarrative` | `(args: { packKey: string; narrative: string }) => PackSummary` | Manual narrative edit (marker-based) |
@@ -540,10 +544,10 @@ Diagnostics should reference `apiBaseUrl` and `remoteProjectId` (no AWS-specific
 ```sql
 -- Index of all packs, tracking metadata and freshness
 packs_index (
-  pack_key TEXT PRIMARY KEY,       -- Stable key: 'project' | 'lane:<laneId>' | 'feature:<key>' | 'conflict:<laneId>:<peerKey>' | 'plan:<laneId>'
+  pack_key TEXT PRIMARY KEY,       -- Stable key: 'project' | 'lane:<laneId>' | 'feature:<key>' | 'conflict:<laneId>:<peerKey>' | 'plan:<laneId>' | 'mission:<missionId>'
   project_id TEXT NOT NULL,        -- FK to projects table
   lane_id TEXT,                    -- FK to lanes table (NULL for project packs)
-  pack_type TEXT NOT NULL,         -- 'project' | 'lane' | 'feature' | 'conflict' | 'plan'
+  pack_type TEXT NOT NULL,         -- 'project' | 'lane' | 'feature' | 'conflict' | 'plan' | 'mission'
   pack_path TEXT NOT NULL,         -- Filesystem path to the pack markdown file
   deterministic_updated_at TEXT,   -- When the deterministic section was last regenerated
   narrative_updated_at TEXT,       -- When the narrative section was last updated
@@ -615,6 +619,9 @@ CREATE UNIQUE INDEX idx_pack_versions_key_number ON pack_versions(pack_key, vers
 ├── plans/
 │   └── <laneId>/
 │       └── plan_pack.md
+├── missions/
+│   └── <missionId>/
+│       └── mission_pack.md
 ├── conflicts/
 │   ├── predictions/
 │   │   └── <laneId>.json            # Lane conflict prediction summary (deterministic)
@@ -638,7 +645,7 @@ CREATE UNIQUE INDEX idx_pack_versions_key_number ON pack_versions(pack_key, vers
 ```typescript
 type PackSummary = {
   packKey: string;
-  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  packType: "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
   path: string;
   exists: boolean;
   deterministicUpdatedAt: string | null;
@@ -654,7 +661,7 @@ type PackSummary = {
 type PackVersionSummary = {
   id: string;
   packKey: string;
-  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  packType: "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
   versionNumber: number;
   contentHash: string;
   createdAt: string;
@@ -690,7 +697,7 @@ type Checkpoint = {
 
 type PackExport = {
   packKey: string;
-  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  packType: "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
   level: "lite" | "standard" | "deep";
   header: Record<string, unknown>; // `ade.context.v1` header fence content
   content: string;                 // Bounded export markdown (includes header fence + markers)
@@ -750,6 +757,7 @@ Implemented (Phase 8).
 | PACK-017 | Feature pack type (issue-scoped, cross-lane aggregation) | DONE — Phase 8 |
 | PACK-018 | Conflict pack type (resolution context bundle) | DONE — Phase 8 |
 | PACK-019 | Plan pack type (versioned planning documents) | DONE — Phase 8 |
+| PACK-030 | Mission pack type (mission-level context artifact) | DONE — Phase 1.5 |
 
 ### Narrative & Intelligence
 
@@ -799,7 +807,7 @@ Bounded exports are the primary interface for AI jobs and orchestrators. They pr
 ```typescript
 type PackExport = {
   packKey: string;               // e.g. "lane:lane-123"
-  packType: "project" | "lane" | "feature" | "conflict" | "plan";
+  packType: "project" | "lane" | "feature" | "conflict" | "plan" | "mission";
   level: "lite" | "standard" | "deep";
   header: Record<string, unknown>; // ade.context.v1 header fence content
   content: string;               // Bounded export markdown (includes header fence + markers)
@@ -853,6 +861,16 @@ Orchestrators and agents can consume pack changes incrementally using the delta 
 ```
 
 **Why bounded exports instead of full packs?** Agents consume token-budgeted exports, not raw pack markdown. This keeps context windows clean, enables incremental updates via diffs, and allows Lite/Standard by default with Deep on-demand.
+
+**Orchestrator policy profiles**:
+
+- `orchestrator_deterministic_v1` (default): narrative excluded, digest refs for docs, bounded lane/project exports.
+- `orchestrator_narrative_opt_in_v1` (explicit): narrative enabled for steps that opt in.
+- Every orchestrated attempt records the profile id and context snapshot cursor for audit and replay.
+
+**Refresh contract**:
+
+- The deterministic refresh/write/version/event/index flow is unified across all pack types (`project`, `lane`, `feature`, `conflict`, `plan`, `mission`) so downstream orchestrator consumers can rely on consistent version/head semantics.
 
 ### Auto-Narrative Pipeline
 
@@ -962,4 +980,3 @@ ADE now maintains first-class context docs:
 - `docs/architecture/ARCHITECTURE.ade.md`
 
 Model-facing context prefers these minimized docs when present. If canonical docs are too large, deterministic generation emits explicit `omitted_due_size` notes.
-

@@ -15,6 +15,7 @@ import type {
   ContextPrepareDocGenResult,
   ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
+  ContextInventorySnapshot,
   ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
@@ -136,6 +137,8 @@ import type {
   GetLaneExportArgs,
   GetProjectExportArgs,
   GetConflictExportArgs,
+  GetMissionPackArgs,
+  RefreshMissionPackArgs,
   ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
@@ -372,6 +375,7 @@ declare global {
       };
       context: {
         getStatus: () => Promise<ContextStatus>;
+        getInventory: () => Promise<ContextInventorySnapshot>;
         generateDocs: (args: ContextGenerateDocsArgs) => Promise<ContextGenerateDocsResult>;
         prepareDocGeneration: (args: ContextPrepareDocGenArgs) => Promise<ContextPrepareDocGenResult>;
         installGeneratedDocs: (args: ContextInstallGeneratedDocsArgs) => Promise<ContextGenerateDocsResult>;
@@ -383,6 +387,7 @@ declare global {
         getFeaturePack: (featureKey: string) => Promise<PackSummary>;
         getConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
         getPlanPack: (laneId: string) => Promise<PackSummary>;
+        getMissionPack: (args: GetMissionPackArgs) => Promise<PackSummary>;
         getProjectExport: (args: GetProjectExportArgs) => Promise<PackExport>;
         getLaneExport: (args: GetLaneExportArgs) => Promise<PackExport>;
         getConflictExport: (args: GetConflictExportArgs) => Promise<PackExport>;
@@ -391,6 +396,7 @@ declare global {
         refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
         refreshConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
         savePlanPack: (args: { laneId: string; body: string }) => Promise<PackSummary>;
+        refreshMissionPack: (args: RefreshMissionPackArgs) => Promise<PackSummary>;
         applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
         generateNarrative: (laneId: string) => Promise<PackSummary>;
         listVersions: (args: { packKey: string; limit?: number }) => Promise<PackVersionSummary[]>;

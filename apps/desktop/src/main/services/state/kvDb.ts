@@ -928,6 +928,256 @@ function migrate(db: Database) {
     "mission_interventions",
     ["project_id", "status"]
   );
+
+  // Phase 1.5 orchestrator/context hardening gate.
+  db.run(`
+    create table if not exists orchestrator_runs (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      status text not null,
+      context_profile text not null default 'orchestrator_deterministic_v1',
+      scheduler_state text not null,
+      runtime_cursor_json text,
+      last_error text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      started_at text,
+      completed_at text,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runs_project_status on orchestrator_runs(project_id, status)",
+    "orchestrator_runs",
+    ["project_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runs_mission on orchestrator_runs(mission_id)",
+    "orchestrator_runs",
+    ["mission_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runs_project_updated on orchestrator_runs(project_id, updated_at)",
+    "orchestrator_runs",
+    ["project_id", "updated_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_steps (
+      id text primary key,
+      run_id text not null,
+      project_id text not null,
+      mission_step_id text,
+      step_key text not null,
+      step_index integer not null,
+      title text not null,
+      lane_id text,
+      status text not null,
+      join_policy text not null default 'all_success',
+      quorum_count integer,
+      dependency_step_ids_json text not null default '[]',
+      retry_limit integer not null default 0,
+      retry_count integer not null default 0,
+      last_attempt_id text,
+      policy_json text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      started_at text,
+      completed_at text,
+      unique(run_id, step_key),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(project_id) references projects(id),
+      foreign key(mission_step_id) references mission_steps(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_steps_run_status on orchestrator_steps(run_id, status)",
+    "orchestrator_steps",
+    ["run_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_steps_project_status on orchestrator_steps(project_id, status)",
+    "orchestrator_steps",
+    ["project_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_steps_run_order on orchestrator_steps(run_id, step_index)",
+    "orchestrator_steps",
+    ["run_id", "step_index"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_attempts (
+      id text primary key,
+      run_id text not null,
+      step_id text not null,
+      project_id text not null,
+      attempt_number integer not null,
+      status text not null,
+      executor_kind text not null,
+      executor_session_id text,
+      tracked_session_enforced integer not null default 1,
+      context_profile text not null default 'orchestrator_deterministic_v1',
+      context_snapshot_id text,
+      error_class text not null default 'none',
+      error_message text,
+      retry_backoff_ms integer not null default 0,
+      result_envelope_json text,
+      metadata_json text,
+      created_at text not null,
+      started_at text,
+      completed_at text,
+      unique(step_id, attempt_number),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(project_id) references projects(id),
+      foreign key(context_snapshot_id) references orchestrator_context_snapshots(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempts_run_status on orchestrator_attempts(run_id, status)",
+    "orchestrator_attempts",
+    ["run_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempts_step_status on orchestrator_attempts(step_id, status)",
+    "orchestrator_attempts",
+    ["step_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempts_project_created on orchestrator_attempts(project_id, created_at)",
+    "orchestrator_attempts",
+    ["project_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_claims (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      owner_id text not null,
+      scope_kind text not null,
+      scope_value text not null,
+      state text not null,
+      acquired_at text not null,
+      heartbeat_at text not null,
+      expires_at text not null,
+      released_at text,
+      policy_json text,
+      metadata_json text,
+      foreign key(project_id) references projects(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_claims_run_state on orchestrator_claims(run_id, state)",
+    "orchestrator_claims",
+    ["run_id", "state"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_claims_scope_state on orchestrator_claims(project_id, scope_kind, scope_value, state)",
+    "orchestrator_claims",
+    ["project_id", "scope_kind", "scope_value", "state"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_claims_expires on orchestrator_claims(state, expires_at)",
+    "orchestrator_claims",
+    ["state", "expires_at"]
+  );
+  db.run(
+    "create unique index if not exists idx_orchestrator_claims_active_scope on orchestrator_claims(project_id, scope_kind, scope_value) where state = 'active'"
+  );
+
+  db.run(`
+    create table if not exists orchestrator_context_snapshots (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      snapshot_type text not null,
+      context_profile text not null default 'orchestrator_deterministic_v1',
+      cursor_json text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_context_snapshots_run_created on orchestrator_context_snapshots(run_id, created_at)",
+    "orchestrator_context_snapshots",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_context_snapshots_attempt on orchestrator_context_snapshots(attempt_id)",
+    "orchestrator_context_snapshots",
+    ["attempt_id"]
+  );
+
+  db.run(`
+    create table if not exists mission_step_handoffs (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      mission_step_id text,
+      run_id text,
+      step_id text,
+      attempt_id text,
+      handoff_type text not null,
+      producer text not null,
+      payload_json text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(mission_step_id) references mission_steps(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_step_handoffs_mission_created on mission_step_handoffs(mission_id, created_at)",
+    "mission_step_handoffs",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_step_handoffs_step_created on mission_step_handoffs(mission_step_id, created_at)",
+    "mission_step_handoffs",
+    ["mission_step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_step_handoffs_attempt on mission_step_handoffs(attempt_id)",
+    "mission_step_handoffs",
+    ["attempt_id"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

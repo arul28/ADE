@@ -104,6 +104,7 @@ Packs are ADE's durable context system. They are structured bundles of context a
 - **Feature Pack**: Issue-scoped aggregate across one or more lanes, sessions, and issues.
 - **Conflict Pack**: Resolution context for predicted or active conflicts, including root-cause analysis and resolution strategies.
 - **Plan Pack**: Versioned coding plans with immutable revisions, rationale, and handoff prompts.
+- **Mission Pack**: Mission-level deterministic context snapshot (steps, interventions, orchestrator runs, handoffs) used for resume and audit.
 
 ### Checkpoint
 
@@ -258,7 +259,7 @@ See: [features/CONFLICTS.md](features/CONFLICTS.md)
 
 ### 7.6 Context
 
-The Context tab is the documentation and pack context surface. It shows project/lane context health, supports context docs generation workflows, and provides access to pack-derived narrative and export artifacts that are used in handoffs and orchestration flows.
+The Context tab is the documentation and context-inventory surface. It shows project/lane context health, supports context docs generation workflows, and provides a real-time sectioned inventory of tracked context primitives (packs by type, checkpoints, tracked session deltas, mission handoffs, and orchestrator runtime state) so users can audit evolution as it happens.
 
 See: [features/PACKS.md](features/PACKS.md)
 
@@ -313,7 +314,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 5 | Conflicts | [features/CONFLICTS.md](features/CONFLICTS.md) | Conflict prediction and resolution radar. Covers per-lane conflict prediction, pairwise lane-lane risk matrix, merge simulation, near-real-time updates from staged/dirty changes, and hosted proposal workflows. |
 | 6 | Pull Requests | [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md) | GitHub PR integration. Covers PR creation and linking per lane, checks/review status display, description drafting from packs, stacked PR chain visualization, and the land stack guided merge flow. |
 | 7 | History | [features/HISTORY.md](features/HISTORY.md) | ADE operations timeline. Covers chronological event stream, feature history aggregation, event detail with jump links, context replay from checkpoints, undo capabilities, and graph visualization (V1). |
-| 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all five pack types, the update pipeline, and privacy/retention controls. |
+| 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all six pack types, the update pipeline, and privacy/retention controls. |
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | Mission intake and tracking for plain-English goals. Covers queue/status lifecycle, mission steps, interventions, artifacts (including PR links), timeline events, and relay-ready metadata for future orchestrator phases. |
 | 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, hosted agent consent), trust surfaces, operation previews, escape hatches, and theme/keybinding configuration. |
@@ -352,6 +353,13 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 - **Pack Event**: Append-only event for any change to pack state (checkpoint created, pack materialized, plan version created, narrative augmented).
 - **Pack Version**: Immutable rendered version of a pack (markdown + metadata + source inputs). Never edited in place.
 - **Pack Head**: Mutable pointer per pack key referencing the latest deterministic version, latest narrative version, and active version.
+
+**Context hardening policy (Phase 1.5 gate)**:
+
+- Orchestrator state transitions, scheduling, retries, claims, and gates are deterministic code/state-machine paths.
+- AI is advisory-only (decomposition, strategy suggestions, patch proposals, summaries).
+- Default orchestrator context profile excludes narrative text; narrative inclusion is explicit opt-in.
+- Orchestrator context defaults to PRD/architecture digest refs and bounded exports; full doc bodies are included only when step policy requires it.
 
 **Update pipeline**: On session end, the pipeline creates a checkpoint, appends events, materializes lane/project/feature packs, predicts conflicts, updates conflict packs if needed, syncs to the hosted mirror, and optionally requests narrative augmentation. This pipeline runs through the job engine with coalescing to avoid redundant work.
 
@@ -479,6 +487,8 @@ Arrays of objects merge by stable `id`. Unresolved references (such as stack but
 Implementation sequencing, future phases, and dependency ordering are now maintained in:
 
 - `docs/final-plan.md`
+
+Current gating note: Phase 2 orchestrator runtime delivery depends on the Phase 1.5 Context Hardening Gate (context durability, tracked-session enforcement, claim leases, and resume contracts).
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

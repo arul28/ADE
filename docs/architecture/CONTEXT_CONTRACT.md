@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-15
+> Last updated: 2026-02-19
 
 This document is the **authoritative contract** for ADE context artifacts used by:
 
@@ -93,6 +93,8 @@ flowchart TD
   - `feature:<featureKey>`
 - Plan pack:
   - `plan:<laneId>`
+- Mission pack:
+  - `mission:<missionId>`
 - Conflict pack:
   - `conflict:<laneId>:<peerKey>`
   - `peerKey` is either:
@@ -168,7 +170,7 @@ Every pack and export must contain a machine-readable header as a **JSON code fe
 - Identity:
   - `schema` (must be `ade.context.v1`)
   - `packKey`
-  - `packType` (`project` | `lane` | `conflict` | `feature` | `plan`)
+  - `packType` (`project` | `lane` | `conflict` | `feature` | `plan` | `mission`)
   - `exportLevel` (exports only: `lite` | `standard` | `deep`)
 - Scope:
   - `laneId` (nullable)
@@ -320,6 +322,8 @@ flowchart TD
 | No mirror / upload failure | inline_fallback | Job still submitted; warning and fallback telemetry recorded |
 | Periodic delta handoff | bounded delta + exports | Deterministic ordering, optional omission metadata preserved |
 
+### Export levels
+
 - `Lite`
   - Default for spawning new agents and quick context.
   - Strictly bounded; focuses on task spec, intent, key deltas, and blockers.
@@ -329,6 +333,24 @@ flowchart TD
 - `Deep`
   - Explicit and on-demand.
   - Includes additional low-signal sections (e.g. narrative text) within a larger budget.
+
+### Orchestrator context policy profiles
+
+- `orchestrator_deterministic_v1` (default):
+  - narrative excluded by default,
+  - docs included as digest refs,
+  - bounded lane/project exports (`standard`/`lite` defaults).
+- `orchestrator_narrative_opt_in_v1` (explicit):
+  - narrative inclusion enabled,
+  - larger bounded export defaults,
+  - still subject to token/file budgets.
+- Each orchestrated attempt records the selected profile id and context snapshot cursor for replay/audit.
+
+### Project docs handling contract
+
+- Default orchestrator context includes PRD + architecture document digest refs (`path`, `sha256`, `bytes`) for auditability.
+- Full doc bodies are only included when step policy explicitly requests full docs.
+- Snapshot metadata must explicitly declare docs mode (`digest_ref` vs `full_body`) and truncation state.
 
 ### Budget guidance (approximate)
 
@@ -532,4 +554,3 @@ Compatibility guarantees:
 - Existing pack/export/event/checkpoint consumers remain valid.
 - Legacy fields and IPC channels remain unchanged.
 - New fields are additive and optional.
-

@@ -422,6 +422,7 @@ export function createPackService({
   const getLanePackPath = (laneId: string) => path.join(packsDir, "lanes", laneId, "lane_pack.md");
   const getFeaturePackPath = (featureKey: string) => path.join(packsDir, "features", safeSegment(featureKey), "feature_pack.md");
   const getPlanPackPath = (laneId: string) => path.join(packsDir, "plans", laneId, "plan_pack.md");
+  const getMissionPackPath = (missionId: string) => path.join(packsDir, "missions", missionId, "mission_pack.md");
   const getConflictPackPath = (laneId: string, peer: string) =>
     path.join(packsDir, "conflicts", "v2", `${laneId}__${safeSegment(peer)}.md`);
   const conflictsRootDir = path.join(packsDir, "conflicts");
@@ -442,6 +443,16 @@ export function createPackService({
     !!value && typeof value === "object" && !Array.isArray(value);
 
   const asString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+  const parseRecord = (raw: string | null | undefined): Record<string, unknown> | null => {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
 
   const buildGraphEnvelope = (relations: PackRelation[]): PackGraphEnvelopeV1 => ({
     schema: "ade.packGraph.v1",
@@ -492,6 +503,16 @@ export function createPackService({
       { id: "bootstrap", kind: "heading", heading: "## Bootstrap context (codebase + docs)" },
       { id: "lane_snapshot", kind: "heading", heading: "## Lane Snapshot" }
     ];
+  };
+
+  const inferPackTypeFromKey = (packKey: string): PackType => {
+    if (packKey === "project") return "project";
+    if (packKey.startsWith("lane:")) return "lane";
+    if (packKey.startsWith("feature:")) return "feature";
+    if (packKey.startsWith("conflict:")) return "conflict";
+    if (packKey.startsWith("plan:")) return "plan";
+    if (packKey.startsWith("mission:")) return "mission";
+    return "project";
   };
 
   const CONTEXT_VERSION = 1;
@@ -1659,6 +1680,67 @@ Before writing, explore to understand:
     });
 
     return { versionId, versionNumber, contentHash: bodyHash };
+  };
+
+  const persistPackRefresh = (args: {
+    packKey: string;
+    packType: PackType;
+    packPath: string;
+    laneId: string | null;
+    body: string;
+    deterministicUpdatedAt: string;
+    narrativeUpdatedAt?: string | null;
+    lastHeadSha?: string | null;
+    metadata?: Record<string, unknown>;
+    eventType?: string;
+    eventPayload?: Record<string, unknown>;
+  }): PackSummary => {
+    ensureDirFor(args.packPath);
+    fs.writeFileSync(args.packPath, args.body, "utf8");
+
+    createPackEvent({
+      packKey: args.packKey,
+      eventType: args.eventType ?? "refresh_triggered",
+      payload: args.eventPayload ?? {}
+    });
+
+    const version = createPackVersion({ packKey: args.packKey, packType: args.packType, body: args.body });
+    const metadata = {
+      ...(args.metadata ?? {}),
+      versionId: version.versionId,
+      versionNumber: version.versionNumber,
+      contentHash: version.contentHash
+    };
+
+    upsertPackIndex({
+      db,
+      projectId,
+      packKey: args.packKey,
+      laneId: args.laneId,
+      packType: args.packType,
+      packPath: args.packPath,
+      deterministicUpdatedAt: args.deterministicUpdatedAt,
+      narrativeUpdatedAt: args.narrativeUpdatedAt ?? null,
+      lastHeadSha: args.lastHeadSha ?? null,
+      metadata
+    });
+
+    maybeCleanupPacks();
+
+    return {
+      packKey: args.packKey,
+      packType: args.packType,
+      path: args.packPath,
+      exists: true,
+      deterministicUpdatedAt: args.deterministicUpdatedAt,
+      narrativeUpdatedAt: args.narrativeUpdatedAt ?? null,
+      lastHeadSha: args.lastHeadSha ?? null,
+      versionId: version.versionId,
+      versionNumber: version.versionNumber,
+      contentHash: version.contentHash,
+      metadata,
+      body: args.body
+    };
   };
 
   const recordCheckpointFromDelta = (args: {
@@ -2960,6 +3042,224 @@ Before writing, explore to understand:
     return { body: `${lines.join("\n")}\n`, laneIds: matching.map((lane) => lane.id) };
   };
 
+  const buildMissionPackBody = async (args: {
+    missionId: string;
+    reason: string;
+    deterministicUpdatedAt: string;
+    runId?: string | null;
+  }): Promise<{ body: string; laneId: string | null }> => {
+    const mission = db.get<{
+      id: string;
+      title: string;
+      prompt: string;
+      lane_id: string | null;
+      status: string;
+      priority: string;
+      execution_mode: string;
+      target_machine_id: string | null;
+      outcome_summary: string | null;
+      last_error: string | null;
+      created_at: string;
+      updated_at: string;
+      started_at: string | null;
+      completed_at: string | null;
+    }>(
+      `
+        select
+          id,
+          title,
+          prompt,
+          lane_id,
+          status,
+          priority,
+          execution_mode,
+          target_machine_id,
+          outcome_summary,
+          last_error,
+          created_at,
+          updated_at,
+          started_at,
+          completed_at
+        from missions
+        where id = ?
+          and project_id = ?
+        limit 1
+      `,
+      [args.missionId, projectId]
+    );
+    if (!mission?.id) throw new Error(`Mission not found: ${args.missionId}`);
+
+    const steps = db.all<{
+      id: string;
+      step_index: number;
+      title: string;
+      status: string;
+      lane_id: string | null;
+      started_at: string | null;
+      completed_at: string | null;
+      updated_at: string;
+    }>(
+      `
+        select
+          id,
+          step_index,
+          title,
+          status,
+          lane_id,
+          started_at,
+          completed_at,
+          updated_at
+        from mission_steps
+        where mission_id = ?
+          and project_id = ?
+        order by step_index asc
+      `,
+      [args.missionId, projectId]
+    );
+
+    const artifacts = db.get<{ count: number }>(
+      "select count(*) as count from mission_artifacts where mission_id = ? and project_id = ?",
+      [args.missionId, projectId]
+    );
+    const interventions = db.get<{ open_count: number; total_count: number }>(
+      `
+        select
+          sum(case when status = 'open' then 1 else 0 end) as open_count,
+          count(*) as total_count
+        from mission_interventions
+        where mission_id = ?
+          and project_id = ?
+      `,
+      [args.missionId, projectId]
+    );
+    const handoffs = db.all<{
+      handoff_type: string;
+      producer: string;
+      created_at: string;
+      payload_json: string | null;
+    }>(
+      `
+        select handoff_type, producer, created_at, payload_json
+        from mission_step_handoffs
+        where mission_id = ?
+          and project_id = ?
+        order by created_at desc
+        limit 16
+      `,
+      [args.missionId, projectId]
+    );
+
+    const runs = db.all<{
+      id: string;
+      status: string;
+      context_profile: string;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `
+        select id, status, context_profile, created_at, updated_at
+        from orchestrator_runs
+        where mission_id = ?
+          and project_id = ?
+        order by created_at desc
+        limit 8
+      `,
+      [args.missionId, projectId]
+    );
+
+    const lines: string[] = [];
+    lines.push(`# Mission Pack: ${mission.title}`);
+    lines.push("");
+    lines.push(`- Mission ID: ${mission.id}`);
+    lines.push(`- Deterministic updated: ${args.deterministicUpdatedAt}`);
+    lines.push(`- Trigger: ${args.reason}`);
+    lines.push(`- Status: ${mission.status}`);
+    lines.push(`- Priority: ${mission.priority}`);
+    lines.push(`- Execution mode: ${mission.execution_mode}`);
+    if (mission.target_machine_id) lines.push(`- Target machine: ${mission.target_machine_id}`);
+    if (args.runId) lines.push(`- Orchestrator run: ${args.runId}`);
+    lines.push(`- Created: ${mission.created_at}`);
+    lines.push(`- Updated: ${mission.updated_at}`);
+    if (mission.started_at) lines.push(`- Started: ${mission.started_at}`);
+    if (mission.completed_at) lines.push(`- Completed: ${mission.completed_at}`);
+    lines.push("");
+
+    lines.push("## Prompt");
+    lines.push("```");
+    lines.push(mission.prompt.trim());
+    lines.push("```");
+    lines.push("");
+
+    lines.push("## Step Progress");
+    if (!steps.length) {
+      lines.push("- No mission steps.");
+      lines.push("");
+    } else {
+      lines.push("| # | Step | Status | Lane | Started | Completed |");
+      lines.push("|---|------|--------|------|---------|-----------|");
+      for (const step of steps) {
+        lines.push(
+          `| ${Number(step.step_index) + 1} | ${step.title.replace(/\|/g, "\\|")} | ${step.status} | ${step.lane_id ?? "-"} | ${step.started_at ?? "-"} | ${step.completed_at ?? "-"} |`
+        );
+      }
+      lines.push("");
+    }
+
+    lines.push("## Artifacts & Interventions");
+    lines.push(`- Artifacts: ${Number(artifacts?.count ?? 0)}`);
+    lines.push(`- Interventions (open/total): ${Number(interventions?.open_count ?? 0)}/${Number(interventions?.total_count ?? 0)}`);
+    if (mission.outcome_summary) lines.push(`- Outcome summary: ${mission.outcome_summary}`);
+    if (mission.last_error) lines.push(`- Last error: ${mission.last_error}`);
+    lines.push("");
+
+    lines.push("## Orchestrator Runs");
+    if (!runs.length) {
+      lines.push("- No orchestrator runs linked yet.");
+    } else {
+      for (const run of runs) {
+        lines.push(`- ${run.id} · ${run.status} · profile=${run.context_profile} · updated=${run.updated_at}`);
+      }
+    }
+    lines.push("");
+
+    lines.push("## Step Handoffs");
+    if (!handoffs.length) {
+      lines.push("- No step handoffs recorded.");
+    } else {
+      for (const handoff of handoffs) {
+        const payload = parseRecord(handoff.payload_json);
+        const summary = payload?.result && typeof payload.result === "object"
+          ? String((payload.result as Record<string, unknown>).summary ?? "")
+          : "";
+        lines.push(
+          `- ${handoff.created_at} · ${handoff.handoff_type} · producer=${handoff.producer}${summary ? ` · ${summary}` : ""}`
+        );
+      }
+    }
+    lines.push("");
+
+    if (mission.lane_id) {
+      const lanePack = readFileIfExists(getLanePackPath(mission.lane_id));
+      if (lanePack.trim().length) {
+        lines.push("## Lane Pack Reference");
+        lines.push(`- Lane pack key: lane:${mission.lane_id}`);
+        lines.push(`- Lane pack path: ${getLanePackPath(mission.lane_id)}`);
+        lines.push("");
+      }
+    }
+
+    lines.push("## Narrative");
+    lines.push(
+      "Mission packs are deterministic mission-level context snapshots used by orchestrator resume and handoff flows."
+    );
+    lines.push("");
+
+    return {
+      body: `${lines.join("\n")}\n`,
+      laneId: mission.lane_id ?? null
+    };
+  };
+
   const buildConflictPackBody = async (args: {
     laneId: string;
     peerLaneId: string | null;
@@ -3198,6 +3498,13 @@ Before writing, explore to understand:
       return getPackSummaryForKey(packKey, { packType: "plan", packPath: getPlanPackPath(id) });
     },
 
+    getMissionPack(missionId: string): PackSummary {
+      const id = missionId.trim();
+      if (!id) throw new Error("missionId is required");
+      const packKey = `mission:${id}`;
+      return getPackSummaryForKey(packKey, { packType: "mission", packPath: getMissionPackPath(id) });
+    },
+
     getSessionDelta(sessionId: string): SessionDeltaSummary | null {
       const row = getSessionDeltaRow(sessionId);
       if (!row) return null;
@@ -3347,21 +3654,29 @@ Before writing, explore to understand:
 
         const packKey = `lane:${args.laneId}`;
         const packPath = getLanePackPath(args.laneId);
-        ensureDirFor(packPath);
-        fs.writeFileSync(packPath, body, "utf8");
-
-        createPackEvent({
+        const summary = persistPackRefresh({
           packKey,
+          packType: "lane",
+          packPath,
+          laneId: args.laneId,
+          body,
+          deterministicUpdatedAt,
+          narrativeUpdatedAt: null,
+          lastHeadSha,
+          metadata: {
+            reason: args.reason,
+            sessionId: args.sessionId ?? null,
+            latestDeltaSessionId: latestDelta?.sessionId ?? null,
+            operationId: op.operationId
+          },
           eventType: "refresh_triggered",
-          payload: {
+          eventPayload: {
             operationId: op.operationId,
             trigger: args.reason,
             laneId: args.laneId,
             sessionId: args.sessionId ?? null
           }
         });
-
-        const version = createPackVersion({ packKey, packType: "lane", body });
 
         if (args.sessionId && latestDelta) {
           const checkpointSha =
@@ -3379,28 +3694,6 @@ Before writing, explore to understand:
           }
         }
 
-        const metadata = {
-          reason: args.reason,
-          sessionId: args.sessionId ?? null,
-          latestDeltaSessionId: latestDelta?.sessionId ?? null,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        };
-
-        upsertPackIndex({
-          db,
-          projectId,
-          packKey,
-          laneId: args.laneId,
-          packType: "lane",
-          packPath,
-          deterministicUpdatedAt,
-          narrativeUpdatedAt: null,
-          lastHeadSha,
-          metadata
-        });
-
         operationService.finish({
           operationId: op.operationId,
           status: "succeeded",
@@ -3409,27 +3702,11 @@ Before writing, explore to understand:
             packPath,
             deterministicUpdatedAt,
             latestDeltaSessionId: latestDelta?.sessionId ?? null,
-            versionId: version.versionId,
-            versionNumber: version.versionNumber
+            versionId: summary.versionId ?? null,
+            versionNumber: summary.versionNumber ?? null
           }
         });
-
-        maybeCleanupPacks();
-
-        return {
-          packKey,
-          packType: "lane",
-          path: packPath,
-          exists: true,
-          deterministicUpdatedAt,
-          narrativeUpdatedAt: null,
-          lastHeadSha,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash,
-          metadata,
-          body
-        };
+        return summary;
       } catch (error) {
         operationService.finish({
           operationId: op.operationId,
@@ -3461,41 +3738,27 @@ Before writing, explore to understand:
         });
 
         const packKey = "project";
-        ensureDirFor(projectPackPath);
-        fs.writeFileSync(projectPackPath, body, "utf8");
-
-        createPackEvent({
+        const summary = persistPackRefresh({
           packKey,
+          packType: "project",
+          packPath: projectPackPath,
+          laneId: null,
+          body,
+          deterministicUpdatedAt,
+          narrativeUpdatedAt: null,
+          lastHeadSha: null,
+          metadata: {
+            ...readContextDocMeta(),
+            reason: args.reason,
+            sourceLaneId: args.laneId ?? null,
+            operationId: op.operationId
+          },
           eventType: "refresh_triggered",
-          payload: {
+          eventPayload: {
             operationId: op.operationId,
             trigger: args.reason,
             laneId: args.laneId ?? null
           }
-        });
-
-        const version = createPackVersion({ packKey, packType: "project", body });
-
-        const metadata = {
-          ...readContextDocMeta(),
-          reason: args.reason,
-          sourceLaneId: args.laneId ?? null,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        };
-
-        upsertPackIndex({
-          db,
-          projectId,
-          packKey,
-          laneId: null,
-          packType: "project",
-          packPath: projectPackPath,
-          deterministicUpdatedAt,
-          narrativeUpdatedAt: null,
-          lastHeadSha: null,
-          metadata
         });
 
         operationService.finish({
@@ -3504,27 +3767,11 @@ Before writing, explore to understand:
           metadataPatch: {
             packPath: projectPackPath,
             deterministicUpdatedAt,
-            versionId: version.versionId,
-            versionNumber: version.versionNumber
+            versionId: summary.versionId ?? null,
+            versionNumber: summary.versionNumber ?? null
           }
         });
-
-        maybeCleanupPacks();
-
-        return {
-          packKey,
-          packType: "project",
-          path: projectPackPath,
-          exists: true,
-          deterministicUpdatedAt,
-          narrativeUpdatedAt: null,
-          lastHeadSha: null,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash,
-          metadata,
-          body
-        };
+        return summary;
       } catch (error) {
         operationService.finish({
           operationId: op.operationId,
@@ -3549,50 +3796,23 @@ Before writing, explore to understand:
       });
 
       const packPath = getFeaturePackPath(key);
-      ensureDirFor(packPath);
-      fs.writeFileSync(packPath, built.body, "utf8");
-
-      createPackEvent({
+      return persistPackRefresh({
         packKey,
-        eventType: "refresh_triggered",
-        payload: { trigger: args.reason, featureKey: key, laneIds: built.laneIds }
-      });
-
-      const version = createPackVersion({ packKey, packType: "feature", body: built.body });
-
-      upsertPackIndex({
-        db,
-        projectId,
-        packKey,
-        laneId: null,
         packType: "feature",
         packPath,
+        laneId: null,
+        body: built.body,
         deterministicUpdatedAt,
         narrativeUpdatedAt: null,
         lastHeadSha: null,
         metadata: {
           reason: args.reason,
           featureKey: key,
-          laneIds: built.laneIds,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        }
+          laneIds: built.laneIds
+        },
+        eventType: "refresh_triggered",
+        eventPayload: { trigger: args.reason, featureKey: key, laneIds: built.laneIds }
       });
-
-      return {
-        packKey,
-        packType: "feature",
-        path: packPath,
-        exists: true,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: null,
-        versionId: version.versionId,
-        versionNumber: version.versionNumber,
-        contentHash: version.contentHash,
-        body: built.body
-      };
     },
 
     async refreshConflictPack(args: { laneId: string; peerLaneId?: string | null; reason: string }): Promise<PackSummary> {
@@ -3612,24 +3832,12 @@ Before writing, explore to understand:
       });
 
       const packPath = getConflictPackPath(laneId, peerKey);
-      ensureDirFor(packPath);
-      fs.writeFileSync(packPath, built.body, "utf8");
-
-      createPackEvent({
+      return persistPackRefresh({
         packKey,
-        eventType: "refresh_triggered",
-        payload: { trigger: args.reason, laneId, peerLaneId: peer, peerKey }
-      });
-
-      const version = createPackVersion({ packKey, packType: "conflict", body: built.body });
-
-      upsertPackIndex({
-        db,
-        projectId,
-        packKey,
-        laneId,
         packType: "conflict",
         packPath,
+        laneId,
+        body: built.body,
         deterministicUpdatedAt,
         narrativeUpdatedAt: null,
         lastHeadSha: built.lastHeadSha,
@@ -3637,26 +3845,11 @@ Before writing, explore to understand:
           reason: args.reason,
           laneId,
           peerLaneId: peer,
-          peerKey,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        }
+          peerKey
+        },
+        eventType: "refresh_triggered",
+        eventPayload: { trigger: args.reason, laneId, peerLaneId: peer, peerKey }
       });
-
-      return {
-        packKey,
-        packType: "conflict",
-        path: packPath,
-        exists: true,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
-        lastHeadSha: built.lastHeadSha,
-        versionId: version.versionId,
-        versionNumber: version.versionNumber,
-        contentHash: version.contentHash,
-        body: built.body
-      };
     },
 
     async savePlanPack(args: { laneId: string; body: string; reason: string }): Promise<PackSummary> {
@@ -3670,49 +3863,57 @@ Before writing, explore to understand:
       const headSha = await getHeadSha(lane.worktreePath);
 
       const body = args.body ?? "";
-      ensureDirFor(packPath);
-      fs.writeFileSync(packPath, body, "utf8");
-
-      createPackEvent({
+      return persistPackRefresh({
         packKey,
-        eventType: "plan_saved",
-        payload: { trigger: args.reason, laneId }
-      });
-
-      const version = createPackVersion({ packKey, packType: "plan", body });
-
-      upsertPackIndex({
-        db,
-        projectId,
-        packKey,
-        laneId,
         packType: "plan",
         packPath,
+        laneId,
+        body,
         deterministicUpdatedAt,
         narrativeUpdatedAt: deterministicUpdatedAt,
         lastHeadSha: headSha,
         metadata: {
           reason: args.reason,
-          laneId,
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
+          laneId
+        },
+        eventType: "plan_saved",
+        eventPayload: { trigger: args.reason, laneId }
+      });
+    },
+
+    async refreshMissionPack(args: { missionId: string; reason: string; runId?: string | null }): Promise<PackSummary> {
+      const missionId = args.missionId.trim();
+      if (!missionId) throw new Error("missionId is required");
+      const packKey = `mission:${missionId}`;
+      const deterministicUpdatedAt = nowIso();
+      const built = await buildMissionPackBody({
+        missionId,
+        reason: args.reason,
+        deterministicUpdatedAt,
+        runId: args.runId ?? null
+      });
+      const packPath = getMissionPackPath(missionId);
+      return persistPackRefresh({
+        packKey,
+        packType: "mission",
+        packPath,
+        laneId: built.laneId,
+        body: built.body,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        lastHeadSha: null,
+        metadata: {
+          reason: args.reason,
+          missionId,
+          runId: args.runId ?? null
+        },
+        eventType: "refresh_triggered",
+        eventPayload: {
+          trigger: args.reason,
+          missionId,
+          runId: args.runId ?? null
         }
       });
-
-      return {
-        packKey,
-        packType: "plan",
-        path: packPath,
-        exists: true,
-        deterministicUpdatedAt,
-        narrativeUpdatedAt: deterministicUpdatedAt,
-        lastHeadSha: headSha,
-        versionId: version.versionId,
-        versionNumber: version.versionNumber,
-        contentHash: version.contentHash,
-        body
-      };
     },
 
     updateNarrative(args: { packKey: string; narrative: string; source?: string }): PackSummary {
@@ -3774,7 +3975,7 @@ Before writing, explore to understand:
       const packKey = args.packKey.trim();
       if (!packKey) throw new Error("packKey is required");
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
-      const packType = getPackIndexRow(packKey)?.pack_type ?? (packKey.startsWith("lane:") ? "lane" : "project");
+      const packType = getPackIndexRow(packKey)?.pack_type ?? inferPackTypeFromKey(packKey);
       const rows = db.all<{
         id: string;
         version_number: number;
@@ -3822,7 +4023,7 @@ Before writing, explore to understand:
         [projectId, id]
       );
       if (!row) throw new Error(`Pack version not found: ${id}`);
-      const packType = getPackIndexRow(row.pack_key)?.pack_type ?? (row.pack_key.startsWith("lane:") ? "lane" : "project");
+      const packType = getPackIndexRow(row.pack_key)?.pack_type ?? inferPackTypeFromKey(row.pack_key);
       return {
         id: row.id,
         packKey: row.pack_key,
@@ -3932,7 +4133,7 @@ Before writing, explore to understand:
     getHeadVersion(args: { packKey: string }): PackHeadVersion {
       const packKey = args.packKey.trim();
       if (!packKey) throw new Error("packKey is required");
-      const packType = getPackIndexRow(packKey)?.pack_type ?? (packKey.startsWith("lane:") ? "lane" : "project");
+      const packType = getPackIndexRow(packKey)?.pack_type ?? inferPackTypeFromKey(packKey);
       const row = db.get<{
         id: string;
         version_number: number;

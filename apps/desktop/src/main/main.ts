@@ -38,6 +38,7 @@ import { createCiService } from "./services/ci/ciService";
 import { createRestackSuggestionService } from "./services/lanes/restackSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
+import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -420,6 +421,14 @@ app.whenReady().then(async () => {
       onEvent: (event) => broadcast(IPC.missionsEvent, event)
     });
 
+    const orchestratorService = createOrchestratorService({
+      db,
+      projectId,
+      projectRoot,
+      packService,
+      ptyService
+    });
+
     const automationPlannerService = createAutomationPlannerService({
       logger,
       projectRoot,
@@ -543,6 +552,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       missionService,
+      orchestratorService,
       ciService,
       packService,
       projectConfigService,

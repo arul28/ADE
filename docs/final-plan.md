@@ -91,7 +91,8 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Feature | Primary Phase | Depends On |
 |---|---|---|
 | Missions (model + UI) | Phase 1 | Current baseline |
-| Orchestrator runtime | Phase 2 | Phase 1 |
+| Context hardening gate | Phase 1.5 | Phase 1 |
+| Orchestrator runtime | Phase 2 | Phases 1 and 1.5 |
 | Agent identities | Phase 3 | Phase 2 |
 | Night Shift | Phase 4 | Phases 2-3 |
 | Play runtime isolation | Phase 5 | Phase 2 |
@@ -147,9 +148,9 @@ Goal: Introduce a first-class mission object and mission-facing UI.
 
 ---
 
-## Phase 2 — Orchestrator Runtime v1 (4-5 weeks)
+## Phase 1.5 — Context Hardening Gate (2-3 weeks)
 
-Goal: Deterministic execution engine for missions.
+Goal: Harden context contracts and durability before shipping orchestrator execution.
 
 ### Dependencies
 
@@ -158,24 +159,87 @@ Goal: Deterministic execution engine for missions.
 ### Workstreams
 
 - Data/contracts:
-  - Add orchestrator run/step state model linked to missions.
-  - Define failure categories and retry metadata.
-- Main process:
-  - Add `orchestratorService`, executor queue, retry/backoff engine.
-  - Implement step adapters for lanes/git/terminals/tests/PRs/packs.
-  - Enforce policy checks on every command-executing step.
-- Renderer:
-  - Mission detail view shows step timeline and live execution state.
-  - History overlays show orchestrator-originated events.
-- Validation:
-  - Step idempotency tests.
-  - Resume/retry tests from partial failures.
+  - Add mission-level context artifact (`mission` pack) with durable versioning/event history.
+  - Add structured step handoff records for every step attempt (`mission_step_handoffs`).
+  - Add orchestrator runtime persistence tables: `orchestrator_runs`, `orchestrator_steps`, `orchestrator_attempts`, `orchestrator_claims`, `orchestrator_context_snapshots`.
+- Runtime policy:
+  - Enforce `tracked=true` sessions on orchestrated execution paths.
+  - Add lane/file/env claim lease model with heartbeat, expiry, and collision policy.
+  - Add deterministic runtime cursor/context snapshot storage for run/step/attempt resume.
+- Pack/export policy:
+  - Unify deterministic refresh pattern across `project`, `lane`, `feature`, `conflict`, `plan`, and `mission` packs.
+  - Add internal orchestrator context policy profiles:
+    - default deterministic profile excludes narrative text.
+    - explicit opt-in profile includes narrative.
+  - Record context profile used per step attempt.
+- Context/doc handling:
+  - Include PRD/architecture refs and digests by default in orchestrator context snapshots.
+  - Include full doc bodies only when explicit step policy requires it.
+  - Keep doc inclusion bounded and auditable in snapshot metadata.
+- Validation and gates:
+  - Migration coverage for all new tables/indexes.
+  - Tests for claim collisions, tracked-session enforcement, profile behavior, and resume recovery.
+
+### Quality gates
+
+- SLO: tracked session -> delta -> checkpoint -> lane pack latency.
+- SLO: pack freshness by pack type.
+- Context completeness rate for orchestrated steps.
+- Blocked-run rate due to insufficient context (with explicit reason codes).
 
 ### Exit criteria
 
-- Missions can execute multi-step workflows with retries.
-- Failures are classified and recoverable without state corruption.
-- Execution audit trail is queryable in Missions and History surfaces.
+- Mission pack and handoff records are durable and queryable.
+- Orchestrator runtime state survives restart with deterministic resume behavior.
+- Claim collisions are managed (no unmanaged concurrent scope ownership).
+- Default orchestrator profile excludes narrative; opt-in path is validated.
+- Phase 2 is blocked until all Phase 1.5 quality gates pass.
+
+---
+
+## Phase 2 — Orchestrator Runtime v2 (Deterministic Kernel + Executor Adapters) (4-5 weeks)
+
+Goal: Run multi-step, multi-lane missions with deterministic scheduling, durable resume, and conflict-aware coordination across external executors.
+
+### Dependencies
+
+- Phase 1 complete.
+- Phase 1.5 Context Hardening Gate complete.
+
+### Workstreams
+
+1. Deterministic orchestration kernel:
+   - DAG step lifecycle and dependency resolution.
+   - Retry/backoff, failure classes, cancellation, resume.
+   - Join semantics (`all_success`, `any_success`, `quorum`).
+2. Scheduler + claims:
+   - Lane/file/env claim manager.
+   - Collision policy and intervention behavior.
+   - Durable claim event logging.
+3. Context resolver:
+   - Auto-select context bundle by step type.
+   - Pull from pack exports + delta cursors + step handoffs.
+   - Default narrative exclusion with opt-in override.
+4. Executor adapter layer:
+   - Unified adapter contract for Claude/Codex/Gemini.
+   - Normalized attempt result envelope.
+   - Session mapping and transcript linkage.
+5. Conflict-aware integration flow:
+   - Deterministic merge sequencing.
+   - Integration lane routing for multi-source merges.
+   - Resolver chain: external CLI first, then hosted/BYOK fallback, then intervention.
+6. Audit + history:
+   - Append-only run/step/attempt timeline events.
+   - Replayable run state with exact context provenance.
+
+### Exit criteria
+
+- Orchestrator runs parallel steps safely with no unmanaged claim collisions.
+- Crash/restart resumes from durable state without losing progress.
+- Every orchestrated step has structured handoff output.
+- Default orchestrator context excludes narrative; opt-in path is verified.
+- Conflict path from predicted conflict to integration-lane resolution is deterministic and tested.
+- Full audit trail is visible in Missions/History with context provenance.
 
 ---
 
@@ -445,16 +509,17 @@ Goal: Monetize hosted AI while preserving BYOK/CLI-first product value.
 Base build order:
 
 1. Phase 1
-2. Phase 2
-3. Phase 3
-4. Phase 4
-5. Phase 5
-6. Phase 6
-7. Phase 7
-8. Phase 8
-9. Phase 9
-10. Phase 10
-11. Phase 11
+2. Phase 1.5
+3. Phase 2
+4. Phase 3
+5. Phase 4
+6. Phase 5
+7. Phase 6
+8. Phase 7
+9. Phase 8
+10. Phase 9
+11. Phase 10
+12. Phase 11
 
 Pull-forward rule:
 

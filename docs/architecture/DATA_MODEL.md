@@ -86,7 +86,7 @@ Several tables use `*_json` TEXT columns to store structured data that varies by
 
 ### Database Schema
 
-The following 26 tables are created by the migration system in `kvDb.ts`:
+The following 35 tables are created by the migration system in `kvDb.ts`:
 
 #### Key-Value Store
 
@@ -376,7 +376,7 @@ CREATE TABLE IF NOT EXISTS packs_index (
   pack_key                TEXT PRIMARY KEY,
   project_id              TEXT NOT NULL,
   lane_id                 TEXT,
-  pack_type               TEXT NOT NULL,  -- 'project' | 'lane'
+  pack_type               TEXT NOT NULL,  -- 'project' | 'lane' | 'feature' | 'conflict' | 'plan' | 'mission'
   pack_path               TEXT NOT NULL,
   deterministic_updated_at TEXT NOT NULL,
   narrative_updated_at    TEXT,
@@ -389,7 +389,7 @@ CREATE INDEX IF NOT EXISTS idx_packs_index_project ON packs_index(project_id);
 CREATE INDEX IF NOT EXISTS idx_packs_index_lane    ON packs_index(lane_id);
 ```
 
-Index table for pack files. The `pack_key` is either `"project"` for the project pack or `"lane:<lane_id>"` for lane packs. Tracks when the deterministic and narrative sections were last updated and the HEAD SHA at the time of generation.
+Index table for pack files. `pack_key` is scoped by pack type (`project`, `lane:<lane_id>`, `feature:<feature_key>`, `conflict:<lane_id>:<peer_key>`, `plan:<lane_id>`, `mission:<mission_id>`). Tracks when deterministic/narrative sections were last updated and the HEAD SHA at generation time.
 
 #### Conflict Predictions (Phase 5)
 
@@ -662,7 +662,7 @@ CREATE INDEX IF NOT EXISTS idx_mission_steps_mission_index ON mission_steps(miss
 CREATE INDEX IF NOT EXISTS idx_mission_steps_project_status ON mission_steps(project_id, status);
 ```
 
-Ordered per-mission steps with independent status transitions. This is the Phase 1 baseline that later orchestrator runs will attach to.
+Ordered per-mission steps with independent status transitions. Orchestrator runs can now attach through `mission_step_id` in `orchestrator_steps`.
 
 #### Mission Events (Phase 1)
 
@@ -737,6 +737,194 @@ CREATE INDEX IF NOT EXISTS idx_mission_interventions_project_status ON mission_i
 ```
 
 Human-in-the-loop gating records used when a mission requires operator approval or input.
+
+#### Mission Step Handoffs (Phase 1.5)
+
+```sql
+CREATE TABLE IF NOT EXISTS mission_step_handoffs (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  mission_id     TEXT NOT NULL,
+  mission_step_id TEXT,
+  run_id         TEXT,
+  step_id        TEXT,
+  attempt_id     TEXT,
+  handoff_type   TEXT NOT NULL,
+  producer       TEXT NOT NULL,
+  payload_json   TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(mission_id) REFERENCES missions(id),
+  FOREIGN KEY(mission_step_id) REFERENCES mission_steps(id),
+  FOREIGN KEY(run_id) REFERENCES orchestrator_runs(id),
+  FOREIGN KEY(step_id) REFERENCES orchestrator_steps(id),
+  FOREIGN KEY(attempt_id) REFERENCES orchestrator_attempts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_step_handoffs_mission_created ON mission_step_handoffs(mission_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mission_step_handoffs_step_created ON mission_step_handoffs(mission_step_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mission_step_handoffs_attempt ON mission_step_handoffs(attempt_id);
+```
+
+Structured handoff outputs for orchestrator attempts. These are append-only, machine-readable records used for resume, audit replay, and mission history provenance.
+
+#### Orchestrator Runs (Phase 1.5)
+
+```sql
+CREATE TABLE IF NOT EXISTS orchestrator_runs (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT NOT NULL,
+  mission_id         TEXT NOT NULL,
+  status             TEXT NOT NULL,      -- 'queued' | 'running' | 'paused' | 'succeeded' | 'failed' | 'canceled'
+  context_profile    TEXT NOT NULL DEFAULT 'orchestrator_deterministic_v1',
+  scheduler_state    TEXT NOT NULL,
+  runtime_cursor_json TEXT,
+  last_error         TEXT,
+  metadata_json      TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  started_at         TEXT,
+  completed_at       TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(mission_id) REFERENCES missions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_runs_project_status ON orchestrator_runs(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_runs_mission ON orchestrator_runs(mission_id);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_runs_project_updated ON orchestrator_runs(project_id, updated_at);
+```
+
+Top-level deterministic orchestration records. `runtime_cursor_json` stores context cursor state for durable resume and replay.
+
+#### Orchestrator Steps (Phase 1.5)
+
+```sql
+CREATE TABLE IF NOT EXISTS orchestrator_steps (
+  id                      TEXT PRIMARY KEY,
+  run_id                  TEXT NOT NULL,
+  project_id              TEXT NOT NULL,
+  mission_step_id         TEXT,
+  step_key                TEXT NOT NULL,
+  step_index              INTEGER NOT NULL,
+  title                   TEXT NOT NULL,
+  lane_id                 TEXT,
+  status                  TEXT NOT NULL,   -- 'pending' | 'ready' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'skipped' | 'canceled'
+  join_policy             TEXT NOT NULL DEFAULT 'all_success',
+  quorum_count            INTEGER,
+  dependency_step_ids_json TEXT NOT NULL DEFAULT '[]',
+  retry_limit             INTEGER NOT NULL DEFAULT 0,
+  retry_count             INTEGER NOT NULL DEFAULT 0,
+  last_attempt_id         TEXT,
+  policy_json             TEXT,
+  metadata_json           TEXT,
+  created_at              TEXT NOT NULL,
+  updated_at              TEXT NOT NULL,
+  started_at              TEXT,
+  completed_at            TEXT,
+  UNIQUE(run_id, step_key),
+  FOREIGN KEY(run_id) REFERENCES orchestrator_runs(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(mission_step_id) REFERENCES mission_steps(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_steps_run_status ON orchestrator_steps(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_steps_project_status ON orchestrator_steps(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_steps_run_order ON orchestrator_steps(run_id, step_index);
+```
+
+DAG step rows linked to mission and lane scopes with deterministic dependency/join semantics.
+
+#### Orchestrator Attempts (Phase 1.5)
+
+```sql
+CREATE TABLE IF NOT EXISTS orchestrator_attempts (
+  id                     TEXT PRIMARY KEY,
+  run_id                 TEXT NOT NULL,
+  step_id                TEXT NOT NULL,
+  project_id             TEXT NOT NULL,
+  attempt_number         INTEGER NOT NULL,
+  status                 TEXT NOT NULL,   -- 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'canceled'
+  executor_kind          TEXT NOT NULL,   -- 'claude' | 'codex' | 'gemini' | 'shell' | 'manual'
+  executor_session_id    TEXT,
+  tracked_session_enforced INTEGER NOT NULL DEFAULT 1,
+  context_profile        TEXT NOT NULL DEFAULT 'orchestrator_deterministic_v1',
+  context_snapshot_id    TEXT,
+  error_class            TEXT NOT NULL DEFAULT 'none',
+  error_message          TEXT,
+  retry_backoff_ms       INTEGER NOT NULL DEFAULT 0,
+  result_envelope_json   TEXT,
+  metadata_json          TEXT,
+  created_at             TEXT NOT NULL,
+  started_at             TEXT,
+  completed_at           TEXT,
+  UNIQUE(step_id, attempt_number),
+  FOREIGN KEY(run_id) REFERENCES orchestrator_runs(id),
+  FOREIGN KEY(step_id) REFERENCES orchestrator_steps(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(context_snapshot_id) REFERENCES orchestrator_context_snapshots(id)
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_attempts_run_status ON orchestrator_attempts(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_attempts_step_status ON orchestrator_attempts(step_id, status);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_attempts_project_created ON orchestrator_attempts(project_id, created_at);
+```
+
+Attempt-level execution records with normalized result envelopes and explicit context profile provenance.
+
+#### Orchestrator Claims (Phase 1.5)
+
+```sql
+CREATE TABLE IF NOT EXISTS orchestrator_claims (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL,
+  run_id       TEXT NOT NULL,
+  step_id      TEXT,
+  attempt_id   TEXT,
+  owner_id     TEXT NOT NULL,
+  scope_kind   TEXT NOT NULL,            -- 'lane' | 'file' | 'env'
+  scope_value  TEXT NOT NULL,
+  state        TEXT NOT NULL,            -- 'active' | 'released' | 'expired'
+  acquired_at  TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL,
+  expires_at   TEXT NOT NULL,
+  released_at  TEXT,
+  policy_json  TEXT,
+  metadata_json TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(run_id) REFERENCES orchestrator_runs(id),
+  FOREIGN KEY(step_id) REFERENCES orchestrator_steps(id),
+  FOREIGN KEY(attempt_id) REFERENCES orchestrator_attempts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_claims_run_state ON orchestrator_claims(run_id, state);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_claims_scope_state ON orchestrator_claims(project_id, scope_kind, scope_value, state);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_claims_expires ON orchestrator_claims(state, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orchestrator_claims_active_scope
+  ON orchestrator_claims(project_id, scope_kind, scope_value)
+  WHERE state = 'active';
+```
+
+Lease/claim ownership model for collision-safe multi-lane execution. Partial unique index enforces one active owner per scope.
+
+#### Orchestrator Context Snapshots (Phase 1.5)
+
+```sql
+CREATE TABLE IF NOT EXISTS orchestrator_context_snapshots (
+  id             TEXT PRIMARY KEY,
+  project_id     TEXT NOT NULL,
+  run_id         TEXT NOT NULL,
+  step_id        TEXT,
+  attempt_id     TEXT,
+  snapshot_type  TEXT NOT NULL,          -- 'run' | 'step' | 'attempt'
+  context_profile TEXT NOT NULL DEFAULT 'orchestrator_deterministic_v1',
+  cursor_json    TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(run_id) REFERENCES orchestrator_runs(id),
+  FOREIGN KEY(step_id) REFERENCES orchestrator_steps(id),
+  FOREIGN KEY(attempt_id) REFERENCES orchestrator_attempts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_context_snapshots_run_created ON orchestrator_context_snapshots(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_context_snapshots_attempt ON orchestrator_context_snapshots(attempt_id);
+```
+
+Durable context cursor snapshots for exact replay of what context was consumed by each run/step/attempt.
 
 ### Database API
 
@@ -844,6 +1032,8 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - **Pack Heads** --> Current version pointer for each pack scope
 - **Automation Runs/Results** --> Automation history UI, run detail viewer
 - **Missions tables** --> Missions board, detail timeline, intervention queue, artifact/PR linking
+- **Mission Step Handoffs** --> Mission/orchestrator attempt provenance, structured resume context
+- **Orchestrator runtime tables** --> Deterministic run/step/attempt scheduling state, claims, and context snapshots
 - **Process/Test tables** --> Process manager UI, test runner UI, pack body generation
 
 ---
@@ -853,7 +1043,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 ### Completed
 
 - SQLite database initialization with sql.js WASM
-- Complete schema with 26 tables and 40+ indexes
+- Complete schema with 35 tables and 70+ indexes
 - Debounced flush strategy (125ms after last write)
 - Parameterized query API (no SQL injection)
 - KV store for layout and settings
@@ -864,6 +1054,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - Pack versioning: `checkpoints`, `pack_events`, `pack_versions`, `pack_heads` (Phase 8)
 - Automation run logging: `automation_runs`, `automation_action_results` (Phase 8)
 - Missions persistence: `missions`, `mission_steps`, `mission_events`, `mission_artifacts`, `mission_interventions` (Phase 1)
+- Context hardening persistence: `orchestrator_runs`, `orchestrator_steps`, `orchestrator_attempts`, `orchestrator_claims`, `orchestrator_context_snapshots`, `mission_step_handoffs` (Phase 1.5)
 - Lanes table extended with: `lane_type`, `attached_root_path`, `is_edit_protected`, `parent_lane_id`, `color`, `icon`, `tags_json`
 - Terminal sessions table extended with: `tracked`, `goal`, `tool_type`, `pinned`, `summary`
 - Process runtime table extended with `lane_id` (per-lane process isolation, with legacy migration)

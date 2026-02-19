@@ -31,6 +31,7 @@ import type {
   ContextPrepareDocGenResult,
   ContextInstallGeneratedDocsArgs,
   ContextOpenDocArgs,
+  ContextInventorySnapshot,
   ContextStatus,
   ConflictEventPayload,
   ConflictOverlap,
@@ -141,6 +142,8 @@ import type {
   GetLaneExportArgs,
   GetProjectExportArgs,
   GetConflictExportArgs,
+  GetMissionPackArgs,
+  RefreshMissionPackArgs,
   ListPackEventsSinceArgs,
   ProcessActionArgs,
   ProcessDefinition,
@@ -476,6 +479,7 @@ contextBridge.exposeInMainWorld("ade", {
   },
   context: {
     getStatus: async (): Promise<ContextStatus> => ipcRenderer.invoke(IPC.contextGetStatus),
+    getInventory: async (): Promise<ContextInventorySnapshot> => ipcRenderer.invoke(IPC.contextGetInventory),
     generateDocs: async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> =>
       ipcRenderer.invoke(IPC.contextGenerateDocs, args),
     prepareDocGeneration: async (args: ContextPrepareDocGenArgs): Promise<ContextPrepareDocGenResult> =>
@@ -492,6 +496,8 @@ contextBridge.exposeInMainWorld("ade", {
     getConflictPack: async (args: { laneId: string; peerLaneId?: string | null }): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsGetConflictPack, args),
     getPlanPack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsGetPlanPack, { laneId }),
+    getMissionPack: async (args: GetMissionPackArgs): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsGetMissionPack, args),
     getProjectExport: async (args: GetProjectExportArgs): Promise<PackExport> =>
       ipcRenderer.invoke(IPC.packsGetProjectExport, args),
     getLaneExport: async (args: GetLaneExportArgs): Promise<PackExport> =>
@@ -507,6 +513,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.packsRefreshConflictPack, args),
     savePlanPack: async (args: { laneId: string; body: string }): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsSavePlanPack, args),
+    refreshMissionPack: async (args: RefreshMissionPackArgs): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshMissionPack, args),
     applyHostedNarrative: async (args: { laneId: string; narrative: string }): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args),
     generateNarrative: async (laneId: string): Promise<PackSummary> =>

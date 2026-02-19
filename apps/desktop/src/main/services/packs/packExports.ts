@@ -43,6 +43,11 @@ const DEFAULT_BUDGETS: Record<PackType, Record<ContextExportLevel, Budget>> = {
     lite: { maxTokens: 1100 },
     standard: { maxTokens: 3200 },
     deep: { maxTokens: 9000 }
+  },
+  mission: {
+    lite: { maxTokens: 1200 },
+    standard: { maxTokens: 3600 },
+    deep: { maxTokens: 9000 }
   }
 };
 

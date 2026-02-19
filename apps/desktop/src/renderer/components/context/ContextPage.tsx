@@ -1,7 +1,13 @@
 import React from "react";
-import type { ConflictExternalResolverRunSummary, ContextGenerateDocsResult, ContextStatus } from "../../../shared/types";
+import type {
+  ConflictExternalResolverRunSummary,
+  ContextGenerateDocsResult,
+  ContextInventorySnapshot,
+  ContextStatus
+} from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { GenerateDocsModal } from "./GenerateDocsModal";
+
 function renderTiming(status: ContextStatus | null): string {
   if (!status?.hostedTiming) return "No timing telemetry yet.";
   const timing = status.hostedTiming;
@@ -23,33 +29,78 @@ function summarizeRun(run: ConflictExternalResolverRunSummary): string {
   return `${provider} ${status} · ${sources} -> ${target}`;
 }
 
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function shortId(value: string | null | undefined, size = 12): string {
+  const raw = (value ?? "").trim();
+  if (!raw) return "-";
+  return raw.length > size ? raw.slice(0, size) : raw;
+}
+
+function summarizeMissionStatus(snapshot: ContextInventorySnapshot | null): string {
+  if (!snapshot) return "-";
+  const entries = Object.entries(snapshot.missions.byStatus).filter(([, count]) => Number(count ?? 0) > 0);
+  if (!entries.length) return "none";
+  return entries.map(([status, count]) => `${status}:${count}`).join(" · ");
+}
+
 export function ContextPage() {
   const [status, setStatus] = React.useState<ContextStatus | null>(null);
+  const [inventory, setInventory] = React.useState<ContextInventorySnapshot | null>(null);
   const [runs, setRuns] = React.useState<ConflictExternalResolverRunSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [generateOpen, setGenerateOpen] = React.useState(false);
   const [lastGenerate, setLastGenerate] = React.useState<ContextGenerateDocsResult | null>(null);
+  const refreshInFlight = React.useRef(false);
+  const refreshQueued = React.useRef(false);
 
   const refresh = React.useCallback(async () => {
+    if (refreshInFlight.current) {
+      refreshQueued.current = true;
+      return;
+    }
+    refreshInFlight.current = true;
     setLoading(true);
     setError(null);
     try {
-      const [nextStatus, nextRuns] = await Promise.all([
+      const [nextStatus, nextRuns, nextInventory] = await Promise.all([
         window.ade.context.getStatus(),
-        window.ade.conflicts.listExternalResolverRuns({ limit: 8 })
+        window.ade.conflicts.listExternalResolverRuns({ limit: 8 }),
+        window.ade.context.getInventory()
       ]);
       setStatus(nextStatus);
       setRuns(nextRuns);
+      setInventory(nextInventory);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      refreshInFlight.current = false;
       setLoading(false);
+      if (refreshQueued.current) {
+        refreshQueued.current = false;
+        void refresh();
+      }
     }
   }, []);
 
   React.useEffect(() => {
     void refresh();
+    const offPackEvent = window.ade.packs.onEvent(() => void refresh());
+    const offMissionEvent = window.ade.missions.onEvent(() => void refresh());
+    const offConflictEvent = window.ade.conflicts.onEvent(() => void refresh());
+    const timer = window.setInterval(() => void refresh(), 8_000);
+    return () => {
+      offPackEvent();
+      offMissionEvent();
+      offConflictEvent();
+      window.clearInterval(timer);
+    };
   }, [refresh]);
 
   const openWarningPath = async (pathValue: string | undefined) => {
@@ -67,7 +118,10 @@ export function ContextPage() {
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-fg">Context</h1>
-          <div className="text-xs text-muted-fg">ADE context health, docs, manifests, and resolver telemetry.</div>
+          <div className="text-xs text-muted-fg">
+            ADE context health, docs, tracked inventories, and resolver telemetry.
+            {inventory ? ` Snapshot: ${formatTimestamp(inventory.generatedAt)}` : ""}
+          </div>
         </div>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
@@ -138,6 +192,124 @@ export function ContextPage() {
             <div>hosted timing: {renderTiming(status)}</div>
             <div>hosted timeouts: {status?.hostedTimeoutCount ?? 0}</div>
             <div>last timeout reason: {status?.hostedLastTimeoutReason ?? "none"}</div>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4">
+          <h2 className="text-sm font-semibold text-fg">Tracked Context Inventory</h2>
+          <div className="mt-2 space-y-1 text-xs text-muted-fg">
+            <div>packs total: {inventory?.packs.total ?? 0}</div>
+            <div>
+              packs by type: {inventory ? Object.entries(inventory.packs.byType).map(([type, count]) => `${type}:${count ?? 0}`).join(" · ") || "none" : "-"}
+            </div>
+            <div>checkpoints total: {inventory?.checkpoints.total ?? 0}</div>
+            <div>tracked sessions: {inventory?.sessionTracking.trackedSessions ?? 0}</div>
+            <div>untracked sessions: {inventory?.sessionTracking.untrackedSessions ?? 0}</div>
+            <div>running sessions: {inventory?.sessionTracking.runningSessions ?? 0}</div>
+            <div>missions: {inventory?.missions.total ?? 0}</div>
+            <div>mission statuses: {summarizeMissionStatus(inventory)}</div>
+            <div>open interventions: {inventory?.missions.openInterventions ?? 0}</div>
+            <div>orchestrator active runs: {inventory?.orchestrator.activeRuns ?? 0}</div>
+            <div>orchestrator running steps: {inventory?.orchestrator.runningSteps ?? 0}</div>
+            <div>orchestrator running attempts: {inventory?.orchestrator.runningAttempts ?? 0}</div>
+            <div>orchestrator active claims: {inventory?.orchestrator.activeClaims ?? 0}</div>
+            <div>orchestrator snapshots: {inventory?.orchestrator.snapshots ?? 0}</div>
+            <div>orchestrator handoffs: {inventory?.orchestrator.handoffs ?? 0}</div>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4 md:col-span-2">
+          <h2 className="text-sm font-semibold text-fg">Packs (Recent)</h2>
+          <div className="mt-2 space-y-2 text-xs text-muted-fg">
+            {!inventory?.packs.recent.length ? <div>No pack rows tracked yet.</div> : null}
+            {inventory?.packs.recent.map((pack) => (
+              <div key={pack.packKey} className="rounded border border-border/50 bg-bg/40 p-2">
+                <div className="font-medium text-fg">{pack.packKey}</div>
+                <div>
+                  type: {pack.packType}
+                  {pack.laneId ? ` · lane=${pack.laneId}` : ""}
+                </div>
+                <div>deterministic updated: {formatTimestamp(pack.deterministicUpdatedAt)}</div>
+                <div>narrative updated: {formatTimestamp(pack.narrativeUpdatedAt)}</div>
+                <div>head: {pack.lastHeadSha ?? "none"}</div>
+                <div>version: {pack.versionNumber ?? "-"} ({shortId(pack.versionId)})</div>
+                <div>hash: {shortId(pack.contentHash, 16)}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4">
+          <h2 className="text-sm font-semibold text-fg">Session Deltas (Recent)</h2>
+          <div className="mt-2 space-y-2 text-xs text-muted-fg">
+            {!inventory?.sessionTracking.recentDeltas.length ? <div>No tracked deltas yet.</div> : null}
+            {inventory?.sessionTracking.recentDeltas.map((delta) => (
+              <div key={delta.sessionId} className="rounded border border-border/50 bg-bg/40 p-2">
+                <div className="font-medium text-fg">
+                  session {shortId(delta.sessionId)} · lane {delta.laneId}
+                </div>
+                <div>started: {formatTimestamp(delta.startedAt)}</div>
+                <div>ended: {formatTimestamp(delta.endedAt)}</div>
+                <div>
+                  files={delta.filesChanged} · +{delta.insertions} / -{delta.deletions}
+                </div>
+                <div>computed: {formatTimestamp(delta.computedAt)}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4">
+          <h2 className="text-sm font-semibold text-fg">Checkpoints (Recent)</h2>
+          <div className="mt-2 space-y-2 text-xs text-muted-fg">
+            {!inventory?.checkpoints.recent.length ? <div>No checkpoints yet.</div> : null}
+            {inventory?.checkpoints.recent.map((checkpoint) => (
+              <div key={checkpoint.id} className="rounded border border-border/50 bg-bg/40 p-2">
+                <div className="font-medium text-fg">
+                  checkpoint {shortId(checkpoint.id)} · lane {checkpoint.laneId}
+                </div>
+                <div>session: {shortId(checkpoint.sessionId)}</div>
+                <div>sha: {shortId(checkpoint.sha, 16)}</div>
+                <div>created: {formatTimestamp(checkpoint.createdAt)}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4 md:col-span-2">
+          <h2 className="text-sm font-semibold text-fg">Mission Step Handoffs</h2>
+          <div className="mt-2 space-y-2 text-xs text-muted-fg">
+            {!inventory?.missions.recentHandoffs.length ? <div>No mission handoffs recorded.</div> : null}
+            {inventory?.missions.recentHandoffs.map((handoff) => (
+              <div key={handoff.id} className="rounded border border-border/50 bg-bg/40 p-2">
+                <div className="font-medium text-fg">
+                  {handoff.handoffType} · mission {shortId(handoff.missionId)}
+                </div>
+                <div>producer: {handoff.producer}</div>
+                <div>
+                  run: {shortId(handoff.runId)} · step: {shortId(handoff.stepId)} · attempt: {shortId(handoff.attemptId)}
+                </div>
+                <div>created: {formatTimestamp(handoff.createdAt)}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4 md:col-span-2">
+          <h2 className="text-sm font-semibold text-fg">Orchestrator Runtime</h2>
+          <div className="mt-2 space-y-1 text-xs text-muted-fg">
+            <div>active runs: {inventory?.orchestrator.activeRuns ?? 0}</div>
+            <div>running steps: {inventory?.orchestrator.runningSteps ?? 0}</div>
+            <div>running attempts: {inventory?.orchestrator.runningAttempts ?? 0}</div>
+            <div>active claims: {inventory?.orchestrator.activeClaims ?? 0}</div>
+            <div>expired claims: {inventory?.orchestrator.expiredClaims ?? 0}</div>
+            <div>context snapshots: {inventory?.orchestrator.snapshots ?? 0}</div>
+            <div>handoffs linked to runs: {inventory?.orchestrator.handoffs ?? 0}</div>
+            <div>recent run IDs: {inventory?.orchestrator.recentRunIds.length ? inventory.orchestrator.recentRunIds.join(", ") : "none"}</div>
+            <div>
+              recent attempt IDs:{" "}
+              {inventory?.orchestrator.recentAttemptIds.length ? inventory.orchestrator.recentAttemptIds.join(", ") : "none"}
+            </div>
           </div>
         </section>
 
