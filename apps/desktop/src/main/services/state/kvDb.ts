@@ -762,6 +762,170 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
   db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
+
+  // Phase 1 missions model foundation.
+  db.run(`
+    create table if not exists missions (
+      id text primary key,
+      project_id text not null,
+      lane_id text,
+      title text not null,
+      prompt text not null,
+      status text not null,
+      priority text not null default 'normal',
+      execution_mode text not null default 'local',
+      target_machine_id text,
+      outcome_summary text,
+      last_error text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      started_at text,
+      completed_at text,
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_missions_project_updated on missions(project_id, updated_at)",
+    "missions",
+    ["project_id", "updated_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_missions_project_status on missions(project_id, status)",
+    "missions",
+    ["project_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_missions_project_lane on missions(project_id, lane_id)",
+    "missions",
+    ["project_id", "lane_id"]
+  );
+
+  db.run(`
+    create table if not exists mission_steps (
+      id text primary key,
+      mission_id text not null,
+      project_id text not null,
+      step_index integer not null,
+      title text not null,
+      detail text,
+      kind text not null default 'manual',
+      lane_id text,
+      status text not null,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      started_at text,
+      completed_at text,
+      unique(mission_id, step_index),
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_steps_mission_index on mission_steps(mission_id, step_index)",
+    "mission_steps",
+    ["mission_id", "step_index"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_steps_project_status on mission_steps(project_id, status)",
+    "mission_steps",
+    ["project_id", "status"]
+  );
+
+  db.run(`
+    create table if not exists mission_events (
+      id text primary key,
+      mission_id text not null,
+      project_id text not null,
+      event_type text not null,
+      actor text not null,
+      summary text not null,
+      payload_json text,
+      created_at text not null,
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_events_mission_created on mission_events(mission_id, created_at)",
+    "mission_events",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_events_project_created on mission_events(project_id, created_at)",
+    "mission_events",
+    ["project_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists mission_artifacts (
+      id text primary key,
+      mission_id text not null,
+      project_id text not null,
+      artifact_type text not null,
+      title text not null,
+      description text,
+      uri text,
+      lane_id text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      created_by text not null,
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_artifacts_mission_created on mission_artifacts(mission_id, created_at)",
+    "mission_artifacts",
+    ["mission_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists mission_interventions (
+      id text primary key,
+      mission_id text not null,
+      project_id text not null,
+      intervention_type text not null,
+      status text not null,
+      title text not null,
+      body text not null,
+      requested_action text,
+      resolution_note text,
+      lane_id text,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      resolved_at text,
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_interventions_mission_status on mission_interventions(mission_id, status)",
+    "mission_interventions",
+    ["mission_id", "status"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_interventions_project_status on mission_interventions(project_id, status)",
+    "mission_interventions",
+    ["project_id", "status"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

@@ -31,6 +31,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       { id: "go-conflicts", title: "Go to Conflicts", shortcut: "G C", run: () => navigate("/conflicts") },
       { id: "go-prs", title: "Go to PRs", shortcut: "G R", run: () => navigate("/prs") },
       { id: "go-history", title: "Go to History", shortcut: "G H", run: () => navigate("/history") },
+      { id: "go-missions", title: "Go to Missions", shortcut: "G M", run: () => navigate("/missions") },
       { id: "go-settings", title: "Go to Settings", shortcut: "G S", run: () => navigate("/settings") },
       {
         id: "lane-next",

@@ -19,6 +19,8 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AddMissionArtifactArgs,
+  AddMissionInterventionArgs,
   AutomationsEventPayload,
   ConflictExternalResolverRunSummary,
   ConflictProposal,
@@ -121,6 +123,7 @@ import type {
   LaneSummary,
   ListOverlapsArgs,
   ListLanesArgs,
+  ListMissionsArgs,
   ImportBranchLaneArgs,
   ListOperationsArgs,
   ListSessionsArgs,
@@ -194,6 +197,16 @@ import type {
   TerminalSessionDetail,
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
+  ResolveMissionInterventionArgs,
+  MissionArtifact,
+  MissionDetail,
+  MissionIntervention,
+  MissionStep,
+  MissionSummary,
+  MissionsEventPayload,
+  CreateMissionArgs,
+  UpdateMissionArgs,
+  UpdateMissionStepArgs,
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
@@ -271,6 +284,23 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: AutomationsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.automationsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
+    }
+  },
+  missions: {
+    list: async (args: ListMissionsArgs = {}): Promise<MissionSummary[]> => ipcRenderer.invoke(IPC.missionsList, args),
+    get: async (missionId: string): Promise<MissionDetail | null> => ipcRenderer.invoke(IPC.missionsGet, { missionId }),
+    create: async (args: CreateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsCreate, args),
+    update: async (args: UpdateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsUpdate, args),
+    updateStep: async (args: UpdateMissionStepArgs): Promise<MissionStep> => ipcRenderer.invoke(IPC.missionsUpdateStep, args),
+    addArtifact: async (args: AddMissionArtifactArgs): Promise<MissionArtifact> => ipcRenderer.invoke(IPC.missionsAddArtifact, args),
+    addIntervention: async (args: AddMissionInterventionArgs): Promise<MissionIntervention> =>
+      ipcRenderer.invoke(IPC.missionsAddIntervention, args),
+    resolveIntervention: async (args: ResolveMissionInterventionArgs): Promise<MissionIntervention> =>
+      ipcRenderer.invoke(IPC.missionsResolveIntervention, args),
+    onEvent: (cb: (ev: MissionsEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.missionsEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.missionsEvent, listener);
     }
   },
   lanes: {

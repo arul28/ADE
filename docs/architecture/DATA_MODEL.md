@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-19
 
 ---
 
@@ -86,7 +86,7 @@ Several tables use `*_json` TEXT columns to store structured data that varies by
 
 ### Database Schema
 
-The following 21 tables are created by the migration system in `kvDb.ts`:
+The following 26 tables are created by the migration system in `kvDb.ts`:
 
 #### Key-Value Store
 
@@ -605,6 +605,139 @@ CREATE INDEX IF NOT EXISTS idx_automation_action_results_project_run
 
 Per-action results within an automation run. Each action in a rule's action list gets a separate result row, enabling granular progress tracking and error diagnosis.
 
+#### Missions (Phase 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS missions (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL,
+  lane_id           TEXT,
+  title             TEXT NOT NULL,
+  prompt            TEXT NOT NULL,
+  status            TEXT NOT NULL,        -- 'queued' | 'in_progress' | 'intervention_required' | 'completed' | 'failed' | 'canceled'
+  priority          TEXT NOT NULL DEFAULT 'normal',
+  execution_mode    TEXT NOT NULL DEFAULT 'local',
+  target_machine_id TEXT,
+  outcome_summary   TEXT,
+  last_error        TEXT,
+  metadata_json     TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  started_at        TEXT,
+  completed_at      TEXT,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_missions_project_updated ON missions(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_missions_project_status  ON missions(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_missions_project_lane    ON missions(project_id, lane_id);
+```
+
+Top-level mission goal records. These rows store intake prompt, lifecycle status, priority, execution mode (`local`/`relay`), and target machine metadata for future relay routing.
+
+#### Mission Steps (Phase 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS mission_steps (
+  id            TEXT PRIMARY KEY,
+  mission_id    TEXT NOT NULL,
+  project_id    TEXT NOT NULL,
+  step_index    INTEGER NOT NULL,
+  title         TEXT NOT NULL,
+  detail        TEXT,
+  kind          TEXT NOT NULL DEFAULT 'manual',
+  lane_id       TEXT,
+  status        TEXT NOT NULL,
+  metadata_json TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  started_at    TEXT,
+  completed_at  TEXT,
+  UNIQUE(mission_id, step_index),
+  FOREIGN KEY(mission_id) REFERENCES missions(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_steps_mission_index ON mission_steps(mission_id, step_index);
+CREATE INDEX IF NOT EXISTS idx_mission_steps_project_status ON mission_steps(project_id, status);
+```
+
+Ordered per-mission steps with independent status transitions. This is the Phase 1 baseline that later orchestrator runs will attach to.
+
+#### Mission Events (Phase 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS mission_events (
+  id          TEXT PRIMARY KEY,
+  mission_id  TEXT NOT NULL,
+  project_id  TEXT NOT NULL,
+  event_type  TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  summary     TEXT NOT NULL,
+  payload_json TEXT,
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY(mission_id) REFERENCES missions(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_events_mission_created ON mission_events(mission_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mission_events_project_created ON mission_events(project_id, created_at);
+```
+
+Append-only mission timeline entries used by the Missions detail event feed and audit surfaces.
+
+#### Mission Artifacts (Phase 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS mission_artifacts (
+  id            TEXT PRIMARY KEY,
+  mission_id    TEXT NOT NULL,
+  project_id    TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,            -- 'summary' | 'pr' | 'link' | 'note' | 'patch'
+  title         TEXT NOT NULL,
+  description   TEXT,
+  uri           TEXT,
+  lane_id       TEXT,
+  metadata_json TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  created_by    TEXT NOT NULL,
+  FOREIGN KEY(mission_id) REFERENCES missions(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_artifacts_mission_created ON mission_artifacts(mission_id, created_at);
+```
+
+Outcome and linkage records (PR links, summary notes, patches, references) attached to mission history.
+
+#### Mission Interventions (Phase 1)
+
+```sql
+CREATE TABLE IF NOT EXISTS mission_interventions (
+  id                TEXT PRIMARY KEY,
+  mission_id        TEXT NOT NULL,
+  project_id        TEXT NOT NULL,
+  intervention_type TEXT NOT NULL,
+  status            TEXT NOT NULL,        -- 'open' | 'resolved' | 'dismissed'
+  title             TEXT NOT NULL,
+  body              TEXT NOT NULL,
+  requested_action  TEXT,
+  resolution_note   TEXT,
+  lane_id           TEXT,
+  metadata_json     TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  resolved_at       TEXT,
+  FOREIGN KEY(mission_id) REFERENCES missions(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(lane_id) REFERENCES lanes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_interventions_mission_status ON mission_interventions(mission_id, status);
+CREATE INDEX IF NOT EXISTS idx_mission_interventions_project_status ON mission_interventions(project_id, status);
+```
+
+Human-in-the-loop gating records used when a mission requires operator approval or input.
+
 ### Database API
 
 The `AdeDb` interface provides a minimal API surface:
@@ -710,6 +843,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - **Pack Versions** --> Pack version history, diff viewer, head version API
 - **Pack Heads** --> Current version pointer for each pack scope
 - **Automation Runs/Results** --> Automation history UI, run detail viewer
+- **Missions tables** --> Missions board, detail timeline, intervention queue, artifact/PR linking
 - **Process/Test tables** --> Process manager UI, test runner UI, pack body generation
 
 ---
@@ -719,7 +853,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 ### Completed
 
 - SQLite database initialization with sql.js WASM
-- Complete schema with 21 tables and 30+ indexes
+- Complete schema with 26 tables and 40+ indexes
 - Debounced flush strategy (125ms after last write)
 - Parameterized query API (no SQL injection)
 - KV store for layout and settings
@@ -729,6 +863,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - Pull request tracking: `pull_requests` (Phase 7)
 - Pack versioning: `checkpoints`, `pack_events`, `pack_versions`, `pack_heads` (Phase 8)
 - Automation run logging: `automation_runs`, `automation_action_results` (Phase 8)
+- Missions persistence: `missions`, `mission_steps`, `mission_events`, `mission_artifacts`, `mission_interventions` (Phase 1)
 - Lanes table extended with: `lane_type`, `attached_root_path`, `is_edit_protected`, `parent_lane_id`, `color`, `icon`, `tags_json`
 - Terminal sessions table extended with: `tracked`, `goal`, `tool_type`, `pinned`, `summary`
 - Process runtime table extended with `lane_id` (per-lane process isolation, with legacy migration)

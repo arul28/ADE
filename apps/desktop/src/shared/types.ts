@@ -2160,6 +2160,192 @@ export type AutomationsEventPayload = {
   runId?: string;
 };
 
+export type MissionStatus =
+  | "queued"
+  | "in_progress"
+  | "intervention_required"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+export type MissionPriority = "urgent" | "high" | "normal" | "low";
+
+export type MissionExecutionMode = "local" | "relay";
+
+export type MissionStepStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "blocked"
+  | "canceled";
+
+export type MissionArtifactType = "summary" | "pr" | "link" | "note" | "patch";
+
+export type MissionInterventionType =
+  | "approval_required"
+  | "manual_input"
+  | "conflict"
+  | "policy_block"
+  | "failed_step";
+
+export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
+
+export type MissionSummary = {
+  id: string;
+  title: string;
+  prompt: string;
+  laneId: string | null;
+  laneName: string | null;
+  status: MissionStatus;
+  priority: MissionPriority;
+  executionMode: MissionExecutionMode;
+  targetMachineId: string | null;
+  outcomeSummary: string | null;
+  lastError: string | null;
+  artifactCount: number;
+  openInterventions: number;
+  totalSteps: number;
+  completedSteps: number;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type MissionStep = {
+  id: string;
+  missionId: string;
+  index: number;
+  title: string;
+  detail: string | null;
+  kind: string;
+  laneId: string | null;
+  status: MissionStepStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export type MissionEvent = {
+  id: string;
+  missionId: string;
+  eventType: string;
+  actor: string;
+  summary: string;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type MissionArtifact = {
+  id: string;
+  missionId: string;
+  artifactType: MissionArtifactType;
+  title: string;
+  description: string | null;
+  uri: string | null;
+  laneId: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  metadata: Record<string, unknown> | null;
+};
+
+export type MissionIntervention = {
+  id: string;
+  missionId: string;
+  interventionType: MissionInterventionType;
+  status: MissionInterventionStatus;
+  title: string;
+  body: string;
+  requestedAction: string | null;
+  resolutionNote: string | null;
+  laneId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export type MissionDetail = MissionSummary & {
+  steps: MissionStep[];
+  events: MissionEvent[];
+  artifacts: MissionArtifact[];
+  interventions: MissionIntervention[];
+};
+
+export type ListMissionsArgs = {
+  status?: MissionStatus | "active";
+  laneId?: string;
+  limit?: number;
+};
+
+export type CreateMissionArgs = {
+  prompt: string;
+  title?: string;
+  laneId?: string | null;
+  priority?: MissionPriority;
+  executionMode?: MissionExecutionMode;
+  targetMachineId?: string | null;
+};
+
+export type UpdateMissionArgs = {
+  missionId: string;
+  title?: string;
+  prompt?: string;
+  laneId?: string | null;
+  status?: MissionStatus;
+  priority?: MissionPriority;
+  executionMode?: MissionExecutionMode;
+  targetMachineId?: string | null;
+  outcomeSummary?: string | null;
+  lastError?: string | null;
+};
+
+export type UpdateMissionStepArgs = {
+  missionId: string;
+  stepId: string;
+  status: MissionStepStatus;
+  note?: string | null;
+};
+
+export type AddMissionArtifactArgs = {
+  missionId: string;
+  artifactType: MissionArtifactType;
+  title: string;
+  description?: string | null;
+  uri?: string | null;
+  laneId?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type AddMissionInterventionArgs = {
+  missionId: string;
+  interventionType: MissionInterventionType;
+  title: string;
+  body: string;
+  requestedAction?: string | null;
+  laneId?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type ResolveMissionInterventionArgs = {
+  missionId: string;
+  interventionId: string;
+  status: Exclude<MissionInterventionStatus, "open">;
+  note?: string | null;
+};
+
+export type MissionsEventPayload = {
+  type: "missions-updated";
+  missionId?: string;
+  reason?: string;
+  at: string;
+};
+
 export type AutomationPlannerProvider = "codex" | "claude";
 
 export type AutomationPlannerCodexCliConfig = {

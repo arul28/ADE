@@ -76,6 +76,8 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AddMissionArtifactArgs,
+  AddMissionInterventionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
@@ -115,6 +117,7 @@ import type {
   LandResult,
   ListOverlapsArgs,
   LaneSummary,
+  ListMissionsArgs,
   ImportBranchLaneArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
@@ -175,6 +178,16 @@ import type {
   TerminalSessionDetail,
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
+  ResolveMissionInterventionArgs,
+  MissionArtifact,
+  MissionDetail,
+  MissionIntervention,
+  MissionStep,
+  MissionSummary,
+  MissionsEventPayload,
+  CreateMissionArgs,
+  UpdateMissionArgs,
+  UpdateMissionStepArgs,
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
@@ -238,6 +251,17 @@ declare global {
         saveDraft: (req: AutomationSaveDraftRequest) => Promise<AutomationSaveDraftResult>;
         simulate: (req: AutomationSimulateRequest) => Promise<AutomationSimulateResult>;
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
+      };
+      missions: {
+        list: (args?: ListMissionsArgs) => Promise<MissionSummary[]>;
+        get: (missionId: string) => Promise<MissionDetail | null>;
+        create: (args: CreateMissionArgs) => Promise<MissionDetail>;
+        update: (args: UpdateMissionArgs) => Promise<MissionDetail>;
+        updateStep: (args: UpdateMissionStepArgs) => Promise<MissionStep>;
+        addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
+        addIntervention: (args: AddMissionInterventionArgs) => Promise<MissionIntervention>;
+        resolveIntervention: (args: ResolveMissionInterventionArgs) => Promise<MissionIntervention>;
+        onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;

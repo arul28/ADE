@@ -1,0 +1,1467 @@
+import { randomUUID } from "node:crypto";
+import type {
+  AddMissionArtifactArgs,
+  AddMissionInterventionArgs,
+  CreateMissionArgs,
+  ListMissionsArgs,
+  MissionArtifact,
+  MissionArtifactType,
+  MissionDetail,
+  MissionEvent,
+  MissionExecutionMode,
+  MissionIntervention,
+  MissionInterventionStatus,
+  MissionInterventionType,
+  MissionPriority,
+  MissionsEventPayload,
+  MissionStatus,
+  MissionStep,
+  MissionStepStatus,
+  MissionSummary,
+  ResolveMissionInterventionArgs,
+  UpdateMissionArgs,
+  UpdateMissionStepArgs
+} from "../../../shared/types";
+import type { AdeDb } from "../state/kvDb";
+
+const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+
+const MISSION_TRANSITIONS: Record<MissionStatus, Set<MissionStatus>> = {
+  queued: new Set(["queued", "in_progress", "canceled"]),
+  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled"]),
+  intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled"]),
+  completed: new Set(["completed", "queued"]),
+  failed: new Set(["failed", "queued", "in_progress", "canceled"]),
+  canceled: new Set(["canceled", "queued", "in_progress"])
+};
+
+const STEP_TRANSITIONS: Record<MissionStepStatus, Set<MissionStepStatus>> = {
+  pending: new Set(["pending", "running", "skipped", "blocked", "canceled"]),
+  running: new Set(["running", "succeeded", "failed", "blocked", "canceled"]),
+  blocked: new Set(["blocked", "running", "failed", "canceled", "skipped"]),
+  succeeded: new Set(["succeeded"]),
+  failed: new Set(["failed", "running", "canceled"]),
+  skipped: new Set(["skipped"]),
+  canceled: new Set(["canceled"])
+};
+
+type MissionRow = {
+  id: string;
+  title: string;
+  prompt: string;
+  lane_id: string | null;
+  lane_name: string | null;
+  status: string;
+  priority: string;
+  execution_mode: string;
+  target_machine_id: string | null;
+  outcome_summary: string | null;
+  last_error: string | null;
+  artifact_count: number;
+  open_interventions: number;
+  total_steps: number;
+  completed_steps: number;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+type MissionStepRow = {
+  id: string;
+  mission_id: string;
+  step_index: number;
+  title: string;
+  detail: string | null;
+  kind: string;
+  lane_id: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  metadata_json: string | null;
+};
+
+type MissionEventRow = {
+  id: string;
+  mission_id: string;
+  event_type: string;
+  actor: string;
+  summary: string;
+  payload_json: string | null;
+  created_at: string;
+};
+
+type MissionArtifactRow = {
+  id: string;
+  mission_id: string;
+  artifact_type: string;
+  title: string;
+  description: string | null;
+  uri: string | null;
+  lane_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  metadata_json: string | null;
+};
+
+type MissionInterventionRow = {
+  id: string;
+  mission_id: string;
+  intervention_type: string;
+  status: string;
+  title: string;
+  body: string;
+  requested_action: string | null;
+  resolution_note: string | null;
+  lane_id: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  metadata_json: string | null;
+};
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeParseRecord(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMissionStatus(value: string): MissionStatus {
+  if (
+    value === "queued" ||
+    value === "in_progress" ||
+    value === "intervention_required" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "canceled"
+  ) {
+    return value;
+  }
+  return "queued";
+}
+
+function normalizeMissionPriority(value: string): MissionPriority {
+  if (value === "urgent" || value === "high" || value === "normal" || value === "low") return value;
+  return "normal";
+}
+
+function normalizeExecutionMode(value: string): MissionExecutionMode {
+  if (value === "local" || value === "relay") return value;
+  return "local";
+}
+
+function normalizeStepStatus(value: string): MissionStepStatus {
+  if (
+    value === "pending" ||
+    value === "running" ||
+    value === "succeeded" ||
+    value === "failed" ||
+    value === "skipped" ||
+    value === "blocked" ||
+    value === "canceled"
+  ) {
+    return value;
+  }
+  return "pending";
+}
+
+function normalizeArtifactType(value: string): MissionArtifactType {
+  if (value === "summary" || value === "pr" || value === "link" || value === "note" || value === "patch") return value;
+  return "note";
+}
+
+function normalizeInterventionType(value: string): MissionInterventionType {
+  if (value === "approval_required" || value === "manual_input" || value === "conflict" || value === "policy_block" || value === "failed_step") {
+    return value;
+  }
+  return "manual_input";
+}
+
+function normalizeInterventionStatus(value: string): MissionInterventionStatus {
+  if (value === "open" || value === "resolved" || value === "dismissed") return value;
+  return "open";
+}
+
+function normalizePrompt(prompt: string): string {
+  return prompt
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function summarizePrompt(prompt: string): string {
+  const oneLine = prompt.replace(/\s+/g, " ").trim();
+  if (!oneLine.length) return "Mission";
+  if (oneLine.length <= 88) return oneLine;
+  return `${oneLine.slice(0, 85)}...`;
+}
+
+function deriveMissionTitle(prompt: string, explicit?: string): string {
+  const cleanedExplicit = (explicit ?? "").trim();
+  if (cleanedExplicit.length) return cleanedExplicit.slice(0, 140);
+  const firstSentence = normalizePrompt(prompt).split(/(?<=[.!?])\s+/)[0] ?? "";
+  const compact = firstSentence.trim() || summarizePrompt(prompt);
+  return compact.slice(0, 140);
+}
+
+function sanitizeOptionalText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function coerceNullableString(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function buildInitialStepTitles(prompt: string): string[] {
+  const lines = normalizePrompt(prompt)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const extracted: string[] = [];
+  for (const line of lines) {
+    const bulletMatch = line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/);
+    if (!bulletMatch) continue;
+    const value = bulletMatch[1]?.trim();
+    if (!value) continue;
+    extracted.push(value.slice(0, 120));
+    if (extracted.length >= 8) break;
+  }
+
+  if (extracted.length >= 2) return extracted;
+
+  return [
+    "Review mission objective",
+    "Prepare approach",
+    "Execute changes",
+    "Capture outcomes"
+  ];
+}
+
+function toMissionSummary(row: MissionRow): MissionSummary {
+  return {
+    id: row.id,
+    title: row.title,
+    prompt: row.prompt,
+    laneId: row.lane_id,
+    laneName: row.lane_name,
+    status: normalizeMissionStatus(row.status),
+    priority: normalizeMissionPriority(row.priority),
+    executionMode: normalizeExecutionMode(row.execution_mode),
+    targetMachineId: row.target_machine_id,
+    outcomeSummary: row.outcome_summary,
+    lastError: row.last_error,
+    artifactCount: Number(row.artifact_count ?? 0),
+    openInterventions: Number(row.open_interventions ?? 0),
+    totalSteps: Number(row.total_steps ?? 0),
+    completedSteps: Number(row.completed_steps ?? 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at
+  };
+}
+
+function toMissionStep(row: MissionStepRow): MissionStep {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    index: Number(row.step_index ?? 0),
+    title: row.title,
+    detail: row.detail,
+    kind: row.kind,
+    laneId: row.lane_id,
+    status: normalizeStepStatus(row.status),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    metadata: safeParseRecord(row.metadata_json)
+  };
+}
+
+function toMissionEvent(row: MissionEventRow): MissionEvent {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    eventType: row.event_type,
+    actor: row.actor,
+    summary: row.summary,
+    payload: safeParseRecord(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
+function toMissionArtifact(row: MissionArtifactRow): MissionArtifact {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    artifactType: normalizeArtifactType(row.artifact_type),
+    title: row.title,
+    description: row.description,
+    uri: row.uri,
+    laneId: row.lane_id,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    metadata: safeParseRecord(row.metadata_json)
+  };
+}
+
+function toMissionIntervention(row: MissionInterventionRow): MissionIntervention {
+  return {
+    id: row.id,
+    missionId: row.mission_id,
+    interventionType: normalizeInterventionType(row.intervention_type),
+    status: normalizeInterventionStatus(row.status),
+    title: row.title,
+    body: row.body,
+    requestedAction: row.requested_action,
+    resolutionNote: row.resolution_note,
+    laneId: row.lane_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resolvedAt: row.resolved_at,
+    metadata: safeParseRecord(row.metadata_json)
+  };
+}
+
+function hasTransition(
+  graph: Record<MissionStatus, Set<MissionStatus>>,
+  from: MissionStatus,
+  to: MissionStatus
+): boolean {
+  return graph[from]?.has(to) ?? false;
+}
+
+export function isValidMissionTransition(from: MissionStatus, to: MissionStatus): boolean {
+  return hasTransition(MISSION_TRANSITIONS, from, to);
+}
+
+export function isValidMissionStepTransition(from: MissionStepStatus, to: MissionStepStatus): boolean {
+  return STEP_TRANSITIONS[from]?.has(to) ?? false;
+}
+
+export function createMissionService({
+  db,
+  projectId,
+  onEvent
+}: {
+  db: AdeDb;
+  projectId: string;
+  onEvent?: (payload: MissionsEventPayload) => void;
+}) {
+  const emit = (payload: Omit<MissionsEventPayload, "type" | "at">) => {
+    try {
+      onEvent?.({
+        type: "missions-updated",
+        at: nowIso(),
+        ...payload
+      });
+    } catch {
+      // Ignore broadcast failures.
+    }
+  };
+
+  const assertLaneExists = (laneId: string | null | undefined) => {
+    if (!laneId) return;
+    const hit = db.get<{ id: string }>(
+      "select id from lanes where id = ? and project_id = ? and status != 'archived' limit 1",
+      [laneId, projectId]
+    );
+    if (!hit?.id) {
+      throw new Error(`Lane not found or archived: ${laneId}`);
+    }
+  };
+
+  const baseMissionSelect = `
+    select
+      m.id as id,
+      m.title as title,
+      m.prompt as prompt,
+      m.lane_id as lane_id,
+      l.name as lane_name,
+      m.status as status,
+      m.priority as priority,
+      m.execution_mode as execution_mode,
+      m.target_machine_id as target_machine_id,
+      m.outcome_summary as outcome_summary,
+      m.last_error as last_error,
+      (
+        select count(*)
+        from mission_artifacts ma
+        where ma.project_id = m.project_id and ma.mission_id = m.id
+      ) as artifact_count,
+      (
+        select count(*)
+        from mission_interventions mi
+        where mi.project_id = m.project_id and mi.mission_id = m.id and mi.status = 'open'
+      ) as open_interventions,
+      (
+        select count(*)
+        from mission_steps ms
+        where ms.project_id = m.project_id and ms.mission_id = m.id
+      ) as total_steps,
+      (
+        select count(*)
+        from mission_steps ms
+        where ms.project_id = m.project_id and ms.mission_id = m.id and ms.status in ('succeeded', 'skipped')
+      ) as completed_steps,
+      m.created_at as created_at,
+      m.updated_at as updated_at,
+      m.started_at as started_at,
+      m.completed_at as completed_at
+    from missions m
+    left join lanes l on l.id = m.lane_id
+    where m.project_id = ?
+  `;
+
+  const getMissionRow = (missionId: string): MissionRow | null => {
+    return db.get<MissionRow>(
+      `${baseMissionSelect}
+       and m.id = ?
+       limit 1`,
+      [projectId, missionId]
+    );
+  };
+
+  const recordEvent = (args: {
+    missionId: string;
+    eventType: string;
+    actor: string;
+    summary: string;
+    payload?: Record<string, unknown> | null;
+  }): MissionEvent => {
+    const id = randomUUID();
+    const createdAt = nowIso();
+    db.run(
+      `
+        insert into mission_events(
+          id,
+          mission_id,
+          project_id,
+          event_type,
+          actor,
+          summary,
+          payload_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        args.missionId,
+        projectId,
+        args.eventType,
+        args.actor,
+        args.summary,
+        args.payload ? JSON.stringify(args.payload) : null,
+        createdAt
+      ]
+    );
+    return {
+      id,
+      missionId: args.missionId,
+      eventType: args.eventType,
+      actor: args.actor,
+      summary: args.summary,
+      payload: args.payload ?? null,
+      createdAt
+    };
+  };
+
+  const upsertMissionStatus = (args: {
+    missionId: string;
+    nextStatus: MissionStatus;
+    updatedAt?: string;
+    summary?: string;
+    payload?: Record<string, unknown>;
+    actor?: string;
+  }) => {
+    const row = db.get<{
+      status: string;
+      started_at: string | null;
+      completed_at: string | null;
+    }>(
+      "select status, started_at, completed_at from missions where id = ? and project_id = ? limit 1",
+      [args.missionId, projectId]
+    );
+    if (!row) throw new Error(`Mission not found: ${args.missionId}`);
+
+    const previous = normalizeMissionStatus(row.status);
+    const next = args.nextStatus;
+    if (!isValidMissionTransition(previous, next)) {
+      throw new Error(`Invalid mission transition: ${previous} -> ${next}`);
+    }
+
+    const updatedAt = args.updatedAt ?? nowIso();
+    let startedAt = row.started_at;
+    let completedAt = row.completed_at;
+
+    if (next === "in_progress") {
+      if (!startedAt) startedAt = updatedAt;
+      completedAt = null;
+    } else if (next === "queued") {
+      startedAt = null;
+      completedAt = null;
+    } else if (TERMINAL_MISSION_STATUSES.has(next)) {
+      completedAt = updatedAt;
+      if (!startedAt) startedAt = updatedAt;
+    }
+
+    db.run(
+      `
+        update missions
+        set status = ?,
+            started_at = ?,
+            completed_at = ?,
+            updated_at = ?
+        where id = ?
+          and project_id = ?
+      `,
+      [next, startedAt, completedAt, updatedAt, args.missionId, projectId]
+    );
+
+    if (previous !== next) {
+      recordEvent({
+        missionId: args.missionId,
+        eventType: "mission_status_changed",
+        actor: args.actor ?? "user",
+        summary: args.summary ?? `Mission status changed to ${next}.`,
+        payload: {
+          from: previous,
+          to: next,
+          ...(args.payload ?? {})
+        }
+      });
+    }
+  };
+
+  const insertArtifact = (args: {
+    missionId: string;
+    artifactType: MissionArtifactType;
+    title: string;
+    description?: string | null;
+    uri?: string | null;
+    laneId?: string | null;
+    createdBy: string;
+    metadata?: Record<string, unknown> | null;
+  }): MissionArtifact => {
+    assertLaneExists(args.laneId ?? null);
+
+    const id = randomUUID();
+    const createdAt = nowIso();
+    const title = args.title.trim();
+    if (!title.length) throw new Error("Artifact title is required");
+
+    const description = sanitizeOptionalText(args.description ?? null);
+    const uri = coerceNullableString(args.uri);
+
+    db.run(
+      `
+        insert into mission_artifacts(
+          id,
+          mission_id,
+          project_id,
+          artifact_type,
+          title,
+          description,
+          uri,
+          lane_id,
+          metadata_json,
+          created_at,
+          updated_at,
+          created_by
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        args.missionId,
+        projectId,
+        args.artifactType,
+        title,
+        description,
+        uri,
+        args.laneId ?? null,
+        args.metadata ? JSON.stringify(args.metadata) : null,
+        createdAt,
+        createdAt,
+        args.createdBy
+      ]
+    );
+
+    return {
+      id,
+      missionId: args.missionId,
+      artifactType: args.artifactType,
+      title,
+      description,
+      uri,
+      laneId: args.laneId ?? null,
+      createdBy: args.createdBy,
+      createdAt,
+      updatedAt: createdAt,
+      metadata: args.metadata ?? null
+    };
+  };
+
+  const insertIntervention = (args: {
+    missionId: string;
+    interventionType: MissionInterventionType;
+    title: string;
+    body: string;
+    requestedAction?: string | null;
+    laneId?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): MissionIntervention => {
+    assertLaneExists(args.laneId ?? null);
+
+    const id = randomUUID();
+    const createdAt = nowIso();
+    const title = args.title.trim();
+    const body = args.body.trim();
+    if (!title.length) throw new Error("Intervention title is required");
+    if (!body.length) throw new Error("Intervention body is required");
+
+    db.run(
+      `
+        insert into mission_interventions(
+          id,
+          mission_id,
+          project_id,
+          intervention_type,
+          status,
+          title,
+          body,
+          requested_action,
+          resolution_note,
+          lane_id,
+          metadata_json,
+          created_at,
+          updated_at,
+          resolved_at
+        ) values (?, ?, ?, ?, 'open', ?, ?, ?, null, ?, ?, ?, ?, null)
+      `,
+      [
+        id,
+        args.missionId,
+        projectId,
+        args.interventionType,
+        title,
+        body,
+        sanitizeOptionalText(args.requestedAction ?? null),
+        args.laneId ?? null,
+        args.metadata ? JSON.stringify(args.metadata) : null,
+        createdAt,
+        createdAt
+      ]
+    );
+
+    return {
+      id,
+      missionId: args.missionId,
+      interventionType: args.interventionType,
+      status: "open",
+      title,
+      body,
+      requestedAction: sanitizeOptionalText(args.requestedAction ?? null),
+      resolutionNote: null,
+      laneId: args.laneId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+      resolvedAt: null,
+      metadata: args.metadata ?? null
+    };
+  };
+
+  return {
+    list(args: ListMissionsArgs = {}): MissionSummary[] {
+      const where: string[] = [];
+      const params: Array<string | number> = [projectId];
+
+      const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+      if (laneId.length) {
+        where.push("m.lane_id = ?");
+        params.push(laneId);
+      }
+
+      if (args.status === "active") {
+        where.push("m.status in ('queued', 'in_progress', 'intervention_required')");
+      } else if (args.status) {
+        where.push("m.status = ?");
+        params.push(args.status);
+      }
+
+      const limit = Number.isFinite(args.limit) ? Math.max(1, Math.min(500, Math.floor(args.limit ?? 120))) : 120;
+
+      const rows = db.all<MissionRow>(
+        `${baseMissionSelect}
+         ${where.length ? `and ${where.join(" and ")}` : ""}
+         order by
+           case m.status
+             when 'intervention_required' then 0
+             when 'in_progress' then 1
+             when 'queued' then 2
+             when 'failed' then 3
+             when 'completed' then 4
+             else 5
+           end,
+           m.updated_at desc,
+           m.created_at desc
+         limit ?`,
+        [...params, limit]
+      );
+
+      return rows.map(toMissionSummary);
+    },
+
+    get(missionId: string): MissionDetail | null {
+      const id = missionId.trim();
+      if (!id.length) return null;
+
+      const row = getMissionRow(id);
+      if (!row) return null;
+
+      const steps = db
+        .all<MissionStepRow>(
+          `
+            select
+              id,
+              mission_id,
+              step_index,
+              title,
+              detail,
+              kind,
+              lane_id,
+              status,
+              created_at,
+              updated_at,
+              started_at,
+              completed_at,
+              metadata_json
+            from mission_steps
+            where project_id = ?
+              and mission_id = ?
+            order by step_index asc
+          `,
+          [projectId, id]
+        )
+        .map(toMissionStep);
+
+      const events = db
+        .all<MissionEventRow>(
+          `
+            select
+              id,
+              mission_id,
+              event_type,
+              actor,
+              summary,
+              payload_json,
+              created_at
+            from mission_events
+            where project_id = ?
+              and mission_id = ?
+            order by created_at desc
+            limit 500
+          `,
+          [projectId, id]
+        )
+        .map(toMissionEvent);
+
+      const artifacts = db
+        .all<MissionArtifactRow>(
+          `
+            select
+              id,
+              mission_id,
+              artifact_type,
+              title,
+              description,
+              uri,
+              lane_id,
+              created_by,
+              created_at,
+              updated_at,
+              metadata_json
+            from mission_artifacts
+            where project_id = ?
+              and mission_id = ?
+            order by created_at desc
+          `,
+          [projectId, id]
+        )
+        .map(toMissionArtifact);
+
+      const interventions = db
+        .all<MissionInterventionRow>(
+          `
+            select
+              id,
+              mission_id,
+              intervention_type,
+              status,
+              title,
+              body,
+              requested_action,
+              resolution_note,
+              lane_id,
+              created_at,
+              updated_at,
+              resolved_at,
+              metadata_json
+            from mission_interventions
+            where project_id = ?
+              and mission_id = ?
+            order by
+              case status when 'open' then 0 when 'resolved' then 1 else 2 end,
+              created_at desc
+          `,
+          [projectId, id]
+        )
+        .map(toMissionIntervention);
+
+      return {
+        ...toMissionSummary(row),
+        steps,
+        events,
+        artifacts,
+        interventions
+      };
+    },
+
+    create(args: CreateMissionArgs): MissionDetail {
+      const prompt = normalizePrompt(args.prompt ?? "");
+      if (!prompt.length) {
+        throw new Error("Mission prompt is required.");
+      }
+
+      const title = deriveMissionTitle(prompt, args.title);
+      const laneId = coerceNullableString(args.laneId);
+      assertLaneExists(laneId);
+      const priority = args.priority ?? "normal";
+      const executionMode = args.executionMode ?? "local";
+      const targetMachineId = coerceNullableString(args.targetMachineId);
+
+      const id = randomUUID();
+      const createdAt = nowIso();
+
+      db.run(
+        `
+          insert into missions(
+            id,
+            project_id,
+            lane_id,
+            title,
+            prompt,
+            status,
+            priority,
+            execution_mode,
+            target_machine_id,
+            outcome_summary,
+            last_error,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values (?, ?, ?, ?, ?, 'queued', ?, ?, ?, null, null, ?, ?, ?, null, null)
+        `,
+        [
+          id,
+          projectId,
+          laneId,
+          title,
+          prompt,
+          priority,
+          executionMode,
+          targetMachineId,
+          JSON.stringify({ source: "manual", version: 1 }),
+          createdAt,
+          createdAt
+        ]
+      );
+
+      const stepTitles = buildInitialStepTitles(prompt);
+      stepTitles.forEach((stepTitle, index) => {
+        const stepId = randomUUID();
+        db.run(
+          `
+            insert into mission_steps(
+              id,
+              mission_id,
+              project_id,
+              step_index,
+              title,
+              detail,
+              kind,
+              lane_id,
+              status,
+              metadata_json,
+              created_at,
+              updated_at,
+              started_at,
+              completed_at
+            ) values (?, ?, ?, ?, ?, null, 'placeholder', ?, 'pending', null, ?, ?, null, null)
+          `,
+          [stepId, id, projectId, index, stepTitle, laneId, createdAt, createdAt]
+        );
+      });
+
+      recordEvent({
+        missionId: id,
+        eventType: "mission_created",
+        actor: "user",
+        summary: "Mission created from plain-English prompt.",
+        payload: {
+          title,
+          laneId,
+          priority,
+          executionMode,
+          targetMachineId,
+          preview: summarizePrompt(prompt)
+        }
+      });
+
+      emit({ missionId: id, reason: "created" });
+      const detail = this.get(id);
+      if (!detail) throw new Error("Mission creation failed");
+      return detail;
+    },
+
+    update(args: UpdateMissionArgs): MissionDetail {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("Mission id is required.");
+
+      const existing = db.get<{
+        id: string;
+        title: string;
+        prompt: string;
+        lane_id: string | null;
+        status: string;
+        priority: string;
+        execution_mode: string;
+        target_machine_id: string | null;
+        outcome_summary: string | null;
+        last_error: string | null;
+      }>(
+        `
+          select
+            id,
+            title,
+            prompt,
+            lane_id,
+            status,
+            priority,
+            execution_mode,
+            target_machine_id,
+            outcome_summary,
+            last_error
+          from missions
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [missionId, projectId]
+      );
+
+      if (!existing) {
+        throw new Error(`Mission not found: ${missionId}`);
+      }
+
+      const nextLaneId = args.laneId !== undefined ? coerceNullableString(args.laneId) : existing.lane_id;
+      assertLaneExists(nextLaneId);
+
+      const nextPrompt = args.prompt !== undefined ? normalizePrompt(args.prompt) : existing.prompt;
+      if (!nextPrompt.length) throw new Error("Mission prompt cannot be empty.");
+      const nextTitle = args.title !== undefined ? deriveMissionTitle(nextPrompt, args.title) : existing.title;
+
+      const nextPriority = args.priority ?? normalizeMissionPriority(existing.priority);
+      const nextExecutionMode = args.executionMode ?? normalizeExecutionMode(existing.execution_mode);
+      const nextTargetMachineId =
+        args.targetMachineId !== undefined ? coerceNullableString(args.targetMachineId) : existing.target_machine_id;
+      const nextOutcomeSummary =
+        args.outcomeSummary !== undefined ? sanitizeOptionalText(args.outcomeSummary) : existing.outcome_summary;
+      const nextLastError = args.lastError !== undefined ? sanitizeOptionalText(args.lastError) : existing.last_error;
+
+      const updatedAt = nowIso();
+
+      if (args.status) {
+        upsertMissionStatus({
+          missionId,
+          nextStatus: args.status,
+          updatedAt,
+          summary: `Mission status changed to ${args.status}.`
+        });
+      }
+
+      db.run(
+        `
+          update missions
+          set title = ?,
+              prompt = ?,
+              lane_id = ?,
+              priority = ?,
+              execution_mode = ?,
+              target_machine_id = ?,
+              outcome_summary = ?,
+              last_error = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [
+          nextTitle,
+          nextPrompt,
+          nextLaneId,
+          nextPriority,
+          nextExecutionMode,
+          nextTargetMachineId,
+          nextOutcomeSummary,
+          nextLastError,
+          updatedAt,
+          missionId,
+          projectId
+        ]
+      );
+
+      const changedFields: string[] = [];
+      if (nextTitle !== existing.title) changedFields.push("title");
+      if (nextPrompt !== existing.prompt) changedFields.push("prompt");
+      if (nextLaneId !== existing.lane_id) changedFields.push("laneId");
+      if (nextPriority !== existing.priority) changedFields.push("priority");
+      if (nextExecutionMode !== existing.execution_mode) changedFields.push("executionMode");
+      if (nextTargetMachineId !== existing.target_machine_id) changedFields.push("targetMachineId");
+      if (nextOutcomeSummary !== existing.outcome_summary) changedFields.push("outcomeSummary");
+      if (nextLastError !== existing.last_error) changedFields.push("lastError");
+      if (changedFields.length) {
+        recordEvent({
+          missionId,
+          eventType: "mission_updated",
+          actor: "user",
+          summary: `Mission updated (${changedFields.join(", ")}).`,
+          payload: { changedFields }
+        });
+      }
+
+      if (nextOutcomeSummary && args.outcomeSummary !== undefined) {
+        const hasSummaryArtifact = db.get<{ id: string }>(
+          `
+            select id
+            from mission_artifacts
+            where project_id = ?
+              and mission_id = ?
+              and artifact_type = 'summary'
+            order by created_at desc
+            limit 1
+          `,
+          [projectId, missionId]
+        );
+
+        if (!hasSummaryArtifact?.id) {
+          const summaryArtifact = insertArtifact({
+            missionId,
+            artifactType: "summary",
+            title: "Mission outcome summary",
+            description: nextOutcomeSummary,
+            createdBy: "system"
+          });
+          recordEvent({
+            missionId,
+            eventType: "mission_artifact_added",
+            actor: "system",
+            summary: "Outcome summary artifact recorded.",
+            payload: {
+              artifactId: summaryArtifact.id,
+              artifactType: summaryArtifact.artifactType
+            }
+          });
+        }
+      }
+
+      emit({ missionId, reason: "updated" });
+      const detail = this.get(missionId);
+      if (!detail) throw new Error("Mission update failed");
+      return detail;
+    },
+
+    updateStep(args: UpdateMissionStepArgs): MissionStep {
+      const missionId = args.missionId.trim();
+      const stepId = args.stepId.trim();
+      if (!missionId.length || !stepId.length) throw new Error("missionId and stepId are required.");
+
+      const step = db.get<MissionStepRow>(
+        `
+          select
+            id,
+            mission_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at,
+            metadata_json
+          from mission_steps
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [stepId, missionId, projectId]
+      );
+
+      if (!step) {
+        throw new Error(`Mission step not found: ${stepId}`);
+      }
+
+      const previous = normalizeStepStatus(step.status);
+      const next = args.status;
+      if (!isValidMissionStepTransition(previous, next)) {
+        throw new Error(`Invalid mission step transition: ${previous} -> ${next}`);
+      }
+
+      const updatedAt = nowIso();
+      let startedAt = step.started_at;
+      let completedAt = step.completed_at;
+
+      if (next === "running") {
+        if (!startedAt) startedAt = updatedAt;
+        completedAt = null;
+      }
+
+      if (next === "pending") {
+        startedAt = null;
+        completedAt = null;
+      }
+
+      if (next === "succeeded" || next === "failed" || next === "skipped" || next === "canceled") {
+        if (!startedAt) startedAt = updatedAt;
+        completedAt = updatedAt;
+      }
+
+      if (next === "blocked") {
+        completedAt = null;
+      }
+
+      db.run(
+        `
+          update mission_steps
+          set status = ?,
+              started_at = ?,
+              completed_at = ?,
+              updated_at = ?
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+        `,
+        [next, startedAt, completedAt, updatedAt, stepId, missionId, projectId]
+      );
+
+      const note = sanitizeOptionalText(args.note ?? null);
+      recordEvent({
+        missionId,
+        eventType: "mission_step_updated",
+        actor: "user",
+        summary: `Step ${Number(step.step_index) + 1} set to ${next}.`,
+        payload: {
+          stepId,
+          stepIndex: Number(step.step_index),
+          stepTitle: step.title,
+          from: previous,
+          to: next,
+          ...(note ? { note } : {})
+        }
+      });
+
+      if (next === "failed") {
+        const intervention = insertIntervention({
+          missionId,
+          interventionType: "failed_step",
+          title: `Step failed: ${step.title}`,
+          body: note ?? "A mission step was marked as failed and needs attention.",
+          requestedAction: "Review the failure and decide whether to continue, retry, or cancel."
+        });
+
+        db.run(
+          `
+            update missions
+            set last_error = ?,
+                updated_at = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [note ?? step.title, updatedAt, missionId, projectId]
+        );
+
+        upsertMissionStatus({
+          missionId,
+          nextStatus: "intervention_required",
+          updatedAt,
+          summary: "Mission paused for intervention after step failure.",
+          payload: {
+            interventionId: intervention.id,
+            stepId
+          }
+        });
+      }
+
+      emit({ missionId, reason: "step-updated" });
+
+      const nextStep = db.get<MissionStepRow>(
+        `
+          select
+            id,
+            mission_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at,
+            metadata_json
+          from mission_steps
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [stepId, missionId, projectId]
+      );
+
+      if (!nextStep) throw new Error("Mission step update failed");
+      return toMissionStep(nextStep);
+    },
+
+    addArtifact(args: AddMissionArtifactArgs): MissionArtifact {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+
+      const artifact = insertArtifact({
+        missionId,
+        artifactType: args.artifactType,
+        title: args.title,
+        description: args.description,
+        uri: args.uri,
+        laneId: args.laneId,
+        metadata: args.metadata,
+        createdBy: "user"
+      });
+
+      recordEvent({
+        missionId,
+        eventType: "mission_artifact_added",
+        actor: "user",
+        summary: `Artifact added: ${artifact.title}`,
+        payload: {
+          artifactId: artifact.id,
+          artifactType: artifact.artifactType,
+          uri: artifact.uri
+        }
+      });
+
+      db.run(
+        "update missions set updated_at = ? where id = ? and project_id = ?",
+        [nowIso(), missionId, projectId]
+      );
+      emit({ missionId, reason: "artifact-added" });
+      return artifact;
+    },
+
+    addIntervention(args: AddMissionInterventionArgs): MissionIntervention {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+
+      const intervention = insertIntervention({
+        missionId,
+        interventionType: args.interventionType,
+        title: args.title,
+        body: args.body,
+        requestedAction: args.requestedAction,
+        laneId: args.laneId,
+        metadata: args.metadata
+      });
+
+      recordEvent({
+        missionId,
+        eventType: "mission_intervention_added",
+        actor: "user",
+        summary: `Intervention added: ${intervention.title}`,
+        payload: {
+          interventionId: intervention.id,
+          interventionType: intervention.interventionType
+        }
+      });
+
+      upsertMissionStatus({
+        missionId,
+        nextStatus: "intervention_required",
+        summary: "Mission moved to intervention required."
+      });
+
+      db.run(
+        "update missions set updated_at = ? where id = ? and project_id = ?",
+        [nowIso(), missionId, projectId]
+      );
+      emit({ missionId, reason: "intervention-added" });
+      return intervention;
+    },
+
+    resolveIntervention(args: ResolveMissionInterventionArgs): MissionIntervention {
+      const missionId = args.missionId.trim();
+      const interventionId = args.interventionId.trim();
+      if (!missionId.length || !interventionId.length) {
+        throw new Error("missionId and interventionId are required.");
+      }
+
+      const row = db.get<MissionInterventionRow>(
+        `
+          select
+            id,
+            mission_id,
+            intervention_type,
+            status,
+            title,
+            body,
+            requested_action,
+            resolution_note,
+            lane_id,
+            created_at,
+            updated_at,
+            resolved_at,
+            metadata_json
+          from mission_interventions
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [interventionId, missionId, projectId]
+      );
+
+      if (!row) {
+        throw new Error(`Intervention not found: ${interventionId}`);
+      }
+
+      const targetStatus = args.status;
+      const note = sanitizeOptionalText(args.note ?? null);
+      const resolvedAt = nowIso();
+
+      db.run(
+        `
+          update mission_interventions
+          set status = ?,
+              resolution_note = ?,
+              resolved_at = ?,
+              updated_at = ?
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+        `,
+        [targetStatus, note, resolvedAt, resolvedAt, interventionId, missionId, projectId]
+      );
+
+      recordEvent({
+        missionId,
+        eventType: "mission_intervention_resolved",
+        actor: "user",
+        summary: `Intervention ${targetStatus}: ${row.title}`,
+        payload: {
+          interventionId,
+          status: targetStatus,
+          ...(note ? { note } : {})
+        }
+      });
+
+      const openCount = db.get<{ count: number }>(
+        `
+          select count(*) as count
+          from mission_interventions
+          where project_id = ?
+            and mission_id = ?
+            and status = 'open'
+        `,
+        [projectId, missionId]
+      );
+
+      if ((openCount?.count ?? 0) === 0) {
+        const mission = db.get<{ status: string }>(
+          "select status from missions where id = ? and project_id = ? limit 1",
+          [missionId, projectId]
+        );
+        if (mission && normalizeMissionStatus(mission.status) === "intervention_required") {
+          upsertMissionStatus({
+            missionId,
+            nextStatus: "in_progress",
+            summary: "All interventions resolved. Mission resumed."
+          });
+        }
+      }
+
+      db.run(
+        "update missions set updated_at = ? where id = ? and project_id = ?",
+        [resolvedAt, missionId, projectId]
+      );
+      emit({ missionId, reason: "intervention-resolved" });
+
+      const updated = db.get<MissionInterventionRow>(
+        `
+          select
+            id,
+            mission_id,
+            intervention_type,
+            status,
+            title,
+            body,
+            requested_action,
+            resolution_note,
+            lane_id,
+            created_at,
+            updated_at,
+            resolved_at,
+            metadata_json
+          from mission_interventions
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [interventionId, missionId, projectId]
+      );
+      if (!updated) throw new Error("Intervention update failed");
+      return toMissionIntervention(updated);
+    }
+  };
+}
