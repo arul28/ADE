@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { PackExport, PackType } from "../../../shared/types";
+import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/types";
 import { createOrchestratorService } from "./orchestratorService";
 import { openKvDb } from "../state/kvDb";
 
@@ -31,7 +31,10 @@ function buildExport(packKey: string, packType: PackType, level: "lite" | "stand
   };
 }
 
-async function createFixture() {
+async function createFixture(args: {
+  conflictService?: any;
+  packService?: Record<string, unknown>;
+} = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
   fs.writeFileSync(path.join(projectRoot, "docs", "PRD.md"), "# PRD\n\nContext baseline\n", "utf8");
@@ -142,6 +145,36 @@ async function createFixture() {
       contentHash: `hash-${packKey}`,
       updatedAt: now
     }),
+    getDeltaDigest: async (): Promise<PackDeltaDigestV1> => ({
+      packKey: `lane:${laneId}`,
+      packType: "lane",
+      since: {
+        sinceVersionId: null,
+        sinceTimestamp: now,
+        baselineVersionId: null,
+        baselineVersionNumber: null,
+        baselineCreatedAt: null
+      },
+      newVersion: {
+        packKey: `lane:${laneId}`,
+        packType: "lane",
+        versionId: `lane:${laneId}-v1`,
+        versionNumber: 1,
+        contentHash: "hash",
+        updatedAt: now
+      },
+      changedSections: [],
+      highImpactEvents: [],
+      blockers: [],
+      conflicts: null,
+      decisionState: {
+        recommendedExportLevel: "standard",
+        reasons: []
+      },
+      handoffSummary: "none",
+      clipReason: null,
+      omittedSections: null
+    }),
     refreshMissionPack: async ({ missionId: targetMissionId }: { missionId: string }) => ({
       packKey: `mission:${targetMissionId}`,
       packType: "mission",
@@ -162,13 +195,19 @@ async function createFixture() {
     db,
     projectId,
     projectRoot,
-    packService,
+    packService: {
+      ...packService,
+      ...(args.packService ?? {})
+    } as any,
+    conflictService: args.conflictService,
     ptyService
   });
 
   return {
     db,
     service,
+    projectId,
+    projectRoot,
     laneId,
     missionId,
     ptyCreateCalls,
@@ -353,6 +392,371 @@ describe("orchestratorService", () => {
         ownerId: "owner-optin"
       });
       expect(optInAttempt.contextProfile).toBe("orchestrator_narrative_opt_in_v1");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("supports deterministic DAG join semantics (all_success, any_success, quorum)", async () => {
+    const fixture = await createFixture();
+    try {
+      const anyRun = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          { stepKey: "a", title: "A", stepIndex: 0 },
+          { stepKey: "b", title: "B", stepIndex: 1 },
+          {
+            stepKey: "join-any",
+            title: "Join Any",
+            stepIndex: 2,
+            dependencyStepKeys: ["a", "b"],
+            joinPolicy: "any_success"
+          }
+        ]
+      });
+      const [aAny, bAny, joinAny] = fixture.service.listSteps(anyRun.run.id);
+      if (!aAny || !bAny || !joinAny) throw new Error("Missing steps for any_success run");
+      const aAnyAttempt = await fixture.service.startAttempt({ runId: anyRun.run.id, stepId: aAny.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: aAnyAttempt.id,
+        status: "failed",
+        errorClass: "deterministic",
+        errorMessage: "deterministic failure"
+      });
+      const bAnyAttempt = await fixture.service.startAttempt({ runId: anyRun.run.id, stepId: bAny.id, ownerId: "owner" });
+      fixture.service.completeAttempt({ attemptId: bAnyAttempt.id, status: "succeeded" });
+      const joinAnyStep = fixture.service.listSteps(anyRun.run.id).find((step) => step.id === joinAny.id);
+      expect(joinAnyStep?.status).toBe("ready");
+
+      const allRun = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          { stepKey: "a", title: "A", stepIndex: 0 },
+          { stepKey: "b", title: "B", stepIndex: 1 },
+          {
+            stepKey: "join-all",
+            title: "Join All",
+            stepIndex: 2,
+            dependencyStepKeys: ["a", "b"],
+            joinPolicy: "all_success"
+          }
+        ]
+      });
+      const [aAll, bAll, joinAll] = fixture.service.listSteps(allRun.run.id);
+      if (!aAll || !bAll || !joinAll) throw new Error("Missing steps for all_success run");
+      const aAllAttempt = await fixture.service.startAttempt({ runId: allRun.run.id, stepId: aAll.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: aAllAttempt.id,
+        status: "failed",
+        errorClass: "deterministic",
+        errorMessage: "deterministic failure"
+      });
+      const bAllAttempt = await fixture.service.startAttempt({ runId: allRun.run.id, stepId: bAll.id, ownerId: "owner" });
+      fixture.service.completeAttempt({ attemptId: bAllAttempt.id, status: "succeeded" });
+      const joinAllStep = fixture.service.listSteps(allRun.run.id).find((step) => step.id === joinAll.id);
+      expect(joinAllStep?.status).toBe("blocked");
+
+      const quorumRun = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          { stepKey: "a", title: "A", stepIndex: 0 },
+          { stepKey: "b", title: "B", stepIndex: 1 },
+          { stepKey: "c", title: "C", stepIndex: 2 },
+          {
+            stepKey: "join-quorum",
+            title: "Join Quorum",
+            stepIndex: 3,
+            dependencyStepKeys: ["a", "b", "c"],
+            joinPolicy: "quorum",
+            quorumCount: 2
+          }
+        ]
+      });
+      const [aQ, bQ, cQ, joinQ] = fixture.service.listSteps(quorumRun.run.id);
+      if (!aQ || !bQ || !cQ || !joinQ) throw new Error("Missing steps for quorum run");
+      const aQAttempt = await fixture.service.startAttempt({ runId: quorumRun.run.id, stepId: aQ.id, ownerId: "owner" });
+      fixture.service.completeAttempt({ attemptId: aQAttempt.id, status: "succeeded" });
+      const bQAttempt = await fixture.service.startAttempt({ runId: quorumRun.run.id, stepId: bQ.id, ownerId: "owner" });
+      fixture.service.completeAttempt({ attemptId: bQAttempt.id, status: "succeeded" });
+      const cQAttempt = await fixture.service.startAttempt({ runId: quorumRun.run.id, stepId: cQ.id, ownerId: "owner" });
+      fixture.service.completeAttempt({
+        attemptId: cQAttempt.id,
+        status: "failed",
+        errorClass: "deterministic",
+        errorMessage: "deterministic failure"
+      });
+      const joinQuorumStep = fixture.service.listSteps(quorumRun.run.id).find((step) => step.id === joinQ.id);
+      expect(joinQuorumStep?.status).toBe("ready");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("applies deterministic retry/backoff scheduling before retrying", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "retryable", title: "Retryable", stepIndex: 0, retryLimit: 2 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorClass: "transient",
+        errorMessage: "transient failure",
+        retryBackoffMs: 15_000
+      });
+
+      const afterFailure = fixture.service.listSteps(started.run.id)[0];
+      expect(afterFailure?.status).toBe("pending");
+      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? 0)).toBe(15_000);
+
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set metadata_json = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [
+          JSON.stringify({
+            ...(afterFailure?.metadata ?? {}),
+            nextRetryAt: "2000-01-01T00:00:00.000Z"
+          }),
+          new Date().toISOString(),
+          step.id,
+          fixture.projectId
+        ]
+      );
+      fixture.service.tick({ runId: started.run.id });
+      const retryReady = fixture.service.listSteps(started.run.id)[0];
+      expect(retryReady?.status).toBe("ready");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("supports claim heartbeat and expiry recovery for blocked collision steps", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "one",
+            title: "One",
+            stepIndex: 0,
+            policy: {
+              claimScopes: [{ scopeKind: "lane", scopeValue: `lane:${fixture.laneId}`, ttlMs: 60_000 }]
+            }
+          },
+          {
+            stepKey: "two",
+            title: "Two",
+            stepIndex: 1,
+            policy: {
+              claimScopes: [{ scopeKind: "lane", scopeValue: `lane:${fixture.laneId}`, ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const [one, two] = fixture.service.listSteps(started.run.id);
+      if (!one || !two) throw new Error("Missing steps");
+
+      const firstAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: one.id,
+        ownerId: "owner-a"
+      });
+      const beats = fixture.service.heartbeatClaims({ attemptId: firstAttempt.id, ownerId: "owner-a" });
+      expect(beats).toBe(1);
+
+      const blockedAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: two.id,
+        ownerId: "owner-b"
+      });
+      expect(blockedAttempt.status).toBe("blocked");
+
+      fixture.db.run(
+        `
+          update orchestrator_claims
+          set expires_at = ?
+          where attempt_id = ?
+        `,
+        ["2000-01-01T00:00:00.000Z", firstAttempt.id]
+      );
+      fixture.service.tick({ runId: started.run.id });
+      const recoveredStep = fixture.service.listSteps(started.run.id).find((step) => step.id === two.id);
+      expect(recoveredStep?.status).toBe("ready");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("records docs truncation and context provenance metadata in snapshots", async () => {
+    const fixture = await createFixture();
+    try {
+      const docsRoot = path.join(fixture.projectRoot, "docs", "architecture");
+      fs.mkdirSync(docsRoot, { recursive: true });
+      fs.writeFileSync(path.join(docsRoot, "HUGE.md"), "x".repeat(20_000), "utf8");
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "docs",
+            title: "Docs",
+            stepIndex: 0,
+            policy: {
+              includeFullDocs: true,
+              docsMaxBytes: 64
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner-docs"
+      });
+      expect(attempt.contextSnapshotId).toBeTruthy();
+      const snapshot = fixture.service
+        .listContextSnapshots({ runId: started.run.id })
+        .find((entry) => entry.id === attempt.contextSnapshotId);
+      expect(snapshot?.cursor.docsMode).toBe("full_body");
+      expect((snapshot?.cursor.docsTruncatedCount ?? 0) >= 1).toBe(true);
+      expect((snapshot?.cursor.docsConsumedBytes ?? 0) <= 64).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("normalizes adapter envelopes and supports deterministic integration chain blocking", async () => {
+    const conflictService = {
+      prepareResolverSession: async () => ({
+        runId: "resolver-1",
+        promptFilePath: "/tmp/prompt.md",
+        cwdWorktreePath: "/tmp/worktree",
+        cwdLaneId: "lane-1",
+        integrationLaneId: "lane-integration",
+        warnings: [],
+        contextGaps: [],
+        status: "ready" as const
+      })
+    };
+    const fixture = await createFixture({
+      conflictService
+    });
+    try {
+      fixture.service.registerExecutorAdapter({
+        kind: "claude",
+        start: async () => ({
+          status: "completed",
+          result: {
+            success: true,
+            summary: "adapter completed",
+            warnings: "not-array"
+          } as any
+        })
+      });
+
+      const adapterRun = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "adapter",
+            title: "Adapter Step",
+            stepIndex: 0,
+            executorKind: "claude"
+          }
+        ]
+      });
+      const adapterStep = fixture.service.listSteps(adapterRun.run.id)[0];
+      if (!adapterStep) throw new Error("Missing adapter step");
+      const adapterAttempt = await fixture.service.startAttempt({
+        runId: adapterRun.run.id,
+        stepId: adapterStep.id,
+        ownerId: "owner"
+      });
+      expect(adapterAttempt.status).toBe("succeeded");
+      expect(adapterAttempt.resultEnvelope?.schema).toBe("ade.orchestratorAttempt.v1");
+      expect(Array.isArray(adapterAttempt.resultEnvelope?.warnings)).toBe(true);
+
+      const integrationRun = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "integration",
+            title: "Integration",
+            stepIndex: 0,
+            metadata: {
+              integrationFlow: true,
+              targetLaneId: "lane-target",
+              sourceLaneIds: ["lane-source"]
+            }
+          }
+        ]
+      });
+      const integrationStep = fixture.service.listSteps(integrationRun.run.id)[0];
+      if (!integrationStep) throw new Error("Missing integration step");
+      const integrationAttempt = await fixture.service.startAttempt({
+        runId: integrationRun.run.id,
+        stepId: integrationStep.id,
+        ownerId: "owner"
+      });
+      expect(integrationAttempt.status).toBe("blocked");
+      expect(integrationAttempt.errorClass).toBe("policy");
+      const timeline = fixture.service.listTimeline({ runId: integrationRun.run.id, limit: 50 });
+      expect(timeline.some((entry) => entry.eventType === "integration_chain_stage")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("evaluates and persists gate reports with deterministic thresholds", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "gate-step", title: "Gate Step", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "blocked",
+        errorClass: "policy",
+        errorMessage: "insufficient_context:missing_pack"
+      });
+
+      const report = fixture.service.getLatestGateReport({ refresh: true });
+      expect(report.generatedBy).toBe("deterministic_kernel");
+      expect(report.gates.length).toBe(4);
+      const blockedGate = report.gates.find((gate) => gate.key === "blocked_run_rate_insufficient_context");
+      expect(blockedGate?.status).toBe("fail");
+      expect((blockedGate?.metadata?.reasonCodes as string[] | undefined)?.some((reason) => reason.includes("insufficient_context"))).toBe(
+        true
+      );
+
+      const persisted = fixture.service.getLatestGateReport();
+      expect(persisted.id).toBe(report.id);
     } finally {
       fixture.dispose();
     }

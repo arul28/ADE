@@ -1068,3 +1068,27 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - `lane_overlay_policies` table for workspace-level overrides
 - Schema version tracking for non-idempotent migrations
 - Database compaction / vacuum scheduling
+
+---
+
+## 2026-02-19 Addendum — Phase 2 Orchestrator Persistence
+
+New Phase 2 tables (implemented):
+
+- `orchestrator_timeline_events`
+  - append-only timeline for run/step/attempt/claim/scheduler/context/integration signals
+  - indexes:
+    - `idx_orchestrator_timeline_run_created`
+    - `idx_orchestrator_timeline_attempt`
+    - `idx_orchestrator_timeline_project_created`
+- `orchestrator_gate_reports`
+  - deterministic quality-gate snapshot storage
+  - index:
+    - `idx_orchestrator_gate_reports_project_generated`
+
+Phase 1.5 gate reporting snapshots now persist evaluation outputs for:
+
+- tracked session -> delta -> checkpoint -> lane pack latency,
+- pack freshness by type,
+- context completeness rate for orchestrated attempts,
+- blocked-run rate due to insufficient context (with reason metadata).

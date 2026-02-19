@@ -415,3 +415,25 @@ const handleHeadChanged = ({ laneId, reason }) => {
 - **Feature/conflict pack materialization**: `MaterializeFeaturePack`, `MaterializeConflictPack`
 - **Hosted sync jobs**: `SyncToHostedMirror` for cloud agent integration (as standalone job type)
 - **Health monitoring**: Alerting on elevated failure rates
+
+---
+
+## 2026-02-19 Addendum — Orchestrator Scheduler Boundary
+
+Phase 2 introduces a deterministic orchestrator runtime scheduler that is intentionally separate from the pack/job engine queue:
+
+- Job Engine remains responsible for:
+  - pack refresh/materialization triggers,
+  - conflict prediction scheduling,
+  - narrative/background pack jobs.
+- Orchestrator runtime is now responsible for:
+  - DAG dependency transitions,
+  - join semantics (`all_success`, `any_success`, `quorum`),
+  - retry/backoff scheduling,
+  - claim lease ownership and collision handling,
+  - run/step/attempt lifecycle transitions and resume recovery.
+
+Both systems are deterministic and local-first, with explicit persistence:
+
+- Job queue state is event-driven/coalesced.
+- Orchestrator state is persisted via run/step/attempt/claim/snapshot/timeline tables and replayable after restart.

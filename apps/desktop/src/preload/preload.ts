@@ -204,10 +204,29 @@ import type {
   MissionArtifact,
   MissionDetail,
   MissionIntervention,
+  OrchestratorAttempt,
+  OrchestratorGateReport,
+  OrchestratorRuntimeEvent,
+  OrchestratorRun,
+  OrchestratorRunGraph,
+  OrchestratorStep,
+  OrchestratorTimelineEvent,
   MissionStep,
   MissionSummary,
   MissionsEventPayload,
+  GetOrchestratorGateReportArgs,
+  GetOrchestratorRunGraphArgs,
+  ListOrchestratorRunsArgs,
+  ListOrchestratorTimelineArgs,
   CreateMissionArgs,
+  CancelOrchestratorRunArgs,
+  CompleteOrchestratorAttemptArgs,
+  HeartbeatOrchestratorClaimsArgs,
+  ResumeOrchestratorRunArgs,
+  StartOrchestratorAttemptArgs,
+  StartOrchestratorRunArgs,
+  StartOrchestratorRunFromMissionArgs,
+  TickOrchestratorRunArgs,
   UpdateMissionArgs,
   UpdateMissionStepArgs,
   TestEvent,
@@ -304,6 +323,38 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: MissionsEventPayload) => cb(payload);
       ipcRenderer.on(IPC.missionsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.missionsEvent, listener);
+    }
+  },
+  orchestrator: {
+    listRuns: async (args: ListOrchestratorRunsArgs = {}): Promise<OrchestratorRun[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListRuns, args),
+    getRunGraph: async (args: GetOrchestratorRunGraphArgs): Promise<OrchestratorRunGraph> =>
+      ipcRenderer.invoke(IPC.orchestratorGetRunGraph, args),
+    startRun: async (args: StartOrchestratorRunArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> =>
+      ipcRenderer.invoke(IPC.orchestratorStartRun, args),
+    startRunFromMission: async (
+      args: StartOrchestratorRunFromMissionArgs
+    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => ipcRenderer.invoke(IPC.orchestratorStartRunFromMission, args),
+    startAttempt: async (args: StartOrchestratorAttemptArgs): Promise<OrchestratorAttempt> =>
+      ipcRenderer.invoke(IPC.orchestratorStartAttempt, args),
+    completeAttempt: async (args: CompleteOrchestratorAttemptArgs): Promise<OrchestratorAttempt> =>
+      ipcRenderer.invoke(IPC.orchestratorCompleteAttempt, args),
+    tickRun: async (args: TickOrchestratorRunArgs): Promise<OrchestratorRun> =>
+      ipcRenderer.invoke(IPC.orchestratorTickRun, args),
+    resumeRun: async (args: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> =>
+      ipcRenderer.invoke(IPC.orchestratorResumeRun, args),
+    cancelRun: async (args: CancelOrchestratorRunArgs): Promise<OrchestratorRun> =>
+      ipcRenderer.invoke(IPC.orchestratorCancelRun, args),
+    heartbeatClaims: async (args: HeartbeatOrchestratorClaimsArgs): Promise<number> =>
+      ipcRenderer.invoke(IPC.orchestratorHeartbeatClaims, args),
+    listTimeline: async (args: ListOrchestratorTimelineArgs): Promise<OrchestratorTimelineEvent[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListTimeline, args),
+    getGateReport: async (args: GetOrchestratorGateReportArgs = {}): Promise<OrchestratorGateReport> =>
+      ipcRenderer.invoke(IPC.orchestratorGetGateReport, args),
+    onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => cb(payload);
+      ipcRenderer.on(IPC.orchestratorEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.orchestratorEvent, listener);
     }
   },
   lanes: {

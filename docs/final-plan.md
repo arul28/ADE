@@ -587,3 +587,47 @@ The program is complete when:
 - Desktop and iOS can operate against local and relay machine targets.
 - MCP safely exposes ADE capabilities to external agent ecosystems.
 - Hosted monetization remains optional and BYOK/CLI parity is maintained.
+
+---
+
+## 2026-02-19 Implementation Addendum — Phase 2 Runtime v2
+
+Phase 2 is now implemented in the desktop runtime with deterministic orchestration controls and durable auditability:
+
+- Deterministic kernel:
+  - DAG scheduling with `all_success`, `any_success`, and `quorum` join semantics.
+  - Deterministic retry/backoff scheduling (`nextRetryAt`) and restart recovery for in-flight attempts.
+  - Resume/cancel paths are persisted and replayable from DB state.
+- Scheduler + claims:
+  - Claim acquisition/heartbeat/expiry/release remain authoritative for lane/file/env ownership.
+  - Claim collisions deterministically block attempts and are represented in handoffs + timeline.
+- Context resolver:
+  - Step-aware context snapshots now include pack heads, optional delta digest, docs mode/truncation metadata, and related mission handoff provenance.
+  - Narrative remains excluded by default (`orchestrator_deterministic_v1`), with explicit opt-in profile/policy.
+- Executor adapters:
+  - Unified adapter path is active for Claude/Codex/Gemini with normalized attempt envelopes.
+  - Local-first scaffold adapters create tracked sessions and persist session/transcript linkage.
+- Conflict-aware integration flow:
+  - Deterministic chain order is implemented: external CLI prep first, hosted/BYOK proposal fallback second (when allowed), intervention blocking last.
+  - Multi-source integration is routed through resolver session preparation with integration lane metadata.
+- Audit + history:
+  - New append-only timeline events persisted for run/step/attempt/claim/context/scheduler transitions.
+  - Missions and Context UI surfaces now expose runtime graph state, attempts, timeline, and provenance.
+
+Phase 1.5 quality gate reporting is also completed:
+
+- Deterministic gate evaluator implemented in main process.
+- Durable gate report snapshots persisted in DB.
+- IPC + UI readout added for pass/warn/fail status and reasons.
+
+Shipped as production behavior:
+
+- deterministic kernel/state machine transitions,
+- timeline persistence,
+- gate evaluator/report snapshots,
+- orchestrator IPC surface + UI controls.
+
+Shipped as production-safe scaffold:
+
+- executor runtime for Claude/Codex/Gemini (tracked-session scaffold adapters),
+- integration external CLI execution handoff (deterministic session prep + explicit intervention state).

@@ -1178,6 +1178,61 @@ function migrate(db: Database) {
     "mission_step_handoffs",
     ["attempt_id"]
   );
+
+  // Phase 2 orchestrator runtime v2: durable timeline + quality gate snapshots.
+  db.run(`
+    create table if not exists orchestrator_timeline_events (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      claim_id text,
+      event_type text not null,
+      reason text not null,
+      detail_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(claim_id) references orchestrator_claims(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_timeline_run_created on orchestrator_timeline_events(run_id, created_at)",
+    "orchestrator_timeline_events",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_timeline_attempt on orchestrator_timeline_events(attempt_id)",
+    "orchestrator_timeline_events",
+    ["attempt_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_timeline_project_created on orchestrator_timeline_events(project_id, created_at)",
+    "orchestrator_timeline_events",
+    ["project_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_gate_reports (
+      id text primary key,
+      project_id text not null,
+      generated_at text not null,
+      report_json text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_gate_reports_project_generated on orchestrator_gate_reports(project_id, generated_at)",
+    "orchestrator_gate_reports",
+    ["project_id", "generated_at"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

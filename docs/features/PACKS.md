@@ -980,3 +980,35 @@ ADE now maintains first-class context docs:
 - `docs/architecture/ARCHITECTURE.ade.md`
 
 Model-facing context prefers these minimized docs when present. If canonical docs are too large, deterministic generation emits explicit `omitted_due_size` notes.
+
+---
+
+## 2026-02-19 Addendum — Orchestrator Runtime v2 Context Provenance
+
+Orchestrator context snapshots now persist richer deterministic provenance for attempt replay/audit:
+
+- Snapshot cursor additions:
+  - `packDeltaDigest` (when available from prior cursor)
+  - `missionHandoffIds` (linked mission-step handoffs used for context)
+  - `contextSources` (source inventory for the bundle)
+  - `docsMode`, `docsBudgetBytes`, `docsConsumedBytes`, `docsTruncatedCount`
+- Step-aware context selection:
+  - Lane/project export levels remain bounded and profile-driven.
+  - Narrative remains excluded by default unless profile/policy opts in.
+- Docs policy:
+  - Default is digest refs for PRD/architecture docs.
+  - Full body inclusion is explicit per-step policy and always byte-bounded with truncation metadata.
+
+Operational telemetry additions:
+
+- `orchestrator_timeline_events` provides append-only transition/audit signals.
+- `orchestrator_gate_reports` stores deterministic quality-gate snapshots (latency/freshness/completeness/insufficient-context rate).
+
+Current implementation status:
+
+- Shipped:
+  - deterministic snapshot provenance and timeline persistence,
+  - bounded docs policy + truncation audit metadata,
+  - gate report persistence/readout.
+- Scaffolded:
+  - executor-backed external provider runs (tracked-session scaffolds with explicit adapter state markers).

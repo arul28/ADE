@@ -311,8 +311,24 @@ Lifecycle/transition coverage:
 - Orchestrator runtime state tables are implemented (runs, steps, attempts, claims, context snapshots).
 - Claim/lease model, resume recovery path, and tracked-session enforcement are implemented in runtime service/tests.
 
-### Phase 2+ Runtime (Next)
+### Phase 2 Runtime v2 (Implemented)
 
-- Expand mission UI with first-class orchestrator run timeline controls and intervention routing.
-- Add executor adapter operations UI (Claude/Codex/Gemini parity) with deterministic orchestration state views.
-- Add merge/integration-lane orchestration path controls tied to conflict resolver chain policy.
+- Missions detail now includes orchestrator runtime controls:
+  - start run from mission steps,
+  - tick/resume/cancel run,
+  - start step attempts,
+  - complete running attempts.
+- Mission detail now shows:
+  - step DAG runtime status,
+  - attempt history per step,
+  - recent run timeline events.
+- IPC coverage now includes orchestrator runtime endpoints for runs/graph/attempt lifecycle/claims heartbeat/timeline/gate report.
+- Orchestrator runtime events are broadcast and mission UI refreshes on mission + orchestrator event streams.
+
+### Phase 2 Runtime Notes (Shipped vs Scaffolded)
+
+- Shipped:
+  - deterministic run lifecycle controls from mission UI,
+  - durable timeline and context provenance visibility.
+- Scaffolded:
+  - external executor deep integration for Claude/Codex/Gemini remains in production-safe tracked-session scaffold mode with explicit adapter state markers.

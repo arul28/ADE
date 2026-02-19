@@ -3,7 +3,9 @@ import type {
   ConflictExternalResolverRunSummary,
   ContextGenerateDocsResult,
   ContextInventorySnapshot,
-  ContextStatus
+  ContextStatus,
+  OrchestratorGateReport,
+  OrchestratorRunGraph
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { GenerateDocsModal } from "./GenerateDocsModal";
@@ -52,6 +54,8 @@ function summarizeMissionStatus(snapshot: ContextInventorySnapshot | null): stri
 export function ContextPage() {
   const [status, setStatus] = React.useState<ContextStatus | null>(null);
   const [inventory, setInventory] = React.useState<ContextInventorySnapshot | null>(null);
+  const [gateReport, setGateReport] = React.useState<OrchestratorGateReport | null>(null);
+  const [latestRunGraph, setLatestRunGraph] = React.useState<OrchestratorRunGraph | null>(null);
   const [runs, setRuns] = React.useState<ConflictExternalResolverRunSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -69,14 +73,27 @@ export function ContextPage() {
     setLoading(true);
     setError(null);
     try {
-      const [nextStatus, nextRuns, nextInventory] = await Promise.all([
+      const [nextStatus, nextRuns, nextInventory, nextGateReport] = await Promise.all([
         window.ade.context.getStatus(),
         window.ade.conflicts.listExternalResolverRuns({ limit: 8 }),
-        window.ade.context.getInventory()
+        window.ade.context.getInventory(),
+        window.ade.orchestrator.getGateReport()
       ]);
       setStatus(nextStatus);
       setRuns(nextRuns);
       setInventory(nextInventory);
+      setGateReport(nextGateReport);
+      const latestRunId = nextInventory.orchestrator.recentRunIds[0];
+      if (latestRunId) {
+        try {
+          const graph = await window.ade.orchestrator.getRunGraph({ runId: latestRunId, timelineLimit: 60 });
+          setLatestRunGraph(graph);
+        } catch {
+          setLatestRunGraph(null);
+        }
+      } else {
+        setLatestRunGraph(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -94,11 +111,13 @@ export function ContextPage() {
     const offPackEvent = window.ade.packs.onEvent(() => void refresh());
     const offMissionEvent = window.ade.missions.onEvent(() => void refresh());
     const offConflictEvent = window.ade.conflicts.onEvent(() => void refresh());
+    const offOrchestratorEvent = window.ade.orchestrator.onEvent(() => void refresh());
     const timer = window.setInterval(() => void refresh(), 8_000);
     return () => {
       offPackEvent();
       offMissionEvent();
       offConflictEvent();
+      offOrchestratorEvent();
       window.clearInterval(timer);
     };
   }, [refresh]);
@@ -305,11 +324,61 @@ export function ContextPage() {
             <div>expired claims: {inventory?.orchestrator.expiredClaims ?? 0}</div>
             <div>context snapshots: {inventory?.orchestrator.snapshots ?? 0}</div>
             <div>handoffs linked to runs: {inventory?.orchestrator.handoffs ?? 0}</div>
+            <div>timeline events: {inventory?.orchestrator.timelineEvents ?? 0}</div>
             <div>recent run IDs: {inventory?.orchestrator.recentRunIds.length ? inventory.orchestrator.recentRunIds.join(", ") : "none"}</div>
             <div>
               recent attempt IDs:{" "}
               {inventory?.orchestrator.recentAttemptIds.length ? inventory.orchestrator.recentAttemptIds.join(", ") : "none"}
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4 md:col-span-2">
+          <h2 className="text-sm font-semibold text-fg">Phase 1.5 Gate Report</h2>
+          <div className="mt-2 space-y-2 text-xs text-muted-fg">
+            <div>
+              overall: <span className="font-medium text-fg">{gateReport?.overallStatus ?? "-"}</span>
+              {gateReport?.generatedAt ? ` · generated ${formatTimestamp(gateReport.generatedAt)}` : ""}
+            </div>
+            {!gateReport?.gates.length ? <div>No gate report yet.</div> : null}
+            {gateReport?.gates.map((gate) => (
+              <div key={gate.key} className="rounded border border-border/50 bg-bg/40 p-2">
+                <div className="font-medium text-fg">
+                  {gate.label} · {gate.status}
+                </div>
+                <div>
+                  measured {gate.measuredValue} {gate.comparator} threshold {gate.threshold} · samples {gate.samples}
+                </div>
+                {gate.reasons.length ? <div>reasons: {gate.reasons.join(" | ")}</div> : null}
+              </div>
+            ))}
+            {gateReport?.notes.length ? <div>notes: {gateReport.notes.join(" | ")}</div> : null}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border/60 bg-panel p-4 md:col-span-2">
+          <h2 className="text-sm font-semibold text-fg">Attempt Context Provenance (Latest Run)</h2>
+          <div className="mt-2 space-y-2 text-xs text-muted-fg">
+            {!latestRunGraph ? <div>No orchestrator run graph available.</div> : null}
+            {latestRunGraph?.attempts.slice(0, 8).map((attempt) => {
+              const snapshot = latestRunGraph.contextSnapshots.find((entry) => entry.id === attempt.contextSnapshotId);
+              return (
+                <div key={attempt.id} className="rounded border border-border/50 bg-bg/40 p-2">
+                  <div className="font-medium text-fg">
+                    attempt {shortId(attempt.id)} · {attempt.status} · {attempt.executorKind}
+                  </div>
+                  <div>snapshot: {shortId(attempt.contextSnapshotId)} · profile: {attempt.contextProfile}</div>
+                  <div>
+                    docs mode: {snapshot?.cursor.docsMode ?? "-"} · docs: {snapshot?.cursor.docs.length ?? 0} · truncated:{" "}
+                    {snapshot?.cursor.docsTruncatedCount ?? 0}
+                  </div>
+                  <div>
+                    lane pack: {snapshot?.cursor.lanePackVersionId ?? "none"} · project pack: {snapshot?.cursor.projectPackVersionId ?? "none"}
+                  </div>
+                  <div>delta digest: {snapshot?.cursor.packDeltaDigest ? "yes" : "no"} · handoffs: {snapshot?.cursor.missionHandoffIds?.length ?? 0}</div>
+                </div>
+              );
+            })}
           </div>
         </section>
 

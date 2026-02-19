@@ -30,7 +30,9 @@ describe("kvDb orchestrator migration", () => {
       "orchestrator_attempts",
       "orchestrator_claims",
       "orchestrator_context_snapshots",
-      "mission_step_handoffs"
+      "mission_step_handoffs",
+      "orchestrator_timeline_events",
+      "orchestrator_gate_reports"
     ];
 
     for (const table of expectedTables) {
@@ -136,6 +138,30 @@ describe("kvDb orchestrator migration", () => {
       ])
     );
 
+    expect(listColumnNames(db, "orchestrator_timeline_events")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "claim_id",
+        "event_type",
+        "reason",
+        "detail_json",
+        "created_at"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_gate_reports")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "generated_at",
+        "report_json"
+      ])
+    );
+
     const expectedIndexes = [
       "idx_orchestrator_runs_project_status",
       "idx_orchestrator_runs_mission",
@@ -154,7 +180,11 @@ describe("kvDb orchestrator migration", () => {
       "idx_orchestrator_context_snapshots_attempt",
       "idx_mission_step_handoffs_mission_created",
       "idx_mission_step_handoffs_step_created",
-      "idx_mission_step_handoffs_attempt"
+      "idx_mission_step_handoffs_attempt",
+      "idx_orchestrator_timeline_run_created",
+      "idx_orchestrator_timeline_attempt",
+      "idx_orchestrator_timeline_project_created",
+      "idx_orchestrator_gate_reports_project_generated"
     ];
 
     for (const indexName of expectedIndexes) {

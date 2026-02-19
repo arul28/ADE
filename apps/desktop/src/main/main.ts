@@ -426,7 +426,9 @@ app.whenReady().then(async () => {
       projectId,
       projectRoot,
       packService,
-      ptyService
+      conflictService,
+      ptyService,
+      onEvent: (event) => broadcast(IPC.orchestratorEvent, event)
     });
 
     const automationPlannerService = createAutomationPlannerService({

@@ -2,6 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  ConflictProposal,
+  ConflictProposalPreview,
+  ExternalConflictResolverProvider,
   MissionStepHandoff,
   OrchestratorAttempt,
   OrchestratorAttemptResultEnvelope,
@@ -16,12 +19,19 @@ import type {
   OrchestratorDocsRef,
   OrchestratorErrorClass,
   OrchestratorExecutorKind,
+  OrchestratorGateEntry,
+  OrchestratorGateReport,
+  OrchestratorGateStatus,
   OrchestratorJoinPolicy,
   OrchestratorRun,
+  OrchestratorRunGraph,
   OrchestratorRunStatus,
   OrchestratorStep,
   OrchestratorStepStatus,
+  OrchestratorTimelineEvent,
+  PackDeltaDigestV1,
   PackExport,
+  PrepareResolverSessionArgs,
   PtyCreateArgs,
   StartOrchestratorRunArgs,
   StartOrchestratorRunStepInput
@@ -29,6 +39,7 @@ import type {
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
+import type { createConflictService } from "../conflicts/conflictService";
 
 type RunRow = {
   id: string;
@@ -131,6 +142,24 @@ type HandoffRow = {
   created_at: string;
 };
 
+type TimelineRow = {
+  id: string;
+  run_id: string;
+  step_id: string | null;
+  attempt_id: string | null;
+  claim_id: string | null;
+  event_type: string;
+  reason: string;
+  detail_json: string | null;
+  created_at: string;
+};
+
+type GateReportRow = {
+  id: string;
+  generated_at: string;
+  report_json: string;
+};
+
 type StepPolicy = {
   includeNarrative?: boolean;
   includeFullDocs?: boolean;
@@ -230,6 +259,22 @@ const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "claim_conflict",
   "resume_recovered"
 ]);
+const DEFAULT_RETRY_BACKOFF_MS = 5_000;
+const MAX_TIMELINE_LIMIT = 1_000;
+const GATE_THRESHOLDS = {
+  maxTrackedPipelineLatencyMs: 300_000,
+  minContextCompletenessRate: 0.98,
+  minFreshnessByTypeRate: 0.9,
+  maxBlockedInsufficientContextRate: 0.05,
+  freshnessMaxAgeByPackTypeMs: {
+    project: 24 * 60 * 60 * 1_000,
+    lane: 6 * 60 * 60 * 1_000,
+    feature: 48 * 60 * 60 * 1_000,
+    conflict: 2 * 60 * 60 * 1_000,
+    plan: 72 * 60 * 60 * 1_000,
+    mission: 24 * 60 * 60 * 1_000
+  } as Record<string, number>
+} as const;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -479,6 +524,49 @@ function toHandoff(row: HandoffRow): MissionStepHandoff {
   };
 }
 
+function toTimelineEvent(row: TimelineRow): OrchestratorTimelineEvent {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepId: row.step_id,
+    attemptId: row.attempt_id,
+    claimId: row.claim_id,
+    eventType: row.event_type,
+    reason: row.reason,
+    detail: parseRecord(row.detail_json),
+    createdAt: row.created_at
+  };
+}
+
+function toGateReport(row: GateReportRow): OrchestratorGateReport | null {
+  try {
+    const parsed = JSON.parse(row.report_json) as OrchestratorGateReport;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEnvelope(
+  envelope: Partial<OrchestratorAttemptResultEnvelope> & { summary: string; success: boolean }
+): OrchestratorAttemptResultEnvelope {
+  const warnings = Array.isArray(envelope.warnings) ? envelope.warnings.map((entry) => String(entry)) : [];
+  const outputs =
+    envelope.outputs && typeof envelope.outputs === "object" && !Array.isArray(envelope.outputs)
+      ? (envelope.outputs as Record<string, unknown>)
+      : null;
+  return {
+    schema: "ade.orchestratorAttempt.v1",
+    success: envelope.success,
+    summary: String(envelope.summary ?? "").trim() || (envelope.success ? "Step completed." : "Step failed."),
+    outputs,
+    warnings,
+    sessionId: typeof envelope.sessionId === "string" ? envelope.sessionId : null,
+    trackedSession: envelope.trackedSession !== false
+  };
+}
+
 function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
 }
@@ -551,8 +639,11 @@ function resolveContextPolicy(args: {
   stepPolicy: StepPolicy;
 }): OrchestratorContextPolicyProfile {
   const base = CONTEXT_PROFILES[args.runProfileId] ?? CONTEXT_PROFILES[DEFAULT_CONTEXT_PROFILE_ID];
+  const includeNarrative = args.stepPolicy.includeNarrative === true ? true : base.includeNarrative;
   return {
     ...base,
+    includeNarrative,
+    laneExportLevel: includeNarrative ? "deep" : base.laneExportLevel,
     docsMode: args.stepPolicy.includeFullDocs ? "full_docs" : base.docsMode,
     maxDocBytes:
       typeof args.stepPolicy.docsMaxBytes === "number" && Number.isFinite(args.stepPolicy.docsMaxBytes) && args.stepPolicy.docsMaxBytes > 0
@@ -566,6 +657,7 @@ export function createOrchestratorService({
   projectId,
   projectRoot,
   packService,
+  conflictService,
   ptyService,
   onEvent
 }: {
@@ -573,6 +665,7 @@ export function createOrchestratorService({
   projectId: string;
   projectRoot: string;
   packService: ReturnType<typeof createPackService>;
+  conflictService?: ReturnType<typeof createConflictService>;
   ptyService?: ReturnType<typeof createPtyService>;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
@@ -583,6 +676,83 @@ export function createOrchestratorService({
       ...event,
       at: nowIso()
     });
+  };
+
+  const appendTimelineEvent = (args: {
+    runId: string;
+    stepId?: string | null;
+    attemptId?: string | null;
+    claimId?: string | null;
+    eventType: string;
+    reason: string;
+    detail?: Record<string, unknown> | null;
+  }): OrchestratorTimelineEvent => {
+    const id = randomUUID();
+    const createdAt = nowIso();
+    db.run(
+      `
+        insert into orchestrator_timeline_events(
+          id,
+          project_id,
+          run_id,
+          step_id,
+          attempt_id,
+          claim_id,
+          event_type,
+          reason,
+          detail_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        projectId,
+        args.runId,
+        args.stepId ?? null,
+        args.attemptId ?? null,
+        args.claimId ?? null,
+        args.eventType,
+        args.reason,
+        args.detail ? JSON.stringify(args.detail) : null,
+        createdAt
+      ]
+    );
+    return {
+      id,
+      runId: args.runId,
+      stepId: args.stepId ?? null,
+      attemptId: args.attemptId ?? null,
+      claimId: args.claimId ?? null,
+      eventType: args.eventType,
+      reason: args.reason,
+      detail: args.detail ?? null,
+      createdAt
+    };
+  };
+
+  const listTimelineRows = (args: { runId: string; limit?: number }): TimelineRow[] => {
+    const limitRaw = Number(args.limit ?? 200);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(MAX_TIMELINE_LIMIT, Math.floor(limitRaw))) : 200;
+    return db.all<TimelineRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          claim_id,
+          event_type,
+          reason,
+          detail_json,
+          created_at
+        from orchestrator_timeline_events
+        where project_id = ?
+          and run_id = ?
+        order by created_at desc
+        limit ?
+      `,
+      [projectId, args.runId, limit]
+    );
   };
 
   const getRunRow = (runId: string): RunRow | null =>
@@ -812,10 +982,44 @@ export function createOrchestratorService({
       ]
     );
     emit({ type: "orchestrator-run-updated", runId, reason: "status_updated" });
+    appendTimelineEvent({
+      runId,
+      eventType: "run_status_changed",
+      reason: "status_updated",
+      detail: {
+        from: normalizeRunStatus(existing.status),
+        to: status,
+        schedulerState: patch.scheduler_state ?? existing.scheduler_state
+      }
+    });
   };
 
   const expireClaims = () => {
     const now = nowIso();
+    const expiring = db.all<ClaimRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          owner_id,
+          scope_kind,
+          scope_value,
+          state,
+          acquired_at,
+          heartbeat_at,
+          expires_at,
+          released_at,
+          policy_json,
+          metadata_json
+        from orchestrator_claims
+        where project_id = ?
+          and state = 'active'
+          and expires_at <= ?
+      `,
+      [projectId, now]
+    );
     db.run(
       `
         update orchestrator_claims
@@ -827,6 +1031,23 @@ export function createOrchestratorService({
       `,
       [now, projectId, now]
     );
+    for (const row of expiring) {
+      appendTimelineEvent({
+        runId: row.run_id,
+        stepId: row.step_id,
+        attemptId: row.attempt_id,
+        claimId: row.id,
+        eventType: "claim_expired",
+        reason: "lease_expired",
+        detail: {
+          ownerId: row.owner_id,
+          scopeKind: row.scope_kind,
+          scopeValue: row.scope_value,
+          expiresAt: row.expires_at
+        }
+      });
+      emit({ type: "orchestrator-claim-updated", runId: row.run_id, claimId: row.id, reason: "expired" });
+    }
   };
 
   const acquireClaim = (args: {
@@ -907,6 +1128,20 @@ export function createOrchestratorService({
       if (!row) return null;
       const claim = toClaim(row);
       emit({ type: "orchestrator-claim-updated", runId: args.runId, claimId: claim.id, reason: "acquired" });
+      appendTimelineEvent({
+        runId: args.runId,
+        stepId: args.stepId,
+        attemptId: args.attemptId,
+        claimId: claim.id,
+        eventType: "claim_acquired",
+        reason: "claim_acquired",
+        detail: {
+          ownerId: claim.ownerId,
+          scopeKind: claim.scopeKind,
+          scopeValue: claim.scopeValue,
+          expiresAt: claim.expiresAt
+        }
+      });
       return claim;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -921,6 +1156,30 @@ export function createOrchestratorService({
   }): number => {
     const nextState = args.state ?? "released";
     const releasedAt = nowIso();
+    const releasable = db.all<ClaimRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          owner_id,
+          scope_kind,
+          scope_value,
+          state,
+          acquired_at,
+          heartbeat_at,
+          expires_at,
+          released_at,
+          policy_json,
+          metadata_json
+        from orchestrator_claims
+        where project_id = ?
+          and attempt_id = ?
+          and state = 'active'
+      `,
+      [projectId, args.attemptId]
+    );
     db.run(
       `
         update orchestrator_claims
@@ -943,7 +1202,26 @@ export function createOrchestratorService({
       [projectId, args.attemptId, nextState]
     );
     const count = Number(countRow?.count ?? 0);
-    if (count > 0) emit({ type: "orchestrator-claim-updated", attemptId: args.attemptId, reason: "released" });
+    if (count > 0) {
+      emit({ type: "orchestrator-claim-updated", attemptId: args.attemptId, reason: "released" });
+      for (const claim of releasable) {
+        appendTimelineEvent({
+          runId: claim.run_id,
+          stepId: claim.step_id,
+          attemptId: claim.attempt_id,
+          claimId: claim.id,
+          eventType: nextState === "expired" ? "claim_expired" : "claim_released",
+          reason: nextState === "expired" ? "released_as_expired" : "released",
+          detail: {
+            ownerId: claim.owner_id,
+            scopeKind: claim.scope_kind,
+            scopeValue: claim.scope_value,
+            releasedAt,
+            state: nextState
+          }
+        });
+      }
+    }
     return count;
   };
 
@@ -981,9 +1259,16 @@ export function createOrchestratorService({
       const gate = evaluateDependencyGate(step, statusesById);
       const stepPolicy = resolveStepPolicy(step);
       const claimScoped = (stepPolicy.claimScopes ?? []).length > 0;
+      const nextRetryAtRaw = typeof step.metadata?.nextRetryAt === "string" ? step.metadata.nextRetryAt : null;
+      const nextRetryAtMs = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : NaN;
+      const retryDeferred = Number.isFinite(nextRetryAtMs) && nextRetryAtMs > Date.now();
       let next: OrchestratorStepStatus = step.status;
       if (gate.satisfied) {
-        if (step.status === "pending" || step.status === "blocked") next = "ready";
+        if (retryDeferred) {
+          next = "pending";
+        } else if (step.status === "pending" || step.status === "blocked") {
+          next = "ready";
+        }
       } else if (gate.permanentlyBlocked) {
         next = "blocked";
       } else {
@@ -1011,19 +1296,39 @@ export function createOrchestratorService({
       }
 
       if (next !== step.status) {
+        const nextMetadata = (() => {
+          if (!step.metadata || !("nextRetryAt" in step.metadata)) return step.metadata;
+          if (next !== "ready") return step.metadata;
+          const clone = { ...step.metadata };
+          delete clone.nextRetryAt;
+          return clone;
+        })();
         db.run(
           `
             update orchestrator_steps
             set status = ?,
+                metadata_json = ?,
                 updated_at = ?
             where id = ?
               and run_id = ?
               and project_id = ?
           `,
-          [next, now, step.id, runId, projectId]
+          [next, JSON.stringify(nextMetadata ?? null), now, step.id, runId, projectId]
         );
         statusesById.set(step.id, next);
         emit({ type: "orchestrator-step-updated", runId, stepId: step.id, reason: "readiness_recomputed" });
+        appendTimelineEvent({
+          runId,
+          stepId: step.id,
+          eventType: "step_status_changed",
+          reason: "readiness_recomputed",
+          detail: {
+            from: step.status,
+            to: next,
+            joinPolicy: step.joinPolicy,
+            dependencies: step.dependencyStepIds
+          }
+        });
       }
     }
   };
@@ -1032,12 +1337,14 @@ export function createOrchestratorService({
     const steps = listStepRows(runId).map(toStep);
     if (!steps.length) return "succeeded";
     const statuses = steps.map((step) => step.status);
-    if (statuses.every((status) => status === "succeeded" || status === "skipped")) return "succeeded";
-    if (statuses.some((status) => status === "failed")) return "failed";
+    const allTerminal = statuses.every((status) => TERMINAL_STEP_STATUSES.has(status));
+    if (allTerminal && statuses.every((status) => status === "succeeded" || status === "skipped")) return "succeeded";
+    if (allTerminal && statuses.every((status) => status === "canceled")) return "canceled";
+    if (allTerminal && statuses.some((status) => status === "failed")) return "failed";
+    if (allTerminal && statuses.some((status) => status === "blocked")) return "paused";
     if (statuses.some((status) => status === "running")) return "running";
     if (statuses.some((status) => status === "ready" || status === "pending")) return "running";
     if (statuses.some((status) => status === "blocked")) return "paused";
-    if (statuses.every((status) => status === "canceled")) return "canceled";
     return "running";
   };
 
@@ -1047,19 +1354,49 @@ export function createOrchestratorService({
     attemptId: string;
     contextProfile: OrchestratorContextPolicyProfile;
   }): Promise<CreateSnapshotResult> => {
+    const existingCursor = (() => {
+      if (!args.run.metadata) return null;
+      const raw = args.run.metadata.runtimeCursor;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+      return raw as Record<string, unknown>;
+    })();
+    const previousPackDeltaSince = typeof existingCursor?.packDeltaSince === "string" ? existingCursor.packDeltaSince : null;
+    const stepType = (() => {
+      const fromMetadata = typeof args.step.metadata?.stepType === "string" ? args.step.metadata.stepType : null;
+      if (fromMetadata && fromMetadata.trim().length) return fromMetadata.trim();
+      const missionStepKind = db.get<{ kind: string | null }>(
+        `
+          select kind
+          from mission_steps
+          where id = ?
+            and mission_id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [args.step.missionStepId ?? "", args.run.missionId, projectId]
+      );
+      return typeof missionStepKind?.kind === "string" && missionStepKind.kind.trim().length ? missionStepKind.kind.trim() : "manual";
+    })();
+    const laneExportLevel =
+      (stepType === "integration" || stepType === "merge") && args.contextProfile.includeNarrative
+        ? "deep"
+        : args.contextProfile.laneExportLevel;
+    const projectExportLevel = stepType === "analysis" ? "standard" : args.contextProfile.projectExportLevel;
     const lanePackKey = args.step.laneId ? `lane:${args.step.laneId}` : null;
     const laneExport = args.step.laneId
       ? await packService.getLaneExport({
           laneId: args.step.laneId,
-          level: args.contextProfile.laneExportLevel
+          level: laneExportLevel
         })
       : null;
     const projectExport = await packService.getProjectExport({
-      level: args.contextProfile.projectExportLevel
+      level: projectExportLevel
     });
 
     const docsPaths = readDocPaths(projectRoot);
     let remainingBytes = args.contextProfile.maxDocBytes;
+    let docsConsumedBytes = 0;
+    let docsTruncatedCount = 0;
     const docsRefs: OrchestratorDocsRef[] = [];
     const fullDocs: Array<{ path: string; content: string; truncated: boolean }> = [];
 
@@ -1077,6 +1414,8 @@ export function createOrchestratorService({
         const used = Math.min(Math.max(0, remainingBytes), bytes);
         const chunk = buf.subarray(0, used).toString("utf8");
         const truncated = used < bytes;
+        docsConsumedBytes += used;
+        if (truncated) docsTruncatedCount += 1;
         docsRefs.push({
           path: rel,
           sha256: digest,
@@ -1091,6 +1430,7 @@ export function createOrchestratorService({
         });
         remainingBytes = Math.max(0, remainingBytes - used);
       } else {
+        docsConsumedBytes += Math.min(64, bytes); // digest refs use only metadata bytes in prompt budget.
         docsRefs.push({
           path: rel,
           sha256: digest,
@@ -1102,14 +1442,59 @@ export function createOrchestratorService({
       if (remainingBytes <= 0 && args.contextProfile.docsMode === "full_docs") break;
     }
 
+    const packDeltaDigest = await (async (): Promise<PackDeltaDigestV1 | null> => {
+      if (!lanePackKey || !previousPackDeltaSince) return null;
+      try {
+        return await packService.getDeltaDigest({
+          packKey: lanePackKey,
+          sinceTimestamp: previousPackDeltaSince,
+          minimumImportance: "medium",
+          limit: 60
+        });
+      } catch {
+        return null;
+      }
+    })();
+
+    const missionStepIds = new Set<string>();
+    if (args.step.missionStepId) missionStepIds.add(args.step.missionStepId);
+    if (args.step.dependencyStepIds.length) {
+      const placeholders = args.step.dependencyStepIds.map(() => "?").join(", ");
+      const rows = db.all<{ mission_step_id: string | null }>(
+        `
+          select mission_step_id
+          from orchestrator_steps
+          where project_id = ?
+            and run_id = ?
+            and id in (${placeholders})
+        `,
+        [projectId, args.run.id, ...args.step.dependencyStepIds]
+      );
+      for (const row of rows) {
+        if (row.mission_step_id) missionStepIds.add(row.mission_step_id);
+      }
+    }
+    const missionHandoffIds = (() => {
+      const ids = [...missionStepIds];
+      if (!ids.length) return [] as string[];
+      const placeholders = ids.map(() => "?").join(", ");
+      const rows = db.all<{ id: string }>(
+        `
+          select id
+          from mission_step_handoffs
+          where project_id = ?
+            and mission_id = ?
+            and mission_step_id in (${placeholders})
+          order by created_at desc
+          limit 30
+        `,
+        [projectId, args.run.missionId, ...ids]
+      );
+      return rows.map((row) => row.id);
+    })();
+
     const laneHead = lanePackKey ? packService.getHeadVersion({ packKey: lanePackKey }) : null;
     const projectHead = packService.getHeadVersion({ packKey: "project" });
-    const existingCursor = (() => {
-      if (!args.run.metadata) return null;
-      const raw = args.run.metadata.runtimeCursor;
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-      return raw as Record<string, unknown>;
-    })();
     const cursor: OrchestratorContextSnapshotCursor = {
       lanePackKey,
       lanePackVersionId: laneHead?.versionId ?? null,
@@ -1117,8 +1502,21 @@ export function createOrchestratorService({
       projectPackKey: "project",
       projectPackVersionId: projectHead.versionId,
       projectPackVersionNumber: projectHead.versionNumber,
-      packDeltaSince: typeof existingCursor?.packDeltaSince === "string" ? existingCursor.packDeltaSince : null,
-      docs: docsRefs
+      packDeltaSince: previousPackDeltaSince,
+      docs: docsRefs,
+      packDeltaDigest,
+      missionHandoffIds,
+      contextSources: [
+        `pack:project:${projectExport.level}`,
+        ...(lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
+        ...(packDeltaDigest ? ["delta_digest"] : []),
+        ...(missionHandoffIds.length ? ["mission_handoffs"] : []),
+        `docs:${args.contextProfile.docsMode}`
+      ],
+      docsMode: args.contextProfile.docsMode === "full_docs" ? "full_body" : "digest_ref",
+      docsBudgetBytes: args.contextProfile.maxDocBytes,
+      docsConsumedBytes,
+      docsTruncatedCount
     };
 
     const snapshotId = randomUUID();
@@ -1148,6 +1546,22 @@ export function createOrchestratorService({
         createdAt
       ]
     );
+    appendTimelineEvent({
+      runId: args.run.id,
+      stepId: args.step.id,
+      attemptId: args.attemptId,
+      eventType: "context_snapshot_created",
+      reason: "attempt_context_resolved",
+      detail: {
+        snapshotId,
+        docsMode: cursor.docsMode,
+        docsCount: docsRefs.length,
+        docsTruncatedCount,
+        stepType,
+        hasDeltaDigest: Boolean(packDeltaDigest),
+        handoffCount: missionHandoffIds.length
+      }
+    });
 
     const runtimeCursorPayload = {
       runtimeCursor: {
@@ -1187,6 +1601,249 @@ export function createOrchestratorService({
     };
   };
 
+  const tryRunConflictResolverChain = async (args: {
+    run: OrchestratorRun;
+    step: OrchestratorStep;
+    attempt: OrchestratorAttempt;
+  }): Promise<
+    | {
+        status: "succeeded" | "blocked" | "failed";
+        result?: OrchestratorAttemptResultEnvelope;
+        errorClass?: OrchestratorErrorClass;
+        errorMessage?: string;
+        metadata?: Record<string, unknown> | null;
+      }
+    | null
+  > => {
+    const metadata = args.step.metadata ?? {};
+    const integrationConfig =
+      metadata.integration && typeof metadata.integration === "object" && !Array.isArray(metadata.integration)
+        ? (metadata.integration as Record<string, unknown>)
+        : metadata;
+    const isIntegrationStep = integrationConfig.stepType === "integration" || integrationConfig.integrationFlow === true;
+    if (!isIntegrationStep) return null;
+
+    const targetLaneId =
+      typeof integrationConfig.targetLaneId === "string" && integrationConfig.targetLaneId.trim().length
+        ? integrationConfig.targetLaneId.trim()
+        : "";
+    const sourceLaneIds = Array.isArray(integrationConfig.sourceLaneIds)
+      ? integrationConfig.sourceLaneIds.map((value) => String(value ?? "").trim()).filter(Boolean)
+      : [];
+    if (!targetLaneId || sourceLaneIds.length === 0) {
+      return {
+        status: "blocked",
+        errorClass: "policy",
+        errorMessage: "Integration step is missing targetLaneId/sourceLaneIds metadata.",
+        metadata: {
+          integrationConfigInvalid: true
+        }
+      };
+    }
+    if (!conflictService) {
+      return {
+        status: "blocked",
+        errorClass: "policy",
+        errorMessage: "Conflict service is unavailable for integration step execution."
+      };
+    }
+
+    const externalProvider: ExternalConflictResolverProvider =
+      integrationConfig.externalProvider === "claude" ? "claude" : "codex";
+    const scenario: PrepareResolverSessionArgs["scenario"] =
+      sourceLaneIds.length > 1
+        ? "integration-merge"
+        : (integrationConfig.scenario as PrepareResolverSessionArgs["scenario"] | undefined) ?? "single-merge";
+    const integrationLaneName =
+      typeof integrationConfig.integrationLaneName === "string" ? integrationConfig.integrationLaneName : undefined;
+    const allowHostedFallback = integrationConfig.allowHostedFallback === true;
+
+    appendTimelineEvent({
+      runId: args.run.id,
+      stepId: args.step.id,
+      attemptId: args.attempt.id,
+      eventType: "integration_chain_started",
+      reason: "external_cli_first",
+      detail: {
+        targetLaneId,
+        sourceLaneIds,
+        externalProvider,
+        scenario,
+        allowHostedFallback
+      }
+    });
+
+    const prepared = await conflictService.prepareResolverSession({
+      provider: externalProvider,
+      targetLaneId,
+      sourceLaneIds,
+      integrationLaneName,
+      scenario
+    });
+    appendTimelineEvent({
+      runId: args.run.id,
+      stepId: args.step.id,
+      attemptId: args.attempt.id,
+      eventType: "integration_chain_stage",
+      reason: "external_cli_prepare_completed",
+      detail: {
+        status: prepared.status,
+        runId: prepared.runId,
+        integrationLaneId: prepared.integrationLaneId,
+        contextGaps: prepared.contextGaps
+      }
+    });
+
+    if (prepared.status === "ready") {
+      return {
+        status: "blocked",
+        errorClass: "policy",
+        errorMessage: "External resolver session prepared. Operator action required to run CLI resolver.",
+        result: normalizeEnvelope({
+          success: false,
+          summary: "External CLI resolver is prepared and awaiting operator execution.",
+          outputs: {
+            resolverRunId: prepared.runId,
+            promptFilePath: prepared.promptFilePath,
+            cwdWorktreePath: prepared.cwdWorktreePath,
+            cwdLaneId: prepared.cwdLaneId,
+            integrationLaneId: prepared.integrationLaneId
+          },
+          warnings: prepared.warnings,
+          trackedSession: true
+        }),
+        metadata: {
+          integrationStage: "external_cli_ready",
+          externalProvider,
+          resolverRunId: prepared.runId
+        }
+      };
+    }
+
+    if (allowHostedFallback && sourceLaneIds.length === 1) {
+      try {
+        const preview: ConflictProposalPreview = await conflictService.prepareProposal({
+          laneId: sourceLaneIds[0]!,
+          peerLaneId: targetLaneId
+        });
+        const proposal: ConflictProposal = await conflictService.requestProposal({
+          laneId: sourceLaneIds[0]!,
+          peerLaneId: targetLaneId,
+          contextDigest: preview.contextDigest
+        });
+        appendTimelineEvent({
+          runId: args.run.id,
+          stepId: args.step.id,
+          attemptId: args.attempt.id,
+          eventType: "integration_chain_stage",
+          reason: "hosted_byok_fallback_completed",
+          detail: {
+            proposalId: proposal.id,
+            source: proposal.source
+          }
+        });
+        return {
+          status: "succeeded",
+          result: normalizeEnvelope({
+            success: true,
+            summary: "Hosted/BYOK fallback generated a deterministic conflict proposal.",
+            outputs: {
+              proposalId: proposal.id,
+              confidence: proposal.confidence,
+              source: proposal.source
+            },
+            warnings: [],
+            trackedSession: true
+          }),
+          metadata: {
+            integrationStage: "hosted_byok_fallback",
+            proposalId: proposal.id,
+            proposalSource: proposal.source
+          }
+        };
+      } catch (error) {
+        appendTimelineEvent({
+          runId: args.run.id,
+          stepId: args.step.id,
+          attemptId: args.attempt.id,
+          eventType: "integration_chain_stage",
+          reason: "hosted_byok_fallback_failed",
+          detail: {
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+    }
+
+    appendTimelineEvent({
+      runId: args.run.id,
+      stepId: args.step.id,
+      attemptId: args.attempt.id,
+      eventType: "integration_chain_stage",
+      reason: "manual_intervention_required",
+      detail: {
+        targetLaneId,
+        sourceLaneIds
+      }
+    });
+    return {
+      status: "blocked",
+      errorClass: "policy",
+      errorMessage: "Integration resolver chain reached intervention stage.",
+      metadata: {
+        integrationStage: "intervention_required",
+        targetLaneId,
+        sourceLaneIds
+      }
+    };
+  };
+
+  const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
+    if (kind !== "claude" && kind !== "codex" && kind !== "gemini") return null;
+    return {
+      kind,
+      start: async (args) => {
+        if (!args.step.laneId) {
+          return {
+            status: "failed",
+            errorClass: "policy",
+            errorMessage: "Executor scaffolds require step.laneId to create tracked sessions."
+          };
+        }
+        const title = `[orchestrator:${kind}] ${args.step.title}`;
+        try {
+          const session = await args.createTrackedSession({
+            laneId: args.step.laneId,
+            cols: 120,
+            rows: 36,
+            title,
+            toolType: kind === "gemini" ? "other" : kind
+          });
+          return {
+            status: "accepted",
+            sessionId: session.sessionId,
+            metadata: {
+              adapterKind: kind,
+              adapterState: "scaffold_session_started",
+              localFirst: true,
+              byokParity: true
+            }
+          };
+        } catch (error) {
+          return {
+            status: "failed",
+            errorClass: "executor_failure",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            metadata: {
+              adapterKind: kind,
+              adapterState: "scaffold_start_failed"
+            }
+          };
+        }
+      }
+    };
+  };
+
   return {
     getContextProfile(profileId: OrchestratorContextProfileId): OrchestratorContextPolicyProfile {
       return CONTEXT_PROFILES[profileId] ?? CONTEXT_PROFILES[DEFAULT_CONTEXT_PROFILE_ID];
@@ -1217,12 +1874,16 @@ export function createOrchestratorService({
       });
     },
 
-    listRuns(args: { status?: OrchestratorRunStatus; limit?: number } = {}): OrchestratorRun[] {
+    listRuns(args: { status?: OrchestratorRunStatus; missionId?: string; limit?: number } = {}): OrchestratorRun[] {
       const where: string[] = ["project_id = ?"];
       const params: SqlValue[] = [projectId];
       if (args.status) {
         where.push("status = ?");
         params.push(args.status);
+      }
+      if (args.missionId) {
+        where.push("mission_id = ?");
+        params.push(args.missionId);
       }
       const limit = Number.isFinite(args.limit) ? Math.max(1, Math.min(500, Math.floor(args.limit ?? 100))) : 100;
       const rows = db.all<RunRow>(
@@ -1397,6 +2058,388 @@ export function createOrchestratorService({
       return rows.map(toHandoff);
     },
 
+    listTimeline(args: { runId: string; limit?: number }): OrchestratorTimelineEvent[] {
+      return listTimelineRows(args).map(toTimelineEvent);
+    },
+
+    getRunGraph(args: { runId: string; timelineLimit?: number }): OrchestratorRunGraph {
+      const runRow = getRunRow(args.runId);
+      if (!runRow) throw new Error(`Run not found: ${args.runId}`);
+      return {
+        run: toRun(runRow),
+        steps: listStepRows(args.runId).map(toStep),
+        attempts: listAttemptRows(args.runId).map(toAttempt),
+        claims: this.listClaims({ runId: args.runId, limit: 1_000 }),
+        contextSnapshots: this.listContextSnapshots({ runId: args.runId, limit: 1_000 }),
+        handoffs: this.listHandoffs({ runId: args.runId, limit: 1_000 }),
+        timeline: this.listTimeline({ runId: args.runId, limit: args.timelineLimit ?? 300 })
+      };
+    },
+
+    startRunFromMission(args: {
+      missionId: string;
+      runId?: string;
+      contextProfile?: OrchestratorContextProfileId;
+      schedulerState?: string;
+      metadata?: Record<string, unknown> | null;
+      defaultExecutorKind?: OrchestratorExecutorKind;
+      defaultRetryLimit?: number;
+    }): { run: OrchestratorRun; steps: OrchestratorStep[] } {
+      const missionId = String(args.missionId ?? "").trim();
+      if (!missionId) throw new Error("missionId is required.");
+      const mission = db.get<{ id: string; prompt: string | null }>(
+        `
+          select id, prompt
+          from missions
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [missionId, projectId]
+      );
+      if (!mission?.id) throw new Error(`Mission not found: ${missionId}`);
+      const missionSteps = db.all<{
+        id: string;
+        step_index: number;
+        title: string;
+        kind: string;
+        lane_id: string | null;
+        metadata_json: string | null;
+      }>(
+        `
+          select id, step_index, title, kind, lane_id, metadata_json
+          from mission_steps
+          where mission_id = ?
+            and project_id = ?
+          order by step_index asc, created_at asc
+        `,
+        [missionId, projectId]
+      );
+
+      const normalized: StartOrchestratorRunStepInput[] = missionSteps.map((row, index) => {
+        const metadata = parseRecord(row.metadata_json) ?? {};
+        const explicitExecutor =
+          typeof metadata.executorKind === "string" ? normalizeExecutorKind(metadata.executorKind) : args.defaultExecutorKind;
+        const stepKey = `mission_step_${row.step_index}_${index}`;
+        return {
+          missionStepId: row.id,
+          stepKey,
+          title: row.title,
+          stepIndex: Number(row.step_index ?? index),
+          laneId: row.lane_id,
+          dependencyStepKeys: index > 0 ? [`mission_step_${missionSteps[index - 1]!.step_index}_${index - 1}`] : [],
+          joinPolicy: "all_success",
+          retryLimit: Math.max(0, Math.floor(args.defaultRetryLimit ?? 1)),
+          executorKind: explicitExecutor,
+          metadata: {
+            ...metadata,
+            stepType: metadata.stepType ?? row.kind ?? "manual"
+          }
+        };
+      });
+
+      if (!normalized.length) {
+        normalized.push({
+          stepKey: "mission_step_0_0",
+          title: "Execute mission objective",
+          stepIndex: 0,
+          laneId: null,
+          retryLimit: Math.max(0, Math.floor(args.defaultRetryLimit ?? 1)),
+          executorKind: args.defaultExecutorKind ?? "manual",
+          metadata: {
+            stepType: "manual",
+            missionPrompt: mission.prompt ?? ""
+          }
+        });
+      }
+
+      return this.startRun({
+        missionId,
+        runId: args.runId,
+        contextProfile: args.contextProfile,
+        schedulerState: args.schedulerState,
+        metadata: args.metadata,
+        steps: normalized
+      });
+    },
+
+    evaluateGateReport(): OrchestratorGateReport {
+      const now = Date.now();
+      const gateEntries: OrchestratorGateEntry[] = [];
+      const notes: string[] = [];
+
+      const pipelineRows = db.all<{
+        session_id: string;
+        lane_id: string;
+        ended_at: string | null;
+        delta_at: string | null;
+        checkpoint_at: string | null;
+        lane_pack_at: string | null;
+      }>(
+        `
+          select
+            s.id as session_id,
+            s.lane_id as lane_id,
+            s.ended_at as ended_at,
+            (
+              select d.computed_at
+              from session_deltas d
+              where d.project_id = ?
+                and d.session_id = s.id
+              order by d.computed_at desc
+              limit 1
+            ) as delta_at,
+            (
+              select c.created_at
+              from checkpoints c
+              where c.project_id = ?
+                and c.session_id = s.id
+              order by c.created_at desc
+              limit 1
+            ) as checkpoint_at,
+            (
+              select p.deterministic_updated_at
+              from packs_index p
+              where p.project_id = ?
+                and p.pack_key = ('lane:' || s.lane_id)
+              limit 1
+            ) as lane_pack_at
+          from terminal_sessions s
+          join lanes l on l.id = s.lane_id
+          where l.project_id = ?
+            and s.tracked = 1
+            and s.ended_at is not null
+          order by s.ended_at desc
+          limit 400
+        `,
+        [projectId, projectId, projectId, projectId]
+      );
+      const pipelineSamples = pipelineRows
+        .map((row) => {
+          const endedAt = row.ended_at ? Date.parse(row.ended_at) : NaN;
+          const packAt = row.lane_pack_at ? Date.parse(row.lane_pack_at) : NaN;
+          if (!Number.isFinite(endedAt) || !Number.isFinite(packAt)) return null;
+          return Math.max(0, packAt - endedAt);
+        })
+        .filter((value): value is number => Number.isFinite(value));
+      const pipelineWithin = pipelineSamples.filter((value) => value <= GATE_THRESHOLDS.maxTrackedPipelineLatencyMs).length;
+      const pipelineRate = pipelineSamples.length > 0 ? pipelineWithin / pipelineSamples.length : 0;
+      const averagePipelineLatency =
+        pipelineSamples.length > 0 ? Math.round(pipelineSamples.reduce((sum, value) => sum + value, 0) / pipelineSamples.length) : 0;
+      gateEntries.push({
+        key: "session_delta_checkpoint_pack_latency",
+        label: "Tracked session -> delta -> checkpoint -> lane pack latency",
+        status:
+          pipelineSamples.length === 0
+            ? "warn"
+            : averagePipelineLatency <= GATE_THRESHOLDS.maxTrackedPipelineLatencyMs
+              ? "pass"
+              : "fail",
+        measuredValue: averagePipelineLatency,
+        threshold: GATE_THRESHOLDS.maxTrackedPipelineLatencyMs,
+        comparator: "<=",
+        samples: pipelineSamples.length,
+        reasons:
+          pipelineSamples.length === 0
+            ? ["No tracked session pipeline samples were available."]
+            : averagePipelineLatency <= GATE_THRESHOLDS.maxTrackedPipelineLatencyMs
+              ? []
+              : [`Average latency ${averagePipelineLatency}ms exceeded threshold (${GATE_THRESHOLDS.maxTrackedPipelineLatencyMs}ms).`],
+        metadata: {
+          withinBudgetRate: pipelineSamples.length > 0 ? pipelineRate : 0
+        }
+      });
+
+      const packRows = db.all<{ pack_type: string; deterministic_updated_at: string | null }>(
+        `
+          select pack_type, deterministic_updated_at
+          from packs_index
+          where project_id = ?
+        `,
+        [projectId]
+      );
+      const freshCount = packRows.filter((row) => {
+        const updatedAt = row.deterministic_updated_at ? Date.parse(row.deterministic_updated_at) : NaN;
+        if (!Number.isFinite(updatedAt)) return false;
+        const maxAge = GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs[row.pack_type] ?? GATE_THRESHOLDS.freshnessMaxAgeByPackTypeMs.project;
+        return now - updatedAt <= maxAge;
+      }).length;
+      const freshnessRate = packRows.length > 0 ? freshCount / packRows.length : 0;
+      gateEntries.push({
+        key: "pack_freshness_by_type",
+        label: "Pack freshness by type",
+        status:
+          packRows.length === 0
+            ? "warn"
+            : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate
+              ? "pass"
+              : "fail",
+        measuredValue: Number(freshnessRate.toFixed(4)),
+        threshold: GATE_THRESHOLDS.minFreshnessByTypeRate,
+        comparator: ">=",
+        samples: packRows.length,
+        reasons:
+          packRows.length === 0
+            ? ["No packs indexed yet."]
+            : freshnessRate >= GATE_THRESHOLDS.minFreshnessByTypeRate
+              ? []
+              : [`Fresh packs ${freshCount}/${packRows.length} fell below threshold.`],
+        metadata: {
+          freshCount,
+          total: packRows.length
+        }
+      });
+
+      const attemptRows = db.all<{ context_snapshot_id: string | null; cursor_json: string | null; status: string }>(
+        `
+          select
+            a.context_snapshot_id,
+            a.status,
+            s.cursor_json
+          from orchestrator_attempts a
+          left join orchestrator_context_snapshots s on s.id = a.context_snapshot_id
+          where a.project_id = ?
+            and a.status in ('running', 'succeeded', 'failed', 'blocked', 'canceled')
+        `,
+        [projectId]
+      );
+      const completeCount = attemptRows.filter((row) => {
+        if (!row.context_snapshot_id || !row.cursor_json) return false;
+        try {
+          const cursor = JSON.parse(row.cursor_json) as OrchestratorContextSnapshotCursor;
+          return Boolean(cursor.projectPackVersionId) && Array.isArray(cursor.docs) && cursor.docs.length > 0;
+        } catch {
+          return false;
+        }
+      }).length;
+      const completenessRate = attemptRows.length > 0 ? completeCount / attemptRows.length : 0;
+      gateEntries.push({
+        key: "context_completeness_rate",
+        label: "Context completeness rate for orchestrated steps",
+        status:
+          attemptRows.length === 0
+            ? "warn"
+            : completenessRate >= GATE_THRESHOLDS.minContextCompletenessRate
+              ? "pass"
+              : "fail",
+        measuredValue: Number(completenessRate.toFixed(4)),
+        threshold: GATE_THRESHOLDS.minContextCompletenessRate,
+        comparator: ">=",
+        samples: attemptRows.length,
+        reasons:
+          attemptRows.length === 0
+            ? ["No orchestrator attempts exist yet."]
+            : completenessRate >= GATE_THRESHOLDS.minContextCompletenessRate
+              ? []
+              : [`Only ${completeCount}/${attemptRows.length} attempts had context snapshots.`]
+      });
+
+      const runCount = Number(
+        db.get<{ count: number }>("select count(*) as count from orchestrator_runs where project_id = ?", [projectId])?.count ?? 0
+      );
+      const insufficientRows = db.all<{
+        run_id: string;
+        error_message: string | null;
+        metadata_json: string | null;
+      }>(
+        `
+          select run_id, error_message, metadata_json
+          from orchestrator_attempts
+          where project_id = ?
+            and status = 'blocked'
+            and (
+              error_message like '%insufficient%'
+              or metadata_json like '%insufficient_context%'
+              or metadata_json like '%insufficientContext%'
+            )
+        `,
+        [projectId]
+      );
+      const blockedRunIds = new Set<string>();
+      const reasonCodes = new Set<string>();
+      for (const row of insufficientRows) {
+        if (row.run_id) blockedRunIds.add(row.run_id);
+        const metadata = parseRecord(row.metadata_json);
+        const rawCodes = Array.isArray(metadata?.reasonCodes)
+          ? (metadata?.reasonCodes as unknown[])
+          : Array.isArray(metadata?.insufficientReasons)
+            ? (metadata?.insufficientReasons as unknown[])
+            : [];
+        for (const code of rawCodes) reasonCodes.add(String(code));
+        if (typeof row.error_message === "string" && row.error_message.trim().length) {
+          reasonCodes.add(row.error_message.trim());
+        }
+      }
+      const blockedRate = runCount > 0 ? blockedRunIds.size / runCount : 0;
+      gateEntries.push({
+        key: "blocked_run_rate_insufficient_context",
+        label: "Blocked-run rate due to insufficient context",
+        status: runCount === 0 ? "warn" : blockedRate <= GATE_THRESHOLDS.maxBlockedInsufficientContextRate ? "pass" : "fail",
+        measuredValue: Number(blockedRate.toFixed(4)),
+        threshold: GATE_THRESHOLDS.maxBlockedInsufficientContextRate,
+        comparator: "<=",
+        samples: runCount,
+        reasons:
+          runCount === 0
+            ? ["No orchestrator runs exist yet."]
+            : blockedRate <= GATE_THRESHOLDS.maxBlockedInsufficientContextRate
+              ? []
+              : [`Blocked runs ${blockedRunIds.size}/${runCount} exceeded threshold.`],
+        metadata: {
+          reasonCodes: [...reasonCodes]
+        }
+      });
+
+      const overallStatus: OrchestratorGateStatus = gateEntries.some((entry) => entry.status === "fail")
+        ? "fail"
+        : gateEntries.some((entry) => entry.status === "warn")
+          ? "warn"
+          : "pass";
+      if (overallStatus !== "pass") {
+        notes.push("Phase 1.5 quality gates are not fully passing.");
+      }
+
+      const report: OrchestratorGateReport = {
+        id: randomUUID(),
+        generatedAt: nowIso(),
+        generatedBy: "deterministic_kernel",
+        overallStatus,
+        gates: gateEntries,
+        notes
+      };
+      db.run(
+        `
+          insert into orchestrator_gate_reports(
+            id,
+            project_id,
+            generated_at,
+            report_json
+          ) values (?, ?, ?, ?)
+        `,
+        [report.id, projectId, report.generatedAt, JSON.stringify(report)]
+      );
+      return report;
+    },
+
+    getLatestGateReport(args: { refresh?: boolean } = {}): OrchestratorGateReport {
+      if (args.refresh === true) {
+        return this.evaluateGateReport();
+      }
+      const latest = db.get<GateReportRow>(
+        `
+          select id, generated_at, report_json
+          from orchestrator_gate_reports
+          where project_id = ?
+          order by generated_at desc
+          limit 1
+        `,
+        [projectId]
+      );
+      const parsed = latest ? toGateReport(latest) : null;
+      if (parsed) return parsed;
+      return this.evaluateGateReport();
+    },
+
     startRun(args: StartOrchestratorRunArgs): { run: OrchestratorRun; steps: OrchestratorStep[] } {
       const missionId = String(args.missionId ?? "").trim();
       if (!missionId) throw new Error("missionId is required.");
@@ -1438,6 +2481,16 @@ export function createOrchestratorService({
         `,
         [runId, projectId, missionId, profileId, schedulerState, JSON.stringify(metadata), createdAt, createdAt]
       );
+      appendTimelineEvent({
+        runId,
+        eventType: "run_created",
+        reason: "start_run",
+        detail: {
+          missionId,
+          contextProfile: profileId,
+          schedulerState
+        }
+      });
 
       const byKey = new Map<string, string>();
       const stepRows = [...args.steps]
@@ -1471,6 +2524,7 @@ export function createOrchestratorService({
         };
         const metadataJson = JSON.stringify({
           ...(input.metadata ?? {}),
+          ...(input.executorKind ? { executorKind: input.executorKind } : {}),
           policy
         });
         db.run(
@@ -1517,6 +2571,18 @@ export function createOrchestratorService({
             created
           ]
         );
+        appendTimelineEvent({
+          runId,
+          stepId: id,
+          eventType: "step_registered",
+          reason: "start_run",
+          detail: {
+            stepKey: input.stepKey.trim(),
+            stepIndex: Number.isFinite(input.stepIndex) ? Math.floor(input.stepIndex) : 0,
+            joinPolicy: input.joinPolicy ?? "all_success",
+            retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0))
+          }
+        });
       }
 
       // Fill resolved dependency IDs after all step rows exist.
@@ -1536,6 +2602,15 @@ export function createOrchestratorService({
           `,
           [JSON.stringify(depIds), createdAt, id, runId, projectId]
         );
+        appendTimelineEvent({
+          runId,
+          stepId: id,
+          eventType: "step_dependencies_resolved",
+          reason: "start_run",
+          detail: {
+            dependencyStepIds: depIds
+          }
+        });
       }
 
       // Best effort mission pack refresh for durable mission-level context snapshot.
@@ -1604,6 +2679,15 @@ export function createOrchestratorService({
           [nowIso(), args.runId, projectId]
         );
       }
+      appendTimelineEvent({
+        runId: args.runId,
+        eventType: "scheduler_tick",
+        reason: "tick",
+        detail: {
+          fromStatus: current,
+          derivedStatus: next
+        }
+      });
 
       const updated = getRunRow(args.runId);
       if (!updated) throw new Error(`Run not found after tick: ${args.runId}`);
@@ -1648,10 +2732,22 @@ export function createOrchestratorService({
                 expires_at = ?
             where id = ?
               and project_id = ?
-              and state = 'active'
+            and state = 'active'
           `,
           [now, new Date(Date.now() + ttlMs).toISOString(), claim.id, projectId]
         );
+        appendTimelineEvent({
+          runId: claim.run_id,
+          stepId: claim.step_id,
+          attemptId: claim.attempt_id,
+          claimId: claim.id,
+          eventType: "claim_heartbeat",
+          reason: "heartbeat",
+          detail: {
+            ownerId: claim.owner_id,
+            ttlMs
+          }
+        });
       }
       if (activeClaims.length) {
         emit({ type: "orchestrator-claim-updated", attemptId: args.attemptId, reason: "heartbeat" });
@@ -1774,6 +2870,17 @@ export function createOrchestratorService({
             }
           });
           emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId, reason: "claim_blocked" });
+          appendTimelineEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId,
+            eventType: "attempt_blocked",
+            reason: "claim_conflict",
+            detail: {
+              scopeKind: scope.scopeKind,
+              scopeValue: scope.scopeValue
+            }
+          });
           this.tick({ runId: run.id });
           const blockedRow = getAttemptRow(attemptId);
           if (!blockedRow) throw new Error("Failed to create blocked attempt.");
@@ -1872,12 +2979,40 @@ export function createOrchestratorService({
 
       emit({ type: "orchestrator-step-updated", runId: run.id, stepId: step.id, reason: "attempt_started" });
       emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId, reason: "started" });
+      appendTimelineEvent({
+        runId: run.id,
+        stepId: step.id,
+        attemptId,
+        eventType: "attempt_started",
+        reason: "attempt_started",
+        detail: {
+          executorKind,
+          contextProfile: contextPolicy.id,
+          contextSnapshotId: snapshot.snapshotId
+        }
+      });
 
       const attemptRow = getAttemptRow(attemptId);
       if (!attemptRow) throw new Error("Attempt creation failed.");
       const attempt = toAttempt(attemptRow);
 
-      const adapter = adapters.get(executorKind);
+      const integrationResult = await tryRunConflictResolverChain({
+        run,
+        step,
+        attempt
+      });
+      if (integrationResult) {
+        return this.completeAttempt({
+          attemptId: attempt.id,
+          status: integrationResult.status,
+          result: integrationResult.result,
+          errorClass: integrationResult.errorClass,
+          errorMessage: integrationResult.errorMessage,
+          metadata: integrationResult.metadata ?? null
+        });
+      }
+
+      const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
       if (adapter) {
         const result = await adapter.start({
           run,
@@ -1897,6 +3032,15 @@ export function createOrchestratorService({
         if (result.status === "accepted") {
           const sessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
           if (sessionId) {
+            const sessionRow = db.get<{ transcript_path: string | null }>(
+              `
+                select transcript_path
+                from terminal_sessions
+                where id = ?
+                limit 1
+              `,
+              [sessionId]
+            );
             db.run(
               `
                 update orchestrator_attempts
@@ -1910,7 +3054,8 @@ export function createOrchestratorService({
                 sessionId,
                 JSON.stringify({
                   ...(attempt.metadata ?? {}),
-                  ...(result.metadata ?? {})
+                  ...(result.metadata ?? {}),
+                  transcriptPath: sessionRow?.transcript_path ?? null
                 }),
                 nowIso(),
                 attempt.id,
@@ -1918,6 +3063,18 @@ export function createOrchestratorService({
               ]
             );
             emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId: attempt.id, reason: "session_attached" });
+            appendTimelineEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              eventType: "executor_session_attached",
+              reason: "adapter_accepted",
+              detail: {
+                executorKind,
+                sessionId,
+                transcriptPath: sessionRow?.transcript_path ?? null
+              }
+            });
           }
           return toAttempt(getAttemptRow(attempt.id) ?? attemptRow);
         }
@@ -1937,6 +3094,16 @@ export function createOrchestratorService({
         });
       }
 
+      appendTimelineEvent({
+        runId: run.id,
+        stepId: step.id,
+        attemptId: attempt.id,
+        eventType: "executor_adapter_missing",
+        reason: "manual_wait",
+        detail: {
+          executorKind
+        }
+      });
       this.tick({ runId: run.id });
       return attempt;
     },
@@ -1961,7 +3128,27 @@ export function createOrchestratorService({
 
       const completedAt = nowIso();
       const status = args.status;
-      const errorClass = status === "failed" ? args.errorClass ?? "executor_failure" : status === "canceled" ? "canceled" : "none";
+      const errorClass =
+        status === "failed"
+          ? args.errorClass ?? "executor_failure"
+          : status === "blocked"
+            ? args.errorClass ?? "policy"
+            : status === "canceled"
+              ? "canceled"
+              : "none";
+      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
+      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
+      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
+      const computedBackoff =
+        shouldRetry
+          ? Math.max(
+              0,
+              Math.floor(
+                args.retryBackoffMs
+                  ?? Math.min(10 * 60_000, DEFAULT_RETRY_BACKOFF_MS * Math.pow(2, Math.max(0, step.retryCount)))
+              )
+            )
+          : Math.max(0, Math.floor(args.retryBackoffMs ?? 0));
       const defaultSummary =
         status === "succeeded"
           ? "Step completed."
@@ -1970,17 +3157,16 @@ export function createOrchestratorService({
             : status === "blocked"
               ? args.errorMessage?.trim() || "Step attempt blocked."
               : "Step attempt canceled.";
-      const envelope: OrchestratorAttemptResultEnvelope =
-        args.result ??
-        ({
-          schema: "ade.orchestratorAttempt.v1",
+      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
+        args.result ?? {
           success: status === "succeeded",
           summary: defaultSummary,
           outputs: null,
           warnings: status === "failed" || status === "blocked" ? [defaultSummary] : [],
           sessionId: attemptRow.executor_session_id,
           trackedSession: true
-        } satisfies OrchestratorAttemptResultEnvelope);
+        }
+      );
 
       db.run(
         `
@@ -2000,7 +3186,7 @@ export function createOrchestratorService({
           status,
           errorClass,
           args.errorMessage ?? null,
-          Math.max(0, Math.floor(args.retryBackoffMs ?? 0)),
+          computedBackoff,
           JSON.stringify(envelope),
           JSON.stringify({
             ...(parseRecord(attemptRow.metadata_json) ?? {}),
@@ -2057,26 +3243,49 @@ export function createOrchestratorService({
               and run_id = ?
               and project_id = ?
           `,
-          [completedAt, args.attemptId, step.id, run.id, projectId]
-        );
+        [completedAt, args.attemptId, step.id, run.id, projectId]
+      );
       } else {
-        const retryable = RETRYABLE_ERROR_CLASSES.has(errorClass);
-        const retryRemaining = step.retryCount < step.retryLimit;
-        const shouldRetry = retryable && retryRemaining;
         if (shouldRetry) {
+          const nextRetryAt = new Date(Date.now() + computedBackoff).toISOString();
           db.run(
             `
               update orchestrator_steps
-              set status = 'ready',
+              set status = 'pending',
                   retry_count = retry_count + 1,
+                  metadata_json = ?,
                   updated_at = ?,
                   last_attempt_id = ?
               where id = ?
                 and run_id = ?
                 and project_id = ?
             `,
-            [completedAt, args.attemptId, step.id, run.id, projectId]
+            [
+              JSON.stringify({
+                ...(step.metadata ?? {}),
+                nextRetryAt,
+                lastRetryBackoffMs: computedBackoff
+              }),
+              completedAt,
+              args.attemptId,
+              step.id,
+              run.id,
+              projectId
+            ]
           );
+          appendTimelineEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: args.attemptId,
+            eventType: "attempt_retry_scheduled",
+            reason: "retryable_failure",
+            detail: {
+              retryBackoffMs: computedBackoff,
+              nextRetryAt,
+              retryCount: step.retryCount + 1,
+              retryLimit: step.retryLimit
+            }
+          });
         } else {
           db.run(
             `
@@ -2089,8 +3298,8 @@ export function createOrchestratorService({
                 and run_id = ?
                 and project_id = ?
             `,
-            [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
-          );
+          [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
+        );
         }
       }
 
@@ -2114,13 +3323,26 @@ export function createOrchestratorService({
           status,
           errorClass,
           errorMessage: args.errorMessage ?? null,
-          retryBackoffMs: Math.max(0, Math.floor(args.retryBackoffMs ?? 0)),
+          retryBackoffMs: computedBackoff,
           result: envelope
         }
       });
 
       emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId: args.attemptId, reason: "completed" });
       emit({ type: "orchestrator-step-updated", runId: run.id, stepId: step.id, reason: "attempt_completed" });
+      appendTimelineEvent({
+        runId: run.id,
+        stepId: step.id,
+        attemptId: args.attemptId,
+        eventType: "attempt_completed",
+        reason: status,
+        detail: {
+          status,
+          errorClass,
+          retryBackoffMs: computedBackoff,
+          shouldRetry
+        }
+      });
 
       const updatedRun = this.tick({ runId: run.id });
       if (updatedRun.status === "failed") {
@@ -2248,9 +3470,29 @@ export function createOrchestratorService({
             contextProfile: normalizeProfileId(attemptRow.context_profile)
           }
         });
+        appendTimelineEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId: attemptRow.id,
+          eventType: "attempt_recovered_after_restart",
+          reason: "resume_recovered",
+          detail: {
+            retryLimit: step.retry_limit,
+            retryCount: step.retry_count
+          }
+        });
       }
 
       const resumed = this.tick({ runId: run.id });
+      appendTimelineEvent({
+        runId: run.id,
+        eventType: "run_resumed",
+        reason: "resume_run",
+        detail: {
+          recoveredAttempts: runningAttempts.length,
+          status: resumed.status
+        }
+      });
       return resumed;
     },
 
@@ -2301,6 +3543,14 @@ export function createOrchestratorService({
       );
       updateRunStatus(args.runId, "canceled", {
         last_error: args.reason ?? null
+      });
+      appendTimelineEvent({
+        runId: args.runId,
+        eventType: "run_canceled",
+        reason: "cancel_run",
+        detail: {
+          reason: args.reason ?? null
+        }
       });
     }
   };

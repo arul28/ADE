@@ -508,4 +508,30 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 
 ---
 
+## 2026-02-19 Addendum — Phase 2 Orchestrator Runtime v2
+
+The product now includes a deterministic orchestrator runtime surface in the desktop app:
+
+- Missions:
+  - Mission detail now supports starting orchestrator runs from mission steps.
+  - Operators can tick/resume/cancel runs, start attempts, and complete running attempts.
+  - Step DAG state, attempt history, and timeline events are visible from mission detail.
+- Context:
+  - Context inventory now includes orchestrator timeline event counts.
+  - Gate report readout is available with per-gate pass/warn/fail and reason details.
+  - Attempt-level context provenance is visible (snapshot docs mode/truncation, pack refs, handoff/delta provenance).
+- Runtime model:
+  - Scheduling, retries/backoff, claims, and transition logic are deterministic code paths.
+  - AI remains advisory-only and is not the run coordinator.
+  - Default context profile remains deterministic with narrative excluded unless explicitly opted in.
+
+Persistence expansion:
+
+- `orchestrator_timeline_events`
+- `orchestrator_gate_reports`
+
+These are append-only/audit-focused tables for runtime traceability and quality-gate snapshots.
+
+---
+
 *This document is the authoritative product requirements reference for ADE. For implementation details, consult the linked feature and architecture documents; roadmap sequencing is maintained in `docs/final-plan.md`.*

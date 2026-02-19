@@ -27,7 +27,10 @@ import type {
   MissionStatus,
   MissionStep,
   MissionStepStatus,
-  MissionSummary
+  MissionSummary,
+  OrchestratorAttempt,
+  OrchestratorRunGraph,
+  OrchestratorStep
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -243,6 +246,7 @@ export function MissionsPage() {
   const [missions, setMissions] = React.useState<MissionSummary[]>([]);
   const [selectedMissionId, setSelectedMissionId] = React.useState<string | null>(null);
   const [selectedMission, setSelectedMission] = React.useState<MissionDetail | null>(null);
+  const [runGraph, setRunGraph] = React.useState<OrchestratorRunGraph | null>(null);
 
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -255,6 +259,8 @@ export function MissionsPage() {
   const [artifactBusy, setArtifactBusy] = React.useState(false);
   const [interventionBusy, setInterventionBusy] = React.useState(false);
   const [outcomeBusy, setOutcomeBusy] = React.useState(false);
+  const [runBusy, setRunBusy] = React.useState(false);
+  const [attemptBusyId, setAttemptBusyId] = React.useState<string | null>(null);
 
   const [showForm, setShowForm] = React.useState(false);
   const [launchAnimating, setLaunchAnimating] = React.useState(false);
@@ -264,6 +270,7 @@ export function MissionsPage() {
     info: true,
     outcome: true,
     steps: true,
+    orchestrator: true,
     interventions: true,
     artifacts: true,
     timeline: false
@@ -299,6 +306,19 @@ export function MissionsPage() {
   );
 
   const statusCount = React.useMemo(() => countByStatus(missions), [missions]);
+  const attemptsByStep = React.useMemo(() => {
+    const map = new Map<string, OrchestratorAttempt[]>();
+    if (!runGraph) return map;
+    for (const attempt of runGraph.attempts) {
+      const bucket = map.get(attempt.stepId) ?? [];
+      bucket.push(attempt);
+      map.set(attempt.stepId, bucket);
+    }
+    for (const bucket of map.values()) {
+      bucket.sort((a, b) => b.attemptNumber - a.attemptNumber);
+    }
+    return map;
+  }, [runGraph]);
 
   const refreshMissionList = React.useCallback(
     async (opts: { preserveSelection?: boolean; silent?: boolean } = {}) => {
@@ -349,6 +369,27 @@ export function MissionsPage() {
     }
   }, []);
 
+  const loadOrchestratorGraph = React.useCallback(async (missionId: string) => {
+    const trimmed = missionId.trim();
+    if (!trimmed.length) {
+      setRunGraph(null);
+      return;
+    }
+    try {
+      const runs = await window.ade.orchestrator.listRuns({ missionId: trimmed, limit: 20 });
+      const latestRun = runs[0];
+      if (!latestRun) {
+        setRunGraph(null);
+        return;
+      }
+      const graph = await window.ade.orchestrator.getRunGraph({ runId: latestRun.id, timelineLimit: 120 });
+      setRunGraph(graph);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setRunGraph(null);
+    }
+  }, []);
+
   React.useEffect(() => {
     void refreshMissionList({ preserveSelection: true });
   }, [refreshMissionList]);
@@ -356,20 +397,31 @@ export function MissionsPage() {
   React.useEffect(() => {
     if (!selectedMissionId) {
       setSelectedMission(null);
+      setRunGraph(null);
       return;
     }
     void loadMissionDetail(selectedMissionId);
-  }, [selectedMissionId, loadMissionDetail]);
+    void loadOrchestratorGraph(selectedMissionId);
+  }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
 
   React.useEffect(() => {
     const unsub = window.ade.missions.onEvent((payload) => {
       void refreshMissionList({ preserveSelection: true, silent: true });
       if (payload.missionId && payload.missionId === selectedMissionId) {
         void loadMissionDetail(payload.missionId);
+        void loadOrchestratorGraph(payload.missionId);
       }
     });
     return () => unsub();
-  }, [loadMissionDetail, refreshMissionList, selectedMissionId]);
+  }, [loadMissionDetail, loadOrchestratorGraph, refreshMissionList, selectedMissionId]);
+
+  React.useEffect(() => {
+    const unsub = window.ade.orchestrator.onEvent(() => {
+      if (!selectedMissionId) return;
+      void loadOrchestratorGraph(selectedMissionId);
+    });
+    return () => unsub();
+  }, [loadOrchestratorGraph, selectedMissionId]);
 
   React.useEffect(() => {
     setOutcomeDraft(selectedMission?.outcomeSummary ?? "");
@@ -558,6 +610,111 @@ export function MissionsPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setInterventionBusy(false);
+    }
+  };
+
+  const startOrchestratorRun = async () => {
+    if (!selectedMission) return;
+    setRunBusy(true);
+    try {
+      await window.ade.orchestrator.startRunFromMission({
+        missionId: selectedMission.id,
+        defaultExecutorKind: "manual",
+        defaultRetryLimit: 1
+      });
+      await loadOrchestratorGraph(selectedMission.id);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunBusy(false);
+    }
+  };
+
+  const tickRun = async () => {
+    if (!runGraph) return;
+    setRunBusy(true);
+    try {
+      await window.ade.orchestrator.tickRun({ runId: runGraph.run.id });
+      if (selectedMission) {
+        await loadOrchestratorGraph(selectedMission.id);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunBusy(false);
+    }
+  };
+
+  const resumeRun = async () => {
+    if (!runGraph) return;
+    setRunBusy(true);
+    try {
+      await window.ade.orchestrator.resumeRun({ runId: runGraph.run.id });
+      if (selectedMission) {
+        await loadOrchestratorGraph(selectedMission.id);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunBusy(false);
+    }
+  };
+
+  const cancelRun = async () => {
+    if (!runGraph) return;
+    setRunBusy(true);
+    try {
+      await window.ade.orchestrator.cancelRun({ runId: runGraph.run.id, reason: "Canceled from Missions UI." });
+      if (selectedMission) {
+        await loadOrchestratorGraph(selectedMission.id);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunBusy(false);
+    }
+  };
+
+  const startStepAttempt = async (step: OrchestratorStep) => {
+    if (!runGraph) return;
+    setAttemptBusyId(step.id);
+    try {
+      await window.ade.orchestrator.startAttempt({
+        runId: runGraph.run.id,
+        stepId: step.id,
+        ownerId: "missions-ui"
+      });
+      if (selectedMission) {
+        await loadOrchestratorGraph(selectedMission.id);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttemptBusyId(null);
+    }
+  };
+
+  const completeStepAttempt = async (attemptId: string, status: "succeeded" | "failed" | "blocked" | "canceled") => {
+    setAttemptBusyId(attemptId);
+    try {
+      await window.ade.orchestrator.completeAttempt({
+        attemptId,
+        status,
+        ...(status === "failed" ? { errorClass: "deterministic", errorMessage: "Marked failed by operator." } : {})
+      });
+      if (selectedMission) {
+        await loadOrchestratorGraph(selectedMission.id);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttemptBusyId(null);
     }
   };
 
@@ -1221,6 +1378,121 @@ export function MissionsPage() {
                                     ))}
                                   </div>
                                 </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+
+                      {/* ── Orchestrator Runtime ── */}
+                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => toggleSection("orchestrator")}
+                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 text-xs font-semibold text-fg">
+                            <Route className="h-3.5 w-3.5 text-accent" />
+                            Orchestrator Runtime
+                          </div>
+                          <span className="text-[10px] text-muted-fg">
+                            {runGraph ? `run ${runGraph.run.status}` : "no run"}
+                          </span>
+                        </button>
+                        <AnimatePresence>
+                          {expandedSections.orchestrator && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={easeOut150}
+                              className="overflow-hidden"
+                            >
+                              <div className="px-3 pb-3 space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                  <Button size="sm" variant="outline" disabled={runBusy} onClick={() => void startOrchestratorRun()}>
+                                    {runBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+                                    Start run from mission steps
+                                  </Button>
+                                  <Button size="sm" variant="outline" disabled={runBusy || !runGraph} onClick={() => void tickRun()}>
+                                    Tick
+                                  </Button>
+                                  <Button size="sm" variant="outline" disabled={runBusy || !runGraph} onClick={() => void resumeRun()}>
+                                    Resume
+                                  </Button>
+                                  <Button size="sm" variant="ghost" disabled={runBusy || !runGraph} onClick={() => void cancelRun()}>
+                                    Cancel
+                                  </Button>
+                                </div>
+                                {!runGraph ? (
+                                  <div className="rounded-lg border border-dashed border-border/25 bg-muted/10 px-2 py-3 text-center text-[11px] text-muted-fg">
+                                    No orchestrator run yet for this mission.
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    <div className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2 text-[11px] text-muted-fg">
+                                      <div>run: {runGraph.run.id}</div>
+                                      <div>status: {runGraph.run.status} · profile: {runGraph.run.contextProfile}</div>
+                                      <div>steps: {runGraph.steps.length} · attempts: {runGraph.attempts.length} · claims: {runGraph.claims.length}</div>
+                                    </div>
+                                    <div className="space-y-2">
+                                      {runGraph.steps
+                                        .slice()
+                                        .sort((a, b) => a.stepIndex - b.stepIndex)
+                                        .map((step) => {
+                                          const attempts = attemptsByStep.get(step.id) ?? [];
+                                          const latestAttempt = attempts[0] ?? null;
+                                          const attemptBusy = attemptBusyId === step.id || (latestAttempt && attemptBusyId === latestAttempt.id);
+                                          return (
+                                            <div key={step.id} className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
+                                              <div className="flex items-center justify-between gap-2">
+                                                <div className="text-[11px] text-fg">
+                                                  {step.stepIndex + 1}. {step.title}
+                                                </div>
+                                                <Chip className={cn("border px-1.5 py-0.5 text-[10px]", step.status === "succeeded" ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" : step.status === "failed" ? "text-red-300 border-red-500/40 bg-red-500/10" : step.status === "running" ? "text-violet-300 border-violet-500/40 bg-violet-500/10" : step.status === "blocked" ? "text-amber-300 border-amber-500/40 bg-amber-500/10" : "text-sky-300 border-sky-500/40 bg-sky-500/10")}>
+                                                  {step.status}
+                                                </Chip>
+                                              </div>
+                                              <div className="mt-1 text-[10px] text-muted-fg">
+                                                attempts: {attempts.length}
+                                                {latestAttempt ? ` · latest #${latestAttempt.attemptNumber} (${latestAttempt.status})` : ""}
+                                              </div>
+                                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                                {step.status === "ready" ? (
+                                                  <Button size="sm" variant="primary" className="h-7 px-2 text-[11px]" disabled={Boolean(attemptBusy)} onClick={() => void startStepAttempt(step)}>
+                                                    {attemptBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                                                    Start attempt
+                                                  </Button>
+                                                ) : null}
+                                                {latestAttempt && latestAttempt.status === "running" ? (
+                                                  <>
+                                                    <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={Boolean(attemptBusy)} onClick={() => void completeStepAttempt(latestAttempt.id, "succeeded")}>
+                                                      Complete
+                                                    </Button>
+                                                    <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" disabled={Boolean(attemptBusy)} onClick={() => void completeStepAttempt(latestAttempt.id, "failed")}>
+                                                      Fail
+                                                    </Button>
+                                                  </>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                    </div>
+                                    <div className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2 text-[10px] text-muted-fg">
+                                      <div className="font-medium text-fg">Timeline</div>
+                                      {runGraph.timeline.length === 0 ? (
+                                        <div className="mt-1">No timeline events yet.</div>
+                                      ) : (
+                                        runGraph.timeline.slice(0, 6).map((entry) => (
+                                          <div key={entry.id} className="mt-1">
+                                            {entry.createdAt} · {entry.eventType} · {entry.reason}
+                                          </div>
+                                        ))
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </motion.div>
                           )}

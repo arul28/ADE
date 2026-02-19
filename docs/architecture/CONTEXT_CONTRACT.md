@@ -554,3 +554,30 @@ Compatibility guarantees:
 - Existing pack/export/event/checkpoint consumers remain valid.
 - Legacy fields and IPC channels remain unchanged.
 - New fields are additive and optional.
+
+---
+
+## 2026-02-19 Addendum — Orchestrator Context Snapshot Provenance
+
+Contract version remains additive/backward-compatible.
+
+Orchestrator attempt snapshots now include optional provenance fields inside cursor payloads:
+
+- `packDeltaDigest` (digest since prior runtime cursor)
+- `missionHandoffIds` (handoff records incorporated in the bundle)
+- `contextSources` (deterministic list of context source categories)
+- `docsMode` (`digest_ref` or `full_body`)
+- `docsBudgetBytes`
+- `docsConsumedBytes`
+- `docsTruncatedCount`
+
+Runtime policy clarifications:
+
+- Default orchestrator profile (`orchestrator_deterministic_v1`) still excludes narrative unless explicitly overridden.
+- `full_docs` mode is only selected by explicit step policy and remains bounded by byte budget.
+- Snapshot metadata must remain replayable from DB alone (no hidden in-memory dependency).
+
+Auditability additions:
+
+- Every run/step/attempt/claim transition is persisted as an append-only timeline event.
+- Quality-gate evaluations are persisted as deterministic snapshots for operator review.

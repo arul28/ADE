@@ -196,7 +196,27 @@ import type {
   MissionStepHandoff,
   MissionSummary,
   ResolveMissionInterventionArgs,
-  CreateMissionArgs
+  CreateMissionArgs,
+  CancelOrchestratorRunArgs,
+  CompleteOrchestratorAttemptArgs,
+  GetOrchestratorGateReportArgs,
+  GetOrchestratorRunGraphArgs,
+  HeartbeatOrchestratorClaimsArgs,
+  ListOrchestratorRunsArgs,
+  ListOrchestratorTimelineArgs,
+  OrchestratorAttempt,
+  OrchestratorClaim,
+  OrchestratorContextSnapshot,
+  OrchestratorGateReport,
+  OrchestratorRun,
+  OrchestratorRunGraph,
+  OrchestratorStep,
+  OrchestratorTimelineEvent,
+  ResumeOrchestratorRunArgs,
+  StartOrchestratorAttemptArgs,
+  StartOrchestratorRunFromMissionArgs,
+  StartOrchestratorRunArgs,
+  TickOrchestratorRunArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -551,6 +571,7 @@ function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapsho
     expired_claims: number;
     snapshots: number;
     handoffs: number;
+    timeline_events: number;
   }>(
     `
       select
@@ -560,9 +581,10 @@ function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapsho
         (select count(*) from orchestrator_claims where project_id = ? and state = 'active') as active_claims,
         (select count(*) from orchestrator_claims where project_id = ? and state = 'expired') as expired_claims,
         (select count(*) from orchestrator_context_snapshots where project_id = ?) as snapshots,
-        (select count(*) from mission_step_handoffs where project_id = ? and run_id is not null) as handoffs
+        (select count(*) from mission_step_handoffs where project_id = ? and run_id is not null) as handoffs,
+        (select count(*) from orchestrator_timeline_events where project_id = ?) as timeline_events
     `,
-    [ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId]
+    [ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId, ctx.projectId]
   );
   const recentRunIds = ctx.db
     .all<{ id: string }>(
@@ -620,6 +642,7 @@ function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapsho
       expiredClaims: Number(orchestratorCounts?.expired_claims ?? 0),
       snapshots: Number(orchestratorCounts?.snapshots ?? 0),
       handoffs: Number(orchestratorCounts?.handoffs ?? 0),
+      timelineEvents: Number(orchestratorCounts?.timeline_events ?? 0),
       recentRunIds,
       recentAttemptIds
     }
@@ -1069,6 +1092,90 @@ export function registerIpc({
         });
       }
       return intervention;
+    }
+  );
+
+  ipcMain.handle(IPC.orchestratorListRuns, async (_event, arg: ListOrchestratorRunsArgs = {}): Promise<OrchestratorRun[]> => {
+    const ctx = getCtx();
+    return ctx.orchestratorService.listRuns(arg);
+  });
+
+  ipcMain.handle(IPC.orchestratorGetRunGraph, async (_event, arg: GetOrchestratorRunGraphArgs): Promise<OrchestratorRunGraph> => {
+    const ctx = getCtx();
+    return ctx.orchestratorService.getRunGraph(arg);
+  });
+
+  ipcMain.handle(
+    IPC.orchestratorStartRun,
+    async (_event, arg: StartOrchestratorRunArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.startRun(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorStartRunFromMission,
+    async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.startRunFromMission(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorStartAttempt,
+    async (_event, arg: StartOrchestratorAttemptArgs): Promise<OrchestratorAttempt> => {
+      const ctx = getCtx();
+      return await ctx.orchestratorService.startAttempt(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorCompleteAttempt,
+    async (_event, arg: CompleteOrchestratorAttemptArgs): Promise<OrchestratorAttempt> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.completeAttempt(arg);
+    }
+  );
+
+  ipcMain.handle(IPC.orchestratorTickRun, async (_event, arg: TickOrchestratorRunArgs): Promise<OrchestratorRun> => {
+    const ctx = getCtx();
+    return ctx.orchestratorService.tick(arg);
+  });
+
+  ipcMain.handle(IPC.orchestratorResumeRun, async (_event, arg: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> => {
+    const ctx = getCtx();
+    return ctx.orchestratorService.resumeRun(arg);
+  });
+
+  ipcMain.handle(IPC.orchestratorCancelRun, async (_event, arg: CancelOrchestratorRunArgs): Promise<OrchestratorRun> => {
+    const ctx = getCtx();
+    ctx.orchestratorService.cancelRun(arg);
+    const run = ctx.orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === arg.runId);
+    if (!run) throw new Error(`Run not found after cancellation: ${arg.runId}`);
+    return run;
+  });
+
+  ipcMain.handle(
+    IPC.orchestratorHeartbeatClaims,
+    async (_event, arg: HeartbeatOrchestratorClaimsArgs): Promise<number> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.heartbeatClaims(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListTimeline,
+    async (_event, arg: ListOrchestratorTimelineArgs): Promise<OrchestratorTimelineEvent[]> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.listTimeline(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetGateReport,
+    async (_event, arg: GetOrchestratorGateReportArgs = {}): Promise<OrchestratorGateReport> => {
+      const ctx = getCtx();
+      return ctx.orchestratorService.getLatestGateReport(arg);
     }
   );
 

@@ -185,10 +185,29 @@ import type {
   MissionArtifact,
   MissionDetail,
   MissionIntervention,
+  OrchestratorAttempt,
+  OrchestratorGateReport,
+  OrchestratorRun,
+  OrchestratorRunGraph,
+  OrchestratorRuntimeEvent,
+  OrchestratorStep,
+  OrchestratorTimelineEvent,
   MissionStep,
   MissionSummary,
   MissionsEventPayload,
+  GetOrchestratorGateReportArgs,
+  GetOrchestratorRunGraphArgs,
+  ListOrchestratorRunsArgs,
+  ListOrchestratorTimelineArgs,
   CreateMissionArgs,
+  CancelOrchestratorRunArgs,
+  CompleteOrchestratorAttemptArgs,
+  HeartbeatOrchestratorClaimsArgs,
+  ResumeOrchestratorRunArgs,
+  StartOrchestratorAttemptArgs,
+  StartOrchestratorRunArgs,
+  StartOrchestratorRunFromMissionArgs,
+  TickOrchestratorRunArgs,
   UpdateMissionArgs,
   UpdateMissionStepArgs,
   TestEvent,
@@ -265,6 +284,23 @@ declare global {
         addIntervention: (args: AddMissionInterventionArgs) => Promise<MissionIntervention>;
         resolveIntervention: (args: ResolveMissionInterventionArgs) => Promise<MissionIntervention>;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
+      };
+      orchestrator: {
+        listRuns: (args?: ListOrchestratorRunsArgs) => Promise<OrchestratorRun[]>;
+        getRunGraph: (args: GetOrchestratorRunGraphArgs) => Promise<OrchestratorRunGraph>;
+        startRun: (args: StartOrchestratorRunArgs) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
+        startRunFromMission: (
+          args: StartOrchestratorRunFromMissionArgs
+        ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
+        startAttempt: (args: StartOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
+        completeAttempt: (args: CompleteOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
+        tickRun: (args: TickOrchestratorRunArgs) => Promise<OrchestratorRun>;
+        resumeRun: (args: ResumeOrchestratorRunArgs) => Promise<OrchestratorRun>;
+        cancelRun: (args: CancelOrchestratorRunArgs) => Promise<OrchestratorRun>;
+        heartbeatClaims: (args: HeartbeatOrchestratorClaimsArgs) => Promise<number>;
+        listTimeline: (args: ListOrchestratorTimelineArgs) => Promise<OrchestratorTimelineEvent[]>;
+        getGateReport: (args?: GetOrchestratorGateReportArgs) => Promise<OrchestratorGateReport>;
+        onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;

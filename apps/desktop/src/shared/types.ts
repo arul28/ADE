@@ -894,6 +894,7 @@ export type ContextInventoryOrchestratorSummary = {
   expiredClaims: number;
   snapshots: number;
   handoffs: number;
+  timelineEvents: number;
   recentRunIds: string[];
   recentAttemptIds: string[];
 };
@@ -2504,6 +2505,13 @@ export type OrchestratorContextSnapshotCursor = {
   projectPackVersionNumber: number | null;
   packDeltaSince: string | null;
   docs: OrchestratorDocsRef[];
+  packDeltaDigest?: PackDeltaDigestV1 | null;
+  missionHandoffIds?: string[];
+  contextSources?: string[];
+  docsMode?: "digest_ref" | "full_body";
+  docsBudgetBytes?: number;
+  docsConsumedBytes?: number;
+  docsTruncatedCount?: number;
 };
 
 export type OrchestratorRun = {
@@ -2615,6 +2623,69 @@ export type MissionStepHandoff = {
   createdAt: string;
 };
 
+export type OrchestratorTimelineEvent = {
+  id: string;
+  runId: string;
+  stepId: string | null;
+  attemptId: string | null;
+  claimId: string | null;
+  eventType: string;
+  reason: string;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type OrchestratorRuntimeEvent = {
+  type:
+    | "orchestrator-run-updated"
+    | "orchestrator-step-updated"
+    | "orchestrator-attempt-updated"
+    | "orchestrator-claim-updated";
+  runId?: string;
+  stepId?: string;
+  attemptId?: string;
+  claimId?: string;
+  at: string;
+  reason: string;
+};
+
+export type OrchestratorRunGraph = {
+  run: OrchestratorRun;
+  steps: OrchestratorStep[];
+  attempts: OrchestratorAttempt[];
+  claims: OrchestratorClaim[];
+  contextSnapshots: OrchestratorContextSnapshot[];
+  handoffs: MissionStepHandoff[];
+  timeline: OrchestratorTimelineEvent[];
+};
+
+export type OrchestratorGateStatus = "pass" | "warn" | "fail";
+
+export type OrchestratorGateEntry = {
+  key:
+    | "session_delta_checkpoint_pack_latency"
+    | "pack_freshness_by_type"
+    | "context_completeness_rate"
+    | "blocked_run_rate_insufficient_context";
+  label: string;
+  status: OrchestratorGateStatus;
+  measuredValue: number;
+  threshold: number;
+  comparator: "<=" | ">=";
+  samples: number;
+  reasons: string[];
+  metadata?: Record<string, unknown> | null;
+};
+
+export type OrchestratorGateReport = {
+  id: string;
+  generatedAt: string;
+  generatedBy: "deterministic_kernel";
+  overallStatus: OrchestratorGateStatus;
+  gates: OrchestratorGateEntry[];
+  notes: string[];
+};
+
 export type StartOrchestratorRunStepPolicy = {
   includeNarrative?: boolean;
   includeFullDocs?: boolean;
@@ -2648,6 +2719,71 @@ export type StartOrchestratorRunArgs = {
   schedulerState?: string;
   metadata?: Record<string, unknown> | null;
   steps: StartOrchestratorRunStepInput[];
+};
+
+export type ListOrchestratorRunsArgs = {
+  status?: OrchestratorRunStatus;
+  missionId?: string;
+  limit?: number;
+};
+
+export type GetOrchestratorRunGraphArgs = {
+  runId: string;
+  timelineLimit?: number;
+};
+
+export type StartOrchestratorRunFromMissionArgs = {
+  missionId: string;
+  runId?: string;
+  contextProfile?: OrchestratorContextProfileId;
+  schedulerState?: string;
+  metadata?: Record<string, unknown> | null;
+  defaultExecutorKind?: OrchestratorExecutorKind;
+  defaultRetryLimit?: number;
+};
+
+export type StartOrchestratorAttemptArgs = {
+  runId: string;
+  stepId: string;
+  ownerId: string;
+  executorKind?: OrchestratorExecutorKind;
+};
+
+export type CompleteOrchestratorAttemptArgs = {
+  attemptId: string;
+  status: Extract<OrchestratorAttemptStatus, "succeeded" | "failed" | "blocked" | "canceled">;
+  result?: OrchestratorAttemptResultEnvelope;
+  errorClass?: OrchestratorErrorClass;
+  errorMessage?: string | null;
+  retryBackoffMs?: number;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type TickOrchestratorRunArgs = {
+  runId: string;
+};
+
+export type ResumeOrchestratorRunArgs = {
+  runId: string;
+};
+
+export type CancelOrchestratorRunArgs = {
+  runId: string;
+  reason?: string;
+};
+
+export type HeartbeatOrchestratorClaimsArgs = {
+  attemptId: string;
+  ownerId: string;
+};
+
+export type ListOrchestratorTimelineArgs = {
+  runId: string;
+  limit?: number;
+};
+
+export type GetOrchestratorGateReportArgs = {
+  refresh?: boolean;
 };
 
 export type AutomationPlannerProvider = "codex" | "claude";
