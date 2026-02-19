@@ -39,10 +39,28 @@ export function StartupAuthPage() {
 
     const load = async () => {
       try {
-        const [status, bootstrap, snapshot] = await Promise.all([
+        const snapshot = await window.ade.projectConfig.get();
+
+        if (cancelled) return;
+
+        const hosted = getHostedConfig(snapshot);
+        const providerMode =
+          typeof snapshot.effective.providerMode === "string" ? snapshot.effective.providerMode : "guest";
+        setTermsAccepted(asBoolean(hosted.consentGiven));
+        setGithubConsentAccepted(asBoolean(hosted.githubRepoConsent));
+
+        const startupChoice = window.localStorage.getItem(STARTUP_CHOICE_KEY);
+        if (startupChoice === "guest" || providerMode === "guest") {
+          navigate("/project", { replace: true });
+          return;
+        }
+
+        // Render startup UI first. Hosted status/bootstrap can be fetched in the background.
+        setLoading(false);
+
+        const [status, bootstrap] = await Promise.all([
           window.ade.hosted.getStatus().catch(() => null),
-          window.ade.hosted.getBootstrapConfig().catch(() => null),
-          window.ade.projectConfig.get()
+          window.ade.hosted.getBootstrapConfig().catch(() => null)
         ]);
 
         if (cancelled) return;
@@ -50,12 +68,7 @@ export function StartupAuthPage() {
         if (status) setHostedStatus(status);
         if (bootstrap) setBootstrapConfig(bootstrap);
 
-        const hosted = getHostedConfig(snapshot);
-        setTermsAccepted(asBoolean(hosted.consentGiven));
-        setGithubConsentAccepted(asBoolean(hosted.githubRepoConsent));
-
-        const startupChoice = window.localStorage.getItem(STARTUP_CHOICE_KEY);
-        if (status?.auth.signedIn || startupChoice === "guest") {
+        if (status?.auth.signedIn) {
           navigate("/project", { replace: true });
           return;
         }

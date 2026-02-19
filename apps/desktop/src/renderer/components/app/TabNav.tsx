@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
-import { BookOpenText, Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Rocket, Settings, TerminalSquare, Wand2 } from "lucide-react";
+import { BookOpenText, Bug, FileCode2, GitPullRequest, History, LayoutGrid, MessageSquareText, Network, Play, Rocket, Settings, TerminalSquare, Wand2 } from "lucide-react";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
@@ -12,6 +12,7 @@ const items = [
   { to: "/lanes", label: "Lanes", icon: LayoutGrid },
   { to: "/files", label: "Files", icon: FileCode2 },
   { to: "/terminals", label: "Terminals", icon: TerminalSquare },
+  { to: "/codex", label: "Codex", icon: MessageSquareText },
   { to: "/conflicts", label: "Conflicts", icon: Bug },
   { to: "/context", label: "Context", icon: BookOpenText },
   { to: "/graph", label: "Graph", icon: Network },

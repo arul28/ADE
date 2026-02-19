@@ -176,6 +176,25 @@ import type {
   CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
   SessionDeltaSummary,
+  CodexAccountState,
+  CodexConnectionState,
+  CodexEventPayload,
+  CodexLaneThreadBinding,
+  CodexLoginAccountArgs,
+  CodexLoginAccountResult,
+  CodexModel,
+  CodexPendingApprovalRequest,
+  CodexRateLimits,
+  CodexRespondApprovalArgs,
+  CodexThread,
+  CodexThreadListArgs,
+  CodexThreadListResult,
+  CodexThreadReadArgs,
+  CodexThreadResumeArgs,
+  CodexThreadStartArgs,
+  CodexTurn,
+  CodexTurnInterruptArgs,
+  CodexTurnStartArgs,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -330,6 +349,27 @@ declare global {
         updateMeta: (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null; resumeCommand?: string | null }) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
+      };
+      codex: {
+        getConnectionState: () => Promise<CodexConnectionState>;
+        retryConnection: () => Promise<CodexConnectionState>;
+        getLaneBinding: (laneId: string) => Promise<CodexLaneThreadBinding>;
+        setLaneDefaultThread: (args: { laneId: string; threadId: string | null }) => Promise<CodexLaneThreadBinding>;
+        threadStart: (args: CodexThreadStartArgs) => Promise<CodexThread>;
+        threadResume: (args: CodexThreadResumeArgs) => Promise<CodexThread>;
+        threadList: (args?: CodexThreadListArgs) => Promise<CodexThreadListResult>;
+        threadRead: (args: CodexThreadReadArgs) => Promise<CodexThread>;
+        turnStart: (args: CodexTurnStartArgs) => Promise<CodexTurn>;
+        turnInterrupt: (args: CodexTurnInterruptArgs) => Promise<void>;
+        accountRead: (args?: { refreshToken?: boolean }) => Promise<CodexAccountState>;
+        accountLoginStart: (args: CodexLoginAccountArgs & { openInBrowser?: boolean }) => Promise<CodexLoginAccountResult>;
+        accountLoginCancel: (loginId: string) => Promise<void>;
+        accountLogout: () => Promise<void>;
+        accountRateLimitsRead: () => Promise<CodexRateLimits>;
+        modelList: (args?: { limit?: number }) => Promise<{ data: CodexModel[]; nextCursor: string | null }>;
+        listPendingApprovals: (args?: { threadId?: string }) => Promise<CodexPendingApprovalRequest[]>;
+        respondApproval: (args: CodexRespondApprovalArgs) => Promise<void>;
+        onEvent: (cb: (ev: CodexEventPayload) => void) => () => void;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;

@@ -39,6 +39,7 @@ import { createRestackSuggestionService } from "./services/lanes/restackSuggesti
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
+import { createCodexAppServerService } from "./services/codex/codexAppServerService";
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -73,6 +74,15 @@ async function createWindow(): Promise<BrowserWindow> {
     if (url === allowed) return;
     event.preventDefault();
   });
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    try {
+      // Avoid stale dev-server module cache entries causing "Outdated Optimize Dep" failures.
+      await win.webContents.session.clearCache();
+    } catch {
+      // ignore cache clear failures in dev
+    }
+  }
 
   await win.loadURL(getRendererUrl());
 
@@ -198,6 +208,14 @@ app.whenReady().then(async () => {
       onHeadChanged: handleHeadChanged
     });
     await laneService.ensurePrimaryLane();
+
+    const codexAppServerService = createCodexAppServerService({
+      db,
+      logger,
+      laneService,
+      clientVersion: app.getVersion(),
+      onEvent: (event) => broadcast(IPC.codexEvent, event)
+    });
 
     const sessionService = createSessionService({ db });
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({ status: "disposed" });
@@ -555,6 +573,7 @@ app.whenReady().then(async () => {
       automationPlannerService,
       missionService,
       orchestratorService,
+      codexAppServerService,
       ciService,
       packService,
       projectConfigService,
@@ -601,6 +620,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctxRef.ptyService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      ctxRef.codexAppServerService.dispose();
     } catch {
       // ignore
     }

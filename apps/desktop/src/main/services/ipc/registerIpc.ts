@@ -184,6 +184,24 @@ import type {
   UpdateSessionMetaArgs,
   UpdateMissionArgs,
   UpdateMissionStepArgs,
+  CodexAccountState,
+  CodexConnectionState,
+  CodexLaneThreadBinding,
+  CodexLoginAccountArgs,
+  CodexLoginAccountResult,
+  CodexModel,
+  CodexPendingApprovalRequest,
+  CodexRateLimits,
+  CodexRespondApprovalArgs,
+  CodexThread,
+  CodexThreadListArgs,
+  CodexThreadListResult,
+  CodexThreadReadArgs,
+  CodexThreadResumeArgs,
+  CodexThreadStartArgs,
+  CodexTurn,
+  CodexTurnInterruptArgs,
+  CodexTurnStartArgs,
   TestRunSummary,
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
@@ -250,6 +268,7 @@ import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createMissionService } from "../missions/missionService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
+import type { createCodexAppServerService } from "../codex/codexAppServerService";
 import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
@@ -284,6 +303,7 @@ export type AppContext = {
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   missionService: ReturnType<typeof createMissionService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  codexAppServerService: ReturnType<typeof createCodexAppServerService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -1352,6 +1372,108 @@ export function registerIpc({
   ipcMain.handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {
     const ctx = getCtx();
     return ctx.packService.getSessionDelta(arg.sessionId);
+  });
+
+  ipcMain.handle(IPC.codexGetConnectionState, async (): Promise<CodexConnectionState> => {
+    const ctx = getCtx();
+    return ctx.codexAppServerService.getConnectionState();
+  });
+
+  ipcMain.handle(IPC.codexRetryConnection, async (): Promise<CodexConnectionState> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.retryConnection();
+  });
+
+  ipcMain.handle(IPC.codexGetLaneBinding, async (_event, arg: { laneId: string }): Promise<CodexLaneThreadBinding> => {
+    const ctx = getCtx();
+    return ctx.codexAppServerService.getLaneBinding(arg?.laneId ?? "");
+  });
+
+  ipcMain.handle(
+    IPC.codexSetLaneDefaultThread,
+    async (_event, arg: { laneId: string; threadId: string | null }): Promise<CodexLaneThreadBinding> => {
+      const ctx = getCtx();
+      return ctx.codexAppServerService.setLaneDefaultThread(arg?.laneId ?? "", arg?.threadId ?? null);
+    }
+  );
+
+  ipcMain.handle(IPC.codexThreadStart, async (_event, arg: CodexThreadStartArgs): Promise<CodexThread> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.threadStart(arg);
+  });
+
+  ipcMain.handle(IPC.codexThreadResume, async (_event, arg: CodexThreadResumeArgs): Promise<CodexThread> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.threadResume(arg);
+  });
+
+  ipcMain.handle(IPC.codexThreadList, async (_event, arg: CodexThreadListArgs = {}): Promise<CodexThreadListResult> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.threadList(arg);
+  });
+
+  ipcMain.handle(IPC.codexThreadRead, async (_event, arg: CodexThreadReadArgs): Promise<CodexThread> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.threadRead(arg);
+  });
+
+  ipcMain.handle(IPC.codexTurnStart, async (_event, arg: CodexTurnStartArgs): Promise<CodexTurn> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.turnStart(arg);
+  });
+
+  ipcMain.handle(IPC.codexTurnInterrupt, async (_event, arg: CodexTurnInterruptArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.codexAppServerService.turnInterrupt(arg);
+  });
+
+  ipcMain.handle(IPC.codexAccountRead, async (_event, arg: { refreshToken?: boolean } = {}): Promise<CodexAccountState> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.accountRead(Boolean(arg?.refreshToken));
+  });
+
+  ipcMain.handle(
+    IPC.codexAccountLoginStart,
+    async (_event, arg: CodexLoginAccountArgs & { openInBrowser?: boolean }): Promise<CodexLoginAccountResult> => {
+      const ctx = getCtx();
+      const loginArgs: CodexLoginAccountArgs = arg?.type === "apiKey" ? { type: "apiKey", apiKey: arg.apiKey } : { type: "chatgpt" };
+      const result = await ctx.codexAppServerService.accountLoginStart(loginArgs);
+      if (result.type === "chatgpt" && arg?.openInBrowser !== false) {
+        await shell.openExternal(result.authUrl);
+      }
+      return result;
+    }
+  );
+
+  ipcMain.handle(IPC.codexAccountLoginCancel, async (_event, arg: { loginId: string }): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.codexAppServerService.accountLoginCancel(arg?.loginId ?? "");
+  });
+
+  ipcMain.handle(IPC.codexAccountLogout, async (): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.codexAppServerService.accountLogout();
+  });
+
+  ipcMain.handle(IPC.codexAccountRateLimitsRead, async (): Promise<CodexRateLimits> => {
+    const ctx = getCtx();
+    return await ctx.codexAppServerService.accountRateLimitsRead();
+  });
+
+  ipcMain.handle(IPC.codexModelList, async (_event, arg: { limit?: number } = {}): Promise<{ data: CodexModel[]; nextCursor: string | null }> => {
+    const ctx = getCtx();
+    const limit = typeof arg?.limit === "number" ? Math.max(1, Math.min(200, Math.floor(arg.limit))) : 100;
+    return await ctx.codexAppServerService.modelList(limit);
+  });
+
+  ipcMain.handle(IPC.codexListPendingApprovals, async (_event, arg: { threadId?: string } = {}): Promise<CodexPendingApprovalRequest[]> => {
+    const ctx = getCtx();
+    return ctx.codexAppServerService.listPendingApprovals(arg?.threadId);
+  });
+
+  ipcMain.handle(IPC.codexRespondApproval, async (_event, arg: CodexRespondApprovalArgs): Promise<void> => {
+    const ctx = getCtx();
+    await ctx.codexAppServerService.respondToApprovalRequest(arg.requestId, arg.decision);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

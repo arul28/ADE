@@ -1066,6 +1066,185 @@ export type ReadTranscriptTailArgs = {
   raw?: boolean;
 };
 
+export type CodexApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
+
+export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+
+export type CodexConnectionStatus = "starting" | "ready" | "restarting" | "missing-binary" | "error" | "stopped";
+
+export type CodexConnectionState = {
+  status: CodexConnectionStatus;
+  detail: string | null;
+  restartAttempt: number;
+  updatedAt: string;
+};
+
+export type CodexAuthMode = "apikey" | "chatgpt" | "chatgptAuthTokens";
+
+export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export type CodexAccount = { type: "apiKey" } | { type: "chatgpt"; email: string; planType: string };
+
+export type CodexRateLimitWindow = {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+};
+
+export type CodexRateLimitSnapshot = {
+  limitId: string | null;
+  limitName: string | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+  planType: string | null;
+};
+
+export type CodexRateLimits = {
+  rateLimits: CodexRateLimitSnapshot;
+  rateLimitsByLimitId: Record<string, CodexRateLimitSnapshot> | null;
+};
+
+export type CodexAccountState = {
+  account: CodexAccount | null;
+  requiresOpenaiAuth: boolean;
+  authMode: CodexAuthMode | null;
+};
+
+export type CodexModel = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  supportedReasoningEfforts?: Array<{
+    reasoningEffort: CodexReasoningEffort;
+    description: string;
+  }>;
+  defaultReasoningEffort?: CodexReasoningEffort;
+  isDefault: boolean;
+};
+
+export type CodexThreadItem = {
+  id: string;
+  type: string;
+  [key: string]: unknown;
+};
+
+export type CodexTurn = {
+  id: string;
+  items: CodexThreadItem[];
+  status: string;
+  error: Record<string, unknown> | null;
+};
+
+export type CodexThread = {
+  id: string;
+  preview: string;
+  modelProvider: string;
+  createdAt: number;
+  updatedAt: number;
+  path: string | null;
+  cwd: string;
+  cliVersion: string;
+  source: string;
+  gitInfo: Record<string, unknown> | null;
+  turns: CodexTurn[];
+};
+
+export type CodexThreadListArgs = {
+  cursor?: string | null;
+  limit?: number;
+  sortKey?: "created_at" | "updated_at";
+  modelProviders?: string[] | null;
+};
+
+export type CodexThreadListResult = {
+  data: CodexThread[];
+  nextCursor: string | null;
+};
+
+export type CodexThreadStartArgs = {
+  laneId: string;
+  model?: string | null;
+  approvalPolicy?: CodexApprovalPolicy;
+  sandbox?: CodexSandboxMode;
+};
+
+export type CodexThreadResumeArgs = {
+  laneId: string;
+  threadId: string;
+  model?: string | null;
+  approvalPolicy?: CodexApprovalPolicy;
+  sandbox?: CodexSandboxMode;
+};
+
+export type CodexThreadReadArgs = {
+  threadId: string;
+  includeTurns?: boolean;
+};
+
+export type CodexTurnStartArgs = {
+  threadId: string;
+  laneId?: string | null;
+  prompt: string;
+  model?: string | null;
+  effort?: CodexReasoningEffort | null;
+  approvalPolicy?: CodexApprovalPolicy;
+};
+
+export type CodexTurnInterruptArgs = {
+  threadId: string;
+  turnId: string;
+};
+
+export type CodexLaneThreadBinding = {
+  laneId: string;
+  defaultThreadId: string | null;
+  recentThreadIds: string[];
+  updatedAt: string | null;
+};
+
+export type CodexLoginAccountArgs = { type: "chatgpt" } | { type: "apiKey"; apiKey: string };
+
+export type CodexLoginAccountResult =
+  | { type: "apiKey" }
+  | { type: "chatgpt"; loginId: string; authUrl: string };
+
+export type CodexApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
+
+export type CodexPendingApprovalRequest = {
+  requestId: string;
+  method: "item/commandExecution/requestApproval" | "item/fileChange/requestApproval";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  reason: string | null;
+  command: string | null;
+  cwd: string | null;
+  grantRoot: string | null;
+  requestedAt: string;
+};
+
+export type CodexRespondApprovalArgs = {
+  requestId: string;
+  decision: CodexApprovalDecision;
+};
+
+export type CodexEventPayload =
+  | { type: "connection"; state: CodexConnectionState }
+  | {
+      type: "notification";
+      method: string;
+      params: unknown;
+      receivedAt: string;
+    }
+  | {
+      type: "server-request";
+      request: CodexPendingApprovalRequest;
+      receivedAt: string;
+    }
+  | { type: "server-request-resolved"; requestId: string; at: string }
+  | { type: "transport-error"; message: string; at: string };
+
 export type ListLanesArgs = {
   includeArchived?: boolean;
 };

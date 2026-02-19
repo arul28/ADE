@@ -195,6 +195,25 @@ import type {
   UpdateLaneAppearanceArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
+  CodexAccountState,
+  CodexConnectionState,
+  CodexEventPayload,
+  CodexLaneThreadBinding,
+  CodexLoginAccountArgs,
+  CodexLoginAccountResult,
+  CodexModel,
+  CodexPendingApprovalRequest,
+  CodexRateLimits,
+  CodexRespondApprovalArgs,
+  CodexThread,
+  CodexThreadListArgs,
+  CodexThreadListResult,
+  CodexThreadReadArgs,
+  CodexThreadResumeArgs,
+  CodexThreadStartArgs,
+  CodexTurn,
+  CodexTurnInterruptArgs,
+  CodexTurnStartArgs,
   StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
@@ -402,6 +421,41 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId })
+  },
+  codex: {
+    getConnectionState: async (): Promise<CodexConnectionState> => ipcRenderer.invoke(IPC.codexGetConnectionState),
+    retryConnection: async (): Promise<CodexConnectionState> => ipcRenderer.invoke(IPC.codexRetryConnection),
+    getLaneBinding: async (laneId: string): Promise<CodexLaneThreadBinding> =>
+      ipcRenderer.invoke(IPC.codexGetLaneBinding, { laneId }),
+    setLaneDefaultThread: async (args: { laneId: string; threadId: string | null }): Promise<CodexLaneThreadBinding> =>
+      ipcRenderer.invoke(IPC.codexSetLaneDefaultThread, args),
+    threadStart: async (args: CodexThreadStartArgs): Promise<CodexThread> => ipcRenderer.invoke(IPC.codexThreadStart, args),
+    threadResume: async (args: CodexThreadResumeArgs): Promise<CodexThread> => ipcRenderer.invoke(IPC.codexThreadResume, args),
+    threadList: async (args: CodexThreadListArgs = {}): Promise<CodexThreadListResult> =>
+      ipcRenderer.invoke(IPC.codexThreadList, args),
+    threadRead: async (args: CodexThreadReadArgs): Promise<CodexThread> => ipcRenderer.invoke(IPC.codexThreadRead, args),
+    turnStart: async (args: CodexTurnStartArgs): Promise<CodexTurn> => ipcRenderer.invoke(IPC.codexTurnStart, args),
+    turnInterrupt: async (args: CodexTurnInterruptArgs): Promise<void> => ipcRenderer.invoke(IPC.codexTurnInterrupt, args),
+    accountRead: async (args: { refreshToken?: boolean } = {}): Promise<CodexAccountState> =>
+      ipcRenderer.invoke(IPC.codexAccountRead, args),
+    accountLoginStart: async (
+      args: CodexLoginAccountArgs & { openInBrowser?: boolean }
+    ): Promise<CodexLoginAccountResult> => ipcRenderer.invoke(IPC.codexAccountLoginStart, args),
+    accountLoginCancel: async (loginId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.codexAccountLoginCancel, { loginId }),
+    accountLogout: async (): Promise<void> => ipcRenderer.invoke(IPC.codexAccountLogout),
+    accountRateLimitsRead: async (): Promise<CodexRateLimits> => ipcRenderer.invoke(IPC.codexAccountRateLimitsRead),
+    modelList: async (args: { limit?: number } = {}): Promise<{ data: CodexModel[]; nextCursor: string | null }> =>
+      ipcRenderer.invoke(IPC.codexModelList, args),
+    listPendingApprovals: async (args: { threadId?: string } = {}): Promise<CodexPendingApprovalRequest[]> =>
+      ipcRenderer.invoke(IPC.codexListPendingApprovals, args),
+    respondApproval: async (args: CodexRespondApprovalArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.codexRespondApproval, args),
+    onEvent: (cb: (payload: CodexEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: CodexEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.codexEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.codexEvent, listener);
+    }
   },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => ipcRenderer.invoke(IPC.ptyCreate, args),

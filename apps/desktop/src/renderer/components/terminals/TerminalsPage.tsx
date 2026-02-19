@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Clipboard, FileText, Info, LayoutList, Monitor, Play, RefreshCw, Square, Terminal } from "lucide-react";
+import { Clipboard, FileText, Info, LayoutList, MessageSquareText, Monitor, Play, RefreshCw, Square, Terminal } from "lucide-react";
 import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -8,6 +9,7 @@ import { Chip } from "../ui/Chip";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { TerminalView, getTerminalRuntimeHealth } from "./TerminalView";
 import { sanitizeTerminalInlineText, sessionIndicatorState } from "../../lib/terminalAttention";
+import { CodexChatPage } from "../codex/CodexChatPage";
 
 /* ---- Default tiling layout ---- */
 
@@ -61,6 +63,9 @@ export function TerminalsPage() {
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [lanePickerOpen, setLanePickerOpen] = useState(false);
+  const [lanePickerLaneIds, setLanePickerLaneIds] = useState<string[]>([]);
+  const [inlineCodexLaneId, setInlineCodexLaneId] = useState<string | null>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -147,6 +152,60 @@ export function TerminalsPage() {
     [sessions, selectedSessionId]
   );
   const selectedHealth = selectedSession ? getTerminalRuntimeHealth(selectedSession.id) : null;
+  const inlineCodexLane = useMemo(
+    () => (inlineCodexLaneId ? lanes.find((lane) => lane.id === inlineCodexLaneId) ?? null : null),
+    [inlineCodexLaneId, lanes]
+  );
+
+  useEffect(() => {
+    if (!inlineCodexLaneId) return;
+    if (lanes.some((lane) => lane.id === inlineCodexLaneId)) return;
+    setInlineCodexLaneId(null);
+  }, [inlineCodexLaneId, lanes]);
+
+  const openCodexForLane = useCallback(
+    (laneId: string) => {
+      setInlineCodexLaneId(laneId);
+      selectLane(laneId);
+    },
+    [selectLane]
+  );
+
+  const launchCodexChat = useCallback(() => {
+    if (inlineCodexLane) {
+      setInlineCodexLaneId(null);
+      return;
+    }
+
+    const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const candidates: string[] = [];
+    const pushCandidate = (laneId: string | null | undefined) => {
+      if (!laneId || !lanesById.has(laneId) || candidates.includes(laneId)) return;
+      candidates.push(laneId);
+    };
+
+    if (filterLaneId !== "all") pushCandidate(filterLaneId);
+    pushCandidate(selectedLaneId);
+    pushCandidate(selectedSession?.laneId);
+    if (filtered.length === 1) pushCandidate(filtered[0]?.laneId);
+
+    if (candidates.length === 1) {
+      openCodexForLane(candidates[0]!);
+      return;
+    }
+
+    if (candidates.length === 0 && lanes.length === 1) {
+      openCodexForLane(lanes[0]!.id);
+      return;
+    }
+
+    const fromVisibleSessions = Array.from(
+      new Set(filtered.map((session) => session.laneId).filter((laneId) => lanesById.has(laneId)))
+    );
+    const laneIds = candidates.length > 1 ? candidates : fromVisibleSessions.length ? fromVisibleSessions : lanes.map((lane) => lane.id);
+    setLanePickerLaneIds(laneIds);
+    setLanePickerOpen(true);
+  }, [filterLaneId, filtered, inlineCodexLane, lanes, openCodexForLane, selectedLaneId, selectedSession?.laneId]);
 
   // Auto-select the first running session if nothing is selected
   useEffect(() => {
@@ -403,14 +462,14 @@ export function TerminalsPage() {
         title: "Terminal",
         icon: Monitor,
         bodyClassName: "overflow-hidden",
-        meta: selectedSession
-          ? selectedSession.status === "running"
-            ? "live"
-            : selectedSession.status
-          : undefined,
+        meta: inlineCodexLane ? `codex · ${inlineCodexLane.name}` : selectedSession ? (selectedSession.status === "running" ? "live" : selectedSession.status) : undefined,
         children: (
           <div className="h-full w-full">
-            {runningSessions.length > 0 ? (
+            {inlineCodexLane ? (
+              <div className="h-full overflow-hidden">
+                <CodexChatPage embedded laneIdOverride={inlineCodexLane.id} onCloseEmbedded={() => setInlineCodexLaneId(null)} />
+              </div>
+            ) : runningSessions.length > 0 ? (
               <div className="relative h-full w-full">
                 {runningSessions.map((session) =>
                   session.ptyId ? (
@@ -656,6 +715,7 @@ export function TerminalsPage() {
     [
       filtered,
       loading,
+      inlineCodexLane,
       filterLaneId,
       filterStatus,
       q,
@@ -675,43 +735,103 @@ export function TerminalsPage() {
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-bg">
-      {/* Header toolbar */}
-      <div className="border-b border-border/30 bg-gradient-to-b from-surface/60 to-transparent px-3 py-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="text-sm font-bold tracking-tight text-fg/80">Terminals</div>
-          <div className="ml-auto flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7"
-              disabled={runningSessions.length === 0}
-              title={runningSessions.length ? "Close all running sessions" : "No running sessions"}
-              onClick={() => closeRunning().catch(() => {})}
-            >
-              <Square className="h-3.5 w-3.5" />
-              Close Running ({runningSessions.length})
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7"
-              title="Refresh sessions"
-              onClick={() => refresh().catch(() => {})}
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </Button>
+    <>
+      <div className="flex h-full min-w-0 flex-col bg-bg">
+        {/* Header toolbar */}
+        <div className="border-b border-border/30 bg-gradient-to-b from-surface/60 to-transparent px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-bold tracking-tight text-fg/80">Terminals</div>
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                title={inlineCodexLane ? "Close inline Codex chat" : "Open Codex chat inline"}
+                onClick={launchCodexChat}
+              >
+                <MessageSquareText className="h-3.5 w-3.5" />
+                {inlineCodexLane ? "Close Codex Chat" : "Codex Chat"}
+              </Button>
+              {inlineCodexLane ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7"
+                  title="Open Codex in full page"
+                  onClick={() => navigate(`/codex?laneId=${encodeURIComponent(inlineCodexLane.id)}`)}
+                >
+                  Open Full Page
+                </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                disabled={runningSessions.length === 0}
+                title={runningSessions.length ? "Close all running sessions" : "No running sessions"}
+                onClick={() => closeRunning().catch(() => {})}
+              >
+                <Square className="h-3.5 w-3.5" />
+                Close Running ({runningSessions.length})
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7"
+                title="Refresh sessions"
+                onClick={() => refresh().catch(() => {})}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
         </div>
+
+        {/* Pane tiling layout */}
+        <PaneTilingLayout
+          layoutId="terminals:tiling:v1"
+          tree={TERMINALS_TILING_TREE}
+          panes={paneConfigs}
+          className="flex-1 min-h-0"
+        />
       </div>
 
-      {/* Pane tiling layout */}
-      <PaneTilingLayout
-        layoutId="terminals:tiling:v1"
-        tree={TERMINALS_TILING_TREE}
-        panes={paneConfigs}
-        className="flex-1 min-h-0"
-      />
-    </div>
+      <Dialog.Root open={lanePickerOpen} onOpenChange={setLanePickerOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-[60] w-[min(420px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border/30 bg-[--color-surface-overlay] p-4 shadow-float backdrop-blur-xl">
+            <Dialog.Title className="text-sm font-semibold text-fg">Select Lane</Dialog.Title>
+            <Dialog.Description className="mt-1 text-xs text-muted-fg">
+              Multiple lanes match the current terminals context. Choose one to open inline Codex chat.
+            </Dialog.Description>
+            <div className="mt-3 max-h-72 space-y-1.5 overflow-auto">
+              {lanePickerLaneIds.map((candidateId) => {
+                const lane = lanes.find((row) => row.id === candidateId);
+                if (!lane) return null;
+                return (
+                  <button
+                    key={candidateId}
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md border border-border/25 bg-card/70 px-3 py-2 text-left text-xs text-fg hover:bg-card"
+                    onClick={() => {
+                      setLanePickerOpen(false);
+                      openCodexForLane(candidateId);
+                    }}
+                  >
+                    <span className="font-medium">{lane.name}</span>
+                    <span className="text-[11px] text-muted-fg">{lane.branchRef}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex justify-end">
+              <Button size="sm" variant="ghost" onClick={() => setLanePickerOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </>
   );
 }
