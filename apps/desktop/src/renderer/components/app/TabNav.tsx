@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { BookOpenText, Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Settings, TerminalSquare, Wand2 } from "lucide-react";
+import { BookOpenText, Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Rocket, Settings, TerminalSquare, Wand2 } from "lucide-react";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
@@ -16,6 +16,7 @@ const items = [
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: History },
   { to: "/automations", label: "Automations", icon: Wand2 },
+  { to: "/missions", label: "Missions", icon: Rocket },
   { to: "/settings", label: "Settings", icon: Settings }
 ] as const;
 

@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-18
+> Last updated: 2026-02-19
 >
-> Roadmap note: future sequencing and planned architecture expansion (missions, orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
+> Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
 
 ---
 
@@ -88,6 +88,7 @@ Key UI subsystems:
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
 | History | Operation/checkpoint/pack event timeline |
 | Automations | Trigger-action workflows and planner-driven draft flows |
+| Missions | Plain-English mission intake, lifecycle board, interventions, artifacts, outcomes |
 | Settings | Provider, trust, keybindings, terminal profiles, and data controls |
 
 ### 2. Local Core Engine
@@ -149,7 +150,7 @@ Each step in this pipeline is triggered by events rather than polling. The job e
 
 ### IPC Architecture
 
-Communication between the renderer and main process is organized into a broad typed IPC contract (`225` channels in `apps/desktop/src/shared/ipc.ts` as of 2026-02-18). Major domains include:
+Communication between the renderer and main process is organized into a broad typed IPC contract (`234` channels in `apps/desktop/src/shared/ipc.ts` as of 2026-02-19). Major domains include:
 
 | Domain | Prefix examples | Pattern |
 |-----------|---------------|---------|
@@ -157,7 +158,7 @@ Communication between the renderer and main process is organized into a broad ty
 | Lanes / Git / Conflicts / PRs | `ade.lanes.*`, `ade.git.*`, `ade.conflicts.*`, `ade.prs.*` | invoke/handle + selected events |
 | Terminals / Sessions / Files | `ade.pty.*`, `ade.sessions.*`, `ade.files.*` | invoke/handle + high-frequency stream events |
 | Context / Packs / History / Graph | `ade.context.*`, `ade.packs.*`, `ade.history.*`, `ade.graph.*` | invoke/handle + pack events |
-| Processes / Tests / Automations | `ade.processes.*`, `ade.tests.*`, `ade.automations.*` | invoke/handle + runtime events |
+| Processes / Tests / Automations / Missions | `ade.processes.*`, `ade.tests.*`, `ade.automations.*`, `ade.missions.*` | invoke/handle + runtime events |
 | Config / Settings surfaces | `ade.projectConfig.*`, `ade.keybindings.*`, `ade.terminalProfiles.*`, `ade.agentTools.*`, `ade.hosted.*`, `ade.github.*` | invoke/handle + provider/state events |
 
 These per-subsystem counts are illustrative and can drift; `apps/desktop/src/shared/ipc.ts` is the canonical live channel inventory.

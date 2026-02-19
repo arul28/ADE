@@ -11,6 +11,7 @@ import { WorkspaceGraphPage } from "../graph/WorkspaceGraphPage";
 import { PRsPage } from "../prs/PRsPage";
 import { HistoryPage } from "../history/HistoryPage";
 import { AutomationsPage } from "../automations/AutomationsPage";
+import { MissionsPage } from "../missions/MissionsPage";
 import { SettingsPage } from "./SettingsPage";
 import { StartupAuthPage } from "./StartupAuthPage";
 import { OnboardingPage } from "../onboarding/OnboardingPage";
@@ -52,6 +53,7 @@ export function App() {
             <Route path="/prs" element={<PRsPage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/automations" element={<AutomationsPage />} />
+            <Route path="/missions" element={<MissionsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>

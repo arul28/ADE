@@ -21,6 +21,8 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AddMissionArtifactArgs,
+  AddMissionInterventionArgs,
   ConflictProposal,
   ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
@@ -113,6 +115,7 @@ import type {
   ListOperationsArgs,
   ListOverlapsArgs,
   ListLanesArgs,
+  ListMissionsArgs,
   ListSessionsArgs,
   ListTestRunsArgs,
   MergeSimulationArgs,
@@ -175,10 +178,19 @@ import type {
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
   UpdateSessionMetaArgs,
+  UpdateMissionArgs,
+  UpdateMissionStepArgs,
   TestRunSummary,
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
-  WriteTextAtomicArgs
+  WriteTextAtomicArgs,
+  MissionDetail,
+  MissionIntervention,
+  MissionArtifact,
+  MissionStep,
+  MissionSummary,
+  ResolveMissionInterventionArgs,
+  CreateMissionArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -210,6 +222,7 @@ import type { createOnboardingService } from "../onboarding/onboardingService";
 import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
+import type { createMissionService } from "../missions/missionService";
 import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
@@ -242,6 +255,7 @@ export type AppContext = {
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
+  missionService: ReturnType<typeof createMissionService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -583,6 +597,52 @@ export function registerIpc({
     const ctx = getCtx();
     return ctx.automationPlannerService.simulate(arg);
   });
+
+  ipcMain.handle(IPC.missionsList, async (_event, arg: ListMissionsArgs = {}): Promise<MissionSummary[]> => {
+    const ctx = getCtx();
+    return ctx.missionService.list(arg);
+  });
+
+  ipcMain.handle(IPC.missionsGet, async (_event, arg: { missionId: string }): Promise<MissionDetail | null> => {
+    const ctx = getCtx();
+    return ctx.missionService.get(arg?.missionId ?? "");
+  });
+
+  ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {
+    const ctx = getCtx();
+    return ctx.missionService.create(arg);
+  });
+
+  ipcMain.handle(IPC.missionsUpdate, async (_event, arg: UpdateMissionArgs): Promise<MissionDetail> => {
+    const ctx = getCtx();
+    return ctx.missionService.update(arg);
+  });
+
+  ipcMain.handle(IPC.missionsUpdateStep, async (_event, arg: UpdateMissionStepArgs): Promise<MissionStep> => {
+    const ctx = getCtx();
+    return ctx.missionService.updateStep(arg);
+  });
+
+  ipcMain.handle(IPC.missionsAddArtifact, async (_event, arg: AddMissionArtifactArgs): Promise<MissionArtifact> => {
+    const ctx = getCtx();
+    return ctx.missionService.addArtifact(arg);
+  });
+
+  ipcMain.handle(
+    IPC.missionsAddIntervention,
+    async (_event, arg: AddMissionInterventionArgs): Promise<MissionIntervention> => {
+      const ctx = getCtx();
+      return ctx.missionService.addIntervention(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.missionsResolveIntervention,
+    async (_event, arg: ResolveMissionInterventionArgs): Promise<MissionIntervention> => {
+      const ctx = getCtx();
+      return ctx.missionService.resolveIntervention(arg);
+    }
+  );
 
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
     const ctx = getCtx();

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-18
+> Last updated: 2026-02-19
 
 This document describes the Electron desktop runtime in `apps/desktop`, including process boundaries, service initialization, IPC contracts, and lifecycle behavior.
 
@@ -47,6 +47,7 @@ Main-process responsibilities:
 - PTY session lifecycle and transcript capture
 - Git operations and conflict-state handling
 - Packs/checkpoints/events/versioning pipeline
+- Mission lifecycle state and intervention tracking
 - Automations and job engine execution
 - Process/test runners
 - Hosted/BYOK integrations
@@ -72,6 +73,7 @@ Core service groups:
 - Context and risk systems: pack service, conflict service, restack suggestion service, auto-rebase service, job engine
 - Integrations: hosted agent service, BYOK service, GitHub service, PR service + polling
 - Automation: automation service + automation planner service
+- Missions: mission service (Phase 1 mission lifecycle CRUD + eventing)
 
 Additional runtime loops:
 
@@ -84,7 +86,7 @@ Additional runtime loops:
 
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
-As of 2026-02-18, the contract includes `225` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github/hosted, automations, layout/graph, processes/tests, and settings/config domains.
+As of 2026-02-19, the contract includes `234` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github/hosted, automations/missions, layout/graph, processes/tests, and settings/config domains.
 
 High-frequency/broadcast event channels include:
 
@@ -97,6 +99,7 @@ High-frequency/broadcast event channels include:
 - `ade.packs.event`
 - `ade.prs.event`
 - `ade.automations.event`
+- `ade.missions.event`
 - `ade.lanes.restackSuggestions.event`
 - `ade.lanes.autoRebase.event`
 - `ade.project.missing`
@@ -146,4 +149,4 @@ Desktop architecture is mature and production-oriented for current scope:
 - Security boundaries (`contextIsolation`, preload-only IPC surface) are enforced.
 - Head-change and session-end pipelines keep packs/conflicts/automations synchronized.
 
-Future architecture expansion (Missions, Machines, relay transport, core extraction) is tracked in `docs/final-plan.md`.
+Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan.md`.

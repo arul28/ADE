@@ -52,7 +52,7 @@ Per `docs/final-plan.md`, Automations owns recurring/background execution policy
 - Budget/time guardrails for unattended runs.
 - Morning digest summaries and review queues.
 
-Missions are ad-hoc goal objects and are documented in the Final Plan. Automations is not replaced by Missions; it remains the recurring trigger layer that can launch mission/orchestrator work.
+Missions are ad-hoc goal objects and are documented in [features/MISSIONS.md](features/MISSIONS.md). Automations is not replaced by Missions; it remains the recurring trigger layer that can launch mission/orchestrator work.
 
 ---
 

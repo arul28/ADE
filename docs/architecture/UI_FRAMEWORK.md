@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-18
+> Last updated: 2026-02-19
 
 This document describes the renderer architecture in `apps/desktop/src/renderer`, including routing, theme system, state model, layout patterns, and IPC integration constraints.
 
@@ -24,7 +24,7 @@ This document describes the renderer architecture in `apps/desktop/src/renderer`
 
 ## Overview
 
-The ADE renderer is a React SPA running inside Electron's renderer process. It provides high-density operational UI for lanes, files, terminals, conflicts, context packs, PRs, history, automations, and settings.
+The ADE renderer is a React SPA running inside Electron's renderer process. It provides high-density operational UI for lanes, files, terminals, conflicts, context packs, PRs, history, automations, missions, and settings.
 
 The renderer has no direct filesystem/process/git access. All privileged operations flow through `window.ade` (preload bridge), with the Electron main process as the only trusted executor.
 
@@ -85,9 +85,10 @@ Routes are defined in `apps/desktop/src/renderer/components/app/App.tsx`. Curren
 - `/prs`
 - `/history`
 - `/automations`
+- `/missions`
 - `/settings`
 
-Primary left-rail nav (`TabNav`) exposes 11 tabs:
+Primary left-rail nav (`TabNav`) exposes 12 tabs:
 
 1. Play
 2. Lanes
@@ -99,7 +100,8 @@ Primary left-rail nav (`TabNav`) exposes 11 tabs:
 8. PRs
 9. History
 10. Automations
-11. Settings
+11. Missions
+12. Settings
 
 The shell is composed by `AppShell` + `TopBar` + `TabNav`, with each route rendering a feature page in the content region.
 
@@ -158,6 +160,7 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 - `prs/`: PR operations and status surfaces
 - `history/`: operations timeline surfaces
 - `automations/`: rules, history, NL planner interactions
+- `missions/`: mission intake, status board, interventions, artifacts, and outcomes
 - `onboarding/`: first-run setup flows
 - `settings/`: settings subsections (keybindings, terminal profiles, automations, data management)
 - `ui/`: shared presentation primitives
@@ -174,7 +177,7 @@ High-level IPC domains consumed by the renderer:
 - Lanes/sessions/pty/files/git
 - Conflicts/context/packs
 - PRs/github/hosted
-- Automations/layout/graph/processes/tests
+- Automations/missions/layout/graph/processes/tests
 - Project config/keybindings/terminal profiles/agent tools
 
 High-frequency event streams include:
@@ -188,6 +191,7 @@ High-frequency event streams include:
 - `ade.packs.event`
 - `ade.prs.event`
 - `ade.automations.event`
+- `ade.missions.event`
 - `ade.lanes.restackSuggestions.event`
 - `ade.lanes.autoRebase.event`
 - `ade.project.missing`
@@ -200,10 +204,10 @@ The complete live channel inventory is defined in `apps/desktop/src/shared/ipc.t
 
 Renderer architecture is fully operational for the current desktop scope:
 
-- 11-tab shell + startup/onboarding routes are implemented.
+- 12-tab shell + startup/onboarding routes are implemented.
 - Six-theme token system is implemented and wired through settings.
 - High-density pane layouts are implemented across lanes/terminals/conflicts/graph.
-- Key feature pages (Play, Lanes, Files, Terminals, Conflicts, Context, Graph, PRs, History, Automations, Settings) are implemented.
+- Key feature pages (Play, Lanes, Files, Terminals, Conflicts, Context, Graph, PRs, History, Automations, Missions, Settings) are implemented.
 - IPC integration is broad and type-aligned with the preload contract.
 
-Future UI surfaces for Missions and Machines are planned in `docs/final-plan.md` and are intentionally not yet represented in current route/nav configuration.
+Future UI surfaces for Machines are planned in `docs/final-plan.md`.

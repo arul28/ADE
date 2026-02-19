@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-02-18
+Last updated: 2026-02-19
 
 Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -25,7 +25,8 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
    - 7.8 [PRs](#78-prs)
    - 7.9 [History](#79-history)
    - 7.10 [Automations](#710-automations)
-   - 7.11 [Settings](#711-settings)
+   - 7.11 [Missions](#711-missions)
+   - 7.12 [Settings](#712-settings)
 8. [Feature Documentation](#8-feature-documentation)
 9. [Architecture Documentation](#9-architecture-documentation)
 10. [Cross-Cutting Concerns](#10-cross-cutting-concerns)
@@ -207,7 +208,7 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 
 ## 7. Application Structure (Tabs)
 
-ADE currently uses an 11-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, and Files tabs to default-filter to the active lane context. The app can be used in Guest Mode (no account required) with context tracking disabled.
+ADE currently uses a 12-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, Files, and Missions tabs to default-filter to the active lane context. The app can be used in Guest Mode (no account required) with context tracking disabled.
 
 Current tab routes:
 - `/project` (Play)
@@ -220,9 +221,10 @@ Current tab routes:
 - `/prs`
 - `/history`
 - `/automations`
+- `/missions`
 - `/settings`
 
-The detailed ownership model for future additions (including Missions and Machines) is maintained in `docs/final-plan.md`.
+The detailed ownership model for future additions (including Machines) is maintained in `docs/final-plan.md`.
 
 ### 7.1 Run (▶)
 
@@ -284,7 +286,13 @@ The Automations tab manages trigger-action workflows, manual runs, execution his
 
 See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
 
-### 7.11 Settings
+### 7.11 Missions
+
+The Missions tab is the Phase 1 intake and tracking surface for plain-English task execution. It provides quick mission launch (lane, priority, execution target), status-lane board views, intervention queues, mission step progress, outcomes, artifacts (including PR links), and mission timeline events. It is intentionally orchestrator-ready and machine-routing-ready for future phases.
+
+See: [features/MISSIONS.md](features/MISSIONS.md)
+
+### 7.12 Settings
 
 The Settings tab provides application preferences including hosted agent enable/disable, mirror exclude pattern editing, process/test configuration export/import, keyboard shortcuts reference, provider configuration (hosted/BYOK/CLI), theme selection (Clean Paper light or Bloomberg Terminal dark), and automation enable/disable with last-run status.
 
@@ -307,8 +315,9 @@ Each feature area is specified in detail in the following documents. These are t
 | 7 | History | [features/HISTORY.md](features/HISTORY.md) | ADE operations timeline. Covers chronological event stream, feature history aggregation, event detail with jump links, context replay from checkpoints, undo capabilities, and graph visualization (V1). |
 | 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all five pack types, the update pipeline, and privacy/retention controls. |
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
-| 10 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, hosted agent consent), trust surfaces, operation previews, escape hatches, and theme/keybinding configuration. |
-| 11 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | Trigger-action workflows. Covers session-end and commit triggers, scheduled actions, pack updates, conflict prediction, test execution, and configuration via `.ade/actions.yaml`. |
+| 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | Mission intake and tracking for plain-English goals. Covers queue/status lifecycle, mission steps, interventions, artifacts (including PR links), timeline events, and relay-ready metadata for future orchestrator phases. |
+| 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, hosted agent consent), trust surfaces, operation previews, escape hatches, and theme/keybinding configuration. |
+| 12 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | Trigger-action workflows. Covers session-end and commit triggers, scheduled actions, pack updates, conflict prediction, test execution, and configuration via `.ade/actions.yaml`. |
 
 ---
 
@@ -320,7 +329,7 @@ Each architecture area is specified in detail in the following documents. These 
 |---|-------------------|----------|---------|
 | 1 | System Overview | [architecture/SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) | Top-level component breakdown (desktop UI, local core engine, hosted agent), the happy-path data flow from lane creation through PR landing, key contracts, and the swappable provider model. |
 | 2 | Desktop App | [architecture/DESKTOP_APP.md](architecture/DESKTOP_APP.md) | Electron process model (main, renderer, preload), IPC contracts and typed channel allowlist, PTY hosting in the main process, and the recommended folder/repo layout. |
-| 3 | Data Model | [architecture/DATA_MODEL.md](architecture/DATA_MODEL.md) | Local SQLite schema covering projects, workspaces, lanes, stacks, sessions, processes, tests, operations, checkpoints, pack events, pack versions, pack heads, planning threads, plan versions, and conflict predictions. |
+| 3 | Data Model | [architecture/DATA_MODEL.md](architecture/DATA_MODEL.md) | Local SQLite schema covering projects, workspaces, lanes, stacks, sessions, processes, tests, operations, checkpoints, pack events, pack versions, pack heads, missions (mission/step/event/artifact/intervention), planning threads, plan versions, and conflict predictions. |
 | 4 | Git Engine | [architecture/GIT_ENGINE.md](architecture/GIT_ENGINE.md) | Git worktree management, drift status computation (ahead/behind/dirty), sync operations (merge and rebase with undo), dry-run conflict prediction, and stack-aware restack operations. |
 | 5 | Job Engine | [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md) | Event-driven pipeline with coalescing rules. Covers all event types, idempotent job definitions, the lane refresh pipeline (checkpoint through hosted sync), real-time conflict pass, re-plan pipeline, and failure handling. |
 | 6 | Hosted Agent | [architecture/HOSTED_AGENT.md](architecture/HOSTED_AGENT.md) | Read-only cloud mirror architecture. Covers the repo mirror model with sync policies, cloud job types (narrative augmentation, conflict proposals, PR descriptions), security/trust requirements, cost controls, and provider swappability. |

@@ -1,6 +1,6 @@
 # ADE Final Plan (Canonical Roadmap)
 
-Last updated: 2026-02-18  
+Last updated: 2026-02-19  
 Owner: ADE  
 Status: Active
 
@@ -32,6 +32,7 @@ Baseline derived from code in `apps/desktop`, `apps/web`, and `infra`.
 - PRs (`/prs`)
 - History (`/history`)
 - Automations (`/automations`)
+- Missions (`/missions`)
 - Settings (`/settings`)
 
 ### 2.2 Shipped capabilities
@@ -44,12 +45,13 @@ Baseline derived from code in `apps/desktop`, `apps/web`, and `infra`.
 - PR workflows (including stacked and integration PR paths)
 - Packs/checkpoints/version/event pipeline with bounded exports
 - Automations engine + natural-language planner
+- Mission intake/tracking lifecycle (status lanes, steps, interventions, artifacts, events)
 - Hosted/BYOK/CLI provider modes, onboarding, CI import, project switching
 
 ### 2.3 Architectural leverage and constraints
 
 - Main process is already service-oriented and extraction-friendly.
-- IPC surface is broad (`225` channels in `apps/desktop/src/shared/ipc.ts`).
+- IPC surface is broad (`234` channels in `apps/desktop/src/shared/ipc.ts`).
 - `registerIpc.ts` concentration remains a known extraction bottleneck.
 - Core product behavior is local-first and must stay operational without hosted AI.
 
@@ -57,7 +59,6 @@ Baseline derived from code in `apps/desktop`, `apps/web`, and `infra`.
 
 Not implemented yet:
 
-- Missions runtime + mission persistence lifecycle
 - Orchestrator runtime + step queue/retry model
 - Agent identities (persona/policy bundles)
 - Night Shift automation family

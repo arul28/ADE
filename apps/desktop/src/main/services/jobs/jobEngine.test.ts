@@ -64,6 +64,7 @@ describe("jobEngine narrative payload propagation", () => {
           clipReason: null,
           omittedSections: []
         })),
+        getPeerLanesContext: vi.fn(async () => null),
         applyHostedNarrative,
         recordEvent
       } as any,
