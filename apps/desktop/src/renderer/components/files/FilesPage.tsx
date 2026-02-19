@@ -34,7 +34,6 @@ import { useAppStore } from "../../state/appStore";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
 import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
-
 type OpenTab = {
   path: string;
   content: string;

@@ -4161,8 +4161,10 @@ function GraphInner() {
 
 export function WorkspaceGraphPage() {
   return (
-    <ReactFlowProvider>
-      <GraphInner />
-    </ReactFlowProvider>
+    <div className="h-full">
+      <ReactFlowProvider>
+        <GraphInner />
+      </ReactFlowProvider>
+    </div>
   );
 }

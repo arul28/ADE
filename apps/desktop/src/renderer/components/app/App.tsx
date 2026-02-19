@@ -17,7 +17,6 @@ import { StartupAuthPage } from "./StartupAuthPage";
 import { OnboardingPage } from "../onboarding/OnboardingPage";
 
 import { useAppStore } from "../../state/appStore";
-
 function ShellLayout() {
   return (
     <AppShell>

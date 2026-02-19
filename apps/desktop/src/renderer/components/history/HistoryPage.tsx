@@ -7,7 +7,6 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
-
 function parseMetadata(raw: string | null): Record<string, unknown> | null {
   if (!raw) return null;
   try {

@@ -77,9 +77,9 @@ export function TopBar({
   }, [switchProjectToPath]);
 
   return (
-    <header className="flex h-[48px] items-center gap-3 ade-panel-header px-4">
+    <header className="flex h-[48px] items-center gap-3 ade-panel-header px-4 bg-bg border-b border-border/20">
       {/* Branding */}
-      <div className="text-sm font-bold tracking-tight shrink-0 text-fg/90">ADE</div>
+      <div className="text-sm font-bold tracking-tight shrink-0 text-accent">ADE</div>
 
       <div className="h-3.5 w-px bg-border/15 shrink-0" />
 
@@ -108,7 +108,7 @@ export function TopBar({
                     isMissing
                       ? "opacity-50 text-muted-fg"
                       : isCurrent
-                        ? "bg-accent/10 text-fg shadow-card"
+                        ? "bg-accent/10 text-fg shadow-card border-b-2 border-accent"
                         : "text-muted-fg hover:bg-muted/40 hover:text-fg cursor-pointer"
                   )}
                   onClick={() => {

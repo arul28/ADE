@@ -17,7 +17,7 @@ export const Button = React.forwardRef<
   ref
 ) {
   const base =
-    "inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-colors duration-150 disabled:opacity-50 disabled:pointer-events-none hover:scale-[1.02] active:scale-[0.97] transition-[color,background-color,border-color,box-shadow,transform] ease-out";
 
   const sizes = size === "sm" ? "h-8 px-3 text-[13px]" : "h-9 px-4 text-sm";
 
@@ -28,5 +28,11 @@ export const Button = React.forwardRef<
     ghost: "bg-transparent text-fg hover:bg-muted/50 active:bg-muted/70"
   };
 
-  return <button ref={ref} className={cn(base, sizes, variants[variant], className)} {...props} />;
+  return (
+    <button
+      ref={ref}
+      className={cn(base, sizes, variants[variant], variant === "primary" && "ade-btn-shimmer", className)}
+      {...props}
+    />
+  );
 });

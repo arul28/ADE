@@ -1455,3 +1455,704 @@ h6 {
   border-radius: inherit;
   z-index: -1;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   ADE Motion System — Global Keyframes
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes ade-float {
+  0%, 100% { transform: translateY(-4px); }
+  50% { transform: translateY(4px); }
+}
+
+@keyframes ade-gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes ade-particle-drift {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(15px, -10px); }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes ade-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.03); opacity: 0.85; }
+}
+
+@keyframes ade-slide-up {
+  0% { transform: translateY(8px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes ade-glow-pulse {
+  0%, 100% { box-shadow: 0 0 4px 1px var(--color-glow); }
+  50% { box-shadow: 0 0 12px 4px var(--color-glow); }
+}
+
+@keyframes ade-spin-slow {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes ade-radar-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes ade-code-rain {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes ade-shimmer-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+@keyframes ade-timeline-arc {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes ade-gear-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes ade-gear-spin-reverse {
+  0% { transform: rotate(360deg); }
+  100% { transform: rotate(0deg); }
+}
+
+/* Reduced motion: disable all ADE animations */
+@media (prefers-reduced-motion: reduce) {
+  .ade-tab-bg,
+  .ade-tab-bg::before,
+  .ade-tab-bg::after {
+    animation: none !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Tab Ambient Background System
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-tab-bg {
+  opacity: 1;
+  contain: strict;
+  will-change: opacity;
+}
+
+/* 1. Play — Command Center / Radar Sweep */
+.ade-tab-bg-project {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 23px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 23px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 23px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 23px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 24px
+    );
+}
+
+.ade-tab-bg-project::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 500px;
+  height: 500px;
+  margin-top: -250px;
+  margin-left: -250px;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    color-mix(in srgb, var(--color-accent) 6%, transparent) 30deg,
+    transparent 60deg
+  );
+  border-radius: 50%;
+  animation: ade-radar-sweep 20s linear infinite;
+  opacity: 0.5;
+}
+
+/* 2. Lanes — Racing Tracks (horizontal flowing lines) */
+.ade-tab-bg-lanes::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 59px,
+      color-mix(in srgb, var(--color-accent) 5%, transparent) 59px,
+      color-mix(in srgb, var(--color-accent) 5%, transparent) 60px
+    );
+  animation: ade-particle-drift 25s ease-in-out infinite;
+}
+
+/* 3. Files — Explorer / Tree Wireframe */
+.ade-tab-bg-files {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 0%,
+      transparent 30%
+    );
+}
+
+.ade-tab-bg-files::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 200px;
+  height: 100%;
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--color-accent) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 3%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
+  opacity: 0.5;
+}
+
+/* 4. Terminals — Hacker Console / Code Rain */
+.ade-tab-bg-terminals::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 39px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 39px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 40px
+    );
+  opacity: 0.4;
+}
+
+.ade-tab-bg-terminals::after {
+  content: "";
+  position: absolute;
+  top: -100%;
+  left: 0;
+  width: 100%;
+  height: 200%;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0px,
+      transparent 38px,
+      color-mix(in srgb, var(--color-accent) 5%, transparent) 38px,
+      color-mix(in srgb, var(--color-accent) 5%, transparent) 40px
+    );
+  animation: ade-code-rain 8s linear infinite;
+  opacity: 0.25;
+}
+
+/* 5. Conflicts — Battlefield / Diagonal Tension Lines */
+.ade-tab-bg-conflicts::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 29px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 29px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 30px
+    ),
+    repeating-linear-gradient(
+      135deg,
+      transparent,
+      transparent 29px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 29px,
+      color-mix(in srgb, var(--color-accent) 3%, transparent) 30px
+    );
+  animation: ade-breathe 6s ease-in-out infinite;
+  opacity: 0.5;
+}
+
+/* 6. Context — Neural Network / Connected Nodes */
+.ade-tab-bg-context::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 30%, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 3%),
+    radial-gradient(circle at 60% 20%, color-mix(in srgb, var(--color-accent) 6%, transparent) 0%, transparent 2.5%),
+    radial-gradient(circle at 80% 60%, color-mix(in srgb, var(--color-accent) 7%, transparent) 0%, transparent 3%),
+    radial-gradient(circle at 35% 70%, color-mix(in srgb, var(--color-accent) 5%, transparent) 0%, transparent 2%),
+    radial-gradient(circle at 70% 80%, color-mix(in srgb, var(--color-accent) 6%, transparent) 0%, transparent 2.5%),
+    radial-gradient(circle at 10% 80%, color-mix(in srgb, var(--color-accent) 5%, transparent) 0%, transparent 2%),
+    radial-gradient(circle at 90% 25%, color-mix(in srgb, var(--color-accent) 7%, transparent) 0%, transparent 3%),
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--color-accent) 4%, transparent) 0%, transparent 2%);
+  animation: ade-breathe 8s ease-in-out infinite;
+}
+
+/* 7. Graph — Constellation / Star-field */
+.ade-tab-bg-graph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 15% 15%, color-mix(in srgb, var(--color-fg) 12%, transparent) 0px, color-mix(in srgb, var(--color-fg) 12%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 45% 25%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, color-mix(in srgb, var(--color-fg) 8%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 75% 35%, color-mix(in srgb, var(--color-fg) 10%, transparent) 0px, color-mix(in srgb, var(--color-fg) 10%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 25% 55%, color-mix(in srgb, var(--color-fg) 7%, transparent) 0px, color-mix(in srgb, var(--color-fg) 7%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 85% 65%, color-mix(in srgb, var(--color-fg) 9%, transparent) 0px, color-mix(in srgb, var(--color-fg) 9%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 55% 75%, color-mix(in srgb, var(--color-fg) 6%, transparent) 0px, color-mix(in srgb, var(--color-fg) 6%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 35% 85%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, color-mix(in srgb, var(--color-fg) 8%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 65% 90%, color-mix(in srgb, var(--color-fg) 11%, transparent) 0px, color-mix(in srgb, var(--color-fg) 11%, transparent) 1px, transparent 1px);
+  animation: ade-particle-drift 30s ease-in-out infinite;
+}
+
+/* 8. PRs — Gateway / Launch Pad */
+.ade-tab-bg-prs::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 400px;
+  height: 100%;
+  margin-left: -200px;
+  background:
+    linear-gradient(0deg, color-mix(in srgb, var(--color-accent) 4%, transparent) 0%, transparent 60%);
+  border-radius: 50% 50% 0 0;
+  opacity: 0.6;
+  animation: ade-breathe 8s ease-in-out infinite;
+}
+
+/* 9. History — Time Chronicle / Circular Arcs */
+.ade-tab-bg-history::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -100px;
+  width: 400px;
+  height: 400px;
+  margin-top: -200px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 6%, transparent);
+  border-radius: 50%;
+  opacity: 0.5;
+  animation: ade-timeline-arc 60s linear infinite;
+}
+
+.ade-tab-bg-history::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -60px;
+  width: 300px;
+  height: 300px;
+  margin-top: -150px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 4%, transparent);
+  border-radius: 50%;
+  opacity: 0.4;
+  animation: ade-timeline-arc 45s linear infinite reverse;
+}
+
+/* 10. Automations — Factory Floor / Rotating Gears */
+.ade-tab-bg-automations::before {
+  content: "";
+  position: absolute;
+  bottom: -60px;
+  right: -60px;
+  width: 200px;
+  height: 200px;
+  border: 2px dashed color-mix(in srgb, var(--color-accent) 6%, transparent);
+  border-radius: 50%;
+  animation: ade-gear-spin 20s linear infinite;
+  opacity: 0.4;
+}
+
+.ade-tab-bg-automations::after {
+  content: "";
+  position: absolute;
+  bottom: -30px;
+  right: 80px;
+  width: 140px;
+  height: 140px;
+  border: 2px dashed color-mix(in srgb, var(--color-accent) 5%, transparent);
+  border-radius: 50%;
+  animation: ade-gear-spin-reverse 15s linear infinite;
+  opacity: 0.35;
+}
+
+/* 11. Missions — Space Adventure / Nebula Aurora */
+.ade-tab-bg-missions {
+  background:
+    radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 60%, color-mix(in srgb, var(--color-secondary) 6%, transparent) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 90%, color-mix(in srgb, var(--color-accent) 5%, transparent) 0%, transparent 45%);
+  background-size: 200% 200%;
+  animation: ade-gradient-shift 20s ease-in-out infinite;
+}
+
+.ade-tab-bg-missions::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 10% 20%, color-mix(in srgb, var(--color-fg) 10%, transparent) 0px, transparent 2px),
+    radial-gradient(circle at 30% 50%, color-mix(in srgb, var(--color-fg) 6%, transparent) 0px, transparent 1.5px),
+    radial-gradient(circle at 50% 10%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, transparent 1px),
+    radial-gradient(circle at 70% 40%, color-mix(in srgb, var(--color-fg) 5%, transparent) 0px, transparent 1px),
+    radial-gradient(circle at 90% 70%, color-mix(in srgb, var(--color-fg) 7%, transparent) 0px, transparent 1.5px),
+    radial-gradient(circle at 20% 80%, color-mix(in srgb, var(--color-fg) 9%, transparent) 0px, transparent 1px),
+    radial-gradient(circle at 80% 15%, color-mix(in srgb, var(--color-fg) 6%, transparent) 0px, transparent 2px),
+    radial-gradient(circle at 60% 85%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, transparent 1px);
+  animation: ade-float 6s ease-in-out infinite;
+}
+
+/* 12. Settings — Workshop / Blueprint Grid */
+.ade-tab-bg-settings {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 47px,
+      color-mix(in srgb, var(--color-accent) 4%, transparent) 47px,
+      color-mix(in srgb, var(--color-accent) 4%, transparent) 48px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 47px,
+      color-mix(in srgb, var(--color-accent) 4%, transparent) 47px,
+      color-mix(in srgb, var(--color-accent) 4%, transparent) 48px
+    );
+}
+
+.ade-tab-bg-settings::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 7px,
+      color-mix(in srgb, var(--color-accent) 2%, transparent) 7px,
+      color-mix(in srgb, var(--color-accent) 2%, transparent) 8px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 7px,
+      color-mix(in srgb, var(--color-accent) 2%, transparent) 7px,
+      color-mix(in srgb, var(--color-accent) 2%, transparent) 8px
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Enhanced Theme Personality Effects
+   ═══════════════════════════════════════════════════════════ */
+
+/* E-Paper: warm, slow transitions */
+[data-theme="e-paper"] .ade-tab-bg {
+  opacity: 0.4;
+  filter: sepia(0.15);
+}
+
+/* Bloomberg: amber CRT tint on backgrounds */
+[data-theme="bloomberg"] .ade-tab-bg {
+  opacity: 0.5;
+  filter: hue-rotate(-10deg);
+}
+
+/* GitHub: crisp, minimal */
+[data-theme="github"] .ade-tab-bg {
+  opacity: 0.35;
+}
+
+/* Rainbow: vibrant */
+[data-theme="rainbow"] .ade-tab-bg {
+  opacity: 0.6;
+}
+
+/* Sky: soft, frosted */
+[data-theme="sky"] .ade-tab-bg {
+  opacity: 0.3;
+}
+
+/* Pats: bold */
+[data-theme="pats"] .ade-tab-bg {
+  opacity: 0.5;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Button Micro-interactions
+   ═══════════════════════════════════════════════════════════ */
+
+/* Primary button shimmer */
+.ade-btn-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.ade-btn-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.08),
+    transparent
+  );
+  animation: ade-shimmer-sweep 3s ease-in-out infinite;
+}
+
+/* Slide-up entrance for chips */
+.ade-chip-enter {
+  animation: ade-slide-up 200ms ease-out;
+}
+
+/* Status dot breathe */
+.ade-status-breathe {
+  animation: ade-breathe 4s ease-in-out infinite;
+}
+
+/* Float animation utility */
+.ade-float {
+  animation: ade-float 6s ease-in-out infinite;
+}
+
+/* Glow pulse utility */
+.ade-glow-pulse {
+  animation: ade-glow-pulse 2s ease-in-out infinite;
+}
+
+/* Spin slow utility */
+.ade-spin-slow {
+  animation: ade-spin-slow 20s linear infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Per-Theme Personality Effects — Transition & Micro-polish
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────
+   E-Paper: "The Editorial" — warm easing, ink-drop feel
+   ───────────────────────────────────────────────────────── */
+
+[data-theme="e-paper"] button,
+[data-theme="e-paper"] a,
+[data-theme="e-paper"] input,
+[data-theme="e-paper"] select {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="e-paper"] h1,
+[data-theme="e-paper"] h2,
+[data-theme="e-paper"] h3 {
+  letter-spacing: 0.01em;
+}
+
+/* Thicker card borders for book-page feel */
+[data-theme="e-paper"] .ade-floating-pane {
+  border-width: 1.5px;
+  box-shadow: var(--shadow-card), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Bloomberg: "The Terminal" — snap transitions, grid overlay
+   ───────────────────────────────────────────────────────── */
+
+[data-theme="bloomberg"] button,
+[data-theme="bloomberg"] a {
+  transition-duration: 100ms;
+}
+
+[data-theme="bloomberg"] .ade-floating-pane {
+  background-image:
+    linear-gradient(rgba(255, 200, 122, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 200, 122, 0.02) 1px, transparent 1px),
+    repeating-linear-gradient(
+      0deg, transparent, transparent 1px,
+      rgba(255, 200, 122, 0.015) 1px, rgba(255, 200, 122, 0.015) 2px
+    );
+  background-size: 24px 24px, 24px 24px, auto auto;
+}
+
+/* Reduce all border-radius for terminal feel */
+[data-theme="bloomberg"] button,
+[data-theme="bloomberg"] input,
+[data-theme="bloomberg"] select,
+[data-theme="bloomberg"] textarea {
+  border-radius: 2px !important;
+}
+
+/* Amber flash keyframe for confirmations */
+@keyframes ade-bloomberg-flash {
+  0% { box-shadow: 0 0 0 0 rgba(255, 122, 0, 0.6); }
+  100% { box-shadow: 0 0 0 8px rgba(255, 122, 0, 0); }
+}
+
+/* ─────────────────────────────────────────────────────────
+   GitHub: "The Professional" — precise, crisp transitions
+   ───────────────────────────────────────────────────────── */
+
+[data-theme="github"] button,
+[data-theme="github"] a,
+[data-theme="github"] input,
+[data-theme="github"] select {
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+[data-theme="github"] h1,
+[data-theme="github"] h2,
+[data-theme="github"] h3 {
+  letter-spacing: -0.005em;
+}
+
+/* Blue inner glow on card hover */
+[data-theme="github"] .ade-floating-pane:hover {
+  box-shadow: var(--shadow-card-hover), inset 0 0 0 1px rgba(88, 166, 255, 0.08);
+}
+
+/* Animated focus ring */
+[data-theme="github"] input:focus,
+[data-theme="github"] select:focus,
+[data-theme="github"] textarea:focus {
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2);
+  border-color: rgba(88, 166, 255, 0.5);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Rainbow: "The Creative" — bouncy, playful
+   ───────────────────────────────────────────────────────── */
+
+[data-theme="rainbow"] button {
+  transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Neon glow trails on hover */
+[data-theme="rainbow"] button:hover {
+  box-shadow:
+    0 0 12px -3px rgba(251, 113, 133, 0.3),
+    0 0 12px -3px rgba(192, 132, 252, 0.2);
+}
+
+/* Rainbow gradient text — opt-in only via class to avoid perf hit on all headings */
+[data-theme="rainbow"] .ade-rainbow-heading {
+  background: linear-gradient(90deg, #fb7185, #c084fc, #38bdf8, #fb7185);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ade-gradient-shift 8s ease-in-out infinite;
+}
+
+/* Animated gradient border on cards via box-shadow */
+[data-theme="rainbow"] .ade-floating-pane {
+  box-shadow:
+    var(--shadow-card),
+    inset 0 1px 0 0 rgba(251, 113, 133, 0.15),
+    inset 0 -1px 0 0 rgba(56, 189, 248, 0.12),
+    inset 1px 0 0 0 rgba(192, 132, 252, 0.1),
+    inset -1px 0 0 0 rgba(251, 113, 133, 0.1);
+}
+
+/* Glass-tinted panel headers */
+[data-theme="rainbow"] .ade-floating-pane-header {
+  background: rgba(42, 47, 63, 0.85);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Sky: "The Calm" — gentle, long easing curves
+   ───────────────────────────────────────────────────────── */
+
+[data-theme="sky"] button,
+[data-theme="sky"] a,
+[data-theme="sky"] input,
+[data-theme="sky"] select {
+  transition-duration: 300ms;
+  transition-timing-function: ease-out;
+}
+
+/* Frosted glass feel via semi-transparent overlay instead of blur */
+[data-theme="sky"] .ade-floating-pane {
+  background: color-mix(in srgb, var(--pane-bg) 92%, transparent);
+}
+
+[data-theme="sky"] .ade-floating-pane:hover {
+  background: color-mix(in srgb, var(--pane-bg) 96%, transparent);
+}
+
+/* Light font-weight on body */
+[data-theme="sky"] body {
+  font-weight: 400;
+}
+
+/* Cloud-like floating elements behind content */
+@keyframes ade-sky-cloud-drift {
+  0%, 100% { transform: translateX(0) translateY(0); }
+  25% { transform: translateX(10px) translateY(-5px); }
+  50% { transform: translateX(20px) translateY(0); }
+  75% { transform: translateX(10px) translateY(5px); }
+}
+
+/* ─────────────────────────────────────────────────────────
+   Pats: "Championship Energy" — decisive, bold transitions
+   ───────────────────────────────────────────────────────── */
+
+[data-theme="pats"] button,
+[data-theme="pats"] a,
+[data-theme="pats"] input,
+[data-theme="pats"] select {
+  transition-duration: 200ms;
+  transition-timing-function: ease-out;
+}
+
+/* Extra bold titles */
+[data-theme="pats"] h1,
+[data-theme="pats"] h2,
+[data-theme="pats"] h3 {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Red glow flash on button active */
+[data-theme="pats"] button:active {
+  box-shadow: 0 0 12px 2px rgba(198, 12, 48, 0.4);
+}
+
+/* Silver shimmer enhanced on headers */
+[data-theme="pats"] .ade-panel-header {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(207, 224, 243, 0) 0%,
+      rgba(207, 224, 243, 0.04) 25%,
+      rgba(207, 224, 243, 0.08) 50%,
+      rgba(207, 224, 243, 0.04) 75%,
+      rgba(207, 224, 243, 0) 100%
+    ),
+    var(--gradient-surface);
+  background-size: 200% 100%, 100% 100%;
+  animation: ade-pats-silver-shimmer 6s linear infinite;
+}
+
+/* Star-field particle effect */
+@keyframes ade-pats-star-twinkle {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+}

@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
+import { TabBackground } from "../ui/TabBackground";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type { ContextStatus, HostedStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
@@ -529,7 +530,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </aside>
 
         <main className="relative flex min-h-0 min-w-0 flex-1">
-          <div className="h-full min-h-0 w-full">
+          <TabBackground />
+          <div className="relative z-[1] h-full min-h-0 w-full">
             {children}
           </div>
 

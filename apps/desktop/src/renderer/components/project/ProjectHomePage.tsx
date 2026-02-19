@@ -37,7 +37,6 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { CiImportPanel } from "./CiImportPanel";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
-
 const DEFAULT_PROCESS_COMMAND = '["npm", "run", "dev"]';
 const DEFAULT_PROCESS_COMMAND_LINE = "npm run dev";
 const DEFAULT_TEST_COMMAND = '["npm", "run", "test"]';

@@ -2,7 +2,6 @@ import React from "react";
 import type { ConflictExternalResolverRunSummary, ContextGenerateDocsResult, ContextStatus } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { GenerateDocsModal } from "./GenerateDocsModal";
-
 function renderTiming(status: ContextStatus | null): string {
   if (!status?.hostedTiming) return "No timing telemetry yet.";
   const timing = status.hostedTiming;
