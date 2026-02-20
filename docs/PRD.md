@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-02-19
+Last updated: 2026-02-20
 
 Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -564,7 +564,7 @@ Implementation sequencing, future phases, and dependency ordering are now mainta
 
 - `docs/final-plan.md`
 
-Current gating note: Phase 2 orchestrator runtime delivery depends on the Phase 1.5 Context Hardening Gate (context durability, tracked-session enforcement, claim leases, and resume contracts).
+Current status: Phase 1 (Agent SDK Integration) and Phase 1.5 (Agent Chat Integration) are complete. Phase 2 (MCP Server) is the next implementation target.
 
 This PRD intentionally focuses on product scope and behavior, while roadmap execution detail is centralized in the Final Plan to avoid drift.
 

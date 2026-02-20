@@ -654,6 +654,30 @@ h6 {
   background: rgba(198, 12, 48, 0.5);
 }
 
+/* Theme-aware diff colors (light vs dark) */
+:root,
+[data-theme="e-paper"],
+[data-theme="sky"] {
+  --color-diff-add: #16a34a;
+  --color-diff-del: #dc2626;
+  --color-diff-hunk: #2563eb;
+}
+
+[data-theme="bloomberg"],
+[data-theme="github"],
+[data-theme="rainbow"],
+[data-theme="pats"] {
+  --color-diff-add: #6ee7b7;
+  --color-diff-del: #fda4af;
+  --color-diff-hunk: #7dd3fc;
+}
+
+/* Theme-aware prose for agent chat markdown */
+.ade-prose-themed,
+.ade-prose-themed :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: var(--color-fg);
+}
+
 /* Scrollbars — minimal, unobtrusive */
 ::-webkit-scrollbar {
   width: 5px;

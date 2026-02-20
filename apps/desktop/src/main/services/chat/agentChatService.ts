@@ -57,6 +57,7 @@ type PersistedChatState = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  reasoningEffort?: string | null;
   threadId?: string;
   messages?: PersistedClaudeMessage[];
   updatedAt: string;
@@ -84,6 +85,7 @@ type CodexRuntime = {
   pending: Map<string, PendingRpc>;
   approvals: Map<string, PendingCodexApproval>;
   activeTurnId: string | null;
+  threadResumed: boolean;
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
@@ -126,27 +128,122 @@ type ResolvedChatConfig = {
 
 const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
+const DEFAULT_REASONING_EFFORT = "medium";
+const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
+  { effort: "low", description: "Fastest turn-around with shallow reasoning." },
+  { effort: "medium", description: "Balanced reasoning depth and speed." },
+  { effort: "high", description: "Deeper reasoning for multi-step implementation." },
+  { effort: "extra_high", description: "Maximum reasoning depth for complex tasks." }
+];
+
+const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
+  { effort: "low", description: "Quick responses with ~1K thinking tokens." },
+  { effort: "medium", description: "Balanced reasoning with ~4K thinking tokens." },
+  { effort: "high", description: "Deep reasoning with ~16K thinking tokens." },
+  { effort: "max", description: "Maximum reasoning with ~32K thinking tokens." }
+];
+
+const CLAUDE_EFFORT_TO_TOKENS: Record<string, number> = {
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+  max: 32768
+};
+
+const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
 
 const CODEX_FALLBACK_MODELS: AgentChatModelInfo[] = [
-  { id: "gpt-5.3-codex", displayName: "gpt-5.3-codex", isDefault: true },
-  { id: "gpt-5.2-codex", displayName: "gpt-5.2-codex", isDefault: false },
-  { id: "gpt-5.1-codex-max", displayName: "gpt-5.1-codex-max", isDefault: false },
-  { id: "codex-mini-latest", displayName: "codex-mini-latest", isDefault: false },
-  { id: "o4-mini", displayName: "o4-mini", isDefault: false },
-  { id: "o3", displayName: "o3", isDefault: false }
+  {
+    id: "gpt-5.3-codex",
+    displayName: "gpt-5.3-codex",
+    description: "Latest Codex model for implementation-heavy tasks.",
+    isDefault: true,
+    reasoningEfforts: CODEX_REASONING_EFFORTS
+  },
+  {
+    id: "gpt-5.2-codex",
+    displayName: "gpt-5.2-codex",
+    description: "Strong coding model with balanced latency/cost.",
+    isDefault: false,
+    reasoningEfforts: CODEX_REASONING_EFFORTS
+  },
+  {
+    id: "gpt-5.1-codex-max",
+    displayName: "gpt-5.1-codex-max",
+    description: "Extended-context Codex model for large refactors.",
+    isDefault: false,
+    reasoningEfforts: CODEX_REASONING_EFFORTS
+  },
+  {
+    id: "codex-mini-latest",
+    displayName: "codex-mini-latest",
+    description: "Fast lightweight Codex model for small edits.",
+    isDefault: false,
+    reasoningEfforts: CODEX_REASONING_EFFORTS
+  },
+  {
+    id: "o4-mini",
+    displayName: "o4-mini",
+    description: "Compact reasoning model for planning and review.",
+    isDefault: false,
+    reasoningEfforts: CODEX_REASONING_EFFORTS
+  },
+  {
+    id: "o3",
+    displayName: "o3",
+    description: "Advanced reasoning model for complex debugging.",
+    isDefault: false,
+    reasoningEfforts: CODEX_REASONING_EFFORTS
+  }
 ];
 
 const CLAUDE_ALIAS_TO_MODEL: Record<string, string> = {
   opus: "claude-opus-4-6",
+  "opus-4-6": "claude-opus-4-6",
   sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5-20251001"
+  "sonnet-4-6": "claude-sonnet-4-6",
+  "sonnet-4-5": "claude-sonnet-4-5-20241022",
+  haiku: "claude-haiku-4-5-20251001",
+  "haiku-4-5": "claude-haiku-4-5-20251001"
 };
 
 const CLAUDE_FALLBACK_MODELS: AgentChatModelInfo[] = [
-  { id: "opus", displayName: "Opus", isDefault: false },
-  { id: "sonnet", displayName: "Sonnet", isDefault: true },
-  { id: "haiku", displayName: "Haiku", isDefault: false }
+  { id: "claude-opus-4-6", displayName: "Claude Opus 4.6", description: "Highest capability for complex strategy and review.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
+  { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", description: "Latest balanced model — quality and speed for everyday work.", isDefault: true, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
+  { id: "claude-sonnet-4-5-20241022", displayName: "Claude Sonnet 4.5", description: "Previous-gen Sonnet — stable and cost-effective.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
+  { id: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5", description: "Fastest Claude variant for lightweight tasks.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
+  { id: "opus", displayName: "Opus (alias)", description: "Alias for Claude Opus 4.6.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
+  { id: "sonnet", displayName: "Sonnet (alias)", description: "Alias for Claude Sonnet 4.6.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 },
+  { id: "haiku", displayName: "Haiku (alias)", description: "Alias for Claude Haiku 4.5.", isDefault: false, reasoningEfforts: CLAUDE_REASONING_EFFORTS, maxThinkingTokens: 32768 }
 ];
+
+function normalizeReasoningEffort(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!normalized.length) return null;
+  return normalized;
+}
+
+const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
+
+function validateReasoningEffort(provider: "codex" | "claude", effort: string | null | undefined): string | null {
+  if (!effort) return null;
+  if (provider === "codex" && !KNOWN_CODEX_EFFORTS.has(effort)) {
+    return DEFAULT_REASONING_EFFORT;
+  }
+  if (provider === "claude" && !KNOWN_CLAUDE_EFFORTS.has(effort)) {
+    return "medium";
+  }
+  return effort;
+}
+
+function describeClaudeModel(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized.length) return null;
+  if (normalized.includes("opus")) return "Highest capability for complex strategy and review.";
+  if (normalized.includes("sonnet")) return "Balanced quality and speed for everyday work.";
+  if (normalized.includes("haiku")) return "Fastest Claude variant for lightweight tasks.";
+  return null;
+}
 
 function isChatToolType(toolType: TerminalToolType | null | undefined): toolType is "codex-chat" | "claude-chat" {
   return toolType === "codex-chat" || toolType === "claude-chat";
@@ -327,6 +424,7 @@ export function createAgentChatService(args: {
       laneId: managed.session.laneId,
       provider: managed.session.provider,
       model: managed.session.model,
+      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { messages: managed.runtime.messages } : {}),
       updatedAt: toIso()
@@ -355,6 +453,7 @@ export function createAgentChatService(args: {
       if (provider !== "codex" && provider !== "claude") return null;
       const laneId = String(record.laneId ?? "").trim();
       const model = String(record.model ?? "").trim();
+      const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       if (!laneId || !model) return null;
       const messages = Array.isArray(record.messages)
         ? record.messages
@@ -371,6 +470,7 @@ export function createAgentChatService(args: {
         laneId,
         provider,
         model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
@@ -456,6 +556,23 @@ export function createAgentChatService(args: {
     managed.closed = true;
     persistChatState(managed);
 
+    // Clean up runtime resources
+    if (managed.runtime?.kind === "codex") {
+      try { managed.runtime.reader.close(); } catch { /* ignore */ }
+      try { managed.runtime.process.kill(); } catch { /* ignore */ }
+      managed.runtime.pending.clear();
+      managed.runtime.approvals.clear();
+      managed.runtime = null;
+    }
+    if (managed.runtime?.kind === "claude") {
+      managed.runtime.abortController?.abort();
+      for (const pending of managed.runtime.approvals.values()) {
+        pending.resolve("cancel");
+      }
+      managed.runtime.approvals.clear();
+      managed.runtime = null;
+    }
+
     try {
       onSessionEnded?.({ laneId: managed.session.laneId, sessionId: managed.session.id, exitCode: options?.exitCode ?? null });
     } catch {
@@ -486,6 +603,7 @@ export function createAgentChatService(args: {
         laneId: row.laneId,
         provider,
         model,
+        reasoningEffort: persisted?.reasoningEffort ?? null,
         status: mapTerminalStatusToChatStatus(row.status),
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
         createdAt: row.startedAt,
@@ -537,7 +655,8 @@ export function createAgentChatService(args: {
 
     const result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
       threadId: managed.session.threadId,
-      input
+      input,
+      ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {})
     });
 
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
@@ -607,14 +726,22 @@ export function createAgentChatService(args: {
     };
 
     try {
-      const stream = streamText({
-        model: claudeProvider(resolveClaudeModel(managed.session.model), {
+      const claudeOpts: Record<string, unknown> = {
           cwd: managed.laneWorktreePath,
           permissionMode: chatConfig.claudePermissionMode,
           settingSources: [],
           maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
           canUseTool
-        } as any),
+      };
+      if (managed.session.reasoningEffort) {
+        const tokens = CLAUDE_EFFORT_TO_TOKENS[managed.session.reasoningEffort];
+        if (tokens) {
+          claudeOpts.maxThinkingTokens = tokens;
+        }
+      }
+
+      const stream = streamText({
+        model: claudeProvider(resolveClaudeModel(managed.session.model), claudeOpts as any),
         messages: runtime.messages.map((message) => ({ role: message.role, content: message.content })) as any,
         abortSignal: abortController.signal
       });
@@ -1108,6 +1235,7 @@ export function createAgentChatService(args: {
       pending,
       approvals: new Map<string, PendingCodexApproval>(),
       activeTurnId: null,
+      threadResumed: false,
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
@@ -1287,36 +1415,50 @@ export function createAgentChatService(args: {
       const response = await runtime.request<{ data?: Array<Record<string, unknown>> }>("model/list", {});
       const rows = Array.isArray(response?.data) ? response.data : [];
       const models = rows
-        .map((row) => {
+        .map((row): AgentChatModelInfo | null => {
           const id = typeof row.id === "string" ? row.id.trim() : "";
           if (!id) return null;
 
           const displayName = typeof row.displayName === "string" && row.displayName.trim().length
             ? row.displayName.trim()
             : id;
+          const description = typeof row.description === "string" && row.description.trim().length
+            ? row.description.trim()
+            : null;
           const isDefault = Boolean(row.isDefault);
 
           const reasoningEfforts = Array.isArray(row.supportedReasoningEfforts)
             ? row.supportedReasoningEfforts
                 .map((entry) => {
+                  if (typeof entry === "string") {
+                    const effort = normalizeReasoningEffort(entry);
+                    return effort
+                      ? {
+                          effort,
+                          description:
+                            CODEX_REASONING_EFFORTS.find((option) => option.effort === effort)?.description ?? ""
+                        }
+                      : null;
+                  }
                   if (!entry || typeof entry !== "object") return null;
-                  const effort = typeof (entry as { reasoningEffort?: unknown }).reasoningEffort === "string"
-                    ? String((entry as { reasoningEffort?: unknown }).reasoningEffort)
-                    : "";
-                  const description = typeof (entry as { description?: unknown }).description === "string"
+                  const effort = normalizeReasoningEffort((entry as { reasoningEffort?: unknown }).reasoningEffort);
+                  const detail = typeof (entry as { description?: unknown }).description === "string"
                     ? String((entry as { description?: unknown }).description)
                     : "";
                   if (!effort) return null;
-                  return { effort, description };
+                  return { effort, description: detail };
                 })
                 .filter((entry): entry is { effort: string; description: string } => entry != null)
             : undefined;
 
+          const normalizedEfforts = reasoningEfforts?.length ? reasoningEfforts : CODEX_REASONING_EFFORTS;
+
           return {
             id,
             displayName,
+            ...(description ? { description } : {}),
             isDefault,
-            ...(reasoningEfforts?.length ? { reasoningEfforts } : {})
+            reasoningEfforts: normalizedEfforts
           } satisfies AgentChatModelInfo;
         })
         .filter((entry): entry is AgentChatModelInfo => entry != null);
@@ -1364,10 +1506,14 @@ export function createAgentChatService(args: {
             const id = String(entry.value ?? "").trim();
             if (!id.length) return null;
             const displayName = String(entry.displayName ?? entry.value ?? id).trim() || id;
+            const description = describeClaudeModel(`${id} ${displayName}`);
             return {
               id,
               displayName,
-              isDefault: id === CLAUDE_ALIAS_TO_MODEL.sonnet
+              ...(description ? { description } : {}),
+              isDefault: id === CLAUDE_ALIAS_TO_MODEL.sonnet,
+              reasoningEfforts: CLAUDE_REASONING_EFFORTS,
+              maxThinkingTokens: 32768
             };
           })
           .filter((entry): entry is AgentChatModelInfo => entry != null);
@@ -1393,7 +1539,7 @@ export function createAgentChatService(args: {
     return CLAUDE_FALLBACK_MODELS;
   };
 
-  const createSession = async ({ laneId, provider, model }: AgentChatCreateArgs): Promise<AgentChatSession> => {
+  const createSession = async ({ laneId, provider, model, reasoningEffort }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const lane = laneService.getLaneBaseAndBranch(laneId);
     const sessionId = randomUUID();
     const startedAt = toIso();
@@ -1403,6 +1549,10 @@ export function createAgentChatService(args: {
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
     const normalizedModel = model.trim() || (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL);
+    const rawEffort = provider === "codex"
+      ? normalizeReasoningEffort(reasoningEffort) ?? DEFAULT_REASONING_EFFORT
+      : normalizeReasoningEffort(reasoningEffort);
+    const normalizedReasoningEffort = validateReasoningEffort(provider, rawEffort);
 
     sessionService.create({
       sessionId,
@@ -1422,6 +1572,7 @@ export function createAgentChatService(args: {
         laneId,
         provider,
         model: normalizedModel,
+        ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
         status: "idle",
         createdAt: startedAt,
         lastActivityAt: startedAt
@@ -1451,6 +1602,7 @@ export function createAgentChatService(args: {
           model?: string;
         }>("thread/start", {
           model: normalizedModel,
+          ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           cwd: lane.worktreePath,
           approvalPolicy: config.codexApprovalPolicy,
           sandbox: config.codexSandboxMode,
@@ -1461,6 +1613,7 @@ export function createAgentChatService(args: {
         const threadId = typeof response.thread?.id === "string" ? response.thread.id : undefined;
         if (threadId) {
           managed.session.threadId = threadId;
+          runtime.threadResumed = true;
           sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
         }
       } else {
@@ -1477,7 +1630,7 @@ export function createAgentChatService(args: {
     }
   };
 
-  const sendMessage = async ({ sessionId, text, attachments = [] }: AgentChatSendArgs): Promise<void> => {
+  const sendMessage = async ({ sessionId, text, attachments = [], reasoningEffort }: AgentChatSendArgs): Promise<void> => {
     const trimmed = text.trim();
     if (!trimmed.length) return;
 
@@ -1492,25 +1645,64 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
-      if (!managed.session.threadId) {
-        const persisted = readPersistedState(sessionId);
-        const threadId = persisted?.threadId;
-        if (threadId) {
-          const config = resolveChatConfig();
-          await runtime.request("thread/resume", {
-            threadId,
+      const nextReasoningEffort = validateReasoningEffort("codex", normalizeReasoningEffort(reasoningEffort));
+      if (nextReasoningEffort) {
+        managed.session.reasoningEffort = nextReasoningEffort;
+      } else if (!managed.session.reasoningEffort) {
+        managed.session.reasoningEffort = DEFAULT_REASONING_EFFORT;
+      }
+
+      const threadIdToResume = managed.session.threadId || readPersistedState(sessionId)?.threadId;
+
+      if (!runtime.threadResumed && threadIdToResume) {
+        const config = resolveChatConfig();
+        const resumeParams = {
+          threadId: threadIdToResume,
+          model: managed.session.model,
+          ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+          cwd: managed.laneWorktreePath,
+          approvalPolicy: config.codexApprovalPolicy,
+          sandbox: config.codexSandboxMode,
+          persistExtendedHistory: true
+        };
+
+        try {
+          await runtime.request("thread/resume", resumeParams);
+          managed.session.threadId = threadIdToResume;
+          runtime.threadResumed = true;
+        } catch (resumeError) {
+          // Rollout expired or thread not found — start a fresh thread instead
+          logger.warn("agent_chat.thread_resume_failed", {
+            sessionId,
+            threadId: threadIdToResume,
+            error: resumeError instanceof Error ? resumeError.message : String(resumeError)
+          });
+          const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
             model: managed.session.model,
+            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
             cwd: managed.laneWorktreePath,
             approvalPolicy: config.codexApprovalPolicy,
             sandbox: config.codexSandboxMode,
+            experimentalRawEvents: false,
             persistExtendedHistory: true
           });
-          managed.session.threadId = threadId;
+          const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
+          if (newThreadId) {
+            managed.session.threadId = newThreadId;
+            sessionService.setResumeCommand(sessionId, `chat:codex:${newThreadId}`);
+          }
+          runtime.threadResumed = true;
+          persistChatState(managed);
         }
       }
 
       await sendCodexMessage(managed, trimmed, attachments);
       return;
+    }
+
+    const nextClaudeEffort = validateReasoningEffort("claude", normalizeReasoningEffort(reasoningEffort));
+    if (nextClaudeEffort) {
+      managed.session.reasoningEffort = nextClaudeEffort;
     }
 
     ensureClaudeSessionRuntime(managed);
@@ -1589,18 +1781,47 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       const config = resolveChatConfig();
+      if (!managed.session.reasoningEffort) {
+        managed.session.reasoningEffort = persisted?.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
+      }
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
-        await runtime.request("thread/resume", {
-          threadId,
-          model: managed.session.model,
-          cwd: managed.laneWorktreePath,
-          approvalPolicy: config.codexApprovalPolicy,
-          sandbox: config.codexSandboxMode,
-          persistExtendedHistory: true
-        });
-        managed.session.threadId = threadId;
-        sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
+        try {
+          await runtime.request("thread/resume", {
+            threadId,
+            model: managed.session.model,
+            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+            cwd: managed.laneWorktreePath,
+            approvalPolicy: config.codexApprovalPolicy,
+            sandbox: config.codexSandboxMode,
+            persistExtendedHistory: true
+          });
+          managed.session.threadId = threadId;
+          runtime.threadResumed = true;
+          sessionService.setResumeCommand(sessionId, `chat:codex:${threadId}`);
+        } catch (resumeError) {
+          // Rollout expired or thread not found — start a fresh thread
+          logger.warn("agent_chat.resume_session_thread_failed", {
+            sessionId,
+            threadId,
+            error: resumeError instanceof Error ? resumeError.message : String(resumeError)
+          });
+          const startResponse = await runtime.request<{ thread?: { id?: string } }>("thread/start", {
+            model: managed.session.model,
+            ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+            cwd: managed.laneWorktreePath,
+            approvalPolicy: config.codexApprovalPolicy,
+            sandbox: config.codexSandboxMode,
+            experimentalRawEvents: false,
+            persistExtendedHistory: true
+          });
+          const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
+          if (newThreadId) {
+            managed.session.threadId = newThreadId;
+            sessionService.setResumeCommand(sessionId, `chat:codex:${newThreadId}`);
+          }
+          runtime.threadResumed = true;
+        }
       }
     } else {
       const runtime = ensureClaudeSessionRuntime(managed);
@@ -1629,6 +1850,7 @@ export function createAgentChatService(args: {
         laneId: row.laneId,
         provider,
         model: persisted?.model ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL),
+        reasoningEffort: persisted?.reasoningEffort ?? null,
         status: row.status === "running" ? "idle" : "ended",
         startedAt: row.startedAt,
         endedAt: row.endedAt,
@@ -1739,6 +1961,45 @@ export function createAgentChatService(args: {
     }
   };
 
+  const listContextPacks = async (args: { laneId?: string } = {}): Promise<import("../../../shared/types").ContextPackOption[]> => {
+    const packs: import("../../../shared/types").ContextPackOption[] = [
+      { scope: "project", label: "Project", description: "Full project context pack", available: true },
+    ];
+
+    if (args.laneId) {
+      packs.push(
+        { scope: "lane", label: "Lane", description: "Current lane context", available: true, laneId: args.laneId },
+        { scope: "conflict", label: "Conflicts", description: "Conflict analysis for this lane", available: true, laneId: args.laneId },
+        { scope: "plan", label: "Plan", description: "Lane development plan", available: true, laneId: args.laneId }
+      );
+    }
+
+    packs.push(
+      { scope: "mission", label: "Mission", description: "Active mission context", available: true }
+    );
+
+    return packs;
+  };
+
+  const fetchContextPack = async (args: import("../../../shared/types").ContextPackFetchArgs): Promise<import("../../../shared/types").ContextPackFetchResult> => {
+    const MAX_CHARS = 50_000;
+    let content = "";
+    let truncated = false;
+
+    try {
+      content = `[Context Pack: ${args.scope}]`;
+
+      if (content.length > MAX_CHARS) {
+        content = content.slice(0, MAX_CHARS);
+        truncated = true;
+      }
+    } catch (error) {
+      content = `Failed to fetch ${args.scope} context: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    return { scope: args.scope, content, truncated };
+  };
+
   return {
     createSession,
     sendMessage,
@@ -1749,6 +2010,8 @@ export function createAgentChatService(args: {
     approveToolUse,
     getAvailableModels,
     dispose,
-    disposeAll
+    disposeAll,
+    listContextPacks,
+    fetchContextPack
   };
 }

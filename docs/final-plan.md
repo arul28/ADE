@@ -1,6 +1,6 @@
 # ADE Final Plan (Canonical Roadmap)
 
-Last updated: 2026-02-19
+Last updated: 2026-02-20
 Owner: ADE
 Status: Active
 
@@ -565,6 +565,17 @@ Goal: Expose ADE capabilities as MCP tools for AI orchestrator consumption. The 
   - Test with Claude Code MCP client mode (`claude --mcp`).
   - Test with Codex MCP client mode.
   - Document MCP server setup for external client consumption.
+- Agent Chat UI polish (Phase 1.5 debt):
+  - Redesign `AgentChatMessageList.tsx` to match the visual quality of the official Codex desktop app and opencode — rich message bubbles, clean inline diff rendering, polished command execution blocks, smooth streaming indicators, and refined approval overlays.
+  - Redesign `AgentChatComposer.tsx` — cleaner input area, better provider/model selector styling, improved attachment UX.
+  - Redesign `AgentChatPane.tsx` layout — proper spacing, session management chrome, and responsive panel behavior in the Work Pane split view.
+- Agent Chat bug fix — Claude provider selection:
+  - Fix bug where users cannot select Claude as the chat provider in the composer dropdown. Ensure both Codex and Claude are selectable when their respective CLIs are detected and authenticated.
+- Agent Chat feature — model reasoning effort selector:
+  - Add reasoning effort level selector to the chat composer model picker.
+  - For Codex models: expose reasoning effort levels (`low`, `medium`, `high`, `extra_high`) as reported by `model/list` in the App Server protocol. Pass selected effort to `thread/start` and `turn/start` via the `reasoningEffort` parameter.
+  - For Claude models: expose available model variants (opus, sonnet, haiku) with clear descriptions. The model picker should show all models returned by `supportedModels()`.
+  - Persist last-used reasoning effort per lane in session state.
 - Validation:
   - Tool contract tests for every adapter (input validation, expected output shape, error handling).
   - Permission denial tests (tool calls that violate policy are rejected with structured errors).
@@ -576,6 +587,9 @@ Goal: Expose ADE capabilities as MCP tools for AI orchestrator consumption. The 
 - External MCP clients (Claude Code, Codex) can query and invoke ADE tools.
 - Tool calls honor permission/policy constraints.
 - Every tool invocation is audit-logged with structured metadata.
+- Agent chat UI is visually polished with rich message rendering matching the quality of the official Codex app.
+- Claude is selectable as a chat provider in the composer dropdown.
+- Model reasoning effort levels are selectable for both Codex and Claude in the chat composer.
 
 ---
 
@@ -598,47 +612,117 @@ Goal: Full AI-powered mission orchestration via a Claude session connected to th
 
 ### Workstreams
 
-- AI orchestrator service:
-  - Create `aiOrchestratorService` that manages a Claude session with the ADE MCP server connected.
-  - Orchestrator receives mission prompt + compressed context packs as initial input.
-  - Orchestrator plans execution steps via AI reasoning, then dispatches them through the existing deterministic runtime (DAG scheduler, claims, context resolver).
-  - AI decisions (step ordering, agent selection, intervention handling) are recorded as structured orchestrator events.
-- Integration with deterministic runtime:
-  - AI orchestrator issues commands to the existing orchestrator runtime rather than replacing it.
-  - Step creation, dependency wiring, and join policy decisions are made by AI and executed by the deterministic kernel.
-  - Claim acquisition, heartbeat, and collision handling remain in the deterministic layer.
-- Mission lifecycle integration:
-  - Integrate with existing mission lifecycle states (`queued` -> `in_progress` -> `completed`/`failed`).
-  - AI orchestrator triggers mission state transitions through the existing `missionService` and `orchestratorService`.
-  - Intervention routing: orchestrator detects need for human input, creates intervention via `ask_user` MCP tool, mission moves to `intervention_required`, user response flows back to orchestrator.
-- Context window management:
-  - Context packs serve as compressed memory for the orchestrator session.
-  - Implement progressive context loading: start with mission pack + project pack, load lane/conflict packs on demand.
-  - Implement context window pressure management (summarize and rotate older context as window fills).
-- Renderer -- activity feed:
-  - Real-time activity feed streaming orchestrator decisions and agent outputs to the renderer.
-  - Feed items include: step started, agent spawned, agent output (streamed), intervention requested, step completed, context loaded.
-- Renderer -- DAG visualization:
-  - Visual DAG of the orchestrator's execution plan overlaid on the existing runtime graph.
-  - Nodes show AI-planned steps with real-time status from the deterministic runtime.
-  - Edges show dependencies and data flow between steps.
-- Renderer -- session transcript tailing:
-  - Live session transcript tailing for running agent sessions in mission detail.
-  - Transcripts stream from tracked PTY sessions linked to orchestrator attempts.
-- Validation:
-  - End-to-end orchestrator tests: mission prompt -> AI plan -> deterministic execution -> completion.
-  - Intervention round-trip tests: orchestrator -> UI -> user -> orchestrator.
-  - Context window pressure tests: verify graceful degradation under large missions.
-  - Crash recovery tests: verify orchestrator resumes from durable runtime state after restart.
+#### W1: AI Orchestrator Service (Leader Session)
+- Create `aiOrchestratorService` that manages a Claude session acting as team leader with the ADE MCP server connected.
+- Orchestrator receives mission prompt + compressed context packs as initial input.
+- Orchestrator plans execution steps via AI reasoning, producing a structured `MissionPlan` JSON with step dependencies, executor hints, claim policies, file ownership patterns, and merge policy.
+- AI decisions (step ordering, agent selection, plan approval, intervention handling) are recorded as structured `OrchestratorEvent` records.
+- Implement plan review gate: optionally present the AI-generated plan to the user before execution begins (configurable via `ai.orchestrator.require_plan_review`).
+
+#### W2: Worker Agent Spawning and Lifecycle
+- Implement worker agent spawning via `spawn_agent` MCP tool, creating tracked sessions (`tool_type: "codex-orchestrated"` or `"claude-orchestrated"`).
+- Each worker operates in a dedicated lane worktree for file isolation — no two workers share a worktree.
+- Workers receive scoped system prompts, bounded context packs, restricted MCP tool whitelists, and configurable permission modes.
+- Implement worker lifecycle: `spawned → initializing → working → idle → disposed`.
+- Implement idle detection: when a worker completes a step, the orchestrator assigns the next available step or requests shutdown.
+- Implement heartbeat monitoring: workers emit claim heartbeats at configurable intervals. Missing heartbeats trigger failure handling.
+- Implement graceful shutdown: orchestrator sends shutdown requests, workers acknowledge and exit. Workers with in-progress work can defer shutdown until completion.
+
+#### W3: Shared Task List and Coordination Patterns
+- Materialize all mission steps as a shared task list with states: `pending`, `claimed`, `in_progress`, `completed`, `failed`.
+- Implement dependency resolution: steps blocked by incomplete predecessors cannot be claimed.
+- Implement six coordination patterns:
+  - **Sequential Chain**: Worker A → Worker B (output as context).
+  - **Parallel Fan-Out**: Multiple workers in separate lanes simultaneously.
+  - **Fan-In Merge**: Wait for all parallel workers, then merge lanes.
+  - **Plan-Then-Implement**: Worker plans in read-only mode, orchestrator approves, worker implements.
+  - **Review-and-Revise**: Implementation worker + review worker, orchestrator decides on revision.
+  - **Speculative Parallel**: Multiple workers attempt same step, best result wins.
+- Implement `parallelismCap` enforcement from the mission plan (max concurrent workers).
+
+#### W4: File Conflict Prevention and Lane Merging
+- Implement claim-based file ownership: each step declares `filePatterns` globs in its claim policy. The planner validates no two parallel steps claim overlapping patterns.
+- Implement pre-merge conflict checking: before merging a worker's lane, call `check_conflicts` against other active worker lanes.
+- Implement three merge policies:
+  - `sequential`: merge each worker's lane immediately after step completion.
+  - `batch-at-end`: merge all lanes in dependency order after mission completes.
+  - `per-step`: orchestrator decides per-step based on downstream dependencies.
+- Implement conflict handoff strategies: `auto-resolve` (use AI conflict resolution), `ask-user` (intervention), `orchestrator-decides` (orchestrator picks resolution).
+
+#### W5: Plan Approval Gates
+- Implement `requiresPlanApproval` flag on steps: workers with this flag start in read-only mode (`permissionMode: "plan"`), research the codebase, and submit a structured plan.
+- Orchestrator evaluates worker plans: checks for scope creep, file ownership violations, test coverage, alignment with mission goals.
+- Implement approve/reject flow: approved workers re-dispatch with edit permissions; rejected workers receive feedback and re-plan.
+- Record plan approval events in orchestrator timeline for audit.
+
+#### W6: Integration with Deterministic Runtime
+- AI orchestrator issues commands to the existing orchestrator runtime rather than replacing it.
+- Step creation, dependency wiring, and join policy decisions are made by AI and executed by the deterministic kernel.
+- Claim acquisition, heartbeat, and collision handling remain in the deterministic layer.
+- Worker agent sessions integrate with the existing session lifecycle: transcript capture, delta computation, pack refresh, `onSessionEnded` callback chain.
+
+#### W7: Mission Lifecycle Integration
+- Integrate with existing mission lifecycle states (`queued` → `planning` → `plan_review` → `in_progress` → `completed`/`failed`).
+- Add `plan_review` state for missions with `require_plan_review` enabled.
+- AI orchestrator triggers mission state transitions through the existing `missionService` and `orchestratorService`.
+- Intervention routing: orchestrator detects need for human input, creates intervention via `ask_user` MCP tool, mission moves to `intervention_required`, user response flows back to orchestrator.
+- Implement automatic intervention triggers: step retry exhaustion, unresolvable conflicts, gate failures, budget approaching limits.
+
+#### W8: Context Window Management
+- Context packs serve as compressed memory for the orchestrator session.
+- Implement progressive context loading: start with mission pack + project pack, load worker result summaries on demand.
+- Implement context window pressure management: when utilization exceeds configurable threshold (default 80%), trigger summarization of older step results and intermediate context.
+- Orchestrator can always re-read step results from the deterministic runtime's durable state if summarized context is insufficient.
+
+#### W9: Orchestrator Configuration
+- Add `ai.orchestrator` configuration block in `.ade/local.yaml`: `require_plan_review`, `max_parallel_workers`, `default_merge_policy`, `default_conflict_handoff`, heartbeat intervals/timeouts, step timeouts, max retries, context pressure threshold, progressive loading toggle, budget caps.
+- Settings renderer: Orchestrator section in Settings with controls for all configuration options, with clear explanations and security implications.
+- Budget enforcement: when total mission budget or per-step budget is reached, pause execution with user notification.
+
+#### W10: Renderer — Activity Feed
+- Real-time activity feed streaming orchestrator decisions and agent outputs to the renderer.
+- Feed items include: `step_assigned`, `step_started`, `agent_spawned`, `agent_output` (streamed), `plan_submitted`, `plan_approved`, `plan_rejected`, `intervention_requested`, `step_completed`, `step_failed`, `context_loaded`, `lane_merged`, `conflict_detected`.
+- Feed supports filtering by step, worker, event type.
+- Live worker count and status indicators (active/idle/completed).
+
+#### W11: Renderer — DAG Visualization
+- Visual DAG of the orchestrator's execution plan overlaid on the existing runtime graph.
+- Nodes show AI-planned steps with real-time status from the deterministic runtime: pending (gray), claimed (blue), in_progress (animated), completed (green), failed (red).
+- Edges show dependencies and data flow between steps.
+- Click-to-inspect: clicking a step node opens step detail with context pack, worker assignment, transcript link, result summary.
+- Parallel step groups visually clustered to show fan-out/fan-in patterns.
+
+#### W12: Renderer — Worker Transcript Tailing
+- Live session transcript tailing for running worker agent sessions in mission detail.
+- Transcripts stream from tracked sessions linked to orchestrator attempts.
+- Multi-worker view: split pane showing multiple worker transcripts simultaneously (configurable 1-4 panes).
+- Transcript events color-coded by type: text (default), tool calls (blue), file changes (green), errors (red), approvals (amber).
+
+#### W13: Validation
+- End-to-end orchestrator tests: mission prompt → AI plan → worker spawning → parallel execution → lane merge → completion.
+- Plan approval round-trip tests: worker plan → orchestrator review → approve/reject → worker re-dispatch.
+- Intervention round-trip tests: orchestrator → UI → user → orchestrator.
+- File conflict prevention tests: overlapping file patterns detected at planning time; pre-merge conflict checks work.
+- Worker lifecycle tests: spawn, heartbeat, idle detection, graceful shutdown, crash recovery.
+- Context window pressure tests: verify summarization triggers and graceful degradation under large missions.
+- Crash recovery tests: verify orchestrator resumes from durable runtime state after restart.
+- Coordination pattern tests: sequential chain, parallel fan-out, fan-in merge, plan-then-implement, review-and-revise.
+- Budget enforcement tests: per-step and total mission budget caps halt execution correctly.
 
 ### Exit criteria
 
 - Missions launch AI-powered orchestration from plain-English prompts.
 - AI orchestrator plans and executes multi-step, multi-lane workflows using MCP tools.
+- Worker agents operate in isolated lane worktrees with scoped permissions and context.
+- File conflict prevention works at planning time (claim validation) and at merge time (pre-merge checks).
+- Plan approval gates work for complex steps: workers plan in read-only mode, orchestrator reviews.
+- All six coordination patterns function: sequential, parallel fan-out, fan-in, plan-then-implement, review-and-revise, speculative parallel.
 - Orchestrator decisions flow through the deterministic runtime with full audit trail.
 - Interventions route from orchestrator to UI and back with correct lifecycle transitions.
-- Activity feed, DAG visualization, and transcript tailing provide real-time mission observability.
+- Activity feed, DAG visualization, and worker transcript tailing provide real-time mission observability.
 - Orchestrator session survives restart via deterministic runtime state recovery.
+- Worker lifecycle (spawn, heartbeat, idle, shutdown) operates reliably under normal and failure conditions.
+- Orchestrator configuration is fully controllable from Settings UI.
 
 ---
 

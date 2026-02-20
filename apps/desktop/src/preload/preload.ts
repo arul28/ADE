@@ -447,7 +447,11 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: AgentChatEventEnvelope) => cb(payload);
       ipcRenderer.on(IPC.agentChatEvent, listener);
       return () => ipcRenderer.removeListener(IPC.agentChatEvent, listener);
-    }
+    },
+    listContextPacks: async (args: import("../shared/types").ContextPackListArgs = {}): Promise<import("../shared/types").ContextPackOption[]> =>
+      ipcRenderer.invoke(IPC.agentChatListContextPacks, args),
+    fetchContextPack: async (args: import("../shared/types").ContextPackFetchArgs): Promise<import("../shared/types").ContextPackFetchResult> =>
+      ipcRenderer.invoke(IPC.agentChatFetchContextPack, args)
   },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => ipcRenderer.invoke(IPC.ptyCreate, args),

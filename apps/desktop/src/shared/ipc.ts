@@ -53,6 +53,8 @@ export const IPC = {
   agentChatModels: "ade.agentChat.models",
   agentChatDispose: "ade.agentChat.dispose",
   agentChatEvent: "ade.agentChat.event",
+  agentChatListContextPacks: "ade.agentChat.listContextPacks",
+  agentChatFetchContextPack: "ade.agentChat.fetchContextPack",
   ptyCreate: "ade.pty.create",
   ptyWrite: "ade.pty.write",
   ptyResize: "ade.pty.resize",

@@ -362,6 +362,8 @@ declare global {
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
         dispose: (args: AgentChatDisposeArgs) => Promise<void>;
         onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
+        listContextPacks: (args?: import("../shared/types").ContextPackListArgs) => Promise<import("../shared/types").ContextPackOption[]>;
+        fetchContextPack: (args: import("../shared/types").ContextPackFetchArgs) => Promise<import("../shared/types").ContextPackFetchResult>;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;

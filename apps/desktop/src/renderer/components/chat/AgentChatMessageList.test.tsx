@@ -159,7 +159,7 @@ describe("AgentChatMessageList", () => {
     expect(screen.getByText("Something failed")).toBeTruthy();
     expect(screen.getByText("UsageLimitExceeded")).toBeTruthy();
 
-    const errorBlock = container.querySelector(".border-red-500\\/40");
+    const errorBlock = container.querySelector(".border-red-500\\/30");
     expect(errorBlock).toBeTruthy();
   });
 

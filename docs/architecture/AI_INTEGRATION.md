@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-20
 
 The AI integration layer replaces the previous hosted agent with a local-first, subscription-powered approach. Instead of a cloud backend with API keys and remote job queues, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions, coordinates them through an MCP server, and manages multi-step workflows via an AI orchestrator.
 
@@ -624,7 +624,25 @@ This provides full traceability of what AI agents did during a mission run.
 
 ### AI Orchestrator
 
-The AI Orchestrator is the intelligent coordination layer that plans and executes multi-step missions. It is implemented as a Claude session with the MCP server connected, running on top of the deterministic orchestrator service state machine.
+The AI Orchestrator is the intelligent coordination layer that plans and executes multi-step missions. It uses a **leader/worker agent team architecture** inspired by Claude Code's agent teams model: one leader session (the orchestrator itself) coordinates multiple worker agents, each operating in its own context window and lane worktree. The orchestrator runs on top of the deterministic orchestrator service state machine, issuing commands through it rather than replacing it.
+
+#### Design Principles (Informed by Claude Code Agent Teams)
+
+The orchestrator adopts key patterns proven in Claude Code's multi-agent coordination:
+
+1. **Leader/Worker Separation**: The orchestrator session acts as the team leader — it plans, assigns, monitors, and synthesizes. Worker agents execute implementation, review, and testing tasks independently. Workers never coordinate directly with each other; all coordination flows through the orchestrator or the shared task infrastructure.
+
+2. **Shared Task List as Coordination Backbone**: All steps in a mission are materialized as a structured task list that both the orchestrator and the deterministic runtime can inspect. Steps have states (`pending`, `claimed`, `in_progress`, `completed`, `failed`), dependencies (a step blocked by another cannot start), and owners (the agent assigned to execute it). This mirrors Claude Code's team task list with file-lock-based claim safety.
+
+3. **Context Isolation via Lane Worktrees**: Each worker agent operates in its own lane worktree — an isolated copy of the repository. This prevents file conflicts between parallel agents (a critical lesson from agent teams: "two teammates editing the same file leads to overwrites"). The orchestrator assigns file/lane ownership at the step level to guarantee isolation.
+
+4. **Scoped Agent Profiles**: Each worker receives a focused system prompt, restricted tool access, and a bounded context pack — not the orchestrator's full conversation history. This matches Claude Code's subagent pattern: workers load project context independently and receive only task-specific instructions from the leader.
+
+5. **Plan Approval Gates**: For complex or risky steps, the orchestrator can require plan approval before a worker begins implementation. The worker researches and plans in read-only mode, submits a plan to the orchestrator, and the orchestrator approves or rejects with feedback. This mirrors the `plan_mode_required` pattern in agent teams.
+
+6. **Inter-Agent Messaging via Structured Events**: All communication between the orchestrator and workers flows through structured `OrchestratorEvent` records — not free-form text. Event types include: `step_assigned`, `step_started`, `step_completed`, `step_failed`, `intervention_requested`, `context_loaded`, `agent_spawned`, `plan_submitted`, `plan_approved`, `plan_rejected`. Each event is durable and queryable from History.
+
+7. **Graceful Lifecycle Management**: Workers go idle between tasks. The orchestrator detects idle workers, assigns new tasks or requests shutdown. Workers can reject shutdown if they have in-progress work. All shutdown is graceful — forced termination is a last resort after timeout.
 
 #### Architecture
 
@@ -632,55 +650,55 @@ The AI Orchestrator is the intelligent coordination layer that plans and execute
 Mission prompt + context packs
         │
         ▼
-┌─────────────────────────────┐
-│  AI Orchestrator            │
-│  (Claude session + MCP)     │
-│                             │
-│  ┌────────────┐             │
-│  │  Planner   │ ──> step plan (JSON schema-enforced)
-│  └────────────┘             │
-│        │                    │
-│        ▼                    │
-│  ┌────────────┐             │
-│  │  Scheduler │ ──> dispatches steps via AgentExecutor interface
-│  └────────────┘             │
-│        │                    │
-│  ┌─────┴─────┐              │
-│  ▼           ▼              │
-│ Step A     Step B           │ (parallel in separate lanes)
-│  │           │              │
-│  ▼           ▼              │
-│ ┌─────────────────────────┐ │
-│ │    AgentExecutor        │ │  <── ADE's abstraction layer
-│ │  ┌─────────┬──────────┐ │ │
-│ │  │ Claude  │  Codex   │ │ │
-│ │  │Executor │ Executor │ │ │
-│ │  └────┬────┴────┬─────┘ │ │
-│ │       │         │       │ │
-│ │       ▼         ▼       │ │
-│ │  ai-sdk-   @openai/    │ │
-│ │  provider  codex-sdk   │ │
-│ │  -claude-  (official)  │ │
-│ │  code                  │ │
-│ │  (community)           │ │
-│ └─────────────────────────┘ │
-│        │                    │
-│  ┌─────┴─────┐              │
-│  ▼           ▼              │
-│ claude     codex            │  (CLI subprocesses)
-│  CLI        CLI             │
-│  │           │              │
-│  ▼           ▼              │
-│  ┌────────────┐             │
-│  │  Monitor   │ ──> gate reports, claim heartbeats
-│  └────────────┘             │
-│        │                    │
-│        ▼                    │
-│  Results / Interventions    │
-└─────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  AI Orchestrator (Leader Session)                 │
+│  Claude session + ADE MCP server connected        │
+│                                                    │
+│  ┌────────────┐                                    │
+│  │  Planner   │ ──> step plan (JSON schema)        │
+│  └────────────┘                                    │
+│        │                                           │
+│        ▼                                           │
+│  ┌──────────────────┐                              │
+│  │  Task Dispatcher  │ ──> shared task list         │
+│  └──────────────────┘     (pending → claimed →     │
+│        │                   in_progress → done)      │
+│        │                                           │
+│  ┌─────┼──────────┐                                │
+│  ▼     ▼          ▼                                │
+│ Worker Worker   Worker   (each in own lane)        │
+│  A      B        C                                 │
+│  │      │        │                                 │
+│  ▼      ▼        ▼                                 │
+│ ┌──────────────────────────────┐                   │
+│ │      AgentExecutor           │                   │
+│ │  ┌──────────┬──────────┐     │                   │
+│ │  │  Claude  │  Codex   │     │                   │
+│ │  │ Executor │ Executor │     │                   │
+│ │  └──────────┴──────────┘     │                   │
+│ └──────────────────────────────┘                   │
+│        │                                           │
+│  ┌─────┼──────────┐                                │
+│  ▼     ▼          ▼                                │
+│ Lane  Lane      Lane     (isolated worktrees)      │
+│  W1    W2        W3                                │
+│  │     │         │                                 │
+│  ▼     ▼         ▼                                 │
+│  ┌──────────────────┐                              │
+│  │     Monitor      │ ──> heartbeats, gate reports │
+│  └──────────────────┘                              │
+│        │                                           │
+│        ▼                                           │
+│  ┌──────────────────┐                              │
+│  │  Result Merger   │ ──> merge worker lanes back  │
+│  └──────────────────┘                              │
+│        │                                           │
+│        ▼                                           │
+│  Orchestrator Events (durable audit trail)         │
+└──────────────────────────────────────────────────┘
         │
         ▼
-Orchestrator service (durable state machine)
+Orchestrator service (deterministic state machine)
         │
         ▼
 Mission service (user-facing lifecycle)
@@ -691,56 +709,194 @@ Mission service (user-facing lifecycle)
 When a mission is created, the orchestrator's planning phase:
 
 1. Receives the mission prompt, title, and any attached context.
-2. Assembles a context bundle: project pack digest, docs digest, operation summary, constraints.
+2. Assembles a context bundle: project pack (Standard), docs digest, active lane summaries, operation history, and any user-attached files.
 3. Builds a structured planner prompt and invokes the configured planning executor (`ClaudeExecutor` or `CodexExecutor`).
-4. The planner returns a JSON plan conforming to the mission plan schema, including:
-   - Mission summary (domain, complexity, strategy, parallelism cap)
-   - Assumptions and risks
-   - Ordered steps with dependencies, executor hints, claim policies, and output contracts
-   - Handoff policy for conflict resolution
-5. The plan is validated, normalized, and converted into orchestrator run steps.
+4. The planner returns a JSON plan conforming to the mission plan schema:
+   ```typescript
+   interface MissionPlan {
+     summary: {
+       domain: string;
+       complexity: "trivial" | "moderate" | "complex" | "very_complex";
+       strategy: "sequential" | "parallel-lite" | "parallel-first";
+       parallelismCap: number;          // max concurrent worker agents
+     };
+     assumptions: string[];
+     risks: Array<{ description: string; mitigation: string }>;
+     steps: MissionStep[];
+     mergePolicy: "sequential" | "batch-at-end" | "per-step";
+     conflictHandoff: "auto-resolve" | "ask-user" | "orchestrator-decides";
+   }
+
+   interface MissionStep {
+     id: string;
+     title: string;
+     description: string;
+     dependsOn: string[];               // step IDs
+     executorKind: "claude" | "codex" | "shell" | "manual";
+     executorHint?: string;             // model preference
+     requiresPlanApproval: boolean;     // worker must plan before implementing
+     claimPolicy: {
+       lanes: string[];                 // lane IDs or "new"
+       filePatterns: string[];          // glob patterns for file ownership
+       envKeys: string[];               // environment scope keys
+     };
+     contextProfiles: string[];         // "lite" | "standard" | "deep"
+     outputContract: {
+       type: "code_changes" | "test_results" | "review" | "artifact";
+       schema?: object;                 // JSON schema for structured output
+     };
+     timeoutMs: number;
+     maxRetries: number;
+     joinPolicy: "all-succeed" | "any-succeed" | "majority"; // for steps with multiple dependencies
+   }
+   ```
+5. The plan is validated against claim collision rules (no two steps claim overlapping file patterns in the same phase), normalized, and converted into orchestrator run steps.
+6. Optionally: the plan is presented to the user for review before execution begins (configurable via `ai.orchestrator.require_plan_review` in `.ade/local.yaml`).
 
 If the AI planner fails (CLI unavailable, timeout, invalid output), the system falls back to a deterministic planner that uses keyword classification to generate a reasonable step plan.
+
+#### Worker Agent Spawning
+
+For each step that enters the `claimed` state, the orchestrator spawns a worker agent:
+
+1. **Lane Assignment**: Each worker operates in a dedicated lane worktree. If the step specifies `lanes: ["new"]`, a new lane is created via the `create_lane` MCP tool. If it references an existing lane, the worker is assigned to that lane.
+
+2. **Agent Profile Construction**: The worker receives:
+   - A **system prompt** built from the step's description, the mission context, and any identity policy (Phase 4).
+   - A **context pack** at the tier specified by `contextProfiles` (Lite/Standard/Deep).
+   - A **tool whitelist** — the worker's MCP tools are restricted to those appropriate for its step type. Implementation workers get `commit_changes`, `run_tests`; review workers get `read_context`, `check_conflicts`.
+   - A **permission mode** — read-only for review/planning steps, edit for implementation steps, configurable per step.
+
+3. **MCP Server Connection**: Each worker agent connects to the same ADE MCP server instance. The MCP permission layer enforces that workers can only access resources within their claimed scope (lane + file patterns). A worker cannot `commit_changes` in a lane it doesn't hold a claim on.
+
+4. **Session Tracking**: The worker's CLI process is registered as a tracked session (`terminal_sessions` row with `tool_type: "codex-orchestrated"` or `"claude-orchestrated"`). This enables transcript capture, delta computation, and pack integration — the same lifecycle as interactive chat sessions.
+
+#### Worker Coordination Patterns
+
+The orchestrator manages workers through several coordination patterns:
+
+| Pattern | Description | When Used |
+|---------|-------------|-----------|
+| **Sequential Chain** | Worker A completes, Worker B starts with A's output as context | Steps with hard dependencies (implement → test → review) |
+| **Parallel Fan-Out** | Multiple workers start simultaneously in separate lanes | Independent implementation steps (feature A in lane-1, feature B in lane-2) |
+| **Fan-In Merge** | Orchestrator waits for all parallel workers, then merges lanes | After parallel implementation, before integration testing |
+| **Plan-Then-Implement** | Worker plans in read-only mode, orchestrator approves, worker implements | Complex/risky steps where the approach should be validated first |
+| **Review-and-Revise** | One worker implements, another reviews, orchestrator decides on revision | Quality-critical code paths |
+| **Speculative Parallel** | Multiple workers attempt the same step with different approaches, best result wins | Ambiguous tasks where the optimal approach is unclear |
+
+#### File Conflict Prevention
+
+The orchestrator prevents file conflicts between parallel workers through:
+
+1. **Claim-Based File Ownership**: Each step declares `filePatterns` in its claim policy. The orchestrator validates at planning time that no two parallel steps claim overlapping patterns. If overlap is detected, the planner re-sequences those steps.
+
+2. **Pre-Merge Conflict Check**: Before merging a worker's lane back, the orchestrator calls `check_conflicts` to detect any conflicts with other active worker lanes. If conflicts are found, the orchestrator decides whether to auto-resolve (using the conflict resolution AI), ask the user, or re-sequence.
+
+3. **Merge Sequencing**: The `mergePolicy` field in the plan determines when worker lanes are merged back:
+   - `sequential`: Each worker's lane is merged immediately after the step completes.
+   - `batch-at-end`: All worker lanes are merged in dependency order after the entire mission completes.
+   - `per-step`: The orchestrator decides per-step based on downstream dependencies.
 
 #### Step Execution
 
 For each step in the plan, the orchestrator:
 
 1. Checks dependency satisfaction (all predecessor steps completed successfully, or join policy allows continuation).
-2. Acquires claims on the required scopes (lane, file patterns, environment keys).
+2. Acquires claims on the required scopes (lane, file patterns, environment keys) via the deterministic runtime's claim system.
 3. Creates a context snapshot with the appropriate export level for the step.
-4. Dispatches the step to the appropriate `AgentExecutor` implementation matching the step's `executorKind`:
+4. If `requiresPlanApproval` is true:
+   a. Dispatches the worker in read-only mode (`permissionMode: "plan"`).
+   b. Worker researches the codebase and submits a plan via structured output.
+   c. Orchestrator evaluates the plan (checks for scope creep, file ownership violations, test coverage).
+   d. If approved, re-dispatches the worker with edit permissions.
+   e. If rejected, provides feedback and re-dispatches in plan mode for revision.
+5. Dispatches the step to the appropriate `AgentExecutor` implementation matching the step's `executorKind`:
    - `claude`: `ClaudeExecutor` spawns a Claude CLI process via `ai-sdk-provider-claude-code` with the step's prompt and context.
    - `codex`: `CodexExecutor` spawns a Codex CLI process via `@openai/codex-sdk` with the step's prompt and context in a sandboxed lane worktree.
    - `shell`: Runs a shell command (for deterministic steps like test execution).
    - `manual`: Waits for user action (for steps requiring human judgment).
-5. Monitors the attempt via session tracking and claim heartbeats.
-6. On completion, records the result envelope and releases claims.
+6. Monitors the attempt via session tracking and claim heartbeats.
+7. On completion, records the result envelope, releases claims, and optionally triggers merge.
+
+#### Worker Lifecycle
+
+Workers follow a predictable lifecycle:
+
+```
+spawned → initializing → working → idle/completed/failed
+                                        │
+                                   (if more tasks)
+                                        ▼
+                                     working → ...
+                                        │
+                                   (if shutdown)
+                                        ▼
+                                    disposed
+```
+
+- **Idle Detection**: When a worker completes a step, it enters `idle` state. The orchestrator detects this via the session tracking system and either assigns the next step or requests shutdown.
+- **Heartbeat Monitoring**: Workers emit claim heartbeats at regular intervals. If heartbeats stop (agent crash, timeout), the orchestrator marks the step as `failed` and handles retry/escalation.
+- **Graceful Shutdown**: When the mission completes, the orchestrator sends shutdown requests to all idle workers. Workers acknowledge and exit. Workers with in-progress work can reject shutdown; the orchestrator waits for completion before re-requesting.
 
 #### Context Window Management
 
 The orchestrator manages AI context budgets through ADE's pack export system:
 
-- **Lite exports** (~2K tokens): Lane metadata, file list, recent commits. Used for quick status checks.
+- **Lite exports** (~2K tokens): Lane metadata, file list, recent commits. Used for quick status checks and worker heartbeat context.
 - **Standard exports** (~8K tokens): Lite content plus file-level diffs, test results, and conflict state. Used for most planning and review tasks.
 - **Deep exports** (~32K tokens): Standard content plus full file contents for key files, detailed transcript excerpts, and narrative history. Used for complex implementation steps.
 
-Each step in a plan specifies its `requiresContextProfiles` field, and the orchestrator assembles the appropriate export before dispatching the step.
+Each step in a plan specifies its `contextProfiles` field, and the orchestrator assembles the appropriate export before dispatching the step.
+
+**Progressive Context Loading**: The orchestrator session itself starts with the mission pack + project pack. As workers complete steps and produce results, the orchestrator loads result summaries on demand rather than accumulating all worker output. This prevents the orchestrator's context window from filling under large missions.
+
+**Context Pressure Management**: When the orchestrator's context utilization exceeds 80%, it triggers a summarization pass — older step results and intermediate context are compressed into summary blocks. The deterministic runtime's durable state serves as the ground truth; the orchestrator can always re-read step results from the runtime if needed.
 
 #### Intervention Routing
 
 When an AI agent encounters a situation requiring human input, it invokes the `ask_user` MCP tool. The orchestrator:
 
 1. Pauses the current step's attempt.
-2. Creates an intervention record in the mission service.
+2. Creates an intervention record in the mission service with structured context (what the agent was doing, what it needs, what options exist).
 3. Broadcasts an intervention event to the renderer via IPC.
 4. The UI displays the intervention in the mission detail view with the agent's question and context.
-5. When the user responds, the intervention is resolved and the orchestrator resumes the step.
+5. When the user responds, the intervention is resolved and the orchestrator resumes the step with the user's input.
 
 Interventions can also be triggered automatically when:
 - A step fails and exceeds its retry limit.
-- A conflict is detected between agent lanes.
-- A gate report indicates a blocking condition (e.g., failing tests).
+- A conflict is detected between worker lanes that cannot be auto-resolved.
+- A gate report indicates a blocking condition (e.g., failing tests after implementation).
+- A worker's plan is rejected by the orchestrator and the orchestrator cannot provide adequate feedback (escalates to user).
+- Budget or time limits are approaching.
+
+#### Orchestrator Configuration
+
+The orchestrator is configurable in `.ade/local.yaml`:
+
+```yaml
+ai:
+  orchestrator:
+    # Planning
+    require_plan_review: false        # Show plan to user before execution
+    max_parallel_workers: 4           # Max concurrent worker agents
+    default_merge_policy: sequential  # sequential | batch-at-end | per-step
+    default_conflict_handoff: auto-resolve  # auto-resolve | ask-user | orchestrator-decides
+
+    # Worker management
+    worker_heartbeat_interval_ms: 30000
+    worker_heartbeat_timeout_ms: 90000
+    worker_idle_timeout_ms: 300000    # Shut down idle workers after 5 min
+    step_timeout_default_ms: 300000   # Default per-step timeout
+    max_retries_per_step: 2
+
+    # Context management
+    context_pressure_threshold: 0.8   # Trigger summarization at 80% capacity
+    progressive_loading: true         # Load worker results on demand
+
+    # Budget
+    max_total_budget_usd: 50.0        # Hard budget cap for entire mission
+    max_per_step_budget_usd: 10.0     # Per-step budget cap
+```
 
 ### Per-Task-Type Configuration
 
@@ -1064,6 +1220,14 @@ async function* sendMessage(text: string): AsyncIterable<ChatEvent> {
 
 **Limitations**: The Claude backend may not support all UI features that Codex provides (plans, reasoning blocks). The chat UI gracefully handles missing features — items that Claude doesn't produce simply don't appear in the UI.
 
+#### Phase 2 Chat Improvements
+
+Phase 2 completed the outstanding chat debt from Phase 1.5:
+
+- **UI polish shipped**: The Work Pane chat surface (`AgentChatMessageList.tsx`, `AgentChatComposer.tsx`, `AgentChatPane.tsx`) now uses richer bubble styling, inline diff emphasis, cleaner command blocks, improved streaming indicators, and clearer approval presentation.
+- **Claude provider selection fixed**: Provider selection no longer resets unexpectedly; Claude and Codex remain selectable based on detected model availability.
+- **Reasoning effort selector shipped**: Codex reasoning effort (`low`, `medium`, `high`, `extra_high`) is surfaced in the composer and passed to both `thread/start` and `turn/start`. Last-used effort is persisted per lane/model. Claude model variants are shown with descriptive labels from `supportedModels()`.
+
 #### Chat Session Lifecycle
 
 Agent chat sessions integrate into ADE's existing session tracking infrastructure:
@@ -1159,19 +1323,20 @@ The pack service provides the context backbone for all AI operations:
 | Executor adapter interface | Complete | `OrchestratorExecutorAdapter` type for pluggable step execution |
 | Context snapshot system | Complete | Profile-based export assembly (deterministic, narrative-opt-in) |
 | Bounded pack exports | Complete | Lite/Standard/Deep export tiers in `packExports.ts` |
-| AgentExecutor interface | Planned | Thin abstraction over both executor SDKs (`ClaudeExecutor`, `CodexExecutor`) |
-| Agent SDK integration (dual-SDK) | Planned | Claude via `ai-sdk-provider-claude-code`; Codex via `@openai/codex-sdk` |
-| MCP server (`apps/mcp-server`) | Planned | stdio transport, tool definitions, resource providers |
-| AI orchestrator (Claude + MCP) | Planned | Claude session coordinating multi-step mission execution |
-| AI integration service | Planned | Unified service replacing hosted/BYOK services |
-| Per-task-type configuration | Planned | `.ade/local.yaml` task-type routing settings |
-| Call audit logging | Planned | MCP tool call logging to orchestrator timeline |
-| Permission/policy layer | Planned | Claim-based mutation authorization for MCP tools |
-| Streaming AI responses to UI | Planned | IPC push events for real-time token delivery |
-| AgentChatService interface | Planned | Provider-agnostic chat abstraction (Phase 1.5) |
-| CodexChatBackend (App Server) | Planned | JSON-RPC 2.0 client for `codex app-server` |
-| ClaudeChatBackend (community provider) | Planned | Multi-turn `streamText()` via `ai-sdk-provider-claude-code` |
-| Chat UI components | Planned | AgentChatPane, MessageList, Composer, ApprovalOverlay |
-| Chat session integration | Planned | Chat sessions as first-class terminal_sessions |
+| AgentExecutor interface | Complete | `apps/desktop/src/main/services/ai/agentExecutor.ts` |
+| Agent SDK integration (dual-SDK) | Complete | `ClaudeExecutor` + `CodexExecutor` implemented |
+| AI integration service | Complete | `apps/desktop/src/main/services/ai/aiIntegrationService.ts` |
+| Per-task-type configuration | Complete | Configurable in `.ade/local.yaml` |
+| Streaming AI responses to UI | Complete | IPC push events via `webContents.send` |
+| AgentChatService interface | Complete | `apps/desktop/src/main/services/chat/agentChatService.ts` |
+| CodexChatBackend (App Server) | Complete | JSON-RPC 2.0 client in `agentChatService.ts` |
+| ClaudeChatBackend (community provider) | Complete | Multi-turn `streamText()` in `agentChatService.ts` |
+| Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
+| Chat session integration | Complete | `codex-chat` and `claude-chat` tool types in `terminal_sessions` |
+| MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 stdio server with Phase 2 tool/resource surface |
+| AI orchestrator (Claude + MCP) | Planned | Phase 3 -- leader/worker agent team architecture with shared task list, plan approval gates, file conflict prevention, lane merging, and six coordination patterns |
+| Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
+| Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
+| Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
 
-**Overall status**: Core mission planning and orchestrator infrastructure are complete. The dual-SDK agent integration (`AgentExecutor` interface, `ClaudeExecutor`, `CodexExecutor`), MCP server, and AI orchestrator represent the next implementation phase that will connect the planning layer to live agent execution.
+**Overall status**: Phases 1, 1.5, and 2 are complete. ADE now ships dual-SDK execution, native chat integration, and a production MCP bridge (`apps/mcp-server`) with policy enforcement and durable audit logging. Phase 3 (AI orchestrator with leader/worker agent team architecture) is the next implementation target. The orchestrator specification has been enriched with concrete team coordination patterns (shared task lists, plan approval gates, file conflict prevention, worker lifecycle management) informed by Claude Code's agent teams model.

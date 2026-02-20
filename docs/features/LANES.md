@@ -186,6 +186,8 @@ The Chat view layout:
 
 Chat sessions created from the Chat view are automatically scoped to the selected lane (`cwd` = lane worktree path). The provider/model selector in the composer supports both Codex and Claude. Chat sessions are tracked as first-class sessions with the same delta computation, pack integration, and context tracking as terminal sessions.
 
+**Phase 2 improvements (shipped)**: The agent chat view now has polished message/composer/pane styling, Claude provider selection remains stable, and Codex reasoning effort selection is available in the model controls (persisted per lane/model and sent to Codex thread/turn starts).
+
 **Diff / Git Operations Panel** (default sub-tab):
 
 The diff panel is the primary interaction surface for git operations within a lane.
@@ -477,4 +479,3 @@ ADE now applies an explicit external-resolver integration rule:
 - Multiple source lanes into target: ADE auto-creates or reuses an **Integration lane** and runs external CLI there.
 
 No additional orchestrator/scheduler behavior is introduced by this rule; it is scoped to conflict-resolution execution only.
-

@@ -7,7 +7,8 @@ import type {
   AgentChatFileRef,
   AgentChatModelInfo,
   AgentChatProvider,
-  AgentChatSessionSummary
+  AgentChatSessionSummary,
+  ContextPackOption
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -23,6 +24,7 @@ type PendingApproval = {
 
 const LAST_PROVIDER_KEY = "ade.chat.lastProvider";
 const LAST_MODEL_KEY_PREFIX = "ade.chat.lastModel";
+const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 
 function defaultModel(provider: AgentChatProvider): string {
   return provider === "codex" ? "gpt-5.3-codex" : "sonnet";
@@ -128,6 +130,50 @@ function writeLastUsedModel(provider: AgentChatProvider, model: string) {
   }
 }
 
+function readLastUsedReasoningEffort(args: {
+  laneId: string | null;
+  provider: AgentChatProvider;
+  model: string;
+}): string | null {
+  if (!args.laneId) return null;
+  try {
+    const raw = window.localStorage.getItem(`${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.provider}:${args.model}`);
+    return raw && raw.trim().length ? raw.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastUsedReasoningEffort(args: {
+  laneId: string | null;
+  provider: AgentChatProvider;
+  model: string;
+  effort: string | null;
+}) {
+  if (!args.laneId || !args.model.trim().length) return;
+  try {
+    const key = `${LAST_REASONING_KEY_PREFIX}:${args.laneId}:${args.provider}:${args.model}`;
+    if (!args.effort || !args.effort.trim().length) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, args.effort.trim());
+  } catch {
+    // ignore
+  }
+}
+
+function selectReasoningEffort(args: {
+  options: Array<{ effort: string; description: string }>;
+  preferred: string | null;
+}): string | null {
+  if (!args.options.length) return null;
+  if (args.preferred && args.options.some((entry) => entry.effort === args.preferred)) {
+    return args.preferred;
+  }
+  return args.options.find((entry) => entry.effort === "medium")?.effort ?? args.options[0]!.effort;
+}
+
 function byStartedDesc(a: AgentChatSessionSummary, b: AgentChatSessionSummary): number {
   return Date.parse(b.startedAt) - Date.parse(a.startedAt);
 }
@@ -156,8 +202,10 @@ export function AgentChatPane({
   const [approvalsBySession, setApprovalsBySession] = useState<Record<string, PendingApproval[]>>({});
   const [provider, setProvider] = useState<AgentChatProvider>("codex");
   const [model, setModel] = useState<string>(defaultModel("codex"));
+  const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [modelsByProvider, setModelsByProvider] = useState<Record<AgentChatProvider, AgentChatModelInfo[]>>({ codex: [], claude: [] });
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const [selectedContextPacks, setSelectedContextPacks] = useState<ContextPackOption[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -174,23 +222,20 @@ export function AgentChatPane({
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const pendingApproval = selectedSessionId ? (approvalsBySession[selectedSessionId]?.[0] ?? null) : null;
+  const activeModels = modelsByProvider[provider];
+  const selectedModel = activeModels.find((entry) => entry.id === model) ?? activeModels[0] ?? null;
+  const reasoningOptions = selectedModel?.reasoningEfforts ?? [];
 
-  const refreshModels = useCallback(async (nextProvider: AgentChatProvider) => {
+  const refreshModels = useCallback(async (nextProvider: AgentChatProvider): Promise<AgentChatModelInfo[]> => {
     try {
       const models = await window.ade.agentChat.models({ provider: nextProvider });
       setModelsByProvider((prev) => ({ ...prev, [nextProvider]: models }));
-      if (nextProvider !== provider) return;
-      if (!models.length) return;
-      if (models.some((entry) => entry.id === model)) return;
-      const preferred = readLastUsedModel(nextProvider);
-      const defaultChoice = preferred && models.some((entry) => entry.id === preferred)
-        ? preferred
-        : models.find((entry) => entry.isDefault)?.id ?? models[0]!.id;
-      setModel(defaultChoice);
+      return models;
     } catch {
-      // Keep fallback defaults.
+      setModelsByProvider((prev) => ({ ...prev, [nextProvider]: [] }));
+      return [];
     }
-  }, [model, provider]);
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     if (!laneId) {
@@ -243,6 +288,13 @@ export function AgentChatPane({
   }, [lockSessionId]);
 
   useEffect(() => {
+    if (!selectedSession) return;
+    setProvider(selectedSession.provider);
+    setModel(selectedSession.model);
+    setReasoningEffort(selectedSession.reasoningEffort ?? null);
+  }, [selectedSession?.sessionId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const boot = async () => {
@@ -277,6 +329,45 @@ export function AgentChatPane({
       cancelled = true;
     };
   }, [refreshModels, refreshSessions]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (modelsByProvider[provider].length) return;
+    const fallback = (["codex", "claude"] as AgentChatProvider[]).find((entry) => modelsByProvider[entry].length > 0);
+    if (!fallback || fallback === provider) return;
+    setProvider(fallback);
+    const fallbackModel = readLastUsedModel(fallback);
+    setModel(fallbackModel ?? (modelsByProvider[fallback][0]?.id ?? defaultModel(fallback)));
+  }, [loading, modelsByProvider, provider]);
+
+  useEffect(() => {
+    const providerModels = modelsByProvider[provider];
+    if (!providerModels.length) return;
+    if (providerModels.some((entry) => entry.id === model)) return;
+    const preferred = readLastUsedModel(provider);
+    const defaultChoice = preferred && providerModels.some((entry) => entry.id === preferred)
+      ? preferred
+      : providerModels.find((entry) => entry.isDefault)?.id ?? providerModels[0]!.id;
+    setModel(defaultChoice);
+  }, [model, modelsByProvider, provider]);
+
+  useEffect(() => {
+    if (!reasoningOptions.length) {
+      if (reasoningEffort !== null) setReasoningEffort(null);
+      return;
+    }
+
+    if (reasoningEffort && reasoningOptions.some((entry) => entry.effort === reasoningEffort)) {
+      return;
+    }
+
+    const preferred = readLastUsedReasoningEffort({
+      laneId,
+      provider,
+      model
+    });
+    setReasoningEffort(selectReasoningEffort({ options: reasoningOptions, preferred }));
+  }, [laneId, model, provider, reasoningEffort, reasoningOptions]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -320,6 +411,15 @@ export function AgentChatPane({
     writeLastUsedModel(provider, model);
   }, [provider, model]);
 
+  useEffect(() => {
+    writeLastUsedReasoningEffort({
+      laneId,
+      provider,
+      model,
+      effort: reasoningEffort
+    });
+  }, [laneId, model, provider, reasoningEffort]);
+
   const searchAttachments = useCallback(async (query: string): Promise<AgentChatFileRef[]> => {
     if (!laneId) return [];
     const trimmed = query.trim();
@@ -348,12 +448,17 @@ export function AgentChatPane({
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (!laneId) return null;
-    const created = await window.ade.agentChat.create({ laneId, provider, model });
+    const created = await window.ade.agentChat.create({
+      laneId,
+      provider,
+      model,
+      reasoningEffort
+    });
     loadedHistoryRef.current.delete(created.id);
     setSelectedSessionId(created.id);
     await refreshSessions();
     return created.id;
-  }, [laneId, model, provider, refreshSessions]);
+  }, [laneId, model, provider, reasoningEffort, refreshSessions]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();
@@ -362,6 +467,30 @@ export function AgentChatPane({
     setBusy(true);
     setError(null);
     try {
+      // Fetch context packs and prepend their content
+      let finalText = text;
+      if (selectedContextPacks.length) {
+        const packContents: string[] = [];
+        for (const pack of selectedContextPacks) {
+          try {
+            const result = await window.ade.agentChat.fetchContextPack({
+              scope: pack.scope,
+              laneId: laneId ?? undefined,
+              featureKey: pack.featureKey,
+              missionId: pack.missionId
+            });
+            if (result.content.trim().length) {
+              packContents.push(`[Context: ${pack.label}]\n${result.content}`);
+            }
+          } catch {
+            // Skip packs that fail to fetch
+          }
+        }
+        if (packContents.length) {
+          finalText = `${packContents.join("\n\n")}\n\n---\n\n${text}`;
+        }
+      }
+
       let sessionId = selectedSessionId;
       if (!sessionId) {
         sessionId = await createSession();
@@ -373,21 +502,27 @@ export function AgentChatPane({
       const selectedAttachments = attachments;
       if (turnActiveBySession[sessionId]) {
         const steerText = selectedAttachments.length
-          ? `${text}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
-          : text;
+          ? `${finalText}\n\nAttached context:\n${selectedAttachments.map((entry) => `- ${entry.type}: ${entry.path}`).join("\n")}`
+          : finalText;
         await window.ade.agentChat.steer({ sessionId, text: steerText });
       } else {
-        await window.ade.agentChat.send({ sessionId, text, attachments: selectedAttachments });
+        await window.ade.agentChat.send({
+          sessionId,
+          text: finalText,
+          attachments: selectedAttachments,
+          reasoningEffort
+        });
       }
       setDraft("");
       setAttachments([]);
+      setSelectedContextPacks([]);
       await refreshSessions();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
       setBusy(false);
     }
-  }, [attachments, createSession, draft, laneId, refreshSessions, selectedSessionId, turnActiveBySession]);
+  }, [attachments, createSession, draft, laneId, reasoningEffort, refreshSessions, selectedContextPacks, selectedSessionId, turnActiveBySession]);
 
   const interrupt = useCallback(async () => {
     if (!selectedSessionId) return;
@@ -417,22 +552,36 @@ export function AgentChatPane({
     }
   }, [approvalsBySession, selectedSessionId]);
 
-  const activeModels = modelsByProvider[provider];
+  const providerOptions = useMemo(
+    () => [
+      {
+        value: "codex" as const,
+        label: "Codex",
+        enabled: loading || modelsByProvider.codex.length > 0
+      },
+      {
+        value: "claude" as const,
+        label: "Claude",
+        enabled: loading || modelsByProvider.claude.length > 0
+      }
+    ],
+    [loading, modelsByProvider]
+  );
 
   if (!laneId) {
     return <EmptyState title="No lane selected" description="Select a lane to use agent chat." />;
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/30 bg-card/60 px-2 py-1.5">
-        <div className="text-xs font-semibold text-fg/80">Agent Chat</div>
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/35 bg-card/70 px-2.5 py-2 shadow-[0_1px_0_rgba(255,255,255,0.03)]">
+        <div className="text-xs font-semibold tracking-wide text-fg/85">Agent Chat</div>
 
         {!lockSessionId ? (
           <select
             value={selectedSessionId ?? ""}
             onChange={(event) => setSelectedSessionId(event.target.value || null)}
-            className="h-7 min-w-[220px] flex-1 rounded border border-border/40 bg-bg/60 px-2 text-xs"
+            className="h-7 min-w-[220px] flex-1 rounded border border-border/40 bg-bg/65 px-2 text-xs"
           >
             <option value="">No session selected</option>
             {sessions.map((session) => (
@@ -486,14 +635,12 @@ export function AgentChatPane({
           <>
             <Chip className="text-[10px]">{selectedSession.provider}</Chip>
             <Chip className="text-[10px]">{selectedSession.status}</Chip>
-            {turnActive ? <Chip className="bg-sky-500/20 text-[10px] text-sky-100">active turn</Chip> : null}
+            {turnActive ? <Chip className="bg-accent/20 text-[10px] text-fg/90">active turn</Chip> : null}
           </>
         ) : null}
       </div>
 
-      {error ? (
-        <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-red-100">{error}</div>
-      ) : null}
+      {error ? <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-fg/90">{error}</div> : null}
 
       <div className="min-h-0 flex-1">
         {loading ? (
@@ -510,23 +657,51 @@ export function AgentChatPane({
 
       <AgentChatComposer
         provider={provider}
+        providerOptions={providerOptions}
         model={model}
         models={activeModels.length ? activeModels : [{ id: defaultModel(provider), displayName: defaultModel(provider), isDefault: true }]}
+        reasoningEffort={reasoningEffort}
         draft={draft}
         attachments={attachments}
         pendingApproval={pendingApproval}
         turnActive={turnActive}
         sendOnEnter={sendOnEnter}
         busy={busy}
+        selectedContextPacks={selectedContextPacks}
+        laneId={laneId ?? undefined}
         onProviderChange={(nextProvider) => {
           setProvider(nextProvider);
           if (!modelsByProvider[nextProvider].length) {
             void refreshModels(nextProvider);
           }
-          const preferred = readLastUsedModel(nextProvider);
-          setModel(preferred ?? defaultModel(nextProvider));
+          const providerModels = modelsByProvider[nextProvider];
+          const preferredModel = readLastUsedModel(nextProvider);
+          const nextModel = preferredModel && providerModels.some((entry) => entry.id === preferredModel)
+            ? preferredModel
+            : providerModels.find((entry) => entry.isDefault)?.id
+              ?? providerModels[0]?.id
+              ?? defaultModel(nextProvider);
+          setModel(nextModel);
+
+          const options = (providerModels.find((entry) => entry.id === nextModel)?.reasoningEfforts ?? []);
+          const preferredReasoning = readLastUsedReasoningEffort({
+            laneId,
+            provider: nextProvider,
+            model: nextModel
+          });
+          setReasoningEffort(selectReasoningEffort({ options, preferred: preferredReasoning }));
         }}
-        onModelChange={setModel}
+        onModelChange={(nextModel) => {
+          setModel(nextModel);
+          const options = (modelsByProvider[provider].find((entry) => entry.id === nextModel)?.reasoningEfforts ?? []);
+          const preferred = readLastUsedReasoningEffort({
+            laneId,
+            provider,
+            model: nextModel
+          });
+          setReasoningEffort(selectReasoningEffort({ options, preferred }));
+        }}
+        onReasoningEffortChange={setReasoningEffort}
         onDraftChange={setDraft}
         onSubmit={() => {
           void submit();
@@ -540,6 +715,12 @@ export function AgentChatPane({
         onAddAttachment={addAttachment}
         onRemoveAttachment={removeAttachment}
         onSearchAttachments={searchAttachments}
+        onContextPacksChange={setSelectedContextPacks}
+        onClearEvents={() => {
+          if (selectedSessionId) {
+            setEventsBySession((prev) => ({ ...prev, [selectedSessionId]: [] }));
+          }
+        }}
       />
     </div>
   );

@@ -770,6 +770,12 @@ export type AgentChatEvent =
         inputTokens?: number | null;
         outputTokens?: number | null;
       };
+    }
+  | {
+      type: "activity";
+      activity: "thinking" | "editing_file" | "running_command" | "searching" | "reading" | "tool_calling";
+      detail?: string;
+      turnId?: string;
     };
 
 export type AgentChatEventEnvelope = {
@@ -783,6 +789,7 @@ export type AgentChatSession = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  reasoningEffort?: string | null;
   status: AgentChatSessionStatus;
   threadId?: string;
   createdAt: string;
@@ -794,6 +801,7 @@ export type AgentChatSessionSummary = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  reasoningEffort?: string | null;
   status: AgentChatSessionStatus;
   startedAt: string;
   endedAt: string | null;
@@ -806,14 +814,17 @@ export type AgentChatSessionSummary = {
 export type AgentChatModelInfo = {
   id: string;
   displayName: string;
+  description?: string | null;
   isDefault: boolean;
   reasoningEfforts?: Array<{ effort: string; description: string }>;
+  maxThinkingTokens?: number | null;
 };
 
 export type AgentChatCreateArgs = {
   laneId: string;
   provider: AgentChatProvider;
   model: string;
+  reasoningEffort?: string | null;
 };
 
 export type AgentChatListArgs = {
@@ -824,6 +835,7 @@ export type AgentChatSendArgs = {
   sessionId: string;
   text: string;
   attachments?: AgentChatFileRef[];
+  reasoningEffort?: string | null;
 };
 
 export type AgentChatSteerArgs = {
@@ -851,6 +863,36 @@ export type AgentChatModelsArgs = {
 
 export type AgentChatDisposeArgs = {
   sessionId: string;
+};
+
+export type ContextPackScope = "project" | "lane" | "conflict" | "plan" | "mission" | "feature";
+
+export type ContextPackOption = {
+  scope: ContextPackScope;
+  label: string;
+  description: string;
+  available: boolean;
+  laneId?: string;
+  featureKey?: string;
+  missionId?: string;
+};
+
+export type ContextPackFetchArgs = {
+  scope: ContextPackScope;
+  laneId?: string;
+  featureKey?: string;
+  missionId?: string;
+  level?: "brief" | "standard" | "detailed";
+};
+
+export type ContextPackFetchResult = {
+  scope: ContextPackScope;
+  content: string;
+  truncated: boolean;
+};
+
+export type ContextPackListArgs = {
+  laneId?: string;
 };
 
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";

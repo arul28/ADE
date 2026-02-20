@@ -6,3 +6,4 @@ infra/.sst/
 infra/.pulumi/
 /infra/.home
 /.npm-cache
+/apps/mcp-server/node_modules

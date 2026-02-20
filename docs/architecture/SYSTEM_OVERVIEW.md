@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-20
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
 
@@ -293,13 +293,17 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | Orchestrator service (run/step/attempt/claim state machine) | Complete |
 | Mission planning via claude/codex CLI | Complete |
 | Deterministic mission planner (fallback) | Complete |
-| MCP server (`apps/mcp-server`) | Planned |
-| Agent SDK integration (dual-SDK) | Planned |
-| AgentExecutor interface | Planned |
-| AI orchestrator (Claude session + MCP) | Planned |
-| Per-task-type routing configuration | Planned |
-| Agent Chat Service (Phase 1.5) | Planned |
+| Agent SDK integration (dual-SDK) | Complete |
+| AgentExecutor interface | Complete |
+| AI integration service | Complete |
+| Per-task-type routing configuration | Complete |
+| Agent Chat Service (Phase 1.5) | Complete |
+| Streaming AI responses to UI | Complete |
+| MCP server (`apps/mcp-server`) | Complete |
+| MCP permission/policy layer | Complete |
+| MCP call audit logging | Complete |
+| AI orchestrator (Claude session + MCP) | Planned (Phase 3) |
 
-For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is the next implementation target. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan.md`

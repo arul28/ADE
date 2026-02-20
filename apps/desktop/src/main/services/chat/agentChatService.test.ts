@@ -43,6 +43,7 @@ vi.mock("../git/git", () => ({
 }));
 
 import { streamText } from "ai";
+import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 import { spawn } from "node:child_process";
 import { runGit } from "../git/git";
 import { createAgentChatService } from "./agentChatService";
@@ -383,12 +384,17 @@ async function waitForCondition(
 const spawnMock = vi.mocked(spawn);
 const runGitMock = vi.mocked(runGit);
 const streamTextMock = vi.mocked(streamText);
+const createClaudeSessionMock = vi.mocked(unstable_v2_createSession);
 
 describe("agentChatService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runGitMock.mockResolvedValue({ exitCode: 0, stdout: "abc123\n", stderr: "" } as any);
     streamTextMock.mockReset();
+    createClaudeSessionMock.mockImplementation(() => ({
+      supportedModels: vi.fn(async () => []),
+      close: vi.fn()
+    }) as any);
   });
 
   afterEach(() => {
@@ -428,7 +434,7 @@ describe("agentChatService", () => {
       await fixture.service.disposeAll();
     });
 
-    it("sends thread/start with lane cwd, model, approval, and sandbox", async () => {
+    it("sends thread/start with lane cwd, model, reasoning effort, approval, and sandbox", async () => {
       const fixture = createFixture("codex");
       const codex = createMockCodexProcess();
       spawnMock.mockReturnValue(codex.proc as any);
@@ -441,12 +447,18 @@ describe("agentChatService", () => {
         codex.respond(msg.id!, { thread: { id: "thread-abc" } });
       });
 
-      await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        reasoningEffort: "high"
+      });
 
       expect(threadStart).toBeTruthy();
       const threadStartParams = (threadStart as SentMessage | null)?.params as any;
       expect(threadStartParams?.cwd).toBe(fixture.laneWorktreePath);
       expect(threadStartParams?.model).toBe("gpt-5.3-codex");
+      expect(threadStartParams?.reasoningEffort).toBe("high");
       expect(threadStartParams?.approvalPolicy).toBe("on-request");
       expect(threadStartParams?.sandbox).toBe("workspace-write");
 
@@ -539,7 +551,7 @@ describe("agentChatService", () => {
       codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
 
       const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
-      await fixture.service.sendMessage({ sessionId: session.id, text: "Run checks" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "Run checks", reasoningEffort: "extra_high" });
 
       await waitForEvent(fixture.emitted, (entry) => entry.event.type === "done");
 
@@ -552,6 +564,7 @@ describe("agentChatService", () => {
       const turnStart = codex.sent.find((entry) => entry.method === "turn/start");
       expect(turnStart?.params?.threadId).toBe("thread-1");
       expect(turnStart?.params?.input?.[0]?.type).toBe("text");
+      expect(turnStart?.params?.reasoningEffort).toBe("extra_high");
 
       await fixture.service.disposeAll();
     });
@@ -899,6 +912,332 @@ describe("agentChatService", () => {
       expect(secondInput.messages[0]?.content).toContain("first-message");
 
       await resumedService.disposeAll();
+    });
+  });
+
+  describe("Model discovery and reasoning effort", () => {
+    it("parses codex model/list reasoning efforts", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("model/list", (msg) => {
+        codex.respond(msg.id!, {
+          data: [
+            {
+              id: "gpt-5.3-codex",
+              displayName: "GPT-5.3 Codex",
+              isDefault: true,
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low", description: "quick" },
+                { reasoningEffort: "high", description: "deep" }
+              ]
+            }
+          ]
+        });
+      });
+
+      const models = await fixture.service.getAvailableModels({ provider: "codex" });
+      expect(models.length).toBeGreaterThan(0);
+      expect(models[0]?.id).toBe("gpt-5.3-codex");
+      expect(models[0]?.reasoningEfforts?.map((entry) => entry.effort)).toEqual(["low", "high"]);
+      expect(models[0]?.displayName).toContain("Codex");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("adds descriptions for claude supported models", async () => {
+      const fixture = createFixture("claude");
+      const close = vi.fn();
+      createClaudeSessionMock.mockImplementationOnce(() => ({
+        supportedModels: vi.fn(async () => [
+          { value: "claude-opus-4-6", displayName: "Opus" },
+          { value: "claude-sonnet-4-6", displayName: "Sonnet" },
+          { value: "claude-haiku-4-5-20251001", displayName: "Haiku" }
+        ]),
+        close
+      }) as any);
+
+      const models = await fixture.service.getAvailableModels({ provider: "claude" });
+      expect(models.length).toBe(3);
+      expect(models.find((entry) => entry.id.includes("sonnet"))?.description).toContain("Balanced");
+      expect(close).toHaveBeenCalledTimes(1);
+
+      await fixture.service.disposeAll();
+    });
+
+    it("persists reasoning effort in session metadata and listSessions", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => codex.respond(msg.id!, { turn: { id: "turn-1" } }));
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        reasoningEffort: "high"
+      });
+
+      await fixture.service.sendMessage({
+        sessionId: session.id,
+        text: "run checks",
+        reasoningEffort: "extra_high"
+      });
+
+      const metadataPath = path.join(fixture.adeDir, "chat-sessions", `${session.id}.json`);
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as { reasoningEffort?: string };
+      expect(metadata.reasoningEffort).toBe("extra_high");
+
+      const listed = await fixture.service.listSessions("lane-1");
+      const summary = listed.find((entry) => entry.sessionId === session.id);
+      expect(summary?.reasoningEffort).toBe("extra_high");
+
+      await fixture.service.disposeAll();
+    });
+  });
+
+  describe("Codex threadResumed bug fix", () => {
+    it("sends thread/resume when sendMessage has a persisted threadId but fresh runtime", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-persisted" } }));
+      codex.onRequest("turn/start", (msg) => {
+        codex.respond(msg.id!, { turn: { id: "turn-1" } });
+        codex.notify("turn/completed", { turn: { id: "turn-1", status: "completed" } });
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      // Create session (sets threadResumed=true via thread/start)
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "first" });
+      await waitForEvent(fixture.emitted, (entry) => entry.event.type === "done");
+
+      // Dispose to clear the runtime
+      await fixture.service.dispose({ sessionId: session.id });
+
+      // Now create a new process for the resumed session
+      const codex2 = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex2.proc as any);
+
+      codex2.onRequest("initialize", (msg) => codex2.respond(msg.id!, {}));
+      codex2.onRequest("thread/resume", (msg) => codex2.respond(msg.id!, {}));
+      codex2.onRequest("turn/start", (msg) => {
+        codex2.respond(msg.id!, { turn: { id: "turn-2" } });
+        codex2.notify("turn/completed", { turn: { id: "turn-2", status: "completed" } });
+      });
+      codex2.onRequest("turn/interrupt", (msg) => codex2.respond(msg.id!, {}));
+
+      // sendMessage on disposed session will reopen it and start a fresh runtime
+      await fixture.service.sendMessage({ sessionId: session.id, text: "after restart" });
+      await waitForEvent(fixture.emitted, (entry) =>
+        entry.event.type === "done" && entry.sessionId === session.id
+      );
+
+      // Verify thread/resume was called on the new runtime
+      const resumeRequest = codex2.sent.find((entry) => entry.method === "thread/resume");
+      expect(resumeRequest).toBeTruthy();
+      expect(resumeRequest?.params?.threadId).toBe("thread-persisted");
+
+      await fixture.service.disposeAll();
+    });
+
+    it("does not send thread/resume again on second sendMessage (threadResumed flag)", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      let turnCounter = 0;
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+      codex.onRequest("turn/start", (msg) => {
+        turnCounter++;
+        const turnId = `turn-${turnCounter}`;
+        codex.respond(msg.id!, { turn: { id: turnId } });
+        // Defer the completion notification so the turn/start response clears first
+        setTimeout(() => {
+          codex.notify("turn/completed", { turn: { id: turnId, status: "completed" } });
+        }, 5);
+      });
+      codex.onRequest("turn/interrupt", (msg) => codex.respond(msg.id!, {}));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+
+      // First message
+      await fixture.service.sendMessage({ sessionId: session.id, text: "first" });
+
+      // Wait until the first turn's done event is emitted (turn/completed has been processed)
+      await waitForEvent(fixture.emitted, (entry) => entry.event.type === "done");
+
+      // Second message on the same runtime — activeTurnId should be cleared
+      await fixture.service.sendMessage({ sessionId: session.id, text: "second" });
+      await waitForEvent(fixture.emitted, (entry) => {
+        // Wait for the second done
+        const dones = fixture.emitted.filter((e) => e.event.type === "done");
+        return dones.length >= 2;
+      });
+
+      // thread/resume should never appear since threadResumed was set to true by thread/start
+      const resumeRequests = codex.sent.filter((entry) => entry.method === "thread/resume");
+      expect(resumeRequests.length).toBe(0);
+
+      await fixture.service.disposeAll();
+    });
+  });
+
+  describe("Claude reasoning effort", () => {
+    it("returns reasoningEfforts array from Claude SDK model discovery", async () => {
+      const fixture = createFixture("claude");
+      const close = vi.fn();
+      createClaudeSessionMock.mockImplementationOnce(() => ({
+        supportedModels: vi.fn(async () => [
+          { value: "claude-sonnet-4-6", displayName: "Sonnet" }
+        ]),
+        close
+      }) as any);
+
+      const models = await fixture.service.getAvailableModels({ provider: "claude" });
+      expect(models.length).toBe(1);
+      expect(models[0]?.reasoningEfforts).toBeTruthy();
+      expect(models[0]?.reasoningEfforts?.length).toBeGreaterThan(0);
+      expect(models[0]?.reasoningEfforts?.map((e) => e.effort)).toEqual(["low", "medium", "high", "max"]);
+
+      await fixture.service.disposeAll();
+    });
+
+    it("maps Claude reasoning effort to maxThinkingTokens in streamText call", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce((input: any) => {
+        return {
+          fullStream: makeFullStream([
+            { type: "text-delta", text: "thinking" },
+            { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+          ])
+        } as any;
+      });
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", reasoningEffort: "high" });
+      await fixture.service.sendMessage({ sessionId: session.id, text: "deep think" });
+
+      expect(streamTextMock).toHaveBeenCalledTimes(1);
+      const callArg = streamTextMock.mock.calls[0]?.[0] as any;
+      // The model is created via claudeProvider(resolvedModel, claudeOpts)
+      // claudeOpts should contain maxThinkingTokens
+      const modelOpts = callArg.model?.__options;
+      expect(modelOpts?.maxThinkingTokens).toBe(16384); // high = 16384
+
+      await fixture.service.disposeAll();
+    });
+
+    it("falls back to medium for invalid Claude reasoning effort", async () => {
+      const fixture = createFixture("claude");
+
+      streamTextMock.mockImplementationOnce(() => ({
+        fullStream: makeFullStream([
+          { type: "text-delta", text: "ok" },
+          { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } }
+        ])
+      }) as any);
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", reasoningEffort: "invalid_effort" });
+      expect(session.reasoningEffort).toBe("medium");
+
+      await fixture.service.sendMessage({ sessionId: session.id, text: "test" });
+
+      const callArg = streamTextMock.mock.calls[0]?.[0] as any;
+      const modelOpts = callArg.model?.__options;
+      expect(modelOpts?.maxThinkingTokens).toBe(4096); // medium = 4096
+
+      await fixture.service.disposeAll();
+    });
+  });
+
+  describe("Context packs", () => {
+    it("listContextPacks returns packs including project, lane, conflict, plan, mission", async () => {
+      const fixture = createFixture("codex");
+      const packs = await fixture.service.listContextPacks({ laneId: "lane-1" });
+
+      const scopes = packs.map((p) => p.scope);
+      expect(scopes).toContain("project");
+      expect(scopes).toContain("lane");
+      expect(scopes).toContain("conflict");
+      expect(scopes).toContain("plan");
+      expect(scopes).toContain("mission");
+
+      for (const pack of packs) {
+        expect(pack.available).toBe(true);
+        expect(pack.label.length).toBeGreaterThan(0);
+      }
+
+      await fixture.service.disposeAll();
+    });
+
+    it("fetchContextPack returns content with correct structure", async () => {
+      const fixture = createFixture("codex");
+      const result = await fixture.service.fetchContextPack({ scope: "project" });
+
+      expect(result.scope).toBe("project");
+      expect(typeof result.content).toBe("string");
+      expect(result.content.length).toBeGreaterThan(0);
+      expect(typeof result.truncated).toBe("boolean");
+
+      await fixture.service.disposeAll();
+    });
+  });
+
+  describe("finishSession cleanup", () => {
+    it("kills the Codex process when session is disposed", async () => {
+      const fixture = createFixture("codex");
+      const codex = createMockCodexProcess();
+      spawnMock.mockReturnValue(codex.proc as any);
+
+      codex.onRequest("initialize", (msg) => codex.respond(msg.id!, {}));
+      codex.onRequest("thread/start", (msg) => codex.respond(msg.id!, { thread: { id: "thread-1" } }));
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.3-codex" });
+      await fixture.service.dispose({ sessionId: session.id });
+
+      expect(codex.proc.kill).toHaveBeenCalled();
+    });
+
+    it("aborts the Claude abort controller when session is disposed", async () => {
+      const fixture = createFixture("claude");
+      let capturedSignal: AbortSignal | null = null;
+
+      streamTextMock.mockImplementationOnce((input: any) => {
+        capturedSignal = input.abortSignal;
+        return {
+          fullStream: {
+            async *[Symbol.asyncIterator]() {
+              await new Promise<void>((resolve) => {
+                if (input.abortSignal.aborted) { resolve(); return; }
+                input.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+              });
+              throw new Error("aborted");
+            }
+          }
+        } as any;
+      });
+
+      const session = await fixture.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const sendPromise = fixture.service.sendMessage({ sessionId: session.id, text: "long task" });
+
+      await waitForCondition(() => {
+        expect(capturedSignal).toBeTruthy();
+      });
+
+      await fixture.service.dispose({ sessionId: session.id });
+      await sendPromise;
+
+      expect((capturedSignal as AbortSignal | null)?.aborted).toBe(true);
     });
   });
 

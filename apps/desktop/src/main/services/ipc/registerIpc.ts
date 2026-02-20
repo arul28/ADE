@@ -101,6 +101,10 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  ContextPackListArgs,
+  ContextPackOption,
+  ContextPackFetchArgs,
+  ContextPackFetchResult,
   AgentTool,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -1688,6 +1692,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.dispose(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListContextPacks, async (_event, arg: ContextPackListArgs = {}): Promise<ContextPackOption[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listContextPacks(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatFetchContextPack, async (_event, arg: ContextPackFetchArgs): Promise<ContextPackFetchResult> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.fetchContextPack(arg);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

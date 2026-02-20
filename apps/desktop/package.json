@@ -10,6 +10,10 @@
     "build": "tsup && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "mcp:dev": "npm --prefix ../mcp-server run dev -- --project-root ../..",
+    "mcp:build": "npm --prefix ../mcp-server run build",
+    "mcp:typecheck": "npm --prefix ../mcp-server run typecheck",
+    "mcp:test": "npm --prefix ../mcp-server run test",
     "verify:ai-sdks": "node ./scripts/verify-ai-sdks.cjs",
     "lint": "echo \"(todo)\"",
     "rebuild:native": "electron-rebuild -f -w node-pty"
