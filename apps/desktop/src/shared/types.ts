@@ -51,7 +51,7 @@ export type RecentProjectSummary = {
 
 export type LaneType = "primary" | "worktree" | "attached";
 
-export type ProviderMode = "guest" | "subscription" | "hosted" | "byok" | "cli";
+export type ProviderMode = "guest" | "hosted" | "byok" | "cli";
 
 export type LaneStatus = {
   dirty: boolean;
@@ -210,7 +210,7 @@ export type ConflictEventPayload =
       totalPairs: number;
     };
 
-export type ConflictProposalSource = "hosted" | "subscription" | "local";
+export type ConflictProposalSource = "hosted" | "local";
 export type ConflictProposalStatus = "pending" | "applied" | "rejected";
 
 export type ConflictProposal = {
@@ -230,7 +230,7 @@ export type ConflictProposal = {
   updatedAt: string;
 };
 
-export type ConflictProposalProvider = "hosted" | "byok" | "subscription";
+export type ConflictProposalProvider = "hosted" | "byok";
 
 export type ExternalConflictResolverProvider = "codex" | "claude";
 
@@ -966,207 +966,9 @@ export type ContextOpenDocArgs = {
   path?: string;
 };
 
-export type AgentChatProvider = "codex" | "claude";
-
-export type AgentChatSessionStatus = "active" | "idle" | "ended";
-
-export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
-
-export type AgentChatFileRef = {
-  path: string;
-  type: "file" | "image";
-};
-
-export type AgentChatPlanStep = {
-  text: string;
-  status: "pending" | "in_progress" | "completed" | "failed";
-};
-
-export type AgentChatEvent =
-  | {
-      type: "user_message";
-      text: string;
-      attachments?: AgentChatFileRef[];
-      turnId?: string;
-    }
-  | {
-      type: "text";
-      text: string;
-      turnId?: string;
-      itemId?: string;
-    }
-  | {
-      type: "tool_call";
-      tool: string;
-      args: unknown;
-      itemId: string;
-      turnId?: string;
-    }
-  | {
-      type: "tool_result";
-      tool: string;
-      result: unknown;
-      itemId: string;
-      turnId?: string;
-      status?: "running" | "completed" | "failed";
-    }
-  | {
-      type: "file_change";
-      path: string;
-      diff: string;
-      kind: "create" | "modify" | "delete";
-      itemId: string;
-      turnId?: string;
-      status?: "running" | "completed" | "failed";
-    }
-  | {
-      type: "command";
-      command: string;
-      cwd: string;
-      output: string;
-      itemId: string;
-      turnId?: string;
-      exitCode?: number | null;
-      durationMs?: number | null;
-      status: "running" | "completed" | "failed";
-    }
-  | {
-      type: "plan";
-      steps: AgentChatPlanStep[];
-      turnId?: string;
-      explanation?: string | null;
-    }
-  | {
-      type: "reasoning";
-      text: string;
-      turnId?: string;
-      itemId?: string;
-      summaryIndex?: number;
-    }
-  | {
-      type: "approval_request";
-      itemId: string;
-      kind: "command" | "file_change" | "tool_call";
-      description: string;
-      turnId?: string;
-      detail?: unknown;
-    }
-  | {
-      type: "status";
-      turnStatus: "started" | "completed" | "interrupted" | "failed";
-      turnId?: string;
-      message?: string;
-    }
-  | {
-      type: "error";
-      message: string;
-      turnId?: string;
-      itemId?: string;
-      errorInfo?: string;
-    }
-  | {
-      type: "done";
-      turnId: string;
-      status: "completed" | "interrupted" | "failed";
-      usage?: {
-        inputTokens?: number | null;
-        outputTokens?: number | null;
-      };
-    };
-
-export type AgentChatEventEnvelope = {
-  sessionId: string;
-  timestamp: string;
-  event: AgentChatEvent;
-};
-
-export type AgentChatSession = {
-  id: string;
-  laneId: string;
-  provider: AgentChatProvider;
-  model: string;
-  status: AgentChatSessionStatus;
-  threadId?: string;
-  createdAt: string;
-  lastActivityAt: string;
-};
-
-export type AgentChatSessionSummary = {
-  sessionId: string;
-  laneId: string;
-  provider: AgentChatProvider;
-  model: string;
-  status: AgentChatSessionStatus;
-  startedAt: string;
-  endedAt: string | null;
-  lastActivityAt: string;
-  lastOutputPreview: string | null;
-  summary: string | null;
-  threadId?: string;
-};
-
-export type AgentChatModelInfo = {
-  id: string;
-  displayName: string;
-  isDefault: boolean;
-  reasoningEfforts?: Array<{ effort: string; description: string }>;
-};
-
-export type AgentChatCreateArgs = {
-  laneId: string;
-  provider: AgentChatProvider;
-  model: string;
-};
-
-export type AgentChatListArgs = {
-  laneId?: string;
-};
-
-export type AgentChatSendArgs = {
-  sessionId: string;
-  text: string;
-  attachments?: AgentChatFileRef[];
-};
-
-export type AgentChatSteerArgs = {
-  sessionId: string;
-  text: string;
-};
-
-export type AgentChatInterruptArgs = {
-  sessionId: string;
-};
-
-export type AgentChatResumeArgs = {
-  sessionId: string;
-};
-
-export type AgentChatApproveArgs = {
-  sessionId: string;
-  itemId: string;
-  decision: AgentChatApprovalDecision;
-};
-
-export type AgentChatModelsArgs = {
-  provider: AgentChatProvider;
-};
-
-export type AgentChatDisposeArgs = {
-  sessionId: string;
-};
-
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
-export type TerminalToolType =
-  | "shell"
-  | "claude"
-  | "codex"
-  | "codex-chat"
-  | "claude-chat"
-  | "cursor"
-  | "aider"
-  | "continue"
-  | "other";
+export type TerminalToolType = "shell" | "claude" | "codex" | "cursor" | "aider" | "continue" | "other";
 
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
 
@@ -1751,114 +1553,6 @@ export type EnvironmentMapping = {
   color?: string;
 };
 
-export type AiTaskRoutingKey =
-  | "planning"
-  | "implementation"
-  | "review"
-  | "conflict_resolution"
-  | "narrative"
-  | "pr_description"
-  | "terminal_summary"
-  | "mission_planning"
-  | "initial_context";
-
-export type AiTaskProvider = "auto" | "claude" | "codex";
-
-export type AiTaskRoutingRule = {
-  provider?: AiTaskProvider;
-  model?: string;
-  timeoutMs?: number;
-  timeout_ms?: number;
-  maxOutputTokens?: number;
-  max_output_tokens?: number;
-  temperature?: number;
-};
-
-export type AiFeatureKey =
-  | "narratives"
-  | "conflict_proposals"
-  | "pr_descriptions"
-  | "terminal_summaries"
-  | "mission_planning"
-  | "orchestrator"
-  | "initial_context";
-
-export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
-
-export type AiBudgetLimit = {
-  dailyLimit?: number;
-  daily_limit?: number;
-};
-
-export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
-
-export type AiClaudePermissionSettings = {
-  permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
-  permission_mode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
-  settingsSources?: Array<"user" | "project" | "local">;
-  settings_sources?: Array<"user" | "project" | "local">;
-  maxBudgetUsd?: number;
-  max_budget_usd?: number;
-  sandbox?: boolean;
-};
-
-export type AiCodexPermissionSettings = {
-  sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
-  sandbox_permissions?: "read-only" | "workspace-write" | "danger-full-access";
-  approvalMode?: "untrusted" | "on-request" | "on-failure" | "never";
-  approval_mode?: "untrusted" | "on-request" | "on-failure" | "never";
-  writablePaths?: string[];
-  writable_paths?: string[];
-  commandAllowlist?: string[];
-  command_allowlist?: string[];
-};
-
-export type AiPermissionSettings = {
-  claude?: AiClaudePermissionSettings;
-  codex?: AiCodexPermissionSettings;
-};
-
-export type AiConflictResolutionConfig = {
-  changeTarget?: "target" | "source" | "ai_decides";
-  change_target?: "target" | "source" | "ai_decides";
-  postResolution?: "unstaged" | "staged" | "commit";
-  post_resolution?: "unstaged" | "staged" | "commit";
-  prBehavior?: "do_nothing" | "open_pr" | "add_to_existing";
-  pr_behavior?: "do_nothing" | "open_pr" | "add_to_existing";
-  autonomy?: "propose_only" | "auto_apply";
-  autoApplyThreshold?: number;
-  auto_apply_threshold?: number;
-};
-
-export type AiChatConfig = {
-  defaultProvider?: "codex" | "claude" | "last_used";
-  default_provider?: "codex" | "claude" | "last_used";
-  defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
-  default_approval_policy?: "auto" | "approve_mutations" | "approve_all";
-  sendOnEnter?: boolean;
-  send_on_enter?: boolean;
-  codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  codex_sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
-  claude_permission_mode?: "plan" | "acceptEdits" | "bypassPermissions";
-  sessionBudgetUsd?: number;
-  session_budget_usd?: number;
-};
-
-export type AiConfig = {
-  mode?: ProviderMode;
-  defaultProvider?: AiTaskProvider;
-  default_provider?: AiTaskProvider;
-  taskRouting?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
-  task_routing?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
-  features?: AiFeatureToggles;
-  budgets?: AiBudgets;
-  permissions?: AiPermissionSettings;
-  conflictResolution?: AiConflictResolutionConfig;
-  conflict_resolution?: AiConflictResolutionConfig;
-  chat?: AiChatConfig;
-};
-
 export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
@@ -1873,7 +1567,6 @@ export type ProjectConfigFile = {
   git?: {
     autoRebaseOnHeadChange?: boolean;
   };
-  ai?: AiConfig;
   providers?: Record<string, unknown>;
 };
 
@@ -1896,7 +1589,6 @@ export type EffectiveProjectConfig = {
   git: {
     autoRebaseOnHeadChange: boolean;
   };
-  ai?: AiConfig;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
 };

@@ -4,10 +4,6 @@ import { createHash } from "node:crypto";
 import YAML from "yaml";
 import cron from "node-cron";
 import type {
-  AiConfig,
-  AiFeatureKey,
-  AiTaskRoutingKey,
-  AiTaskRoutingRule,
   AutomationAction,
   AutomationActionType,
   AutomationRule,
@@ -293,250 +289,6 @@ function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null
   return out;
 }
 
-const AI_TASK_KEYS: AiTaskRoutingKey[] = [
-  "planning",
-  "implementation",
-  "review",
-  "conflict_resolution",
-  "narrative",
-  "pr_description",
-  "terminal_summary",
-  "mission_planning",
-  "initial_context"
-];
-
-const AI_FEATURE_KEYS: AiFeatureKey[] = [
-  "narratives",
-  "conflict_proposals",
-  "pr_descriptions",
-  "terminal_summaries",
-  "mission_planning",
-  "orchestrator",
-  "initial_context"
-];
-
-function coerceAiTaskRoutingRule(value: unknown): AiTaskRoutingRule | null {
-  if (!isRecord(value)) return null;
-  const providerRaw = asString(value.provider)?.trim().toLowerCase();
-  const provider =
-    providerRaw === "auto" || providerRaw === "claude" || providerRaw === "codex"
-      ? providerRaw
-      : undefined;
-  const model = asString(value.model);
-  const timeoutMs = asNumber(value.timeoutMs) ?? asNumber(value.timeout_ms);
-  const maxOutputTokens = asNumber(value.maxOutputTokens) ?? asNumber(value.max_output_tokens);
-  const temperature = asNumber(value.temperature);
-
-  const out: AiTaskRoutingRule = {};
-  if (provider) out.provider = provider;
-  if (model != null) out.model = model;
-  if (timeoutMs != null) out.timeoutMs = timeoutMs;
-  if (maxOutputTokens != null) out.maxOutputTokens = maxOutputTokens;
-  if (temperature != null) out.temperature = temperature;
-
-  return Object.keys(out).length ? out : null;
-}
-
-function coerceAiConfig(value: unknown): AiConfig | undefined {
-  if (!isRecord(value)) return undefined;
-
-  const out: AiConfig = {};
-  const mode = asString(value.mode)?.trim();
-  if (mode === "guest" || mode === "subscription" || mode === "hosted" || mode === "byok" || mode === "cli") {
-    out.mode = mode;
-  }
-
-  const defaultProvider = (asString(value.defaultProvider) ?? asString(value.default_provider))?.trim().toLowerCase();
-  if (defaultProvider === "auto" || defaultProvider === "claude" || defaultProvider === "codex") {
-    out.defaultProvider = defaultProvider;
-  }
-
-  const taskRoutingRaw = isRecord(value.taskRouting)
-    ? value.taskRouting
-    : isRecord(value.task_routing)
-      ? value.task_routing
-      : null;
-  if (taskRoutingRaw) {
-    const routing: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {};
-    for (const taskKey of AI_TASK_KEYS) {
-      const rule = coerceAiTaskRoutingRule(taskRoutingRaw[taskKey]);
-      if (rule) routing[taskKey] = rule;
-    }
-    if (Object.keys(routing).length) out.taskRouting = routing;
-  }
-
-  const featuresRaw = isRecord(value.features) ? value.features : null;
-  if (featuresRaw) {
-    const features: Partial<Record<AiFeatureKey, boolean>> = {};
-    for (const key of AI_FEATURE_KEYS) {
-      const bool = asBool(featuresRaw[key]);
-      if (bool != null) features[key] = bool;
-    }
-    if (Object.keys(features).length) out.features = features;
-  }
-
-  const budgetsRaw = isRecord(value.budgets) ? value.budgets : null;
-  if (budgetsRaw) {
-    const budgets: NonNullable<AiConfig["budgets"]> = {};
-    for (const key of AI_FEATURE_KEYS) {
-      const entry = isRecord(budgetsRaw[key]) ? budgetsRaw[key] : null;
-      if (!entry) continue;
-      const dailyLimit = asNumber(entry.dailyLimit) ?? asNumber(entry.daily_limit);
-      if (dailyLimit == null) continue;
-      budgets[key] = { dailyLimit };
-    }
-    if (Object.keys(budgets).length) out.budgets = budgets;
-  }
-
-  const permissionsRaw = isRecord(value.permissions) ? value.permissions : null;
-  if (permissionsRaw) {
-    const permissions: NonNullable<AiConfig["permissions"]> = {};
-    const claude = isRecord(permissionsRaw.claude) ? permissionsRaw.claude : null;
-    if (claude) {
-      const entry: NonNullable<NonNullable<AiConfig["permissions"]>["claude"]> = {};
-      const permissionMode = (asString(claude.permissionMode) ?? asString(claude.permission_mode))?.trim();
-      if (permissionMode === "default" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions" || permissionMode === "plan") {
-        entry.permissionMode = permissionMode;
-      }
-      const settingsSources = Array.isArray(claude.settingsSources)
-        ? claude.settingsSources
-        : Array.isArray(claude.settings_sources)
-          ? claude.settings_sources
-          : null;
-      if (settingsSources) {
-        const normalized = settingsSources
-          .map((item) => String(item).trim())
-          .filter((item): item is "user" | "project" | "local" => item === "user" || item === "project" || item === "local");
-        if (normalized.length) entry.settingsSources = normalized;
-      }
-      const maxBudgetUsd = asNumber(claude.maxBudgetUsd) ?? asNumber(claude.max_budget_usd);
-      if (maxBudgetUsd != null) entry.maxBudgetUsd = maxBudgetUsd;
-      const sandbox = asBool(claude.sandbox);
-      if (sandbox != null) entry.sandbox = sandbox;
-      if (Object.keys(entry).length) permissions.claude = entry;
-    }
-
-    const codex = isRecord(permissionsRaw.codex) ? permissionsRaw.codex : null;
-    if (codex) {
-      const entry: NonNullable<NonNullable<AiConfig["permissions"]>["codex"]> = {};
-      const sandboxPermissions = (asString(codex.sandboxPermissions) ?? asString(codex.sandbox_permissions))?.trim();
-      if (sandboxPermissions === "read-only" || sandboxPermissions === "workspace-write" || sandboxPermissions === "danger-full-access") {
-        entry.sandboxPermissions = sandboxPermissions;
-      }
-      const approvalMode = (asString(codex.approvalMode) ?? asString(codex.approval_mode))?.trim();
-      if (approvalMode === "untrusted" || approvalMode === "on-request" || approvalMode === "on-failure" || approvalMode === "never") {
-        entry.approvalMode = approvalMode;
-      }
-      const writablePaths = asStringArray(codex.writablePaths) ?? asStringArray(codex.writable_paths);
-      if (writablePaths?.length) entry.writablePaths = writablePaths;
-      const commandAllowlist = asStringArray(codex.commandAllowlist) ?? asStringArray(codex.command_allowlist);
-      if (commandAllowlist?.length) entry.commandAllowlist = commandAllowlist;
-      if (Object.keys(entry).length) permissions.codex = entry;
-    }
-
-    if (Object.keys(permissions).length) out.permissions = permissions;
-  }
-
-  const conflictRaw = isRecord(value.conflictResolution)
-    ? value.conflictResolution
-    : isRecord(value.conflict_resolution)
-      ? value.conflict_resolution
-      : null;
-  if (conflictRaw) {
-    const conflict: NonNullable<AiConfig["conflictResolution"]> = {};
-    const changeTarget = (asString(conflictRaw.changeTarget) ?? asString(conflictRaw.change_target))?.trim();
-    if (changeTarget === "target" || changeTarget === "source" || changeTarget === "ai_decides") {
-      conflict.changeTarget = changeTarget;
-    }
-    const postResolution = (asString(conflictRaw.postResolution) ?? asString(conflictRaw.post_resolution))?.trim();
-    if (postResolution === "unstaged" || postResolution === "staged" || postResolution === "commit") {
-      conflict.postResolution = postResolution;
-    }
-    const prBehavior = (asString(conflictRaw.prBehavior) ?? asString(conflictRaw.pr_behavior))?.trim();
-    if (prBehavior === "do_nothing" || prBehavior === "open_pr" || prBehavior === "add_to_existing") {
-      conflict.prBehavior = prBehavior;
-    }
-    const autonomy = asString(conflictRaw.autonomy)?.trim();
-    if (autonomy === "propose_only" || autonomy === "auto_apply") {
-      conflict.autonomy = autonomy;
-    }
-    const threshold = asNumber(conflictRaw.autoApplyThreshold) ?? asNumber(conflictRaw.auto_apply_threshold);
-    if (threshold != null) conflict.autoApplyThreshold = threshold;
-    if (Object.keys(conflict).length) out.conflictResolution = conflict;
-  }
-
-  const chatRaw = isRecord(value.chat) ? value.chat : null;
-  if (chatRaw) {
-    const chat: NonNullable<AiConfig["chat"]> = {};
-    const defaultProvider = (asString(chatRaw.defaultProvider) ?? asString(chatRaw.default_provider))?.trim();
-    if (defaultProvider === "codex" || defaultProvider === "claude" || defaultProvider === "last_used") {
-      chat.defaultProvider = defaultProvider;
-    }
-    const approvalPolicy = (asString(chatRaw.defaultApprovalPolicy) ?? asString(chatRaw.default_approval_policy))?.trim();
-    if (approvalPolicy === "auto" || approvalPolicy === "approve_mutations" || approvalPolicy === "approve_all") {
-      chat.defaultApprovalPolicy = approvalPolicy;
-    }
-    const sendOnEnter = asBool(chatRaw.sendOnEnter) ?? asBool(chatRaw.send_on_enter);
-    if (sendOnEnter != null) {
-      chat.sendOnEnter = sendOnEnter;
-    }
-    const codexSandbox = (asString(chatRaw.codexSandbox) ?? asString(chatRaw.codex_sandbox))?.trim();
-    if (codexSandbox === "read-only" || codexSandbox === "workspace-write" || codexSandbox === "danger-full-access") {
-      chat.codexSandbox = codexSandbox;
-    }
-    const claudePermissionMode = (asString(chatRaw.claudePermissionMode) ?? asString(chatRaw.claude_permission_mode))?.trim();
-    if (claudePermissionMode === "plan" || claudePermissionMode === "acceptEdits" || claudePermissionMode === "bypassPermissions") {
-      chat.claudePermissionMode = claudePermissionMode;
-    }
-    const sessionBudgetUsd = asNumber(chatRaw.sessionBudgetUsd) ?? asNumber(chatRaw.session_budget_usd);
-    if (sessionBudgetUsd != null) {
-      chat.sessionBudgetUsd = sessionBudgetUsd;
-    }
-    if (Object.keys(chat).length) out.chat = chat;
-  }
-
-  return Object.keys(out).length ? out : undefined;
-}
-
-function mergeAiConfig(sharedAi?: AiConfig, localAi?: AiConfig): AiConfig | undefined {
-  if (!sharedAi && !localAi) return undefined;
-  const taskRouting: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>> = {
-    ...(sharedAi?.taskRouting ?? {}),
-    ...(localAi?.taskRouting ?? {})
-  };
-  const features = {
-    ...(sharedAi?.features ?? {}),
-    ...(localAi?.features ?? {})
-  };
-  const budgets = {
-    ...(sharedAi?.budgets ?? {}),
-    ...(localAi?.budgets ?? {})
-  };
-  const permissions = {
-    ...(sharedAi?.permissions ?? {}),
-    ...(localAi?.permissions ?? {})
-  };
-  const conflictResolution = {
-    ...(sharedAi?.conflictResolution ?? {}),
-    ...(localAi?.conflictResolution ?? {})
-  };
-  const chat = {
-    ...(sharedAi?.chat ?? {}),
-    ...(localAi?.chat ?? {})
-  };
-  const out: AiConfig = {
-    mode: localAi?.mode ?? sharedAi?.mode,
-    defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
-    ...(Object.keys(taskRouting).length ? { taskRouting } : {}),
-    ...(Object.keys(features).length ? { features } : {}),
-    ...(Object.keys(budgets).length ? { budgets } : {}),
-    ...(Object.keys(permissions).length ? { permissions } : {}),
-    ...(Object.keys(conflictResolution).length ? { conflictResolution } : {}),
-    ...(Object.keys(chat).length ? { chat } : {})
-  };
-  return Object.keys(out).length ? out : undefined;
-}
-
 function coerceConfigFile(value: unknown): ProjectConfigFile {
   if (!isRecord(value)) {
     return { version: VERSION, processes: [], stackButtons: [], testSuites: [], laneOverlayPolicies: [], automations: [] };
@@ -580,12 +332,6 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
         }
       : undefined;
 
-  const ai =
-    coerceAiConfig((value as Record<string, unknown>).ai) ??
-    (isRecord((value as Record<string, unknown>).providers)
-      ? coerceAiConfig(((value as Record<string, unknown>).providers as Record<string, unknown>).ai)
-      : undefined);
-
   return {
     version,
     processes,
@@ -596,7 +342,6 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     ...(environments.length ? { environments } : {}),
     ...(github ? { github } : {}),
     ...(git ? { git } : {}),
-    ...(ai ? { ai } : {}),
     ...(isRecord(value.providers) ? { providers: value.providers } : {})
   };
 }
@@ -634,7 +379,6 @@ function toCanonicalYaml(config: ProjectConfigFile): string {
     ...(config.environments ? { environments: config.environments } : {}),
     ...(config.github ? { github: config.github } : {}),
     ...(config.git ? { git: config.git } : {}),
-    ...(config.ai ? { ai: config.ai } : {}),
     ...(config.providers ? { providers: config.providers } : {})
   };
   return YAML.stringify(normalized, { indent: 2 });
@@ -814,26 +558,11 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       }
     : undefined;
 
-  const mergedAi = mergeAiConfig(shared.ai, local.ai);
-
   const environments = [...(shared.environments ?? []), ...(local.environments ?? [])];
 
-  const legacyModeRaw = typeof mergedProviders?.mode === "string" ? String(mergedProviders.mode).trim().toLowerCase() : "";
-  const aiModeRaw = typeof mergedAi?.mode === "string" ? String(mergedAi.mode).trim().toLowerCase() : "";
-  const providerMode: ProviderMode = (() => {
-    const resolved = aiModeRaw || legacyModeRaw;
-    if (resolved === "guest") return "guest";
-    if (resolved === "subscription") return "subscription";
-    if (resolved === "hosted" || resolved === "byok" || resolved === "cli") return "subscription";
-    return "guest";
-  })();
-
-  const effectiveAi = mergedAi
-    ? {
-        ...mergedAi,
-        mode: providerMode
-      }
-    : undefined;
+  const modeRaw = typeof mergedProviders?.mode === "string" ? mergedProviders.mode : undefined;
+  const providerMode: ProviderMode =
+    modeRaw === "hosted" || modeRaw === "byok" || modeRaw === "cli" || modeRaw === "guest" ? modeRaw : "guest";
 
   return {
     version: VERSION,
@@ -848,7 +577,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     git: {
       autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false
     },
-    ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {})
   };
 }
