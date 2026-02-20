@@ -67,7 +67,7 @@ A **session** is a tracked terminal lifecycle from creation to exit. When a PTY 
 
 - **Identity**: Unique session ID, associated lane, user-provided title.
 - **Goal**: A short human-readable intent/purpose string (distinct from the auto-generated title).
-- **Tool type**: Detected or specified tool type (`shell`, `claude`, `codex`, `cursor`, `aider`, `continue`, `other`). Used for filtering and display.
+- **Tool type**: Detected or specified tool type (`shell`, `claude`, `codex`, `codex-chat`, `claude-chat`, `cursor`, `aider`, `continue`, `other`). Used for filtering and display. The `-chat` variants indicate agent chat sessions (rich chat UI) as opposed to CLI terminal sessions.
 - **Tracked/Pinned**: Whether the session captures transcripts (`tracked`) and whether it is pinned for visibility (`pinned`).
 - **Timing**: Start time, end time, duration.
 - **State**: `running`, `completed`, `failed`, or `disposed`. Exit code.
@@ -127,6 +127,36 @@ Untracked sessions still appear in the session list (marked with a "no context" 
 
 **Implementation note**: When `tracked: false` is passed to `ade.pty.create`, the PTY service skips transcript file creation, the session service skips delta computation on exit, and the job engine receives no session-end trigger.
 
+### Agent Chat Session
+
+An **agent chat session** is an interactive conversation with an AI agent (Codex or Claude) conducted through a rich chat interface instead of a CLI terminal. Chat sessions are first-class sessions that integrate into the same tracking, context, and lifecycle infrastructure as PTY sessions.
+
+> **External reference**: The Codex App Server protocol that powers the Codex chat backend is documented at https://developers.openai.com/codex/app-server
+
+**How chat sessions differ from terminal sessions**:
+
+| Aspect | PTY Session | Agent Chat Session |
+|--------|-------------|-------------------|
+| Backend | `node-pty` process | Codex App Server (JSON-RPC) or Claude SDK (`streamText()`) |
+| User interface | xterm.js terminal emulator | Rich chat UI with message bubbles, inline diffs, command output, plan steps |
+| Transcript format | Raw terminal output (`.log`) | Structured JSONL of ChatEvents (`.chat.jsonl`) |
+| Tool type | `"shell"`, `"claude"`, `"codex"` | `"codex-chat"`, `"claude-chat"` |
+| `pty_id` | Set while running | Always null (no PTY process) |
+| Interaction | Type commands, read output | Send messages, view structured items, approve tool use, steer active turns |
+| Approval flow | Manual (user types yes/no in terminal) | Structured overlay (Accept / Decline / Accept for Session buttons) |
+| Resume | Re-run stored command | Resume conversation with full context (Codex: `thread/resume`, Claude: reload messages) |
+
+**What chat sessions track**:
+- All `ChatEvent` items logged to `.ade/transcripts/<session-id>.chat.jsonl` (JSONL format, one event per line)
+- Git state: `head_sha_start` and `head_sha_end` captured for delta computation
+- Session delta: computed from file changes made during the chat (same algorithm as PTY sessions)
+- Summary: deterministic summary from last turn outcome + optional AI-enhanced summary
+- Last output preview: truncated last agent message text
+
+**Where chat sessions appear**:
+- **Lanes tab → Work Pane**: In the Chat view (toggle between Terminal view and Chat view)
+- **Terminals tab**: In the global session list alongside PTY sessions, with distinct tool type badges (`codex-chat` blue, `claude-chat` purple)
+
 ---
 
 ## User Experience
@@ -166,6 +196,13 @@ Each session row displays:
 - **Close button** (for running sessions): Dispose the PTY (sends SIGTERM).
 - **Jump to Lane button**: Navigate to the Lanes tab and select this session's lane.
 - **Transcript button**: View raw transcript for ended sessions.
+
+**Agent chat session display**:
+- Chat sessions appear in the session list with the same row format as PTY sessions.
+- Tool type badge shows "codex-chat" (blue) or "claude-chat" (purple) to distinguish from CLI sessions.
+- Clicking a chat session opens the **AgentChatPane** (rich chat UI) instead of the xterm.js terminal view.
+- The details pane shows the same session delta card as PTY sessions.
+- Resume button calls `agentChatService.resumeSession()` to reopen the conversation with full context.
 
 ### Lane Terminal Panel
 
@@ -213,6 +250,18 @@ Inside the Lanes tab, each lane has a "Terminals" sub-tab that shows sessions sc
 **Quick launch buttons**: One-click launch for common agent tools (Claude Code, Codex) and a plain Shell. A settings cog in the terminal area allows:
 - Toggle "launch with context" vs "without context" defaults
 - Manage the quick buttons (add/remove custom commands)
+
+**Agent Chat view**: The Work Pane includes a view toggle at the top:
+- **Terminal view**: The existing `LaneTerminalsPanel` showing PTY sessions (default).
+- **Chat view**: The `AgentChatPane` showing the agent chat interface.
+
+The Chat view provides a rich conversational interface for working with Codex or Claude. Users can:
+- Start new chat sessions scoped to the current lane
+- Send messages with file attachments
+- View streaming agent responses with inline diffs, command output, and plan steps
+- Approve or decline tool use via structured overlays
+- Steer active turns by pressing Enter while the agent is working
+- Switch between Codex and Claude via a provider/model dropdown in the composer
 
 **Close button per tab**: Running sessions have an explicit close (kill) button per tab/session.
 
@@ -333,6 +382,34 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 
 6. **AI Summary** (optional): If the `terminal_summaries` feature toggle is enabled and an AI provider is available, the AI integration service generates an enhanced summary from the transcript tail and delta data. The AI summary is stored on the session record alongside the deterministic summary.
 
+**Agent Chat Session Lifecycle** (parallel path):
+
+Chat sessions follow the same lifecycle pattern but with different internals:
+
+```
+1. Create Chat Session     2. Chat Turns              3. End/Dispose
+   ┌──────────────┐           ┌──────────────┐           ┌──────────────┐
+   │ App Server   │──────────►│ User sends   │──────────►│ User closes  │
+   │ spawn (Codex)│           │ messages     │           │ or navigates │
+   │ or SDK init  │           │ Agent streams│           │ away         │
+   │ (Claude)     │           │ ChatEvents   │           │              │
+   │ Session row  │           │ Events logged│           │ head_sha_end │
+   │ created      │           │ to .chat.jsonl│          │ captured     │
+   │ head_sha_start│          │              │           └──────────────┘
+   └──────────────┘           └──────────────┘                │
+                                                              ▼
+                                                         4. Delta + Trigger
+                                                         ┌──────────────┐
+                                                         │ Same as PTY: │
+                                                         │ git diff,    │
+                                                         │ failure scan,│
+                                                         │ pack refresh │
+                                                         │ job enqueued │
+                                                         └──────────────┘
+```
+
+Steps 4-6 (delta computation, pack refresh trigger, AI summary) are identical for both PTY and chat sessions. The `onSessionEnded` callback chain fires regardless of session type.
+
 ---
 
 ## Technical Implementation
@@ -375,6 +452,20 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 | `ade.sessions.readTranscriptTail` | `(args: { sessionId: string, lines?: number }) => string` | Read the last N lines of a session's transcript. Used for the "last output preview" in session lists. |
 | `ade.sessions.getDelta` | `(sessionId: string) => SessionDeltaSummary \| null` | Get the computed delta for an ended session. Returns null if the session is still running or delta hasn't been computed yet. |
 
+**Agent chat management**:
+
+| Channel | Signature | Description |
+|---------|-----------|-------------|
+| `ade.agentChat.create` | `(args: { laneId: string, provider: "codex" \| "claude", model: string }) => ChatSession` | Create a new agent chat session in a lane |
+| `ade.agentChat.send` | `(args: { sessionId: string, text: string, attachments?: FileRef[] }) => void` | Send a message (ChatEvents streamed via ade.agentChat.event) |
+| `ade.agentChat.steer` | `(args: { sessionId: string, text: string }) => void` | Inject instructions into the active turn |
+| `ade.agentChat.interrupt` | `(args: { sessionId: string }) => void` | Interrupt the active turn |
+| `ade.agentChat.resume` | `(args: { sessionId: string }) => ChatSession` | Resume an ended chat session |
+| `ade.agentChat.approve` | `(args: { sessionId: string, itemId: string, decision: ApprovalDecision }) => void` | Respond to an approval request |
+| `ade.agentChat.models` | `(args: { provider: "codex" \| "claude" }) => ModelInfo[]` | Get available models for a provider |
+| `ade.agentChat.dispose` | `(args: { sessionId: string }) => void` | End and clean up a chat session |
+| `ade.agentChat.event` | Event stream | ChatEvent stream: `{ sessionId: string, event: ChatEvent }` |
+
 **Type definitions**:
 
 ```typescript
@@ -385,7 +476,7 @@ type PtyCreateResult = {
 
 type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
-type TerminalToolType = "shell" | "claude" | "codex" | "cursor" | "aider" | "continue" | "other";
+type TerminalToolType = "shell" | "claude" | "codex" | "codex-chat" | "claude-chat" | "cursor" | "aider" | "continue" | "other";
 
 type TerminalSessionSummary = {
   id: string;
@@ -498,7 +589,7 @@ terminal_sessions (
   tracked             INTEGER NOT NULL DEFAULT 1, -- 1 = tracked (transcript capture + delta), 0 = untracked
   pinned              INTEGER NOT NULL DEFAULT 0, -- 1 = pinned (always visible in session list)
   goal                TEXT,                   -- User-provided goal/intent string
-  tool_type           TEXT,                   -- 'shell' | 'claude' | 'codex' | 'cursor' | 'aider' | 'continue' | 'other'
+  tool_type           TEXT,                   -- 'shell' | 'claude' | 'codex' | 'codex-chat' | 'claude-chat' | 'cursor' | 'aider' | 'continue' | 'other'
   title               TEXT NOT NULL,          -- User-provided or auto-generated title
   status              TEXT NOT NULL,          -- 'running' | 'completed' | 'failed' | 'disposed'
   started_at          TEXT NOT NULL,          -- ISO 8601 timestamp
@@ -541,6 +632,8 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 |------|-------------|
 | `.ade/transcripts/` | Directory containing all session transcript files |
 | `.ade/transcripts/<session-id>.log` | Raw terminal output for a specific session (includes ANSI codes) |
+| `.ade/transcripts/<session-id>.chat.jsonl` | Structured chat event log for agent chat sessions (JSONL, one ChatEvent per line) |
+| `.ade/chat-sessions/<session-id>.json` | Claude chat session state (messages array) for resume support |
 
 **Transcript file sizing**:
 - Typical interactive session: 10 KB - 1 MB
@@ -615,3 +708,20 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-038 | xterm viewport safety patches | DONE — Phase 8 (patch `_innerRefresh` and `syncScrollArea` to prevent teardown crashes in `TerminalView.tsx`) |
 | TERM-039 | AI-enhanced session summaries via AgentExecutor | TODO — AI summary generation from transcript tail and delta data, stored alongside deterministic summary |
 | TERM-040 | AI summary display in session cards and delta cards | TODO — AI summary section in delta card UI, shown below deterministic summary when available |
+
+### Phase 1.5 — Agent Chat Integration
+
+| ID | Task | Status |
+|----|------|--------|
+| TERM-041 | AgentChatService interface and types | TODO |
+| TERM-042 | CodexChatBackend (App Server JSON-RPC client) | TODO |
+| TERM-043 | ClaudeChatBackend (community provider multi-turn) | TODO |
+| TERM-044 | Chat session → terminal_sessions integration (tool_type, transcript, delta) | TODO |
+| TERM-045 | AgentChatMessageList component (all item type renderers) | TODO |
+| TERM-046 | AgentChatComposer component (input, model selector, steer, interrupt) | TODO |
+| TERM-047 | ApprovalOverlay component (accept/decline/accept-for-session) | TODO |
+| TERM-048 | AgentChatPane integration in Lanes tab Work Pane (view toggle) | TODO |
+| TERM-049 | Chat sessions in Terminals tab session list | TODO |
+| TERM-050 | Chat session resume (Codex thread/resume, Claude messages reload) | TODO |
+| TERM-051 | Chat transcript storage (.chat.jsonl) and delta computation | TODO |
+| TERM-052 | Chat-specific Settings (default provider, approval policy, send-on-enter) | TODO |

@@ -138,7 +138,7 @@ The center pane is the main working area. The LanesPage uses `PaneTilingLayout` 
 - **Diff pane** (`LaneDiffPane`): Git diff viewer with Monaco side-by-side diffs, per-file stage/unstage/discard, commit diff viewing
 - **Git actions pane** (`LaneGitActionsPane`): Commit, stash, fetch, sync (merge/rebase), push operations with recent commits list, restack button for stacked lanes
 - **Terminals pane** (`LaneTerminalsPanel`): Embedded terminal sessions with tab/tiling views, quick-launch profiles, session delta cards
-- **Work pane** (`LaneWorkPane`): Embedded terminal sessions
+- **Work pane** (`LaneWorkPane`): Embedded terminal sessions and agent chat view (terminal/chat toggle)
 - **Stack pane** (`LaneStackPane`): Stack chain visualization and management
 - **Inspector pane** (`LaneInspectorPane`): Packs, PR, and conflict management
 
@@ -150,6 +150,41 @@ The center pane is the main working area. The LanesPage uses `PaneTilingLayout` 
 - **Context toggle**: Launch with or without context tracking (tracked/untracked sessions).
 - **Session delta card**: Displayed for ended sessions showing files changed, insertions/deletions, touched files, and failure lines.
 - A lightweight "Open in Terminals tab" action jumps to the global Terminals view with the lane filter pre-applied.
+
+**Agent Chat View (Phase 1.5)**: The Work Pane includes a view toggle between two modes:
+
+- **Terminal view** (default): The existing `LaneTerminalsPanel` showing PTY sessions with xterm.js.
+- **Chat view**: The `AgentChatPane` providing a rich conversational interface for working with Codex or Claude.
+
+The Chat view layout:
+
+```
++-----------------------------------------------+
+| [Terminal View] [Chat View]  <- toggle         |
++-----------------------------------------------+
+| Messages (scrollable)                          |
+|                                                |
+| [You]: "Fix the auth middleware timeout"       |
+|                                                |
+| [Codex]: "I'll analyze the middleware..."      |
+|   src/middleware/auth.ts  +12 -3               |
+|   +------------------------------------+       |
+|   | - const timeout = 5000;            |       |
+|   | + const timeout = 30000;           |       |
+|   +------------------------------------+       |
+|                                                |
+|   $ npm test                                   |
+|   +------------------------------------+       |
+|   | 31 tests passed                    |       |
+|   +------------------------------------+       |
+|                                                |
++-----------------------------------------------+
+| [@ attach] [Codex gpt-5.3-codex]      [Send]  |
+| Type a message...                    [Stop]    |
++-----------------------------------------------+
+```
+
+Chat sessions created from the Chat view are automatically scoped to the selected lane (`cwd` = lane worktree path). The provider/model selector in the composer supports both Codex and Claude. Chat sessions are tracked as first-class sessions with the same delta computation, pack integration, and context tracking as terminal sessions.
 
 **Diff / Git Operations Panel** (default sub-tab):
 

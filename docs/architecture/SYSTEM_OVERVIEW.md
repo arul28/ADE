@@ -91,7 +91,7 @@ Key UI subsystems:
 | Play | Run processes/tests, lane-scoped execution controls, CI import, agent tool launch points |
 | Lanes | Create, rename, archive, delete, and stack worktree-backed development lanes |
 | Files | IDE-style workspace browser/editor with search and quick-open |
-| Terminals | Embedded terminal sessions backed by node-pty |
+| Terminals | Embedded terminal sessions (PTY via node-pty) and agent chat sessions (Codex App Server + Claude multi-turn) with unified session tracking |
 | Conflicts | Risk matrix, merge simulation, proposal/reconciliation workflows |
 | Context/Packs | Deterministic pack views, exports, and docs-generation actions |
 | Graph | Workspace topology and risk overlays |
@@ -125,6 +125,7 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `missionService` | `missionService.ts` | Mission lifecycle, step tracking, intervention management |
 | `missionPlanningService` | `missionPlanningService.ts` | AI-powered and deterministic mission planning |
 | `orchestratorService` | `orchestratorService.ts` | Run/step/attempt state machine, claim management, context snapshots |
+| `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, ChatEvent streaming |
 
 All services are instantiated in `main.ts` and wired together through dependency injection. The `AppContext` type aggregates all service instances and is passed to the IPC registration layer.
 
@@ -144,6 +145,10 @@ ADE uses each agent's native SDK rather than a single unified execution layer:
 - **`canUseTool` callback**: Intercepts tool-use requests from AI models, routing them through ADE's permission layer before execution.
 - **Streaming support**: All AI responses stream back to the UI in real time, providing immediate feedback during long-running operations.
 - **Session management**: Maintains conversational context across multi-turn interactions within a mission.
+
+#### Agent Chat Service
+
+The Agent Chat Service provides a native interactive chat interface inside ADE, complementing the programmatic `AgentExecutor` for one-shot tasks. It uses the Codex App Server protocol (JSON-RPC 2.0 over stdio, documented at https://developers.openai.com/codex/app-server) for Codex and the community Vercel provider's multi-turn `streamText()` for Claude. A provider-agnostic `AgentChatService` interface unifies both backends behind a common `ChatEvent` stream. Chat sessions integrate as first-class `terminal_sessions` with delta computation, pack integration, and full session lifecycle callbacks.
 
 #### MCP Server
 
@@ -227,6 +232,7 @@ Communication between the renderer and main process is organized into a broad ty
 | Processes / Tests / Automations | `ade.processes.*`, `ade.tests.*`, `ade.automations.*` | invoke/handle + runtime events |
 | Missions / Orchestrator | `ade.missions.*`, `ade.orchestrator.*` | invoke/handle + lifecycle events |
 | AI Integration | `ade.ai.*` | invoke/handle + streaming events |
+| Agent Chat | `ade.agentChat.*` | invoke/handle + ChatEvent stream |
 | Config / Settings | `ade.projectConfig.*`, `ade.keybindings.*`, `ade.terminalProfiles.*`, `ade.agentTools.*`, `ade.github.*` | invoke/handle + provider/state events |
 
 These per-subsystem counts are illustrative and can drift; `apps/desktop/src/shared/ipc.ts` is the canonical live channel inventory.
@@ -292,6 +298,7 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | AgentExecutor interface | Planned |
 | AI orchestrator (Claude session + MCP) | Planned |
 | Per-task-type routing configuration | Planned |
+| Agent Chat Service (Phase 1.5) | Planned |
 
 For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 

@@ -219,6 +219,19 @@ Both Claude and Codex have project-level configuration files (`.claude/settings.
 
 These settings persist to `.ade/local.yaml` under `ai.permissions.claude` and `ai.permissions.codex`.
 
+**Agent Chat Settings**: Configuration for the interactive agent chat interface (Phase 1.5).
+
+| Setting | Options | Default | Description |
+|---------|---------|---------|-------------|
+| Default chat provider | Codex / Claude / Last used | Last used | Which provider opens by default when starting a new chat session |
+| Default approval policy | Auto / Approve mutations / Approve all | Approve mutations | How tool use approvals are handled in chat. Auto = never ask. Approve mutations = ask for file writes and commands. Approve all = ask for everything. |
+| Send on Enter | Toggle | On | When on, Enter sends messages. When off, Cmd+Enter sends (Enter inserts newline). |
+| Codex chat sandbox | Read-only / Workspace write / Full access | Workspace write | Filesystem sandbox policy for Codex chat sessions. |
+| Claude chat permission mode | Plan / Accept edits / Bypass permissions | Accept edits | Permission mode for Claude chat sessions (independent of one-shot task permission mode). |
+| Chat session budget | USD input | $10.00 | Per-session budget cap for chat sessions (applies to both providers). |
+
+Chat settings persist to `.ade/local.yaml` under `ai.chat`.
+
 **Automations**: Embedded `AutomationsSection` showing all automation rules with enable/disable toggles, "Run Now" buttons, and history links. Provides a summary view without leaving Settings.
 
 **Terminal Profiles**: Manage terminal launch profiles. Default profiles include Shell, Claude, Codex, and Aider. Users can add custom profiles with name, command, args, cwd, and environment variables. Profiles are persisted via `kvDb`.
@@ -270,6 +283,8 @@ These settings persist to `.ade/local.yaml` under `ai.permissions.claude` and `a
 | `ade.ai.getPermissions()` | Planned | Returns current Claude and Codex permission/sandbox settings |
 | `ade.ai.setPermissions(settings)` | Planned | Update Claude and Codex permission/sandbox settings |
 | `ade.ai.getAvailableModels()` | Planned | Returns available models per provider (from SDK discovery and hardcoded lists) |
+| `ade.ai.getChatSettings()` | Planned | Returns current chat configuration |
+| `ade.ai.setChatSettings(settings)` | Planned | Update chat configuration |
 
 ### Component Architecture
 
@@ -308,6 +323,12 @@ SettingsPage (route: /settings)
   |    +-- ClaudePermissionsCard (permission mode, settings sources, CLAUDE.md, budget, sandbox)
   |    +-- CodexPermissionsCard (sandbox level, approval mode, writable paths, command allowlist)
   |    +-- SettingsHonoringInfo (display of .claude/settings.json and codex.toml status)
+  +-- AgentChatSettingsSection
+  |    +-- DefaultProviderPicker (Codex / Claude / Last used)
+  |    +-- ApprovalPolicyPicker (Auto / Approve mutations / Approve all)
+  |    +-- SendOnEnterToggle
+  |    +-- PerProviderChatSettings (sandbox/permission mode per provider)
+  |    +-- ChatBudgetInput
   +-- AutomationsSection (per-rule summary with run-now, history, toggle)
   +-- TerminalProfilesSection (profile CRUD: name, command, args, cwd, env)
   +-- KeybindingsSection (table: action, scope, default, override, effective + conflict detection)
@@ -405,6 +426,13 @@ ai:
       sandbox_permissions: workspace-write
       writable_paths: []
       command_allowlist: []
+  chat:
+    default_provider: last_used        # codex | claude | last_used
+    approval_policy: approve_mutations # auto | approve_mutations | approve_all
+    send_on_enter: true
+    codex_sandbox: workspace-write     # read-only | workspace-write | full-access
+    claude_permission_mode: acceptEdits # plan | acceptEdits | bypassPermissions
+    session_budget_usd: 10.00
 preferences:
   theme: "dark"
   confirmBeforeExecute: true
@@ -498,6 +526,7 @@ interface OnboardingStatus {
 | ONBOARD-036 | AI permissions & sandbox configuration UI | Dedicated section for Claude permission mode, Codex sandbox level, approval mode, writable paths, command allowlist. Persisted to `local.yaml` under `ai.permissions` | TODO |
 | ONBOARD-037 | Dynamic model picker for task routing | Per-task model dropdown populated from `supportedModels()` (Claude) and hardcoded list (Codex). Users can assign any model to any task type | TODO |
 | ONBOARD-038 | Settings honoring behavior display | Show whether .claude/settings.json and codex.toml exist, explain override behavior, allow opt-in for project settings sources | TODO |
+| ONBOARD-039 | Agent chat settings UI | Chat-specific settings: default provider, approval policy, send-on-enter, per-provider sandbox/permission, session budget | TODO |
 
 ### Dependency Notes
 
