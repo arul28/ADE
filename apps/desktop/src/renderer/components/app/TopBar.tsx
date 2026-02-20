@@ -23,7 +23,7 @@ export function TopBar({
     window.ade.project
       .listRecent()
       .then((rows) => setRecentProjects(rows))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -44,12 +44,12 @@ export function TopBar({
   }, [fetchRecent]);
 
   const handleOpenNew = useCallback(() => {
-    openRepo().catch(() => {});
+    openRepo().catch(() => { });
   }, [openRepo]);
 
   const handleSwitchProject = useCallback((rootPath: string) => {
     if (project?.rootPath === rootPath) return;
-    switchProjectToPath(rootPath).catch(() => {});
+    switchProjectToPath(rootPath).catch(() => { });
   }, [project?.rootPath, switchProjectToPath]);
 
   const handleRemoveTab = useCallback((rootPath: string) => {
@@ -57,7 +57,7 @@ export function TopBar({
     window.ade.project
       .forgetRecent(rootPath)
       .then((rows) => setRecentProjects(rows))
-      .catch(() => {});
+      .catch(() => { });
   }, [project?.rootPath]);
 
   const handleRelocate = useCallback((oldPath: string) => {
@@ -69,29 +69,29 @@ export function TopBar({
         window.ade.project
           .forgetRecent(oldPath)
           .then((rows) => setRecentProjects(rows))
-          .catch(() => {});
-        switchProjectToPath(newProject.rootPath).catch(() => {});
+          .catch(() => { });
+        switchProjectToPath(newProject.rootPath).catch(() => { });
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setRelocatingPath(null));
   }, [switchProjectToPath]);
 
   return (
-    <header className="flex h-[48px] items-center gap-3 ade-panel-header px-4 bg-bg border-b border-border/20">
+    <header className="flex h-[38px] items-center gap-2.5 ade-panel-header px-3 bg-bg border-b border-border/40">
       {/* Branding */}
-      <div className="text-sm font-bold tracking-tight shrink-0 text-accent">ADE</div>
+      <div className="font-mono text-[11px] font-semibold tracking-widest shrink-0 text-accent uppercase">ADE</div>
 
-      <div className="h-3.5 w-px bg-border/15 shrink-0" />
+      <div className="h-3 w-px bg-border/20 shrink-0" />
 
       {/* Project tabs */}
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {recentProjects.length === 0 && !project ? (
           <button
             type="button"
-            className="flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs text-muted-fg hover:bg-muted/40 hover:text-fg transition-all"
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono text-muted-fg hover:bg-muted/30 hover:text-fg transition-colors"
             onClick={handleOpenNew}
           >
-            <Folder className="h-3.5 w-3.5" />
+            <Folder className="h-3 w-3" />
             Open a project
           </button>
         ) : (
@@ -104,19 +104,19 @@ export function TopBar({
                 <div
                   key={rp.rootPath}
                   className={cn(
-                    "group inline-flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-all",
+                    "group inline-flex max-w-[180px] shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] font-mono transition-colors",
                     isMissing
-                      ? "opacity-50 text-muted-fg"
+                      ? "opacity-40 text-muted-fg"
                       : isCurrent
-                        ? "bg-accent/10 text-fg shadow-card border-b-2 border-accent"
-                        : "text-muted-fg hover:bg-muted/40 hover:text-fg cursor-pointer"
+                        ? "bg-accent/8 text-fg border-b border-accent"
+                        : "text-muted-fg hover:bg-muted/30 hover:text-fg cursor-pointer"
                   )}
                   onClick={() => {
                     if (!isMissing) handleSwitchProject(rp.rootPath);
                   }}
                   title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                 >
-                  <Folder className={cn("h-3 w-3 shrink-0", isMissing && "text-red-400")} />
+                  <Folder className={cn("h-2.5 w-2.5 shrink-0", isMissing && "text-red-400")} />
                   {isCurrent && terminalAttention.indicator !== "none" ? (
                     <span
                       title={
@@ -125,8 +125,8 @@ export function TopBar({
                           : `${terminalAttention.runningCount} running terminal${terminalAttention.runningCount === 1 ? "" : "s"}`
                       }
                       className={cn(
-                        "h-2.5 w-2.5 shrink-0 rounded-full border-2 border-t-transparent animate-spin",
-                        terminalAttention.indicator === "running-needs-attention" ? "border-amber-400" : "border-emerald-500"
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        terminalAttention.indicator === "running-needs-attention" ? "bg-amber-400" : "bg-emerald-500"
                       )}
                     />
                   ) : null}
@@ -175,19 +175,19 @@ export function TopBar({
         {/* Add project tab */}
         <button
           type="button"
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-muted-fg/50 hover:bg-muted/30 hover:text-fg transition-all"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-fg/40 hover:bg-muted/20 hover:text-fg transition-colors"
           onClick={handleOpenNew}
           title="Open another project"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-3 w-3" />
         </button>
       </div>
 
       {/* Command palette */}
-      <Button variant="ghost" size="sm" className="shrink-0 rounded-lg" onClick={onOpenCommandPalette} title="Command palette">
-        <Search className="h-3.5 w-3.5" />
-        <span className="hidden sm:inline text-xs">Commands</span>
-        <span className="hidden md:inline text-[10px] text-muted-fg">{commandHint}</span>
+      <Button variant="ghost" size="sm" className="shrink-0 rounded gap-1" onClick={onOpenCommandPalette} title="Command palette">
+        <Search className="h-3 w-3" />
+        <span className="hidden sm:inline font-mono text-[10px]">Commands</span>
+        <span className="hidden md:inline font-mono text-[9px] text-muted-fg/50">{commandHint}</span>
       </Button>
     </header>
   );

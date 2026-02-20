@@ -117,18 +117,18 @@ export function FloatingPane({
         onDragStart={isDraggable ? handleDragStart : undefined}
         onDragEnd={isDraggable ? handleDragEnd : undefined}
       >
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-1 min-w-0">
           {isDraggable ? (
-            <GripVertical className="h-3 w-3 text-muted-fg/40 shrink-0 cursor-grab" />
+            <GripVertical className="h-2.5 w-2.5 text-muted-fg/30 shrink-0 cursor-grab" />
           ) : null}
           {minimizable ? (
             <button
               type="button"
               className={cn(
-                "flex h-5 w-5 items-center justify-center rounded transition-colors",
+                "flex h-4 w-4 items-center justify-center rounded-sm transition-colors",
                 minimized
-                  ? "text-accent hover:text-accent/80 bg-accent/10"
-                  : "text-muted-fg/70 hover:text-fg"
+                  ? "text-accent"
+                  : "text-muted-fg/50 hover:text-fg"
               )}
               onClick={(event) => {
                 event.stopPropagation();
@@ -138,23 +138,23 @@ export function FloatingPane({
               title={minimized ? "Expand pane" : "Minimize pane"}
             >
               {minimized ? (
-                <ChevronRight className="h-3.5 w-3.5" />
+                <ChevronRight className="h-3 w-3" />
               ) : (
-                <ChevronDown className="h-3.5 w-3.5" />
+                <ChevronDown className="h-3 w-3" />
               )}
             </button>
           ) : null}
           {Icon ? (
             <Icon className={cn(
               "shrink-0",
-              minimized ? "h-4 w-4 text-fg/80" : "h-3.5 w-3.5 text-muted-fg/70"
+              minimized ? "h-3.5 w-3.5 text-fg/70" : "h-3 w-3 text-muted-fg/50"
             )} />
           ) : null}
-          <span className={cn("ade-pane-title truncate", minimized && "text-fg/90")}>{title}</span>
-          {meta && !minimized ? <span className="text-[10px] text-muted-fg/60 truncate">{meta}</span> : null}
+          <span className={cn("ade-pane-title truncate")}>{title}</span>
+          {meta && !minimized ? <span className="font-mono text-[9px] text-muted-fg/40 truncate">{meta}</span> : null}
         </div>
         {headerActions ? (
-          <div className={cn("flex items-center gap-1 shrink-0 ml-2", minimized && "opacity-70")}>
+          <div className={cn("flex items-center gap-0.5 shrink-0 ml-1", minimized && "opacity-60")}>
             {headerActions}
           </div>
         ) : null}

@@ -6,7 +6,7 @@ import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
-import type { createHostedAgentService } from "../hosted/hostedAgentService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { runGit } from "../git/git";
 import type {
   PtyDataEvent,
@@ -99,7 +99,7 @@ export function createPtyService({
   transcriptsDir,
   laneService,
   sessionService,
-  hostedAgentService,
+  aiIntegrationService,
   logger,
   broadcastData,
   broadcastExit,
@@ -110,7 +110,7 @@ export function createPtyService({
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
-  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
@@ -173,7 +173,7 @@ export function createPtyService({
 
   const summarizeSessionBestEffort = (sessionId: string): void => {
     Promise.resolve()
-      .then(() => {
+      .then(async () => {
         const session = sessionService.get(sessionId);
         if (!session) return;
 
@@ -190,6 +190,30 @@ export function createPtyService({
         });
 
         sessionService.setSummary(sessionId, summary);
+
+        if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
+
+        const lane = laneService.getLaneBaseAndBranch(session.laneId);
+        const prompt = [
+          "You are ADE's terminal summary assistant.",
+          "Rewrite this terminal session into a concise 1-3 sentence summary with outcome and next action.",
+          "Do not invent commands or outcomes.",
+          "",
+          "Deterministic summary:",
+          summary,
+          "",
+          "Terminal transcript tail:",
+          transcript.slice(-18_000)
+        ].join("\n");
+
+        const aiSummary = await aiIntegrationService.summarizeTerminal({
+          cwd: lane.worktreePath,
+          prompt
+        });
+        const text = aiSummary.text.trim();
+        if (text.length) {
+          sessionService.setSummary(sessionId, text);
+        }
       })
       .catch(() => {
         // ignore summary generation failures
@@ -432,8 +456,8 @@ export function createPtyService({
       }
 
       // Fire-and-forget: after 4s, attempt AI title generation for non-shell sessions
-      if (hostedAgentService) {
-        const capturedHostedAgent = hostedAgentService;
+      if (aiIntegrationService && aiIntegrationService.getMode() === "subscription") {
+        const capturedAi = aiIntegrationService;
         setTimeout(() => {
           if (entry.disposed) return;
           const strippedOutput = stripAnsi(titleOutputBuffer).trim();
@@ -445,13 +469,23 @@ export function createPtyService({
           const toolType = session.toolType;
           if (!toolType || toolType === "shell") return;
 
-          capturedHostedAgent
-            .requestSessionTitle({
-              sessionId,
-              laneId,
-              initialOutput: strippedOutput.slice(0, 500)
+          const lane = laneService.getLaneBaseAndBranch(laneId);
+          const prompt = [
+            "Generate a concise terminal session title.",
+            "Return only plain text, max 80 characters, no punctuation at the end.",
+            "",
+            "Initial output:",
+            strippedOutput.slice(0, 500)
+          ].join("\n");
+
+          capturedAi
+            .summarizeTerminal({
+              cwd: lane.worktreePath,
+              prompt,
+              timeoutMs: 8_000
             })
-            .then((title) => {
+            .then((result) => {
+              const title = result.text.trim().replace(/\s+/g, " ").slice(0, 80);
               if (title) {
                 sessionService.updateMeta({ sessionId, goal: title });
               }

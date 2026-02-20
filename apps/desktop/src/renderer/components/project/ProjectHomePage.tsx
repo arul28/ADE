@@ -939,7 +939,7 @@ export function ProjectHomePage() {
       children: (
         <div className="space-y-3 p-3">
           {error ? (
-            <div className="rounded-xl bg-red-500/10 border-l-[3px] border-red-500 px-3 py-2 text-xs text-red-400">
+            <div className="rounded bg-red-500/10 border-l-[3px] border-red-500 px-3 py-2 text-xs text-red-400">
               <div className="flex items-start gap-2">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <div className="min-w-0">{error}</div>
@@ -948,11 +948,11 @@ export function ProjectHomePage() {
           ) : null}
 
           {notice ? (
-            <div className="rounded-xl bg-emerald-500/10 border-l-[3px] border-emerald-500 px-3 py-2 text-xs text-emerald-400">{notice}</div>
+            <div className="rounded bg-emerald-500/10 border-l-[3px] border-emerald-500 px-3 py-2 text-xs text-emerald-400">{notice}</div>
           ) : null}
 
           {trustRequired ? (
-            <div className="rounded-xl bg-amber-500/10 border-l-[3px] border-amber-500 px-3 py-2 text-xs text-amber-400">
+            <div className="rounded bg-amber-500/10 border-l-[3px] border-amber-500 px-3 py-2 text-xs text-amber-400">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
                   <ShieldCheck className="mt-0.5 h-4 w-4" />
@@ -1027,7 +1027,7 @@ export function ProjectHomePage() {
               </Button>
 
               {stackStatuses.map(({ stack, status }) => (
-                <div key={stack.id} className={cx("inline-flex items-center gap-1.5 rounded-xl shadow-card bg-card/60 px-2.5 py-1.5 border-t-2", status === "running" ? "border-emerald-500/50" : status === "error" ? "border-red-500/50" : status === "partial" ? "border-amber-500/50" : "border-border/30")}>
+                <div key={stack.id} className={cx("inline-flex items-center gap-1.5 rounded shadow-card bg-card/60 px-2.5 py-1.5 border-t-2", status === "running" ? "border-emerald-500/50" : status === "error" ? "border-red-500/50" : status === "partial" ? "border-amber-500/50" : "border-border/30")}>
                   <Chip className={cx("text-[11px]", stackTone(status))}>{status}</Chip>
                   <span className="text-xs font-semibold">{stack.name}</span>
                   <Button
@@ -1079,7 +1079,7 @@ export function ProjectHomePage() {
               />
               <input
                 className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
-                placeholder="Working directory, e.g. apps/web"
+                placeholder="Working directory, e.g. src"
                 value={quickProcessCwd}
                 onChange={(e) => setQuickProcessCwd(e.target.value)}
               />
@@ -1113,12 +1113,12 @@ export function ProjectHomePage() {
         <div className="space-y-3 p-3">
           <div className="space-y-2">
             {processItems.length === 0 ? (
-              <div className="rounded-xl bg-muted/10 p-3 text-xs text-muted-fg">
+              <div className="rounded bg-muted/10 p-3 text-xs text-muted-fg">
                 No process definitions. Use "Quick add process" above or the config editor.
               </div>
             ) : null}
 
-            <div className="overflow-hidden rounded-xl border border-border/10 bg-card/30">
+            <div className="overflow-hidden rounded border border-border/10 bg-card/30">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b-2 border-accent/20 bg-muted/30">
@@ -1219,7 +1219,7 @@ export function ProjectHomePage() {
             </div>
           </div>
 
-          <div className="rounded-xl shadow-card bg-card/50 p-3">
+          <div className="rounded shadow-card bg-card/50 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-semibold">Process logs</div>
@@ -1253,7 +1253,7 @@ export function ProjectHomePage() {
 
             <pre
               ref={processLogRef}
-              className="mt-2 h-[330px] overflow-auto rounded-xl border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
+              className="mt-2 h-[330px] overflow-auto rounded border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
             >
               {visibleProcessLog || "(no output yet)"}
             </pre>
@@ -1271,7 +1271,7 @@ export function ProjectHomePage() {
         <div className="space-y-3 p-3">
           <div className="space-y-2">
             {suites.length === 0 ? (
-              <div className="rounded-xl bg-muted/10 p-3 text-xs text-muted-fg">
+              <div className="rounded bg-muted/10 p-3 text-xs text-muted-fg">
                 No test suites defined. Add suites in the config editor.
               </div>
             ) : null}
@@ -1280,7 +1280,7 @@ export function ProjectHomePage() {
               const last = latestRunBySuite.get(suite.id);
               const running = last?.status === "running";
               return (
-                <div key={suite.id} className={cx("rounded-xl shadow-card bg-card/50 p-3 border-l-[3px] transition-colors", last?.status === "passed" ? "border-emerald-500/50" : last?.status === "failed" ? "border-red-500/50" : last?.status === "running" ? "border-blue-500/50" : "border-border/20")}>
+                <div key={suite.id} className={cx("rounded shadow-card bg-card/50 p-3 border-l-[3px] transition-colors", last?.status === "passed" ? "border-emerald-500/50" : last?.status === "failed" ? "border-red-500/50" : last?.status === "running" ? "border-blue-500/50" : "border-border/20")}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold">{suite.name}</div>
@@ -1324,7 +1324,7 @@ export function ProjectHomePage() {
               );
             })}
 
-            <div className="rounded-xl shadow-card bg-card/50 p-2">
+            <div className="rounded shadow-card bg-card/50 p-2">
               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-fg/70">Run history</div>
               <div className="max-h-[180px] space-y-0.5 overflow-auto">
                 {runs.map((run) => (
@@ -1344,7 +1344,7 @@ export function ProjectHomePage() {
             </div>
           </div>
 
-          <div className="rounded-xl shadow-card bg-card/50 p-3">
+          <div className="rounded shadow-card bg-card/50 p-3">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Suite logs</div>
@@ -1367,7 +1367,7 @@ export function ProjectHomePage() {
 
             <pre
               ref={testLogRef}
-              className="mt-2 h-[330px] overflow-auto rounded-xl border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
+              className="mt-2 h-[330px] overflow-auto rounded border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
             >
               {visibleTestLog || "(no output yet)"}
             </pre>
@@ -1413,7 +1413,7 @@ export function ProjectHomePage() {
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-xl bg-muted/15 p-2">
+              <div className="rounded bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Processes</div>
                   <Button
@@ -1446,7 +1446,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {processRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `process ${idx + 1}`}</div>
                         <Button
@@ -1571,7 +1571,7 @@ export function ProjectHomePage() {
                             }
                           />
                         ) : null}
-                        <label className="inline-flex h-8 items-center gap-2 rounded-xl bg-muted/20 px-2 text-xs">
+                        <label className="inline-flex h-8 items-center gap-2 rounded bg-muted/20 px-2 text-xs">
                           <input
                             type="checkbox"
                             checked={row.autostart}
@@ -1581,7 +1581,7 @@ export function ProjectHomePage() {
                           />
                           autostart
                         </label>
-                        <details className="rounded-xl bg-card/30 px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
+                        <details className="rounded bg-card/30 px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
                           <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
                           <input
                             className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
@@ -1598,7 +1598,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-xl bg-muted/15 p-2">
+              <div className="rounded bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Stack buttons</div>
                   <Button
@@ -1617,7 +1617,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {stackRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `stack ${idx + 1}`}</div>
                         <Button
@@ -1675,7 +1675,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded-xl bg-muted/15 p-2">
+              <div className="rounded bg-muted/15 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Test suites</div>
                   <Button
@@ -1702,7 +1702,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {suiteRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded-xl shadow-card bg-card/50 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded shadow-card bg-card/50 p-2">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `suite ${idx + 1}`}</div>
                         <Button

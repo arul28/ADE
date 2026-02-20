@@ -291,7 +291,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
         ) : (
           <div className="mt-3 flex-1 min-h-0 overflow-auto space-y-3">
-            <div className="rounded-xl shadow-card bg-card/50 p-3">
+            <div className="rounded shadow-card bg-card/50 p-3">
               <div className="mb-2 text-xs font-semibold text-fg">Create PR</div>
               <div className="grid gap-2">
                 <label className="text-[11px] text-muted-fg">
@@ -366,7 +366,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
               </div>
             </div>
 
-            <div className="rounded-xl shadow-card bg-card/50 p-3">
+            <div className="rounded shadow-card bg-card/50 p-3">
               <div className="mb-2 text-xs font-semibold text-fg">Link Existing PR</div>
               <div className="flex gap-2">
                 <input
@@ -451,15 +451,15 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
 
       {status ? (
         <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
-          <div className="rounded-xl shadow-card bg-card/50 p-2">
+          <div className="rounded shadow-card bg-card/50 p-2">
             <div className="text-[10px] uppercase tracking-wider text-muted-fg">Mergeable</div>
             <div className="font-semibold text-fg">{status.isMergeable ? "yes" : "no"}</div>
           </div>
-          <div className="rounded-xl shadow-card bg-card/50 p-2">
+          <div className="rounded shadow-card bg-card/50 p-2">
             <div className="text-[10px] uppercase tracking-wider text-muted-fg">Conflicts</div>
             <div className="font-semibold text-fg">{status.mergeConflicts ? "yes" : "no"}</div>
           </div>
-          <div className="rounded-xl shadow-card bg-card/50 p-2">
+          <div className="rounded shadow-card bg-card/50 p-2">
             <div className="text-[10px] uppercase tracking-wider text-muted-fg">Behind Base</div>
             <div className="font-semibold text-fg">{status.behindBaseBy}</div>
           </div>
@@ -467,7 +467,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
       ) : null}
 
       <div className="mt-2 grid flex-1 min-h-0 grid-cols-1 gap-2 overflow-auto">
-        <div className="rounded-xl shadow-card bg-card/30">
+        <div className="rounded shadow-card bg-card/30">
           <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Checks</div>
           <div className="divide-y divide-border/10">
             {checks.map((check) => (
@@ -493,7 +493,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             {!checks.length ? <div className="px-2 py-2 text-xs text-muted-fg">No checks found.</div> : null}
           </div>
         </div>
-        <div className="rounded-xl shadow-card bg-card/30">
+        <div className="rounded shadow-card bg-card/30">
           <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Reviews</div>
           <div className="divide-y divide-border/10">
             {reviews.map((review, idx) => (

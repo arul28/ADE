@@ -6,7 +6,7 @@ import { TopBar } from "./TopBar";
 import { TabBackground } from "../ui/TabBackground";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
-import type { ContextStatus, HostedStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
+import type { ContextStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 
@@ -48,8 +48,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false);
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
-  const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
-  const [hostedStatusError, setHostedStatusError] = useState<string | null>(null);
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{ createdAt: string } | null>(null);
   const [aiRetrying, setAiRetrying] = useState(false);
@@ -70,7 +68,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.ade.app
       .getProject()
       .then(setProject)
-      .then(() => Promise.all([refreshLanes(), refreshProviderMode(), refreshKeybindings().catch(() => {})]))
+      .then(() => Promise.all([refreshLanes(), refreshProviderMode(), refreshKeybindings().catch(() => { })]))
       .then(async () => {
         const status = await window.ade.onboarding.getStatus().catch(() => null);
         setOnboardingIncomplete(Boolean(status && !status.completedAt));
@@ -172,29 +170,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [location.pathname]);
 
   useEffect(() => {
-    let cancelled = false;
-    setHostedStatus(null);
-    setHostedStatusError(null);
-    if (providerMode !== "hosted") return;
-    window.ade.hosted
-      .getStatus()
-      .then((status) => {
-        if (cancelled) return;
-        setHostedStatus(status);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setHostedStatusError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [providerMode]);
-
-  useEffect(() => {
     setAiFailure(null);
     setAiMockProvider(null);
-    if (providerMode !== "hosted") return;
+    if (providerMode !== "subscription") return;
 
     const unsub = window.ade.packs.onEvent((ev: PackEvent) => {
       if (ev.eventType === "narrative_failed") {
@@ -300,7 +278,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       {projectMissing ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-red-500/10 px-4 py-2.5 text-xs text-red-800 shadow-card">
+        <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Project directory not found</span> — it may have been moved or deleted.
           <span className="ml-2 inline-flex items-center gap-2">
             <Button
@@ -311,7 +289,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 window.ade.project
                   .openRepo()
                   .then(() => setProjectMissing(false))
-                  .catch(() => {});
+                  .catch(() => { });
               }}
             >
               Relocate
@@ -333,7 +311,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       await window.ade.project.switchToPath(next.rootPath);
                     }
                   })
-                  .catch(() => {});
+                  .catch(() => { });
               }}
             >
               Remove
@@ -351,29 +329,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       {providerMode === "guest" ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
+        <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           Running in Guest Mode - AI details disabled. <Link to="/settings" className="underline">Set up provider</Link>
         </div>
       ) : null}
-      {providerMode === "hosted" ? (
-        hostedStatusError ? (
-          <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-red-500/8 px-4 py-2.5 text-xs text-red-800 shadow-card">
-            Hosted AI error: {hostedStatusError} <Link to="/settings" className="underline">Open Settings</Link>
-          </div>
-        ) : hostedStatus && (!hostedStatus.consentGiven || !hostedStatus.apiConfigured || !hostedStatus.auth.signedIn) ? (
-          <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
-            Hosted AI not ready:
-            {!hostedStatus.consentGiven ? " consent not granted;" : ""}
-            {!hostedStatus.apiConfigured ? " missing API config;" : ""}
-            {!hostedStatus.auth.signedIn ? " not signed in;" : ""}
-            {" "}
-            <Link to="/settings" className="underline">Fix in Settings</Link>
-          </div>
-        ) : null
-      ) : null}
 
       {contextStatus?.docs?.some((doc) => !doc.exists) ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           Missing ADE context docs:
           {contextStatus.docs.filter((doc) => !doc.exists).map((doc) => ` ${doc.label}`).join(", ")}.
           <span className="ml-2 inline-flex items-center gap-2">
@@ -409,19 +371,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               {contextGenerateBusy === "claude" ? "Generating…" : "Generate (Claude)"}
             </Button>
-            <Link to="/context" className="underline">Open Context tab</Link>
+            <Link to="/settings" className="underline">Open Settings</Link>
           </span>
         </div>
       ) : null}
 
-      {providerMode === "hosted" && aiMockProvider ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-amber-500/8 px-4 py-2.5 text-xs text-amber-800 shadow-card">
+      {providerMode === "subscription" && aiMockProvider ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
           LLM provider is "mock" — AI will return placeholder content. <Link to="/settings" className="underline">Open Settings</Link>
         </div>
       ) : null}
 
-      {providerMode === "hosted" && aiFailure ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-red-500/8 px-4 py-2.5 text-xs text-red-800 shadow-card">
+      {providerMode === "subscription" && aiFailure ? (
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-red-500/6 px-3 py-1.5 text-[11px] font-mono text-red-800">
           <span className="font-semibold">Last AI job failed:</span>{" "}
           {aiFailure.jobId ? `job ${shortId(aiFailure.jobId)} · ` : ""}
           {aiFailure.error}
@@ -476,7 +438,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       {onboardingIncomplete && !onboardingDismissed && location.pathname !== "/onboarding" ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded-xl bg-card/60 px-4 py-2.5 text-xs text-fg shadow-card">
+        <div className="shrink-0 mx-3 mt-1.5 rounded bg-card/50 px-3 py-1.5 text-[11px] font-mono text-fg">
           <span className="font-semibold">Onboarding is incomplete.</span>{" "}
           You can keep working and set it up later, or run the wizard to detect defaults, lanes, and initial packs.
           <span className="ml-2 inline-flex items-center gap-2">
@@ -525,7 +487,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       <div className="flex-1 flex min-h-0">
-        <aside className="w-[52px] shrink-0 bg-[--color-surface-raised] shadow-panel flex flex-col items-center py-2 z-10">
+        <aside className="w-[148px] shrink-0 flex flex-col py-2 pl-1.5 pr-0.5 z-10 border-r border-border/20">
           <TabNav />
         </aside>
 
@@ -536,11 +498,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           {prToasts.length > 0 ? (
-            <div className="pointer-events-none absolute bottom-3 right-3 z-[95] flex w-[min(420px,calc(100vw-24px))] flex-col gap-2">
+            <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {prToasts.map((toast) => {
                 const laneName = lanes.find((lane) => lane.id === toast.event.laneId)?.name ?? toast.event.laneId;
                 return (
-                  <div key={toast.id} className="pointer-events-auto rounded-2xl bg-card/90 backdrop-blur-lg px-4 py-3 text-xs shadow-float">
+                  <div key={toast.id} className="pointer-events-auto rounded border border-border/50 bg-card px-3 py-2 text-[11px] font-mono shadow-float">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <div className="font-semibold text-fg truncate">{toast.event.title}</div>
@@ -580,7 +542,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         variant="primary"
                         className="h-7 px-2 text-[11px]"
                         onClick={() => {
-                          void window.ade.prs.openInGitHub(toast.event.prId).catch(() => {});
+                          void window.ade.prs.openInGitHub(toast.event.prId).catch(() => { });
                           setPrToasts((prev) => prev.filter((t) => t.id !== toast.id));
                         }}
                       >

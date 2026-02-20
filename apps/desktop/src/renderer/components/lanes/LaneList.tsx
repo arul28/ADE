@@ -140,7 +140,7 @@ export function LaneList({
               else setLocalFilter(next);
             }}
             placeholder="Filter lanes…"
-            className="h-8 w-full rounded-xl bg-muted/30 shadow-card px-2 text-xs outline-none placeholder:text-muted-fg"
+            className="h-8 w-full rounded bg-muted/30 shadow-card px-2 text-xs outline-none placeholder:text-muted-fg"
           />
         </div>
         {visibleLanes.length === 0 ? (
@@ -172,7 +172,7 @@ export function LaneList({
             ))}
           </div>
         )}
-        <div className="mt-3 rounded-xl shadow-card bg-card/40 p-2">
+        <div className="mt-3 rounded shadow-card bg-card/40 p-2">
           <div className="mb-1 px-1 text-xs text-muted-fg/70">Stack Graph</div>
           <div className="space-y-0.5">
             {visibleLanes.map((lane) => (

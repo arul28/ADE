@@ -114,7 +114,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
         <Dialog.Overlay className="fixed inset-0 bg-black/40 backdrop-blur-sm" />
         <Dialog.Content
           className={cn(
-            "fixed left-1/2 top-[18%] w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-3 shadow-float backdrop-blur-xl",
+            "fixed left-1/2 top-[18%] w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded bg-card border border-border/40 p-3 shadow-float",
             "focus:outline-none"
           )}
         >
@@ -127,7 +127,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             </Dialog.Close>
           </div>
 
-          <div className="mt-3 flex items-center gap-2 rounded-xl bg-muted/40 px-3">
+          <div className="mt-3 flex items-center gap-2 rounded bg-muted/40 px-3">
             <Search className="h-4 w-4 text-muted-fg" />
             <input
               value={q}
@@ -145,7 +145,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
             <Kbd className="hidden sm:inline-flex">Enter</Kbd>
           </div>
 
-          <div className="mt-3 max-h-[45vh] overflow-auto rounded-xl bg-muted/20">
+          <div className="mt-3 max-h-[45vh] overflow-auto rounded bg-muted/20">
             {filtered.length === 0 ? (
               <div className="p-4 text-sm text-muted-fg">No matches.</div>
             ) : (

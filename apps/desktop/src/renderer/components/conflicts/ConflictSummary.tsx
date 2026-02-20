@@ -18,12 +18,12 @@ export function ConflictSummary({
   overlaps: ConflictOverlap[];
 }) {
   if (!lane) {
-    return <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs text-muted-fg">Select a lane to inspect conflicts.</div>;
+    return <div className="rounded shadow-card bg-card/40 p-3 text-xs text-muted-fg">Select a lane to inspect conflicts.</div>;
   }
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl shadow-card bg-card/40 p-3">
+      <div className="rounded shadow-card bg-card/40 p-3">
         <div className="text-sm font-semibold text-fg">{lane.name}</div>
         <div className="mt-1 text-xs text-muted-fg">
           Status: <span className="text-fg">{status?.status ?? "unknown"}</span>
@@ -36,13 +36,13 @@ export function ConflictSummary({
       </div>
 
       {overlaps.length === 0 ? (
-        <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs text-muted-fg">
+        <div className="rounded shadow-card bg-card/40 p-3 text-xs text-muted-fg">
           No overlaps recorded yet for this lane.
         </div>
       ) : (
         <div className="space-y-2">
           {overlaps.map((overlap) => (
-            <div key={`${overlap.peerId ?? "base"}:${overlap.peerName}`} className="rounded-xl shadow-card bg-card/30 p-3">
+            <div key={`${overlap.peerId ?? "base"}:${overlap.peerName}`} className="rounded shadow-card bg-card/30 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="truncate text-xs font-semibold text-fg">{overlap.peerName}</div>
                 <div className={`text-[11px] uppercase tracking-wide ${riskClass(overlap.riskLevel)}`}>{overlap.riskLevel}</div>

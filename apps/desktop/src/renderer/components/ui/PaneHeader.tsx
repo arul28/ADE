@@ -13,16 +13,14 @@ export function PaneHeader({
   className?: string;
 }) {
   return (
-    <div className={cn("flex shrink-0 items-center justify-between px-4 py-2 min-h-[44px] ade-panel-header", className)}>
-      <div className="min-w-0 flex flex-col justify-center">
-        <div className="flex items-baseline gap-2">
-          <div className="truncate text-[13px] font-semibold text-fg/80 select-none">
-            {title}
-          </div>
-          {meta ? <div className="truncate text-xs text-muted-fg/60">{meta}</div> : null}
+    <div className={cn("flex shrink-0 items-center justify-between px-3 py-1.5 min-h-[32px] ade-panel-header", className)}>
+      <div className="min-w-0 flex items-center gap-2">
+        <div className="truncate font-mono text-[10.5px] font-medium text-muted-fg uppercase tracking-wide select-none">
+          {title}
         </div>
+        {meta ? <div className="truncate text-[10px] text-muted-fg/50 font-mono">{meta}</div> : null}
       </div>
-      {right ? <div className="flex items-center gap-2">{right}</div> : null}
+      {right ? <div className="flex items-center gap-1.5">{right}</div> : null}
     </div>
   );
 }

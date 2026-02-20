@@ -31,9 +31,8 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
 import type { createPackService } from "../packs/packService";
-import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createByokLlmService } from "../byok/byokLlmService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import { runGit } from "../git/git";
 
@@ -190,6 +189,41 @@ function readPrTemplate(projectRoot: string): string | null {
   }
 }
 
+function extractFirstJsonObject(text: string): string | null {
+  const raw = text.trim();
+  if (!raw) return null;
+  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    const inner = fenced[1].trim();
+    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
+  }
+
+  const first = raw.indexOf("{");
+  const last = raw.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    const candidate = raw.slice(first, last + 1).trim();
+    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
+  }
+  return null;
+}
+
+function parsePrDraftJson(text: string): { title: string; body: string } | null {
+  const candidate = extractFirstJsonObject(text);
+  if (!candidate) return null;
+  try {
+    const parsed = JSON.parse(candidate);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const title = asString((parsed as Record<string, unknown>).title).trim();
+    const body = asString((parsed as Record<string, unknown>).body).trim();
+    if (!title.length || !body.length) return null;
+    return { title, body: `${body}\n` };
+  } catch {
+    return null;
+  }
+}
+
 export function createPrService({
   db,
   logger,
@@ -199,8 +233,7 @@ export function createPrService({
   operationService,
   githubService,
   packService,
-  hostedAgentService,
-  byokLlmService,
+  aiIntegrationService,
   projectConfigService,
   conflictService,
   openExternal
@@ -213,8 +246,7 @@ export function createPrService({
   operationService: ReturnType<typeof createOperationService>;
   githubService: ReturnType<typeof createGithubService>;
   packService: ReturnType<typeof createPackService>;
-  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
-  byokLlmService?: ReturnType<typeof createByokLlmService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
   openExternal: (url: string) => Promise<void>;
@@ -668,31 +700,42 @@ export function createPrService({
     };
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    if (providerMode === "hosted" && hostedAgentService?.getStatus().enabled) {
-      const result = await hostedAgentService.requestPrDescription({
-        laneId,
-        prContext: context
-      });
-      return {
-        title: result.title || lane.name,
-        body: result.body
-      };
-    }
+    const defaultTitle = lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
 
-    if (providerMode === "byok" && byokLlmService) {
-      const draft = await byokLlmService.draftPrDescription({
-        laneId,
-        prContext: context
-      });
-      const defaultTitle = lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
-      return {
-        title: defaultTitle || lane.name,
-        body: draft.body
-      };
+    if (providerMode !== "guest" && aiIntegrationService) {
+      const prompt = [
+        "You are ADE's PR drafting assistant. Keep content factual and concise.",
+        "Return JSON only with shape: {\"title\": string, \"body\": string}.",
+        "The body must be GitHub-flavored markdown with sections: Summary, What Changed, Validation, Risks.",
+        "",
+        "PR Context JSON:",
+        JSON.stringify(context, null, 2)
+      ].join("\n");
+
+      try {
+        const draft = await aiIntegrationService.draftPrDescription({
+          laneId,
+          cwd: lane.worktreePath,
+          prompt
+        });
+        const parsed = parsePrDraftJson(draft.text);
+        if (parsed) return parsed;
+
+        if (draft.text.trim().length) {
+          return {
+            title: defaultTitle,
+            body: `${draft.text.trim()}\n`
+          };
+        }
+      } catch (error) {
+        logger.warn("prs.draft.ai_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
     }
 
     // Guest/CLI fallback: deterministic content.
-    const defaultTitle = lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
     const lines: string[] = [];
     lines.push("## Summary");
     lines.push("");

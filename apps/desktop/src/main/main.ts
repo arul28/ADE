@@ -19,8 +19,7 @@ import { createGitOperationsService } from "./services/git/gitOperationsService"
 import { runGit } from "./services/git/git";
 import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
-import { createHostedAgentService } from "./services/hosted/hostedAgentService";
-import { createByokLlmService } from "./services/byok/byokLlmService";
+import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
@@ -259,6 +258,12 @@ app.whenReady().then(async () => {
       projectConfigService
     });
 
+    const aiIntegrationService = createAiIntegrationService({
+      db,
+      logger,
+      projectConfigService
+    });
+
     const packService = createPackService({
       db,
       logger,
@@ -269,6 +274,7 @@ app.whenReady().then(async () => {
       sessionService,
       projectConfigService,
       operationService,
+      aiIntegrationService,
       onEvent: (event) => broadcast(IPC.packsEvent, event)
     });
 
@@ -302,30 +308,10 @@ app.whenReady().then(async () => {
       )
       .catch(() => { });
 
-    const hostedAgentService = createHostedAgentService({
-      logger,
-      projectId,
-      projectRoot,
-      projectDisplayName: project.displayName,
-      adeDir: adePaths.adeDir,
-      laneService,
-      projectConfigService,
-      openExternal: async (url) => {
-        await shell.openExternal(url);
-      }
-    });
-
-    const byokLlmService = createByokLlmService({
-      logger,
-      projectConfigService
-    });
-
     const githubService = createGithubService({
       logger,
       adeDir: adePaths.adeDir,
-      projectRoot,
-      projectConfigService,
-      hostedAgentService
+      projectRoot
     });
 
     const conflictService = createConflictService({
@@ -337,8 +323,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       packService,
       operationService,
-      hostedAgentService,
-      byokLlmService,
+      aiIntegrationService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => broadcast(IPC.conflictsEvent, event)
     });
@@ -358,9 +343,8 @@ app.whenReady().then(async () => {
       logger,
       packService,
       conflictService,
-      hostedAgentService,
       projectConfigService,
-      byokLlmService
+      aiIntegrationService
     });
 
     const prService = createPrService({
@@ -372,8 +356,7 @@ app.whenReady().then(async () => {
       operationService,
       githubService,
       packService,
-      hostedAgentService,
-      byokLlmService,
+      aiIntegrationService,
       projectConfigService,
       openExternal: async (url) => {
         await shell.openExternal(url);
@@ -401,7 +384,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
       sessionService,
-      hostedAgentService,
+      aiIntegrationService,
       logger,
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
@@ -460,7 +443,6 @@ app.whenReady().then(async () => {
       projectConfigService,
       packService,
       conflictService,
-      hostedAgentService,
       testService,
       onEvent: (event) => broadcast(IPC.automationsEvent, event)
     });
@@ -596,8 +578,7 @@ app.whenReady().then(async () => {
       operationService,
       gitService,
       conflictService,
-      hostedAgentService,
-      byokLlmService,
+      aiIntegrationService,
       githubService,
       prService,
       prPollingService,

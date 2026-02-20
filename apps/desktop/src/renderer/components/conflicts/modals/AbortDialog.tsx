@@ -21,7 +21,7 @@ export function AbortDialog({ laneId, kind }: { laneId: string; kind: "merge" | 
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/3 z-50 w-[min(400px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
+        <Dialog.Content className="fixed left-1/2 top-1/3 z-50 w-[min(400px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 rounded bg-card border border-border/40 p-3 shadow-float focus:outline-none">
           <Dialog.Title className="text-sm font-semibold text-fg">
             Abort {label}?
           </Dialog.Title>

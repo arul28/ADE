@@ -112,7 +112,7 @@ function insertPrediction(args: {
 }
 
 describe("conflictService conflict context integrity", () => {
-  it("passes relevant file contexts into hosted conflict proposal jobs", async () => {
+  it("passes relevant file contexts into subscription conflict proposal jobs", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-ctx-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
     const dbPath = path.join(repoRoot, "kv.sqlite");
@@ -154,7 +154,7 @@ describe("conflictService conflict context integrity", () => {
         getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
       projectConfigService: {
-        get: () => ({ effective: { providerMode: "hosted" } })
+        get: () => ({ effective: { providerMode: "subscription" } })
       } as any,
       packService: {
         refreshLanePack: async () => {},
@@ -165,17 +165,27 @@ describe("conflictService conflict context integrity", () => {
             '## Conflict Lineage\n```json\n{"pairwisePairsComputed":2,"pairwisePairsTotal":5,"stalePolicy":{"ttlMs":120000}}\n```'
         })
       } as any,
-      hostedAgentService: {
-        getStatus: () => ({ enabled: true }),
+      aiIntegrationService: {
+        getMode: () => "subscription",
         requestConflictProposal: async (args: any) => {
           capturedRequest = args;
           return {
-            jobId: "job-1",
-            artifactId: "artifact-1",
-            explanation: "hosted explanation",
-            diffPatch: "diff --git a/src/a.ts b/src/a.ts\n",
-            confidence: 0.8,
-            rawContent: "raw"
+            text: JSON.stringify({
+              explanation: "subscription explanation",
+              confidence: 0.8,
+              diffPatch: "diff --git a/src/a.ts b/src/a.ts\n"
+            }),
+            structuredOutput: {
+              explanation: "subscription explanation",
+              confidence: 0.8,
+              diffPatch: "diff --git a/src/a.ts b/src/a.ts\n"
+            },
+            provider: "claude",
+            model: "sonnet",
+            sessionId: "ai-session-1",
+            inputTokens: 100,
+            outputTokens: 80,
+            durationMs: 1200
           };
         }
       } as any
@@ -186,17 +196,14 @@ describe("conflictService conflict context integrity", () => {
 
     expect(proposal.diffPatch).toContain("diff --git");
     expect(capturedRequest).toBeTruthy();
-    expect(Array.isArray(capturedRequest.conflictContext.relevantFilesForConflict)).toBe(true);
-    expect(capturedRequest.conflictContext.relevantFilesForConflict.length).toBeGreaterThan(0);
-    expect(Array.isArray(capturedRequest.conflictContext.fileContexts)).toBe(true);
-    expect(capturedRequest.conflictContext.fileContexts.length).toBeGreaterThan(0);
-    expect(capturedRequest.conflictContext.pairwisePairsComputed).toBe(2);
-    expect(capturedRequest.conflictContext.pairwisePairsTotal).toBe(5);
-    expect(capturedRequest.conflictContext.stalePolicy.ttlMs).toBe(120000);
-    expect(typeof capturedRequest.conflictContext.predictionAgeMs).toBe("number");
+    expect(typeof capturedRequest.prompt).toBe("string");
+    expect(capturedRequest.prompt).toContain("relevantFilesForConflict");
+    expect(capturedRequest.prompt).toContain("\"pairwisePairsComputed\": 2");
+    expect(capturedRequest.prompt).toContain("\"pairwisePairsTotal\": 5");
+    expect(capturedRequest.prompt).toContain("\"ttlMs\": 120000");
   });
 
-  it("returns insufficient-context proposal without calling hosted provider", async () => {
+  it("returns insufficient-context proposal without calling subscription provider", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-insufficient-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
     const dbPath = path.join(repoRoot, "kv.sqlite");
@@ -227,7 +234,7 @@ describe("conflictService conflict context integrity", () => {
     );
 
     const laneSummary = createLaneSummary(repoRoot);
-    let hostedCalled = false;
+    let aiCalled = false;
     const service = createConflictService({
       db,
       logger: createLogger(),
@@ -238,7 +245,7 @@ describe("conflictService conflict context integrity", () => {
         getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
       projectConfigService: {
-        get: () => ({ effective: { providerMode: "hosted" } })
+        get: () => ({ effective: { providerMode: "subscription" } })
       } as any,
       packService: {
         refreshLanePack: async () => {},
@@ -249,10 +256,10 @@ describe("conflictService conflict context integrity", () => {
             '## Conflict Lineage\n```json\n{"pairwisePairsComputed":1,"pairwisePairsTotal":1,"stalePolicy":{"ttlMs":60000}}\n```'
         })
       } as any,
-      hostedAgentService: {
-        getStatus: () => ({ enabled: true }),
+      aiIntegrationService: {
+        getMode: () => "subscription",
         requestConflictProposal: async () => {
-          hostedCalled = true;
+          aiCalled = true;
           throw new Error("should not be called");
         }
       } as any
@@ -261,7 +268,7 @@ describe("conflictService conflict context integrity", () => {
     const preview = await service.prepareProposal({ laneId: "lane-1" });
     const proposal = await service.requestProposal({ laneId: "lane-1", contextDigest: preview.contextDigest });
 
-    expect(hostedCalled).toBe(false);
+    expect(aiCalled).toBe(false);
     expect(proposal.source).toBe("local");
     expect(proposal.diffPatch).toBe("");
     expect(proposal.explanation).toContain("Insufficient context");

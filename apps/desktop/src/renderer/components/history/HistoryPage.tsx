@@ -266,7 +266,7 @@ export function HistoryPage() {
                     "bg-muted-fg/50"
                   }`} />
                   <button
-                    className={`w-full rounded-xl border-l-[3px] px-3 py-2.5 text-left transition-all duration-150 ${statusBorderColor(row.status)} ${
+                    className={`w-full rounded border-l-[3px] px-3 py-2.5 text-left transition-all duration-150 ${statusBorderColor(row.status)} ${
                       row.id === selected?.id
                         ? "shadow-card-hover bg-card/90 scale-[1.01] ring-1 ring-accent/15"
                         : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70 hover:scale-[1.005]"
@@ -304,7 +304,7 @@ export function HistoryPage() {
       ) : (
         <div className="space-y-4 text-xs">
           {/* Summary card - prominent */}
-          <div className="rounded-xl bg-card/80 shadow-card p-4">
+          <div className="rounded bg-card/80 shadow-card p-4">
             <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">Summary</div>
             <div className="mt-2 text-sm font-bold leading-snug">{described?.title ?? selected.kind}</div>
             <div className="mt-1.5 text-[11px] leading-relaxed text-muted-fg">{described?.detail ?? (selected.laneName ?? "project")}</div>
@@ -312,35 +312,35 @@ export function HistoryPage() {
 
           {/* Error message with red left border accent */}
           {metaError ? (
-            <div className="rounded-xl border-l-[3px] border-l-red-500/70 bg-red-500/8 p-3 text-[11px] leading-relaxed text-red-300">
+            <div className="rounded border-l-[3px] border-l-red-500/70 bg-red-500/8 p-3 text-[11px] leading-relaxed text-red-300">
               {metaError}
             </div>
           ) : null}
 
           {/* 2x2 info grid with icons */}
           <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-xl bg-card/60 shadow-card p-3">
+            <div className="rounded bg-card/60 shadow-card p-3">
               <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
                 <Tag className="h-3 w-3" />
                 Kind
               </div>
               <div className="mt-1.5 font-semibold">{selected.kind}</div>
             </div>
-            <div className="rounded-xl bg-card/60 shadow-card p-3">
+            <div className="rounded bg-card/60 shadow-card p-3">
               <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
                 <Activity className="h-3 w-3" />
                 Status
               </div>
               <div className={`mt-1.5 font-semibold ${statusTone(selected.status)}`}>{selected.status}</div>
             </div>
-            <div className="rounded-xl bg-card/60 shadow-card p-3">
+            <div className="rounded bg-card/60 shadow-card p-3">
               <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
                 <Clock className="h-3 w-3" />
                 Started
               </div>
               <div className="mt-1.5">{new Date(selected.startedAt).toLocaleString()}</div>
             </div>
-            <div className="rounded-xl bg-card/60 shadow-card p-3">
+            <div className="rounded bg-card/60 shadow-card p-3">
               <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
                 <Calendar className="h-3 w-3" />
                 Ended
@@ -350,7 +350,7 @@ export function HistoryPage() {
           </div>
 
           {/* Lane section */}
-          <div className="rounded-xl bg-card/60 shadow-card p-3">
+          <div className="rounded bg-card/60 shadow-card p-3">
             <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">Lane</div>
             <div className="mt-1.5 font-semibold">{selected.laneName ?? "project"}</div>
             {selected.laneId ? (
@@ -376,7 +376,7 @@ export function HistoryPage() {
           </div>
 
           {/* SHA Transition with code block before -> after visual */}
-          <div className="rounded-xl bg-card/60 shadow-card p-3">
+          <div className="rounded bg-card/60 shadow-card p-3">
             <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
               <Hash className="h-3 w-3" />
               SHA Transition
@@ -395,7 +395,7 @@ export function HistoryPage() {
           </div>
 
           {/* Metadata (raw) with better summary styling */}
-          <details className="group rounded-xl bg-card/60 shadow-card">
+          <details className="group rounded bg-card/60 shadow-card">
             <summary className="cursor-pointer select-none px-3 py-2.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60 transition-colors hover:text-muted-fg">
               Metadata (raw)
             </summary>

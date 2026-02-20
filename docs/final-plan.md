@@ -96,6 +96,7 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Feature | Primary Phase | Depends On |
 |---|---|---|
 | Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline |
+| Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) |
 | MCP server | Phase 2 | Phase 1 |
 | AI orchestrator | Phase 3 | Phases 1 and 2 |
 | Agent identities | Phase 4 | Phase 3 |
@@ -286,6 +287,234 @@ Goal: Replace all legacy AI call paths with subscription-powered agent SDKs unif
 - CLI is only used interactively in Terminals tab and Lanes Work Pane — all programmatic AI tasks use SDKs.
 - Onboarding completes without sign-up or authentication.
 - Initial context loading (PRD/arch docs) uses SDKs, not CLI.
+
+---
+
+## Phase 1.5 -- Agent Chat Integration (2-3 weeks, parallel with Phase 1)
+
+Goal: Build a native agent chat interface inside ADE — a rich, provider-agnostic chat UI that lets users work interactively with Codex and Claude directly in lanes. Chat sessions are first-class sessions with full context tracking, delta computation, and pack integration. The UI replicates the core Codex app experience while also supporting Claude via the same community SDK used in Phase 1.
+
+### Reference docs
+
+- [architecture/AI_INTEGRATION.md](architecture/AI_INTEGRATION.md) — AgentChatService interface, CodexChatBackend (App Server protocol), ClaudeChatBackend (community provider multi-turn), ChatEvent types
+- [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md) — Agent chat sessions as a session type, session lifecycle integration, chat transcript storage, delta computation
+- [features/LANES.md](features/LANES.md) — Work Pane agent chat view (alternative to terminal view)
+- [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) — Chat-specific settings (default provider, approval preferences, model selection)
+- [architecture/DESKTOP_APP.md](architecture/DESKTOP_APP.md) — agentChatService in the service graph
+
+### External references
+
+- **Codex App Server protocol**: https://developers.openai.com/codex/app-server — JSON-RPC 2.0 protocol for building custom Codex frontends. Full specification for threads, turns, items, streaming, approvals, steering, models, skills, and configuration.
+- **Codex App Server Node.js example**: https://developers.openai.com/codex/app-server (bottom of page) — Reference `child_process` spawn + JSONL readline implementation.
+- **Codex App Server schema generation**: `codex app-server generate-ts --out ./schemas` — generates TypeScript types matching the exact protocol version installed.
+- **Codex App features reference**: https://developers.openai.com/codex/app/features — UI patterns, split view, review pane, thread forking, pop-out windows.
+- **Codex models**: https://developers.openai.com/codex/models — Available models and reasoning effort levels.
+- **Community Claude provider**: https://github.com/ben-vargas/ai-sdk-provider-claude-code — Vercel AI SDK provider wrapping Claude Agent SDK. Used for ClaudeChatBackend multi-turn.
+
+### Dependencies
+
+- Phase 1 W1 (package installation) must be complete — SDKs installed and wired.
+- Phase 1 W3/W4 (executor implementations) provide model lists and auth detection.
+- No dependency on Phase 1 completion — can run in parallel once packages are installed.
+
+### Workstreams
+
+#### W1: AgentChatService Interface
+- Define `AgentChatService` interface — the provider-agnostic abstraction for interactive chat sessions:
+  ```typescript
+  interface AgentChatService {
+    createSession(laneId: string, provider: "codex" | "claude", model: string): Promise<ChatSession>;
+    sendMessage(sessionId: string, text: string, attachments?: FileRef[]): AsyncIterable<ChatEvent>;
+    steer(sessionId: string, text: string): Promise<void>;
+    interrupt(sessionId: string): Promise<void>;
+    resumeSession(sessionId: string): Promise<ChatSession>;
+    listSessions(laneId?: string): Promise<ChatSessionSummary[]>;
+    approveToolUse(sessionId: string, itemId: string, decision: ApprovalDecision): Promise<void>;
+    getAvailableModels(provider: "codex" | "claude"): Promise<ModelInfo[]>;
+    dispose(sessionId: string): Promise<void>;
+  }
+  ```
+- Define `ChatEvent` union type mapping both providers to a common stream:
+  - `text` — streaming agent text chunks
+  - `tool_call` / `tool_result` — tool invocations and results
+  - `file_change` — file edit with path and diff
+  - `command` — shell command execution with live output
+  - `plan` — step-by-step plan with per-step status
+  - `reasoning` — thinking/reasoning summary blocks
+  - `approval_request` — needs user decision (accept/decline/accept-for-session)
+  - `status` — turn lifecycle (started, completed, interrupted, failed)
+  - `error` — error with codex error info or Claude error details
+  - `done` — session turn complete
+- Define `ChatSession`, `ChatSessionSummary`, `ApprovalDecision`, `ModelInfo`, `FileRef` types.
+
+#### W2: CodexChatBackend (App Server Protocol)
+- Spawn `codex app-server` as a child process via `child_process.spawn("codex", ["app-server"])`.
+- Implement JSON-RPC 2.0 client over JSONL stdin/stdout:
+  - `initialize` handshake with `clientInfo: { name: "ade", title: "ADE", version: "<ade-version>" }`.
+  - `initialized` notification.
+  - Request/response correlation via `id` field.
+  - Notification handling (no `id` field).
+- Map Codex App Server primitives to `AgentChatService`:
+  - `thread/start` → `createSession()` with `model`, `cwd` (lane worktree), `approvalPolicy`, `sandbox`.
+  - `turn/start` → `sendMessage()` with text + optional image/file attachments.
+  - `turn/steer` → `steer()` — inject instructions into active turn.
+  - `turn/interrupt` → `interrupt()`.
+  - `thread/resume` → `resumeSession()` with stored `threadId`.
+  - `thread/list` → `listSessions()` filtered by `cwd`.
+  - `model/list` → `getAvailableModels()`.
+- Map Codex notifications to `ChatEvent` stream:
+  - `item/agentMessage/delta` → `ChatEvent.text`
+  - `item/started` (commandExecution) → `ChatEvent.command`
+  - `item/commandExecution/outputDelta` → `ChatEvent.command` (output append)
+  - `item/started` (fileChange) → `ChatEvent.file_change`
+  - `item/*/requestApproval` → `ChatEvent.approval_request`
+  - `turn/plan/updated` → `ChatEvent.plan`
+  - `item/reasoning/summaryTextDelta` → `ChatEvent.reasoning`
+  - `turn/completed` → `ChatEvent.done`
+  - `turn/started` → `ChatEvent.status`
+- Approval handling: `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` → present overlay in UI → user responds → send accept/decline/cancel back to app server.
+- Thread lifecycle: archive, fork, rollback, compaction exposed for future use.
+- Rate limit tracking: `account/rateLimits/read` → feed into AI usage dashboard.
+- Error handling: map `codexErrorInfo` values (ContextWindowExceeded, UsageLimitExceeded, etc.) to user-facing messages.
+
+#### W3: ClaudeChatBackend (Community Provider Multi-Turn)
+- Use `ai-sdk-provider-claude-code` (same SDK from Phase 1) in multi-turn mode.
+- Implement `AgentChatService` using Vercel AI SDK's `streamText()` with `messages` array:
+  - `createSession()` → initialize messages array, store session state in memory.
+  - `sendMessage()` → append user message, call `streamText()`, yield `ChatEvent` from stream chunks.
+  - `steer()` → not natively supported by Claude SDK. Implementation: set a flag, on next yield point inject the steer text as a follow-up user message.
+  - `interrupt()` → abort the stream via `AbortController`.
+  - `resumeSession()` → reload stored messages array and resume conversation.
+- Map Claude stream events to `ChatEvent`:
+  - Text chunks → `ChatEvent.text`
+  - Tool calls (via `canUseTool` callback) → `ChatEvent.tool_call` / `ChatEvent.approval_request`
+  - Tool results → `ChatEvent.tool_result`
+  - Structured output → extracted from final text
+- Tool use approval: `canUseTool` callback intercepts every tool invocation → present in chat UI → user approves/denies → callback returns decision.
+- Session state: maintain `messages[]` in memory (bounded by token budget). Persist to disk for resume (`.ade/chat-sessions/<sessionId>.json`).
+- Model selection: use `supportedModels()` from SDK for `getAvailableModels()`.
+- Permission control: inherit from Settings (Phase 1 W12) — `permissionMode`, `allowedTools`, `maxBudgetUsd`.
+
+#### W4: Session Integration
+- Map agent chat sessions to `terminal_sessions` table:
+  - `tool_type`: `"codex-chat"` or `"claude-chat"` (new values added to `TerminalToolType` union).
+  - `pty_id`: null (no PTY — chat uses JSON-RPC / SDK streams instead).
+  - `tracked`: always `true` (chat sessions always produce context).
+  - `transcript_path`: points to chat message log (`.ade/transcripts/<session-id>.chat.jsonl` — JSONL format with all ChatEvents).
+  - `head_sha_start` / `head_sha_end`: captured at session create and last turn complete.
+  - `summary`: generated from chat transcript (deterministic: last turn's outcome. AI: full session summary).
+  - `last_output_preview`: last agent message text (truncated).
+  - `resume_command`: stored as provider + threadId/sessionId for resume.
+- Session delta computation: same algorithm as terminal sessions — diff `head_sha_start` vs current state, scan chat events for `file_change` items, extract failure lines from `command` events.
+- Wire into `onSessionEnded` callback chain: job engine, automation service, orchestrator all receive chat session end events.
+- Chat sessions appear in both:
+  - **Terminals tab** session list (with "codex-chat" or "claude-chat" tool type badge)
+  - **Lanes tab** Work Pane (in the agent chat view)
+
+#### W5: Chat UI — Message List Component
+- `AgentChatMessageList.tsx` — renders a scrollable list of chat events grouped by turns.
+- Message item types (each rendered as a distinct card/bubble):
+
+| Item Type | UI Rendering | Reference |
+|-----------|-------------|-----------|
+| User message | Right-aligned bubble with text, file attachments as chips | Standard chat pattern |
+| Agent text | Left-aligned bubble with streaming markdown (use `react-markdown` + syntax highlighting) | Codex app agent messages |
+| Command execution | Inline terminal block: command header, collapsible live output (monospace), exit code badge, duration | Codex app `commandExecution` items |
+| File change | Inline diff viewer: file path header, unified diff with syntax highlighting (reuse `ConflictFileDiff` or Monaco diff) | Codex app `fileChange` items |
+| Plan | Step list with status indicators: pending (gray), in-progress (blue spinner), completed (green check), failed (red x) | Codex app plan items |
+| Reasoning | Collapsible "Thinking..." block with summary text, expandable for full reasoning | Codex app reasoning items |
+| Approval request | Sticky overlay at bottom of chat: description of what needs approval, Accept / Decline / Accept for Session buttons | Codex app approval flow |
+| Error | Red-tinted message block with error details and suggested actions | Standard error pattern |
+
+- Auto-scroll: scroll to bottom on new content unless user has scrolled up (standard chat behavior).
+- Turn separators: subtle divider between turns showing turn number and timestamp.
+- Streaming indicator: animated dots/cursor while agent is generating text.
+
+#### W6: Chat UI — Composer Component
+- `AgentChatComposer.tsx` — input area at the bottom of the chat pane.
+- Components:
+  - **Text input**: Multi-line textarea with `Cmd+Enter` or `Enter` to send (configurable).
+  - **Provider/Model selector**: Dropdown showing detected providers (Codex, Claude) and their available models. Remembers last selection per lane.
+  - **File attachment**: `@` key triggers fuzzy file search popup — attach files as context references.
+  - **Send button**: Sends `turn/start` (Codex) or appends to messages + `streamText()` (Claude).
+  - **Steer indicator**: When a turn is active, the input area shows "Steering..." label and Enter sends `turn/steer` instead of starting a new turn.
+  - **Interrupt button**: Red stop icon, visible when a turn is active. Sends `turn/interrupt` (Codex) or aborts stream (Claude).
+  - **Approval quick-actions**: When an approval is pending, show Accept/Decline buttons inline in the composer area.
+- **Keyboard shortcuts**:
+  - `Enter` (while turn active): Steer the active turn
+  - `Enter` (while idle): Send new message
+  - `Escape`: Cancel current input / dismiss approval
+  - `Cmd+.` or `Ctrl+.`: Interrupt active turn
+
+#### W7: Chat UI — Integration with Lanes Tab
+- **Work Pane**: Add a view toggle to `LaneWorkPane.tsx`:
+  - **Terminal view** (existing): Shows `LaneTerminalsPanel` with PTY sessions
+  - **Chat view** (new): Shows `AgentChatPane` with the agent chat interface
+  - Toggle via tabs or segmented control at the top of the Work Pane
+- **AgentChatPane** layout:
+  ```
+  +-----------------------------------------------+
+  | [Terminal View] [Chat View]  (toggle)          |
+  +-----------------------------------------------+
+  | Chat Messages (scrollable)                     |
+  |                                                |
+  | [User]: "Fix the auth middleware timeout"      |
+  |                                                |
+  | [Codex]: "I'll look at the auth middleware..." |
+  |   📁 src/middleware/auth.ts  +12 -3            |
+  |   (inline diff viewer)                         |
+  |                                                |
+  |   $ npm test                                   |
+  |   > 31 tests passed ✓                          |
+  |                                                |
+  | [User]: "Also add rate limiting"               |
+  |                                                |
+  | [Codex]: "Adding rate limiting..."             |
+  |   (streaming...)                               |
+  |                                                |
+  +-----------------------------------------------+
+  | [@ attach] [Model: gpt-5.3-codex ▾] [Send ▶]  |
+  | Type a message...                              |
+  +-----------------------------------------------+
+  ```
+- New chat sessions created from the Chat view are automatically scoped to the selected lane (cwd = lane worktree).
+- Existing chat sessions for the selected lane are shown in the Chat view — user can switch between them via a session dropdown or tabs.
+
+#### W8: Chat UI — Integration with Terminals Tab
+- Chat sessions appear in the Terminals tab session list alongside PTY sessions.
+- Tool type badges: "codex-chat" (blue), "claude-chat" (purple) — distinct from "codex" and "claude" (which are CLI sessions).
+- Clicking a chat session in Terminals tab opens the chat view (not a terminal view).
+- Session filters: `TerminalToolType` expanded to include `"codex-chat"` and `"claude-chat"`.
+- Session delta card: same display as terminal sessions — files changed, insertions, deletions, AI summary.
+- Resume: clicking resume on an ended chat session calls `agentChatService.resumeSession()`.
+
+#### W9: Settings — Chat Configuration
+- Add chat-specific settings to the Settings page (under AI Provider section):
+  - **Default chat provider**: Codex / Claude / Last used
+  - **Default approval policy**: Auto (never ask) / Approve mutations / Approve everything
+  - **Send on Enter**: Toggle between Enter-to-send and Cmd+Enter-to-send
+  - **Codex sandbox policy**: Read-only / Workspace write / Full access (overrides default for chat sessions)
+  - **Claude permission mode for chat**: Plan / Accept edits / Bypass permissions
+- Settings persist to `.ade/local.yaml` under `ai.chat`.
+
+#### W10: Validation
+- CodexChatBackend: JSON-RPC handshake, thread CRUD, turn lifecycle, streaming, approval round-trip, error handling tests.
+- ClaudeChatBackend: multi-turn conversation, streaming, tool approval, session persistence, resume tests.
+- Session integration: chat sessions appear in session list, delta computation, callback chain, resume flow.
+- UI component tests: message rendering for each item type, composer input/send, approval overlay, steer/interrupt.
+- Cross-provider: same UI works with both Codex and Claude backends.
+
+### Exit criteria
+
+- Users can open an agent chat in any lane's Work Pane and interact with Codex or Claude via a rich chat interface.
+- Chat sessions are tracked as first-class sessions with transcripts, deltas, and pack integration.
+- Chat sessions appear in both the Lanes tab (Work Pane chat view) and the Terminals tab (session list).
+- The Codex chat experience closely mirrors the Codex desktop app: streaming messages, inline diffs, command output, plan tracking, approval flow, steering.
+- Claude chat provides the same UI experience using the community provider in multi-turn mode.
+- Users can switch between Codex and Claude in the composer dropdown — same UI, different backend.
+- Session resume works for both providers.
+- Chat-specific settings (provider, approval policy, sandbox) are configurable in Settings.
+- All chat activity feeds into the same context pipeline as terminal sessions (deltas, packs, automations, orchestrator).
 
 ---
 
@@ -708,6 +937,7 @@ Goal: Mobile mission control and intervention handling.
 Base build order:
 
 1. Phase 1 (Agent SDK Integration + AgentExecutor Interface)
+1.5. Phase 1.5 (Agent Chat Integration — runs in parallel with Phase 1)
 2. Phase 2 (MCP Server)
 3. Phase 3 (AI Orchestrator)
 4. Phase 4 (Agent Identities + Night Shift)
@@ -721,6 +951,7 @@ Pull-forward rules:
 
 - Phase 5 (Play Runtime Isolation) may begin after Phase 3 starts if resources allow, as it depends on the deterministic runtime (already shipped) rather than the AI orchestrator specifically.
 - Phase 2 (MCP Server) and Phase 1 (Agent SDK Integration) may overlap in late Phase 1 for tool contract design work.
+- Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1's migration workstreams.
 
 ---
 
@@ -749,6 +980,8 @@ Each phase must satisfy:
 | Runtime isolation brittleness | Play instability | Deterministic lease model + diagnostics + fallback mode |
 | Cross-device race conditions | Inconsistent mission outcomes | Ownership model + optimistic locking + event sequencing |
 | MCP tool permission model gaps | Orchestrator may invoke unsafe operations | Permission/policy layer with deny-by-default; audit logging for all tool calls |
+| Codex App Server protocol stability | App Server is relatively new; protocol changes may break integration | Pin `codex` CLI version; generate TypeScript schemas from installed version; adapter pattern isolates protocol changes |
+| Claude multi-turn session quality vs Codex | Claude via community provider may have rougher multi-turn UX than Codex's purpose-built App Server | `AgentChatService` interface allows per-provider UX tuning; feature parity is a goal but not a hard requirement |
 
 ---
 

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
-import { BookOpenText, Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Rocket, Settings, TerminalSquare, Wand2 } from "lucide-react";
+import { Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Rocket, Settings, TerminalSquare, Wand2 } from "lucide-react";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
@@ -13,7 +13,6 @@ const items = [
   { to: "/files", label: "Files", icon: FileCode2 },
   { to: "/terminals", label: "Terminals", icon: TerminalSquare },
   { to: "/conflicts", label: "Conflicts", icon: Bug },
-  { to: "/context", label: "Context", icon: BookOpenText },
   { to: "/graph", label: "Graph", icon: Network },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/history", label: "History", icon: History },
@@ -27,7 +26,6 @@ export function TabNav() {
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [hoveredTab, setHoveredTab] = useState<string | null>(null);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -44,7 +42,7 @@ export function TabNav() {
   return (
     <>
       <nav
-        className="flex flex-col gap-1.5 w-full items-center"
+        className="flex flex-col gap-px w-full"
         onContextMenu={handleContextMenu}
       >
         {items.map((it) => {
@@ -53,29 +51,21 @@ export function TabNav() {
             <NavLink
               key={it.to}
               to={it.to}
-              className="relative flex items-center justify-center w-10 h-10 rounded-xl text-muted-fg/60 transition-colors duration-150 hover:text-fg hover:bg-muted/40"
-              onMouseEnter={() => setHoveredTab(it.to)}
-              onMouseLeave={() => setHoveredTab(null)}
+              className="relative flex items-center gap-2.5 w-full h-8 px-2.5 rounded text-muted-fg/70 transition-colors duration-100 hover:text-fg hover:bg-muted/20 group"
             >
               {isActive && (
                 <motion.div
                   layoutId="tab-indicator"
-                  className="absolute inset-0 rounded-xl bg-accent/15 ring-1 ring-inset ring-accent/10"
+                  className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-accent"
                   transition={layoutTransition}
                 />
               )}
-              <motion.span
-                className="relative inline-flex items-center justify-center"
-                animate={{ scale: isActive ? 1.1 : 1 }}
-                whileHover={{ scale: 1.05 }}
-                transition={{ type: "spring", stiffness: 300, damping: 20 }}
-              >
+              <span className="relative inline-flex items-center shrink-0">
                 <it.icon
                   className={cn(
-                    "h-[18px] w-[18px] transition-colors duration-150",
-                    isActive && "text-accent"
+                    "h-[15px] w-[15px] transition-colors duration-100",
+                    isActive ? "text-accent" : "group-hover:text-fg/70"
                   )}
-                  style={isActive ? { filter: "drop-shadow(0 0 4px var(--color-accent))" } : undefined}
                 />
                 {it.to === "/terminals" && terminalAttention.indicator !== "none" ? (
                   <span
@@ -85,31 +75,29 @@ export function TabNav() {
                         : "All active terminals running"
                     }
                     className={cn(
-                      "absolute -right-1.5 -top-1.5 h-2.5 w-2.5 rounded-full border-2 border-t-transparent animate-spin",
-                      terminalAttention.indicator === "running-needs-attention" ? "border-amber-400" : "border-emerald-500"
+                      "absolute -right-1 -top-1 h-2 w-2 rounded-full",
+                      terminalAttention.indicator === "running-needs-attention" ? "bg-amber-400" : "bg-emerald-500"
                     )}
                   />
                 ) : null}
-              </motion.span>
-              {/* Tooltip */}
-              {hoveredTab === it.to && (
-                <div className="pointer-events-none absolute left-full ml-2 z-50 whitespace-nowrap rounded-lg bg-[--color-surface-overlay] px-2.5 py-1 text-[11px] font-medium text-fg shadow-float backdrop-blur-xl">
-                  {it.label}
-                </div>
-              )}
+              </span>
+              <span className={cn(
+                "font-mono text-[11px] tracking-wide truncate",
+                isActive && "text-fg font-medium"
+              )}>{it.label}</span>
             </NavLink>
           );
         })}
       </nav>
       {contextMenu && project?.rootPath ? (
         <div
-          className="fixed z-40 min-w-[190px] rounded-xl bg-[--color-surface-overlay] p-1 shadow-float backdrop-blur-xl"
+          className="fixed z-40 min-w-[170px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
+          <button className="block w-full rounded-sm px-2 py-1 text-left text-[11px] font-mono hover:bg-muted/40" onClick={() => {
             setContextMenu(null);
-            window.ade.app.revealPath(project.rootPath).catch(() => {});
+            window.ade.app.revealPath(project.rootPath).catch(() => { });
           }}>{revealLabel}</button>
         </div>
       ) : null}

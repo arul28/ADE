@@ -36,12 +36,6 @@ export type ExportConfigBundleResult =
   | { cancelled: true }
   | { cancelled: false; savedPath: string; bytesWritten: number; exportedAt: string };
 
-export type HostedMirrorDeleteResult = {
-  deleted: true;
-  remoteProjectId: string;
-  deletedAt: string;
-};
-
 export type RecentProjectSummary = {
   rootPath: string;
   displayName: string;
@@ -51,7 +45,7 @@ export type RecentProjectSummary = {
 
 export type LaneType = "primary" | "worktree" | "attached";
 
-export type ProviderMode = "guest" | "hosted" | "byok" | "cli";
+export type ProviderMode = "guest" | "subscription";
 
 export type LaneStatus = {
   dirty: boolean;
@@ -210,7 +204,7 @@ export type ConflictEventPayload =
       totalPairs: number;
     };
 
-export type ConflictProposalSource = "hosted" | "local";
+export type ConflictProposalSource = "subscription" | "local";
 export type ConflictProposalStatus = "pending" | "applied" | "rejected";
 
 export type ConflictProposal = {
@@ -230,7 +224,7 @@ export type ConflictProposal = {
   updatedAt: string;
 };
 
-export type ConflictProposalProvider = "hosted" | "byok";
+export type ConflictProposalProvider = "subscription";
 
 export type ExternalConflictResolverProvider = "codex" | "claude";
 
@@ -321,7 +315,7 @@ export type ConflictProposalPreview = {
 };
 
 // -----------------------------
-// Conflict Job Context (Hosted)
+// Conflict Job Context
 // -----------------------------
 
 export type ConflictRelevantFileV1 = {
@@ -405,46 +399,6 @@ export type GitHubStatus = {
   userLogin: string | null;
   scopes: string[];
   checkedAt: string | null;
-};
-
-export type HostedGitHubAppStatus = {
-  configured: boolean;
-  connected: boolean;
-  installationId: string | null;
-  connectedAt: string | null;
-  appSlug: string | null;
-};
-
-export type HostedGitHubConnectStartResult = {
-  installUrl: string;
-  state: string;
-  expiresAt: string;
-  callbackUrl: string;
-};
-
-export type HostedGitHubDisconnectResult = {
-  disconnected: true;
-};
-
-export type HostedGitHubEvent = {
-  eventId: string;
-  githubEvent: string;
-  action: string | null;
-  repoFullName: string | null;
-  prNumber: number | null;
-  summary: string;
-  createdAt: string;
-};
-
-export type HostedGitHubEventsResult = {
-  events: HostedGitHubEvent[];
-};
-
-export type HostedGitHubProxyRequestArgs = {
-  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
-  path: string;
-  query?: Record<string, string | number | boolean | undefined | null>;
-  body?: unknown;
 };
 
 export type PrState = "draft" | "open" | "merged" | "closed";
@@ -562,259 +516,6 @@ export type LandStackArgs = {
   method: MergeMethod;
 };
 
-export type HostedJobType =
-  | "NarrativeGeneration"
-  | "ConflictResolution"
-  | "ProposeConflictResolution"
-  | "DraftPrDescription"
-  | "SessionTitleGeneration";
-
-export type HostedContextDeliveryMode = "auto" | "inline" | "mirror_preferred";
-
-export type HostedContextSource = "inline" | "mirror" | "inline_fallback";
-
-export type HostedPackVersionRefV1 = {
-  packKey: string;
-  versionId: string | null;
-  versionNumber: number | null;
-  contentHash: string | null;
-};
-
-export type HostedManifestRefsV1 = {
-  lane?: string | null;
-  packs?: string | null;
-  transcripts?: string | null;
-  project?: string | null;
-  conflict?: string | null;
-};
-
-export type HostedHandoffV1 = {
-  schema: "ade.handoff.v1";
-  contextSource: HostedContextSource;
-  reasonCode?: string | null;
-  approxParamsBytes?: number | null;
-  policyTtlMs?: number | null;
-  staleness?: {
-    mirrorLastSuccessAt?: string | null;
-    mirrorStalenessMs?: number | null;
-    docsLastRefreshAt?: string | null;
-    docsStaleReason?: string | null;
-  } | null;
-  packVersion?: HostedPackVersionRefV1 | null;
-  projectPackVersion?: HostedPackVersionRefV1 | null;
-  conflictPackVersion?: HostedPackVersionRefV1 | null;
-  manifestRefs?: HostedManifestRefsV1 | null;
-  missingRelevanceWarnings?: string[] | null;
-  fileContextsMissing?: boolean | null;
-  warnings?: string[] | null;
-  refSha256?: string | null;
-  inlineClipReasonTags?: string[] | null;
-};
-
-export type HostedJobContextDeliveryV1 = {
-  schema: "ade.hostedJobContextDelivery.v1";
-  mode: "inline" | "mirror";
-  reasonCode: string;
-  approxParamsBytes: number;
-  contextRefSha256: string | null;
-  warnings: string[];
-  contextSource?: HostedContextSource;
-  confidenceLevel?: "high" | "medium" | "low";
-};
-
-export type HostedMirrorSyncArgs = {
-  laneId?: string;
-  includeTranscripts?: boolean;
-};
-
-export type HostedMirrorCleanupSummaryV1 = {
-  schema: "ade.hostedMirrorCleanupSummary.v1";
-  remoteProjectId: string;
-  startedAt: string;
-  finishedAt: string;
-  reachableBlobs: number;
-  orphanedBlobs: number;
-  deletedBlobs: number;
-  reclaimedBytes: number;
-  policy: {
-    staleGraceMs: number;
-    maxObjectsScanned: number;
-    maxDelete: number;
-    maxBytesScanned: number;
-  };
-  warnings: string[];
-};
-
-export type HostedMirrorCleanupResult = {
-  remoteProjectId: string;
-  cleanedAt: string;
-  reachableBlobs: number;
-  orphanedBlobs: number;
-  deletedBlobs: number;
-  reclaimedBytes: number;
-  warnings?: string[];
-};
-
-export type HostedMirrorSyncSummaryV1 = {
-  schema: "ade.hostedMirrorSyncSummary.v1";
-  remoteProjectId: string;
-  lanesSyncedCount: number;
-  uploaded: number;
-  deduplicated: number;
-  excluded: number;
-  manifestCount: number;
-  transcriptCount: number;
-  packCount: number;
-  syncedAt: string;
-  warnings: string[];
-  cleanup?: HostedMirrorCleanupSummaryV1 | null;
-};
-
-export type HostedMirrorSyncResult = {
-  remoteProjectId: string;
-  lanesSynced: string[];
-  uploaded: number;
-  deduplicated: number;
-  excluded: number;
-  manifestCount: number;
-  transcriptCount: number;
-  packCount: number;
-  syncedAt: string;
-  packsManifestKey?: string | null;
-  transcriptsManifestKey?: string | null;
-  warnings?: string[];
-  cleanup?: HostedMirrorCleanupSummaryV1 | null;
-};
-
-export type HostedJobSubmissionArgs = {
-  type: HostedJobType;
-  laneId: string;
-  params?: Record<string, unknown>;
-};
-
-export type HostedJobSubmissionResult = {
-  remoteProjectId: string;
-  jobId: string;
-  status: "queued" | "processing" | "completed" | "failed";
-  contextDelivery?: HostedJobContextDeliveryV1;
-};
-
-export type HostedJobStatusResult = {
-  jobId: string;
-  status: "queued" | "processing" | "completed" | "failed";
-  type?: HostedJobType;
-  laneId?: string;
-  artifactId?: string;
-  submittedAt?: string;
-  completedAt?: string;
-  error?: {
-    code: string;
-    message: string;
-    details?: Record<string, unknown>;
-  };
-  metrics?: Record<string, unknown> | null;
-};
-
-export type HostedNarrativeTimeoutReason =
-  | "timeout_poll"
-  | "timeout_total"
-  | "job_failed"
-  | "artifact_missing";
-
-export type HostedNarrativeTimingV1 = {
-  schema: "ade.hostedNarrativeTiming.v1";
-  submitStartedAt: string;
-  submitDurationMs: number;
-  queueWaitMs: number;
-  pollDurationMs: number;
-  artifactFetchMs: number;
-  totalDurationMs: number;
-  timeoutMs: number;
-  timeoutReason: HostedNarrativeTimeoutReason | null;
-};
-
-export type HostedArtifactResult = {
-  artifactId: string;
-  type: string;
-  content: unknown;
-  createdAt: string;
-  contentHash: string;
-};
-
-export type HostedAuthStatus = {
-  signedIn: boolean;
-  expiresAt: string | null;
-  hasRefreshToken: boolean;
-  userId: string | null;
-  email: string | null;
-  displayName: string | null;
-};
-
-export type HostedBootstrapConfig = {
-  stage: string;
-  apiBaseUrl: string;
-  region: string;
-  clerkPublishableKey: string;
-  clerkOauthClientId: string;
-  clerkIssuer: string;
-  clerkFrontendApiUrl: string;
-  clerkOauthMetadataUrl: string;
-  clerkOauthAuthorizeUrl: string;
-  clerkOauthTokenUrl: string;
-  clerkOauthRevocationUrl: string;
-  clerkOauthUserInfoUrl: string;
-  clerkOauthScopes: string;
-  generatedAt?: string;
-};
-
-export type HostedStatus = {
-  enabled: boolean;
-  mode: ProviderMode;
-  consentGiven: boolean;
-  apiConfigured: boolean;
-  apiBaseUrl: string | null;
-  remoteProjectId: string | null;
-  auth: HostedAuthStatus;
-  mirrorExcludePatterns: string[];
-  transcriptUploadEnabled: boolean;
-  contextDeliveryMode: HostedContextDeliveryMode;
-  mirrorSync: {
-    lastAttemptAt: string | null;
-    lastSuccessAt: string | null;
-    lastError: string | null;
-    lastResult: HostedMirrorSyncSummaryV1 | null;
-  };
-  mirrorCleanup?: {
-    lastAttemptAt: string | null;
-    lastSuccessAt: string | null;
-    lastError: string | null;
-    lastResult: HostedMirrorCleanupSummaryV1 | null;
-  };
-  contextTelemetry?: {
-    schema: "ade.hostedContextTelemetry.v1";
-    inlineCount: number;
-    mirrorCount: number;
-    inlineFallbackCount: number;
-    lastUpdatedAt: string | null;
-    lastFallbackAt: string | null;
-    insufficientContextJobCount: number;
-    lastNarrativeTiming?: HostedNarrativeTimingV1 | null;
-    narrativeTimeoutCount?: number;
-    lastNarrativeTimeoutReason?: HostedNarrativeTimeoutReason | null;
-  };
-};
-
-export type HostedSignInResult = {
-  signedIn: boolean;
-  expiresAt: string;
-};
-
-export type HostedSignInProvider = "github" | "google";
-
-export type HostedSignInArgs = {
-  provider?: HostedSignInProvider;
-};
-
 export type ContextDocStatus = {
   id: "prd_ade" | "architecture_ade";
   label: string;
@@ -849,9 +550,6 @@ export type ContextStatus = {
   };
   fallbackWrites: number;
   insufficientContextCount: number;
-  hostedTiming: HostedNarrativeTimingV1 | null;
-  hostedTimeoutCount: number;
-  hostedLastTimeoutReason: HostedNarrativeTimeoutReason | null;
   warnings: ContextDocGenerationWarning[];
 };
 
@@ -1553,6 +1251,126 @@ export type EnvironmentMapping = {
   color?: string;
 };
 
+export type AiTaskRoutingKey =
+  | "planning"
+  | "implementation"
+  | "review"
+  | "conflict_resolution"
+  | "narrative"
+  | "pr_description"
+  | "terminal_summary"
+  | "mission_planning"
+  | "initial_context";
+
+export type AiTaskProvider = "auto" | "claude" | "codex";
+
+export type AiTaskRoutingRule = {
+  provider?: AiTaskProvider;
+  model?: string;
+  timeoutMs?: number;
+  timeout_ms?: number;
+  maxOutputTokens?: number;
+  max_output_tokens?: number;
+  temperature?: number;
+};
+
+export type AiFeatureKey =
+  | "narratives"
+  | "conflict_proposals"
+  | "pr_descriptions"
+  | "terminal_summaries"
+  | "mission_planning"
+  | "orchestrator"
+  | "initial_context";
+
+export type AiModelDescriptor = {
+  id: string;
+  label: string;
+  description?: string;
+  aliases?: string[];
+  default?: boolean;
+};
+
+export type AiFeatureUsageRow = {
+  feature: AiFeatureKey;
+  enabled: boolean;
+  dailyUsage: number;
+  dailyLimit: number | null;
+};
+
+export type AiSettingsStatus = {
+  mode: "guest" | "subscription";
+  availableProviders: {
+    claude: boolean;
+    codex: boolean;
+  };
+  models: {
+    claude: AiModelDescriptor[];
+    codex: AiModelDescriptor[];
+  };
+  features: AiFeatureUsageRow[];
+};
+
+export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
+
+export type AiBudgetLimit = {
+  dailyLimit?: number;
+  daily_limit?: number;
+};
+
+export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
+
+export type AiClaudePermissionSettings = {
+  permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+  permission_mode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+  settingsSources?: Array<"user" | "project" | "local">;
+  settings_sources?: Array<"user" | "project" | "local">;
+  maxBudgetUsd?: number;
+  max_budget_usd?: number;
+  sandbox?: boolean;
+};
+
+export type AiCodexPermissionSettings = {
+  sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
+  sandbox_permissions?: "read-only" | "workspace-write" | "danger-full-access";
+  approvalMode?: "untrusted" | "on-request" | "on-failure" | "never";
+  approval_mode?: "untrusted" | "on-request" | "on-failure" | "never";
+  writablePaths?: string[];
+  writable_paths?: string[];
+  commandAllowlist?: string[];
+  command_allowlist?: string[];
+};
+
+export type AiPermissionSettings = {
+  claude?: AiClaudePermissionSettings;
+  codex?: AiCodexPermissionSettings;
+};
+
+export type AiConflictResolutionConfig = {
+  changeTarget?: "target" | "source" | "ai_decides";
+  change_target?: "target" | "source" | "ai_decides";
+  postResolution?: "unstaged" | "staged" | "commit";
+  post_resolution?: "unstaged" | "staged" | "commit";
+  prBehavior?: "do_nothing" | "open_pr" | "add_to_existing";
+  pr_behavior?: "do_nothing" | "open_pr" | "add_to_existing";
+  autonomy?: "propose_only" | "auto_apply";
+  autoApplyThreshold?: number;
+  auto_apply_threshold?: number;
+};
+
+export type AiConfig = {
+  mode?: ProviderMode;
+  defaultProvider?: AiTaskProvider;
+  default_provider?: AiTaskProvider;
+  taskRouting?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
+  task_routing?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
+  features?: AiFeatureToggles;
+  budgets?: AiBudgets;
+  permissions?: AiPermissionSettings;
+  conflictResolution?: AiConflictResolutionConfig;
+  conflict_resolution?: AiConflictResolutionConfig;
+};
+
 export type ProjectConfigFile = {
   version?: number;
   processes?: ConfigProcessDefinition[];
@@ -1567,6 +1385,7 @@ export type ProjectConfigFile = {
   git?: {
     autoRebaseOnHeadChange?: boolean;
   };
+  ai?: AiConfig;
   providers?: Record<string, unknown>;
 };
 
@@ -1589,6 +1408,7 @@ export type EffectiveProjectConfig = {
   git: {
     autoRebaseOnHeadChange: boolean;
   };
+  ai?: AiConfig;
   providerMode?: ProviderMode;
   providers?: Record<string, unknown>;
 };
@@ -1943,7 +1763,7 @@ export type ContextHeaderV1 = {
   approxTokens?: number;
   maxTokens?: number;
 
-  // Hosted gateway metadata (safe: never secrets)
+  // Gateway metadata (safe: never secrets)
   apiBaseUrl?: string | null;
   remoteProjectId?: string | null;
 };
@@ -2094,6 +1914,9 @@ export type PackExport = {
 export type GetLaneExportArgs = { laneId: string; level: ContextExportLevel };
 export type GetProjectExportArgs = { level: ContextExportLevel };
 export type GetConflictExportArgs = { laneId: string; peerLaneId?: string | null; level: ContextExportLevel };
+export type GetFeatureExportArgs = { featureKey: string; level: ContextExportLevel };
+export type GetPlanExportArgs = { laneId: string; level: ContextExportLevel };
+export type GetMissionExportArgs = { missionId: string; level: ContextExportLevel };
 
 export type GetMissionPackArgs = { missionId: string };
 
@@ -2290,15 +2113,13 @@ export type MissionInterventionType =
 
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 
-export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli" | "gemini_cli" | "hosted_ade";
+export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli";
 
 export type MissionExecutorPolicy = "codex" | "claude" | "both";
 
 export type MissionPlannerResolvedEngine =
   | "claude_cli"
   | "codex_cli"
-  | "gemini_cli"
-  | "hosted_ade"
   | "deterministic_fallback";
 
 export type MissionPlannerReasonCode =
@@ -2317,7 +2138,7 @@ export type PlannerMissionStrategy = "sequential" | "parallel-lite" | "parallel-
 
 export type PlannerTaskType = "analysis" | "code" | "integration" | "test" | "review" | "merge" | "deploy" | "docs";
 
-export type PlannerExecutorHint = "claude" | "codex" | "gemini" | "hosted" | "either";
+export type PlannerExecutorHint = "claude" | "codex" | "either";
 
 export type PlannerPreferredScope = "lane" | "file" | "session" | "global";
 
@@ -2637,7 +2458,7 @@ export type OrchestratorAttemptStatus =
 
 export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum";
 
-export type OrchestratorExecutorKind = "claude" | "codex" | "gemini" | "shell" | "manual";
+export type OrchestratorExecutorKind = "claude" | "codex" | "shell" | "manual";
 
 export type OrchestratorErrorClass =
   | "none"

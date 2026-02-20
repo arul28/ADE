@@ -61,7 +61,7 @@ export type ConflictsState = {
   // Restack
   restackSuggestions: RestackSuggestion[];
 
-  // Proposals (hosted/BYOK)
+  // Proposals
   proposals: ConflictProposal[];
   proposalBusy: boolean;
   proposalError: string | null;

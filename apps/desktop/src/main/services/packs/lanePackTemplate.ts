@@ -41,22 +41,23 @@ export function renderLanePackMarkdown(args: {
   validationLines: string[];
   keyFiles: Array<{ file: string; insertions: number | null; deletions: number | null }>;
   errors: string[];
-  sessionsRows: Array<{ when: string; tool: string; goal: string; result: string; delta: string }>;
-  sessionHighlights?: Array<{
+  sessionsDetailed: Array<{
     when: string;
     tool: string;
-    summary: string;
-    summarySource?: string;
-    summaryConfidence?: string;
-    summaryOmissionTags?: string[];
+    goal: string;
+    result: string;
+    delta: string;
+    prompt: string;
+    commands: string[];
+    filesTouched: string[];
+    errors: string[];
   }>;
   sessionsTotal: number;
   sessionsRunning: number;
   nextSteps: string[];
   userTodosMarkers: { start: string; end: string };
   userTodos: string;
-  narrativeMarkers: { start: string; end: string };
-  narrative: string;
+  laneDescription: string;
 }): string {
   const shortSha = args.headSha ? args.headSha.slice(0, 8) : "unknown";
   const cleanliness = args.dirty ? "dirty" : "clean";
@@ -76,7 +77,6 @@ export function renderLanePackMarkdown(args: {
         baseRef: args.baseRef,
         headSha: args.headSha,
         deterministicUpdatedAt: args.deterministicUpdatedAt,
-        narrativeUpdatedAt: null,
         versionId: null,
         versionNumber: null,
         contentHash: null,
@@ -95,6 +95,13 @@ export function renderLanePackMarkdown(args: {
   lines.push(`> Branch: ${mdCode(stripAnsi(args.branchRef))} | Base: ${mdCode(stripAnsi(args.baseRef))} | HEAD: ${mdCode(shortSha)} | ${cleanliness} · ahead ${args.ahead} · behind ${args.behind}`);
   if (args.parentName) lines.push(`> Parent: ${stripAnsi(args.parentName)}`);
   lines.push("");
+
+  const laneDesc = stripAnsi(args.laneDescription).trim();
+  if (laneDesc) {
+    lines.push("## Original Intent");
+    lines.push(laneDesc);
+    lines.push("");
+  }
 
   lines.push("## What Changed");
   if (args.whatChangedLines.length) {
@@ -137,7 +144,7 @@ export function renderLanePackMarkdown(args: {
   } else {
     lines.push("| File | Change |");
     lines.push("|------|--------|");
-    for (const row of args.keyFiles.slice(0, 10)) {
+    for (const row of args.keyFiles.slice(0, 25)) {
       lines.push(`| ${mdCode(stripAnsi(row.file))} | ${fmtChange(row.insertions, row.deletions)} |`);
     }
     lines.push("");
@@ -147,46 +154,40 @@ export function renderLanePackMarkdown(args: {
   if (!args.errors.length) {
     lines.push("No errors detected.");
   } else {
-    for (const entry of args.errors.slice(0, 12)) lines.push(`- ${stripAnsi(entry)}`);
+    for (const entry of args.errors.slice(0, 30)) lines.push(`- ${stripAnsi(entry)}`);
   }
   lines.push("");
 
   lines.push(`## Sessions (${args.sessionsTotal} total, ${args.sessionsRunning} running)`);
-  lines.push("| When | Tool | Goal | Result | Delta |");
-  lines.push("|------|------|------|--------|-------|");
-  if (args.sessionsRows.length) {
-    for (const row of args.sessionsRows.slice(0, 5)) {
-      lines.push(
-        `| ${stripAnsi(row.when)} | ${stripAnsi(row.tool)} | ${stripAnsi(row.goal)} | ${stripAnsi(row.result)} | ${stripAnsi(row.delta)} |`
-      );
+  if (args.sessionsDetailed.length) {
+    for (const [idx, row] of args.sessionsDetailed.slice(0, 30).entries()) {
+      lines.push(`### Session ${idx + 1}: ${stripAnsi(row.when)} — ${stripAnsi(row.tool)}`);
+      const prompt = stripAnsi(row.prompt).trim();
+      if (prompt) {
+        lines.push(`- **Prompt**: ${prompt}`);
+      }
+      lines.push(`- **Goal**: ${stripAnsi(row.goal)}`);
+      lines.push(`- **Result**: ${stripAnsi(row.result)}`);
+      lines.push(`- **Delta**: ${stripAnsi(row.delta)}`);
+      if (row.commands.length) {
+        lines.push(`- **Commands**: ${row.commands.map((c) => mdCode(stripAnsi(c))).join(", ")}`);
+      }
+      if (row.filesTouched.length) {
+        lines.push(`- **Files touched**: ${row.filesTouched.map((f) => mdCode(stripAnsi(f))).join(", ")}`);
+      }
+      if (row.errors.length) {
+        lines.push(`- **Errors**: ${row.errors.map((e) => stripAnsi(e)).join("; ")}`);
+      }
+      lines.push("");
     }
   } else {
-    lines.push("| - | - | - | - | - |");
-  }
-  const highlights = Array.isArray(args.sessionHighlights) ? args.sessionHighlights : [];
-  if (highlights.length) {
+    lines.push("No sessions recorded yet.");
     lines.push("");
-    lines.push("Recent summaries:");
-    for (const h of highlights.slice(0, 3)) {
-      const when = stripAnsi(h.when).trim();
-      const tool = stripAnsi(h.tool).trim();
-      const summary = stripAnsi(h.summary).trim();
-      if (!summary) continue;
-      const clipped = summary.length > 240 ? `${summary.slice(0, 239)}…` : summary;
-      const source = stripAnsi(h.summarySource ?? "").trim();
-      const confidence = stripAnsi(h.summaryConfidence ?? "").trim();
-      const omissions = Array.isArray(h.summaryOmissionTags)
-        ? h.summaryOmissionTags.map((entry) => stripAnsi(String(entry)).trim()).filter(Boolean)
-        : [];
-      const tags: string[] = [];
-      if (source) tags.push(`source=${source}`);
-      if (confidence) tags.push(`confidence=${confidence}`);
-      if (omissions.length) tags.push(`omissions=${omissions.join(",")}`);
-      const prefix = tags.length ? ` [${tags.join(" ")}]` : "";
-      lines.push(`- ${when} ${tool}${prefix}: ${clipped}`);
-    }
   }
-  lines.push("");
+  if (args.sessionsTotal > args.sessionsDetailed.length) {
+    lines.push(`Showing ${args.sessionsDetailed.length} most recent sessions out of ${args.sessionsTotal} total.`);
+    lines.push("");
+  }
 
   lines.push("## Open Questions / Next Steps");
   if (args.nextSteps.length) {
@@ -198,12 +199,6 @@ export function renderLanePackMarkdown(args: {
   lines.push(args.userTodosMarkers.start);
   lines.push(stripAnsi(args.userTodos).trim().length ? stripAnsi(args.userTodos).trim() : "- (add notes/todos here)");
   lines.push(args.userTodosMarkers.end);
-  lines.push("");
-
-  lines.push("## Narrative");
-  lines.push(args.narrativeMarkers.start);
-  lines.push(stripAnsi(args.narrative).trim().length ? stripAnsi(args.narrative).trim() : "AI narrative not yet generated.");
-  lines.push(args.narrativeMarkers.end);
   lines.push("");
 
   lines.push("---");

@@ -1072,7 +1072,7 @@ export function FilesPage() {
                     {conflictHunks.map((hunk) => {
                       const resolved = resolvedConflictKeys.has(hunk.key);
                       return (
-                        <div key={hunk.key} className={cx("rounded-xl border bg-card/40 p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
+                        <div key={hunk.key} className={cx("rounded border bg-card/40 p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
                           <div className="flex items-center justify-between">
                             <span>Lines {hunk.startLine}-{hunk.endLine}</span>
                             {resolved ? <span className="inline-flex items-center gap-1 text-emerald-300"><Sparkles className="h-3 w-3" />Resolved</span> : null}
@@ -1230,7 +1230,7 @@ export function FilesPage() {
       {/* Context menu overlay */}
       {contextMenu ? (
         <div
-          className="fixed z-40 min-w-[190px] rounded-xl bg-[--color-surface-overlay] p-1 shadow-float backdrop-blur-xl"
+          className="fixed z-40 min-w-[190px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
@@ -1271,7 +1271,7 @@ export function FilesPage() {
       {/* Quick Open overlay */}
       {showQuickOpen ? (
         <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/40 pt-20">
-          <div className="w-[640px] rounded-2xl bg-[--color-surface-overlay] p-3 shadow-float backdrop-blur-xl">
+          <div className="w-[640px] rounded bg-[--color-surface-overlay] border border-border/50 p-3 shadow-float">
             <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2">
               <Search className="h-4 w-4 text-muted-fg" />
               <input
@@ -1305,7 +1305,7 @@ export function FilesPage() {
       {/* Text prompt modal */}
       {textPrompt ? (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-[min(520px,100%)] rounded-2xl bg-[--color-surface-overlay] p-3 shadow-float backdrop-blur-xl">
+          <div className="w-[min(520px,100%)] rounded bg-[--color-surface-overlay] border border-border/50 p-3 shadow-float">
             <div className="mb-1 text-sm font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? <div className="mb-2 text-xs text-muted-fg">{textPrompt.message}</div> : null}
             <input

@@ -13,9 +13,9 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cn("rounded-2xl shadow-panel bg-[--color-surface-raised] p-10 text-center", className)}>
+    <div className={cn("rounded shadow-panel bg-[--color-surface-raised] p-10 text-center", className)}>
       {Icon ? (
-        <div className="mb-3 inline-flex items-center justify-center w-10 h-10 rounded-xl bg-accent/10 text-accent">
+        <div className="mb-3 inline-flex items-center justify-center w-10 h-10 rounded bg-accent/10 text-accent">
           <Icon className="h-5 w-5" />
         </div>
       ) : null}

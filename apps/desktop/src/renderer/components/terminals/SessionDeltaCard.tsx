@@ -27,7 +27,7 @@ export function SessionDeltaCard({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   return (
-    <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs">
+    <div className="rounded shadow-card bg-card/40 p-3 text-xs">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">Session Delta</div>
       {loading ? (
         <div className="text-[11px] text-muted-fg">Computing…</div>

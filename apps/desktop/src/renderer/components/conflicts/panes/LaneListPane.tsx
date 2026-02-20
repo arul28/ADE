@@ -147,7 +147,7 @@ export function LaneListPane() {
                   dispatch({ type: "SET_VIEW_MODE", mode: "summary" });
                 }}
                 className={cn(
-                  "mb-2 block w-full rounded-xl border-l-[3px] px-2.5 py-2.5 text-left transition-all",
+                  "mb-2 block w-full rounded border-l-[3px] px-2.5 py-2.5 text-left transition-all",
                   statusBorderClass(status?.status ?? null),
                   selected
                     ? "shadow-card-hover bg-accent/10 ring-1 ring-accent/20"
@@ -190,7 +190,7 @@ export function LaneListPane() {
                 type="button"
                 onClick={() => dispatch({ type: "SET_SELECTED_LANE", laneId: pr.laneId })}
                 className={cn(
-                  "mb-2 block w-full rounded-xl border-l-[3px] px-2.5 py-2.5 text-left transition-all",
+                  "mb-2 block w-full rounded border-l-[3px] px-2.5 py-2.5 text-left transition-all",
                   risk === "high" ? "border-l-red-500" : risk === "medium" ? "border-l-amber-500" : "border-l-emerald-500",
                   selected
                     ? "shadow-card-hover bg-accent/10 ring-1 ring-accent/20"

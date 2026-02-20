@@ -113,7 +113,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
   };
 
   return (
-    <section className="rounded-xl shadow-card bg-card/70 p-3">
+    <section className="rounded shadow-card bg-card/70 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold">CI import</div>
@@ -177,9 +177,9 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
             </div>
           </div>
 
-          <div className="overflow-auto rounded-xl shadow-card bg-card/30">
+          <div className="overflow-auto rounded shadow-card bg-card/30">
             <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-bg/90 backdrop-blur">
+              <thead className="sticky top-0 bg-bg">
                 <tr className="border-b border-border/10">
                   <th className="px-3 py-2 font-semibold text-fg">Select</th>
                   <th className="px-3 py-2 font-semibold text-fg">Job</th>
@@ -256,7 +256,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
           </div>
         </div>
       ) : (
-        <div className="mt-3 rounded-xl bg-muted/10 p-4 text-xs text-muted-fg">
+        <div className="mt-3 rounded bg-muted/10 p-4 text-xs text-muted-fg">
           Run “Scan CI” to detect jobs from GitHub Actions, GitLab CI, CircleCI, or Jenkinsfile.
         </div>
       )}

@@ -52,19 +52,6 @@ import type {
   GetTestLogTailArgs,
   ExportHistoryArgs,
   ExportHistoryResult,
-  HostedArtifactResult,
-  HostedBootstrapConfig,
-  HostedGitHubAppStatus,
-  HostedGitHubConnectStartResult,
-  HostedGitHubDisconnectResult,
-  HostedGitHubEventsResult,
-  HostedJobStatusResult,
-  HostedJobSubmissionArgs,
-  HostedJobSubmissionResult,
-  HostedMirrorDeleteResult,
-  HostedSignInArgs,
-  HostedSignInResult,
-  HostedStatus,
   AgentTool,
   AutomationsEventPayload,
   AutomationRuleSummary,
@@ -78,6 +65,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AiSettingsStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -138,6 +126,9 @@ import type {
   GetLaneExportArgs,
   GetProjectExportArgs,
   GetConflictExportArgs,
+  GetFeatureExportArgs,
+  GetPlanExportArgs,
+  GetMissionExportArgs,
   GetMissionPackArgs,
   RefreshMissionPackArgs,
   ListPackEventsSinceArgs,
@@ -250,6 +241,9 @@ declare global {
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
         set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
+      };
+      ai: {
+        getStatus: () => Promise<AiSettingsStatus>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -440,14 +434,16 @@ declare global {
         getProjectExport: (args: GetProjectExportArgs) => Promise<PackExport>;
         getLaneExport: (args: GetLaneExportArgs) => Promise<PackExport>;
         getConflictExport: (args: GetConflictExportArgs) => Promise<PackExport>;
+        getFeatureExport: (args: GetFeatureExportArgs) => Promise<PackExport>;
+        getPlanExport: (args: GetPlanExportArgs) => Promise<PackExport>;
+        getMissionExport: (args: GetMissionExportArgs) => Promise<PackExport>;
         refreshLanePack: (laneId: string) => Promise<PackSummary>;
         refreshProjectPack: (args?: { laneId?: string | null }) => Promise<PackSummary>;
         refreshFeaturePack: (featureKey: string) => Promise<PackSummary>;
         refreshConflictPack: (args: { laneId: string; peerLaneId?: string | null }) => Promise<PackSummary>;
         savePlanPack: (args: { laneId: string; body: string }) => Promise<PackSummary>;
         refreshMissionPack: (args: RefreshMissionPackArgs) => Promise<PackSummary>;
-        applyHostedNarrative: (args: { laneId: string; narrative: string }) => Promise<PackSummary>;
-        generateNarrative: (laneId: string) => Promise<PackSummary>;
+        refreshPlanPack: (laneId: string) => Promise<PackSummary>;
         listVersions: (args: { packKey: string; limit?: number }) => Promise<PackVersionSummary[]>;
         getVersion: (versionId: string) => Promise<PackVersion>;
         diffVersions: (args: { fromId: string; toId: string }) => Promise<string>;
@@ -483,23 +479,6 @@ declare global {
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
-      };
-      hosted: {
-        getStatus: () => Promise<HostedStatus>;
-        getBootstrapConfig: () => Promise<HostedBootstrapConfig | null>;
-        applyBootstrapConfig: () => Promise<HostedBootstrapConfig>;
-        signIn: (args?: HostedSignInArgs) => Promise<HostedSignInResult>;
-        signOut: () => Promise<void>;
-        deleteMirrorData: () => Promise<HostedMirrorDeleteResult>;
-        submitJob: (args: HostedJobSubmissionArgs) => Promise<HostedJobSubmissionResult>;
-        getJob: (jobId: string) => Promise<HostedJobStatusResult>;
-        getArtifact: (artifactId: string) => Promise<HostedArtifactResult>;
-        github: {
-          getStatus: () => Promise<HostedGitHubAppStatus>;
-          connectStart: () => Promise<HostedGitHubConnectStartResult>;
-          disconnect: () => Promise<HostedGitHubDisconnectResult>;
-          listEvents: () => Promise<HostedGitHubEventsResult>;
-        };
       };
       history: {
         listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;

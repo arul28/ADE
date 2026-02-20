@@ -113,10 +113,8 @@ const FLOATING_SHAPES = [
 
 const PLANNER_ENGINES: Array<{ value: MissionPlannerEngine; label: string }> = [
   { value: "auto", label: "Auto (recommended)" },
-  { value: "claude_cli", label: "Claude (CLI)" },
-  { value: "codex_cli", label: "Codex (CLI)" },
-  { value: "gemini_cli", label: "Gemini (CLI)" },
-  { value: "hosted_ade", label: "Hosted ADE" }
+  { value: "claude_cli", label: "Claude" },
+  { value: "codex_cli", label: "Codex" }
 ];
 const EXECUTOR_POLICIES: Array<{ value: MissionExecutorPolicy; label: string; description: string }> = [
   {
@@ -794,7 +792,7 @@ export function MissionsPage() {
     setRunBusy(true);
     try {
       const fallbackExecutor: OrchestratorExecutorKind =
-        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex" || runAutopilotState.executor === "gemini"
+        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
           ? (runAutopilotState.executor as OrchestratorExecutorKind)
           : "codex";
       await window.ade.missions.update({
@@ -880,7 +878,7 @@ export function MissionsPage() {
           {/* ════════════════════ HERO SECTION ════════════════════ */}
           <motion.section
             variants={staggerItem}
-            className="relative overflow-hidden rounded-2xl border border-border/30 bg-gradient-to-br from-[--color-surface-raised] via-[--color-surface] to-[--color-muted]/50 p-5 shadow-card"
+            className="relative overflow-hidden rounded border border-border/30 bg-gradient-to-br from-[--color-surface-raised] via-[--color-surface] to-[--color-muted]/50 p-5 shadow-card"
           >
             {/* Nebula gradient blobs */}
             <div
@@ -959,7 +957,7 @@ export function MissionsPage() {
                 <motion.div
                   key={column.status}
                   variants={staggerItem}
-                  className="group rounded-xl border border-border/25 bg-card/50 px-3 py-2.5 shadow-card transition-all hover:shadow-card-hover hover:border-border/40"
+                  className="group rounded border border-border/25 bg-card/50 px-3 py-2.5 shadow-card transition-all hover:shadow-card-hover hover:border-border/40"
                 >
                   <div className="text-[10px] uppercase tracking-wide text-muted-fg/70">{column.label}</div>
                   <div className="mt-1 flex items-center gap-2">
@@ -984,7 +982,7 @@ export function MissionsPage() {
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
-                className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200"
+                className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200"
               >
                 {error}
               </motion.div>
@@ -994,7 +992,7 @@ export function MissionsPage() {
           {/* ════════════════════ LAUNCH MISSION FORM ════════════════════ */}
           <motion.section variants={staggerItem} className="relative">
             <motion.div
-              className="rounded-2xl border border-border/30 shadow-card overflow-hidden"
+              className="rounded border border-border/30 shadow-card overflow-hidden"
               style={{
                 background: "color-mix(in srgb, var(--color-card) 90%, transparent)"
               }}
@@ -1195,7 +1193,7 @@ export function MissionsPage() {
           {loading ? (
             <motion.div
               variants={staggerItem}
-              className="rounded-2xl border border-border/25 bg-card/55 p-6 text-sm text-muted-fg"
+              className="rounded border border-border/25 bg-card/55 p-6 text-sm text-muted-fg"
             >
               <Loader2 className="inline h-4 w-4 animate-spin mr-2" />
               Loading missions...
@@ -1212,7 +1210,7 @@ export function MissionsPage() {
               {/* ─── KANBAN BOARD ─── */}
               <motion.section
                 variants={staggerItem}
-                className="rounded-2xl border border-border/30 bg-card/55 p-3 shadow-card"
+                className="rounded border border-border/30 bg-card/55 p-3 shadow-card"
               >
                 <div className="mb-2 flex items-center justify-between gap-2 px-1">
                   <div className="flex items-center gap-2 text-sm font-semibold text-fg">
@@ -1235,7 +1233,7 @@ export function MissionsPage() {
                       <motion.div
                         key={column.status}
                         variants={staggerItem}
-                        className="w-[260px] shrink-0 rounded-xl border border-border/25 bg-card/45 overflow-hidden"
+                        className="w-[260px] shrink-0 rounded border border-border/25 bg-card/45 overflow-hidden"
                       >
                           {/* Column header with accent bar */}
                           <div
@@ -1353,12 +1351,12 @@ export function MissionsPage() {
                   initial="initial"
                   animate="animate"
                   exit="exit"
-                  className="rounded-2xl border border-border/30 bg-card/55 p-3 shadow-card"
+                  className="rounded border border-border/30 bg-card/55 p-3 shadow-card"
                 >
                   {!selectedMissionSummary ? (
                     <EmptyState title="Select a mission" description="Choose one from the board to view details." />
                   ) : detailBusy || !selectedMission || selectedMission.id !== selectedMissionSummary.id ? (
-                    <div className="rounded-xl border border-border/20 bg-card/40 p-4 text-xs text-muted-fg">
+                    <div className="rounded border border-border/20 bg-card/40 p-4 text-xs text-muted-fg">
                       <Loader2 className="inline h-3.5 w-3.5 animate-spin mr-1.5" />
                       Loading mission detail...
                     </div>
@@ -1370,7 +1368,7 @@ export function MissionsPage() {
                       animate="animate"
                     >
                       {runtimeLaneStrip.length > 0 ? (
-                        <motion.div variants={staggerItem} className="rounded-xl border border-border/30 bg-card/50 p-3">
+                        <motion.div variants={staggerItem} className="rounded border border-border/30 bg-card/50 p-3">
                           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-fg">Active Lanes</div>
                           <div className="mt-2 overflow-x-auto">
                             <div className="flex min-w-max gap-2">
@@ -1392,7 +1390,7 @@ export function MissionsPage() {
                         </motion.div>
                       ) : null}
 
-                      <motion.div variants={staggerItem} className="rounded-xl border border-accent/30 bg-accent/5 p-3">
+                      <motion.div variants={staggerItem} className="rounded border border-accent/30 bg-accent/5 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>
                             <div className="text-xs font-semibold text-fg">Mission Control</div>
@@ -1436,7 +1434,7 @@ export function MissionsPage() {
                             <Terminal className="h-3.5 w-3.5" />
                             View running terminals
                           </Button>
-                          <Button size="sm" variant="ghost" onClick={() => navigate("/context")}>
+                          <Button size="sm" variant="ghost" onClick={() => navigate("/settings")}>
                             Context inventory
                           </Button>
                         </div>
@@ -1486,7 +1484,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Info Card ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/65 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/65 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("info")}
@@ -1568,7 +1566,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Outcome Summary ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("outcome")}
@@ -1609,7 +1607,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Mission Plan Steps (vertical timeline) ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("steps")}
@@ -1697,7 +1695,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Orchestrator Runtime ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("orchestrator")}
@@ -1826,7 +1824,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Input Requests ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("interventions")}
@@ -1944,7 +1942,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Artifacts & PRs ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("artifacts")}
@@ -2057,7 +2055,7 @@ export function MissionsPage() {
                       </motion.div>
 
                       {/* ── Mission Timeline ── */}
-                      <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
+                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("timeline")}

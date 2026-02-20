@@ -335,7 +335,7 @@ export function TerminalsPage() {
             <div className="min-h-0 flex-1 overflow-auto px-2 py-1.5">
               {filtered.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center px-4 py-10">
-                  <div className="mb-3 rounded-xl bg-muted/25 p-3">
+                  <div className="mb-3 rounded bg-muted/25 p-3">
                     <Terminal className="h-5 w-5 text-muted-fg/50" />
                   </div>
                   <div className="text-xs font-semibold text-fg/60">No sessions</div>
@@ -434,7 +434,7 @@ export function TerminalsPage() {
               </div>
             ) : (
               <div className="flex h-full flex-col items-center justify-center px-6">
-                <div className="mb-3 rounded-xl bg-muted/20 p-3.5">
+                <div className="mb-3 rounded bg-muted/20 p-3.5">
                   <Monitor className="h-6 w-6 text-muted-fg/40" />
                 </div>
                 <div className="text-sm font-semibold text-fg/60">
@@ -461,7 +461,7 @@ export function TerminalsPage() {
             {selectedSession ? (
               <div className="space-y-3">
                 {/* Session metadata */}
-                <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                <div className="rounded border border-border/15 bg-muted/15 p-3">
                   <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
                     <Info className="h-3 w-3 text-accent/60" />
                     <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Session info</span>
@@ -516,7 +516,7 @@ export function TerminalsPage() {
 
                 {/* Output preview */}
                 {sanitizeTerminalInlineText(selectedSession.lastOutputPreview, 420) ? (
-                  <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                  <div className="rounded border border-border/15 bg-muted/15 p-3">
                     <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
                       <Monitor className="h-3 w-3 text-accent/60" />
                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Last output</span>
@@ -529,7 +529,7 @@ export function TerminalsPage() {
 
                 {/* Summary */}
                 {selectedSession.summary && selectedSession.status !== "running" ? (
-                  <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                  <div className="rounded border border-border/15 bg-muted/15 p-3">
                     <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
                       <FileText className="h-3 w-3 text-accent/60" />
                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Summary</span>
@@ -541,7 +541,7 @@ export function TerminalsPage() {
                 ) : null}
 
                 {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
-                  <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                  <div className="rounded border border-border/15 bg-muted/15 p-3">
                     <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
                       <Play className="h-3 w-3 text-accent/60" />
                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Resume command</span>
@@ -556,7 +556,7 @@ export function TerminalsPage() {
                 ) : null}
 
                 {selectedHealth ? (
-                  <div className="rounded-xl border border-border/15 bg-muted/15 p-3">
+                  <div className="rounded border border-border/15 bg-muted/15 p-3">
                     <div className="mb-2.5 flex items-center gap-2 border-l-2 border-l-accent/50 pl-2">
                       <Info className="h-3 w-3 text-accent/60" />
                       <span className="text-[10px] font-bold uppercase tracking-wider text-muted-fg/80">Terminal health</span>
@@ -642,7 +642,7 @@ export function TerminalsPage() {
               </div>
             ) : (
               <div className="flex h-full flex-col items-center justify-center px-6">
-                <div className="mb-3 rounded-xl bg-muted/20 p-3.5">
+                <div className="mb-3 rounded bg-muted/20 p-3.5">
                   <Info className="h-5 w-5 text-muted-fg/40" />
                 </div>
                 <div className="text-xs font-semibold text-fg/60">No session selected</div>

@@ -89,7 +89,7 @@ export function ConflictDetailPane() {
       />
 
       {/* Lane info card */}
-      <div className="rounded-xl shadow-card bg-card/30 p-3">
+      <div className="rounded shadow-card bg-card/30 p-3">
         <div className="flex items-center gap-2">
           <GitBranch className="h-4 w-4 text-accent" />
           <span className="truncate text-sm font-semibold text-fg">{selectedLane.name}</span>
@@ -144,7 +144,7 @@ export function ConflictDetailPane() {
 
           {/* Git conflict state */}
           {gitConflict?.inProgress && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-3">
+            <div className="rounded border border-red-500/30 bg-red-500/5 p-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-red-600">
                 <AlertTriangle className="h-4 w-4" />
                 Active {gitConflict.kind} in progress

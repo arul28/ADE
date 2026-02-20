@@ -609,7 +609,7 @@ export function LaneGitActionsPane({
               </Button>
             </div>
             {pullDropdownOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+              <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
                 <button
                   type="button"
                   className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50", syncMode === "merge" && "text-accent")}
@@ -679,7 +679,7 @@ export function LaneGitActionsPane({
               </Button>
             </div>
             {pushDropdownOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+              <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
@@ -750,7 +750,7 @@ export function LaneGitActionsPane({
               <MoreHorizontal className="h-3 w-3" />
             </Button>
             {moreDropdownOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+              <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-muted/50"
@@ -1189,7 +1189,7 @@ export function LaneGitActionsPane({
       {/* Text prompt modal */}
       {textPrompt ? (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(460px,100%)] rounded-2xl bg-card/95 backdrop-blur-xl p-4 shadow-float">
+          <div className="w-[min(460px,100%)] rounded bg-card border border-border/40 p-3 shadow-float">
             <div className="text-sm font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? <div className="mt-1 text-xs text-muted-fg">{textPrompt.message}</div> : null}
             <input
@@ -1210,7 +1210,7 @@ export function LaneGitActionsPane({
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="mt-3 h-9 w-full rounded-xl bg-muted/30 shadow-card px-2 text-sm outline-none focus:ring-1 focus:ring-accent/30"
+              className="mt-3 h-9 w-full rounded bg-muted/30 shadow-card px-2 text-sm outline-none focus:ring-1 focus:ring-accent/30"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-400">{textPromptError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">

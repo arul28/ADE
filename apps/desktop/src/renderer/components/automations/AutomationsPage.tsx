@@ -156,7 +156,7 @@ function HistoryDialog({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
+        <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded bg-card border border-border/40 p-3 shadow-float focus:outline-none">
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="min-w-0">
               <Dialog.Title className="text-sm font-semibold truncate">Automation History</Dialog.Title>
@@ -174,11 +174,11 @@ function HistoryDialog({
           </div>
 
           {busy ? (
-            <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs text-muted-fg">Loading runs…</div>
+            <div className="rounded shadow-card bg-card/40 p-3 text-xs text-muted-fg">Loading runs…</div>
           ) : null}
 
           <div className="grid min-h-0 grid-cols-[360px_1fr] gap-3">
-            <div className="max-h-[65vh] overflow-auto rounded-xl bg-card/30 p-2">
+            <div className="max-h-[65vh] overflow-auto rounded bg-card/30 p-2">
               {runs.length === 0 ? (
                 <div className="p-2 text-xs text-muted-fg">No runs yet.</div>
               ) : (
@@ -211,7 +211,7 @@ function HistoryDialog({
               )}
             </div>
 
-            <div className="max-h-[65vh] overflow-auto rounded-xl bg-card/30 p-3">
+            <div className="max-h-[65vh] overflow-auto rounded bg-card/30 p-3">
               {detailBusy ? (
                 <div className="text-xs text-muted-fg">Loading run detail…</div>
               ) : !detail ? (
@@ -222,7 +222,7 @@ function HistoryDialog({
                     run: <span className="font-mono">{detail.run.id}</span>
                   </div>
                   {detail.actions.map((action) => (
-                    <div key={action.id} className="rounded-xl bg-muted/20 p-2">
+                    <div key={action.id} className="rounded bg-muted/20 p-2">
                       <div className="flex items-center justify-between gap-2 text-xs">
                         <div className="font-semibold text-fg">
                           #{action.actionIndex + 1} {action.actionType}
@@ -258,7 +258,7 @@ function ConfirmationsChecklist({
 }) {
   if (!required.length) return null;
   return (
-    <div className="rounded-xl shadow-card bg-card/40 p-2">
+    <div className="rounded shadow-card bg-card/40 p-2">
       <div className="text-xs font-semibold">Confirmations</div>
       <div className="mt-2 space-y-2">
         {required.map((r) => (
@@ -343,7 +343,7 @@ function RuleEditor({
         </label>
       </div>
 
-      <div className="rounded-xl shadow-card bg-card/40 p-2">
+      <div className="rounded shadow-card bg-card/40 p-2">
         <div className="text-xs font-semibold">Trigger</div>
         <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="space-y-1">
@@ -384,7 +384,7 @@ function RuleEditor({
         </div>
       </div>
 
-      <div className="rounded-xl shadow-card bg-card/40 p-2">
+      <div className="rounded shadow-card bg-card/40 p-2">
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs font-semibold">Actions</div>
           <select
@@ -409,7 +409,7 @@ function RuleEditor({
         ) : (
           <div className="mt-2 space-y-2">
             {draft.actions.map((action: any, idx: number) => (
-              <div key={idx} className="rounded-xl bg-muted/20 p-2">
+              <div key={idx} className="rounded bg-muted/20 p-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -645,7 +645,7 @@ function CreateWithNaturalLanguageDialog({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-[6%] z-50 w-[min(1040px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
+        <Dialog.Content className="fixed left-1/2 top-[6%] z-50 w-[min(1040px,calc(100vw-24px))] -translate-x-1/2 rounded bg-card border border-border/40 p-3 shadow-float focus:outline-none">
           <div className="mb-3 flex items-start justify-between gap-2">
             <div className="min-w-0">
               <Dialog.Title className="text-sm font-semibold truncate">Create Automation (Natural Language)</Dialog.Title>
@@ -662,7 +662,7 @@ function CreateWithNaturalLanguageDialog({
 
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[420px_1fr]">
             <div className="space-y-3">
-              <div className="rounded-xl shadow-card bg-card/40 p-2">
+              <div className="rounded shadow-card bg-card/40 p-2">
                 <div className="text-xs font-semibold">Intent</div>
                 <textarea
                   className="mt-2 min-h-[120px] w-full rounded-lg bg-muted/30 p-2 text-xs"
@@ -678,7 +678,7 @@ function CreateWithNaturalLanguageDialog({
                 </div>
               </div>
 
-              <div className="rounded-xl shadow-card bg-card/40 p-2">
+              <div className="rounded shadow-card bg-card/40 p-2">
                 <div className="text-xs font-semibold">Planner Provider</div>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs">
                   <label className="flex items-center gap-2">
@@ -701,7 +701,7 @@ function CreateWithNaturalLanguageDialog({
                   </label>
                 </div>
 
-                <div className="mt-2 rounded-xl bg-muted/20 p-2 text-[11px] text-muted-fg">
+                <div className="mt-2 rounded bg-muted/20 p-2 text-[11px] text-muted-fg">
                   {provider === "codex" ? (
                     <>
                       <div>
@@ -767,7 +767,7 @@ function CreateWithNaturalLanguageDialog({
                       />
                       enable web search
                     </label>
-                    <details className="rounded-xl bg-muted/20 p-2">
+                    <details className="rounded bg-muted/20 p-2">
                       <summary className="cursor-pointer text-xs text-muted-fg">Advanced</summary>
                       <label className="mt-2 block space-y-1">
                         <div className="text-[11px] text-muted-fg">Additional writable dirs (--add-dir)</div>
@@ -837,7 +837,7 @@ function CreateWithNaturalLanguageDialog({
                         use <span className="font-mono">--dangerously-skip-permissions</span>
                       </span>
                     </label>
-                    <details className="rounded-xl bg-muted/20 p-2">
+                    <details className="rounded bg-muted/20 p-2">
                       <summary className="cursor-pointer text-xs text-muted-fg">Advanced</summary>
                       <label className="mt-2 block space-y-1">
                         <div className="text-[11px] text-muted-fg">Allowed tools (--allowedTools)</div>
@@ -897,7 +897,7 @@ function CreateWithNaturalLanguageDialog({
               </div>
 
               {parseResult?.plannerCommandPreview ? (
-                <div className="rounded-xl shadow-card bg-card/40 p-2">
+                <div className="rounded shadow-card bg-card/40 p-2">
                   <div className="text-xs font-semibold">Planner Command Preview</div>
                   <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-[11px] leading-relaxed">
                     {parseResult.plannerCommandPreview}
@@ -906,14 +906,14 @@ function CreateWithNaturalLanguageDialog({
               ) : null}
 
               {parseResult ? (
-                <div className="rounded-xl shadow-card bg-card/40 p-2">
+                <div className="rounded shadow-card bg-card/40 p-2">
                   <div className="text-xs font-semibold">Fuzzy Matches</div>
                   {parseResult.resolutions.length === 0 ? (
                     <div className="mt-1 text-xs text-muted-fg">No fuzzy resolutions.</div>
                   ) : (
                     <div className="mt-2 space-y-2 text-xs">
                       {parseResult.resolutions.slice(0, 6).map((r, idx) => (
-                        <div key={`${r.path}-${idx}`} className="rounded-xl bg-muted/20 p-2">
+                        <div key={`${r.path}-${idx}`} className="rounded bg-muted/20 p-2">
                           <div>
                             <span className="font-mono">{r.path}</span>: <span className="font-mono">{r.input}</span> →{" "}
                             <span className="font-mono">{r.resolved}</span>{" "}
@@ -977,7 +977,7 @@ function CreateWithNaturalLanguageDialog({
                   <div className="text-xs text-muted-fg">Generate a draft to review the structured rule.</div>
                 </div>
               ) : (
-                <div className="max-h-[76vh] overflow-auto rounded-xl bg-card/30 p-3">
+                <div className="max-h-[76vh] overflow-auto rounded bg-card/30 p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-xs font-semibold">Draft</div>
@@ -1182,7 +1182,7 @@ export function AutomationsPage() {
 
   return (
     <div className="flex h-full min-h-0 gap-3">
-      <section className="flex min-h-0 w-[44%] flex-col rounded-2xl shadow-card bg-card/60">
+      <section className="flex min-h-0 w-[44%] flex-col rounded shadow-card bg-card/60">
         <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
           <div>
             <div className="text-sm font-semibold">Automations</div>
@@ -1221,7 +1221,7 @@ export function AutomationsPage() {
                     type="button"
                     onClick={() => setSelectedRuleId(rule.id)}
                     className={cn(
-                      "w-full rounded-xl p-2 text-left transition-all",
+                      "w-full rounded p-2 text-left transition-all",
                       selected ? "shadow-card-hover bg-card/80" : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70"
                     )}
                   >
@@ -1267,7 +1267,7 @@ export function AutomationsPage() {
         </div>
       </section>
 
-      <section className="flex min-h-0 flex-1 flex-col rounded-2xl shadow-card bg-card/60">
+      <section className="flex min-h-0 flex-1 flex-col rounded shadow-card bg-card/60">
         <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
           <div className="min-w-0">
             <div className="text-sm font-semibold truncate">{selectedRule?.name ?? "Rule"}</div>
@@ -1291,7 +1291,7 @@ export function AutomationsPage() {
 
         <div className="min-h-0 flex-1 overflow-auto p-3">
           {configTrustRequired ? (
-            <div className="mb-3 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
+            <div className="mb-3 rounded bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
                   <ShieldCheck className="mt-0.5 h-4 w-4" />
@@ -1345,7 +1345,7 @@ export function AutomationsPage() {
       <Dialog.Root open={simulateOpen} onOpenChange={setSimulateOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(900px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[10%] z-50 w-[min(900px,calc(100vw-24px))] -translate-x-1/2 rounded bg-card border border-border/40 p-3 shadow-float focus:outline-none">
             <div className="mb-3 flex items-center justify-between gap-2">
               <Dialog.Title className="text-sm font-semibold truncate">Simulation</Dialog.Title>
               <Dialog.Close asChild>

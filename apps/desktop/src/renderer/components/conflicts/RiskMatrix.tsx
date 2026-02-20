@@ -155,7 +155,7 @@ export function RiskMatrix({
   }, [loading, progress]);
 
   if (lanes.length === 0) {
-    return <div className="rounded-xl shadow-card bg-card/40 p-3 text-xs text-muted-fg">No lanes to compare.</div>;
+    return <div className="rounded shadow-card bg-card/40 p-3 text-xs text-muted-fg">No lanes to compare.</div>;
   }
 
   const startHover = (
@@ -206,7 +206,7 @@ export function RiskMatrix({
   }, [progress, entries.length]);
 
   return (
-    <div className="relative overflow-auto rounded-xl shadow-card bg-card/30">
+    <div className="relative overflow-auto rounded shadow-card bg-card/30">
       {loading && progress ? (
         <div className="sticky left-0 top-0 z-30 bg-bg/90 px-2 py-1 text-[11px] text-muted-fg">
           Computing {progress.completedPairs}/{progress.totalPairs} pairs…{etaLabel ? ` ${etaLabel}` : ""}

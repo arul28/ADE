@@ -153,7 +153,7 @@ export function KeybindingsSection() {
       ) : (
         <div className="mt-3 overflow-auto rounded border border-border bg-bg/40">
           <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-bg/90 backdrop-blur">
+            <thead className="sticky top-0 bg-bg">
               <tr className="border-b border-border">
                 <th className="px-3 py-2 font-semibold text-fg">Action</th>
                 <th className="px-3 py-2 font-semibold text-fg">Scope</th>

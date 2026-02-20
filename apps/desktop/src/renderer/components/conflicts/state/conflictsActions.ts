@@ -216,7 +216,7 @@ export async function fetchPrsWithConflicts(dispatch: Dispatch<ConflictsAction>)
   }
 }
 
-/** Prepare and send a hosted/BYOK proposal */
+/** Prepare and send a proposal */
 export async function prepareAndSendProposal(
   dispatch: Dispatch<ConflictsAction>,
   laneId: string,

@@ -51,7 +51,7 @@ export function RiskTooltip({
     <div
       ref={ref}
       className={cn(
-        "pointer-events-none fixed z-[80] w-[300px] rounded-xl bg-card/95 p-3 shadow-float ade-tooltip-motion",
+        "pointer-events-none fixed z-[80] w-[300px] rounded bg-card/95 p-3 shadow-float ade-tooltip-motion",
         open ? "ade-tooltip-open duration-150" : "ade-tooltip-closed duration-100"
       )}
       style={style}

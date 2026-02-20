@@ -91,7 +91,7 @@ export function LaneRow({
   return (
     <div
       className={cn(
-        "group relative flex flex-col gap-1 rounded-xl shadow-card bg-card/70 p-3 transition-all hover:shadow-card-hover",
+        "group relative flex flex-col gap-1 rounded shadow-card bg-card/70 p-3 transition-all hover:shadow-card-hover",
         primary && "bg-card/90 shadow-card-hover",
         selected && !primary && "bg-card/85 shadow-card-hover"
       )}
@@ -174,7 +174,7 @@ export function LaneRow({
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(860px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
+              <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(860px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <Dialog.Title className="text-lg font-serif font-bold">Merge Simulation</Dialog.Title>
                   <Dialog.Close asChild>
@@ -240,7 +240,7 @@ export function LaneRow({
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-              <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
+              <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <Dialog.Title className="text-lg font-semibold">Rename Lane</Dialog.Title>
                   <Dialog.Close asChild>
@@ -256,7 +256,7 @@ export function LaneRow({
                     <input
                       value={draftName}
                       onChange={(event) => setDraftName(event.target.value)}
-                      className="block w-full rounded-xl bg-muted/30 shadow-card px-3 py-2 text-lg focus:outline-none"
+                      className="block w-full rounded bg-muted/30 shadow-card px-3 py-2 text-lg focus:outline-none"
                       autoFocus
                     />
                   </div>
@@ -301,7 +301,7 @@ export function LaneRow({
               </Dialog.Trigger>
               <Dialog.Portal>
                 <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-                <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
+                <Dialog.Content className="fixed left-1/2 top-[22%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
                   <div className="mb-4 flex items-center justify-between gap-3">
                     <Dialog.Title className="text-lg font-semibold">Archive Lane</Dialog.Title>
                     <Dialog.Close asChild>
@@ -360,7 +360,7 @@ export function LaneRow({
               </Dialog.Trigger>
               <Dialog.Portal>
                 <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
-                <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
+                <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
                   <div className="mb-4 flex items-start justify-between gap-3">
                     <Dialog.Title className="flex items-center gap-2 text-lg font-semibold text-red-300">
                       <AlertTriangle className="h-5 w-5" />
@@ -374,11 +374,11 @@ export function LaneRow({
                   </div>
 
                 <div className="space-y-3 text-sm">
-                  <div className="rounded-xl bg-red-950/30 p-3 text-red-200">
+                  <div className="rounded bg-red-950/30 p-3 text-red-200">
                     This action permanently deletes this lane from your computer and git.
                   </div>
 
-                  <div className="rounded-xl bg-card/70 shadow-card p-3 font-mono text-xs">
+                  <div className="rounded bg-card/70 shadow-card p-3 font-mono text-xs">
                     <div>Lane: {lane.name}</div>
                     <div>Branch to delete: {lane.branchRef}</div>
                     <div className="truncate">Worktree to remove: {lane.worktreePath}</div>
@@ -387,7 +387,7 @@ export function LaneRow({
                     ) : null}
                   </div>
 
-                  <label className="flex items-center gap-2 rounded-xl bg-card/70 shadow-card p-2 text-xs">
+                  <label className="flex items-center gap-2 rounded bg-card/70 shadow-card p-2 text-xs">
                     <input
                       type="checkbox"
                       checked={deleteForce}
@@ -403,12 +403,12 @@ export function LaneRow({
                     <input
                       value={deleteConfirmText}
                       onChange={(event) => setDeleteConfirmText(event.target.value)}
-                      className="h-9 w-full rounded-xl bg-card/70 shadow-card px-2 text-sm outline-none"
+                      className="h-9 w-full rounded bg-card/70 shadow-card px-2 text-sm outline-none"
                       autoFocus
                     />
                   </div>
 
-                  {deleteError ? <div className="rounded-xl bg-red-950/20 p-2 text-xs text-red-300">{deleteError}</div> : null}
+                  {deleteError ? <div className="rounded bg-red-950/20 p-2 text-xs text-red-300">{deleteError}</div> : null}
 
                   <div className="flex justify-end gap-2 pt-2">
                     <Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleteBusy}>

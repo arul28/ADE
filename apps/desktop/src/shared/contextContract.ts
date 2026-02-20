@@ -12,15 +12,6 @@ export const ADE_TASK_SPEC_END = "<!-- ADE_TASK_SPEC_END -->";
 // Machine-readable header schema embedded in packs/exports as a JSON fence.
 export const CONTEXT_HEADER_SCHEMA_V1 = "ade.context.v1" as const;
 
-// Hosted job context references (when payloads are stored in the hosted mirror and passed by ref).
-export const ADE_JOB_CONTEXT_REF_SCHEMA_V1 = "ade.jobContextRef.v1" as const;
-export const ADE_JOB_CONTEXT_INLINE_META_SCHEMA_V1 = "ade.jobContextInlineMeta.v1" as const;
-export const ADE_HANDOFF_SCHEMA_V1 = "ade.handoff.v1" as const;
-
-// Hosted mirror manifest schemas (optional, used for discoverability in hosted processing).
-export const ADE_MIRROR_PACKS_MANIFEST_SCHEMA_V1 = "ade.mirror.packs.v1" as const;
-export const ADE_MIRROR_TRANSCRIPTS_MANIFEST_SCHEMA_V1 = "ade.mirror.transcripts.v1" as const;
-export const ADE_HOSTED_MIRROR_CLEANUP_SUMMARY_SCHEMA_V1 = "ade.hostedMirrorCleanupSummary.v1" as const;
 export const ADE_CONTEXT_DOC_STATUS_SCHEMA_V1 = "ade.contextDocStatus.v1" as const;
 export const ADE_CONTEXT_DOC_RUN_SCHEMA_V1 = "ade.contextDocRun.v1" as const;
 export const ADE_CONFLICT_EXTERNAL_RUN_SCHEMA_V1 = "ade.conflictExternalRun.v1" as const;

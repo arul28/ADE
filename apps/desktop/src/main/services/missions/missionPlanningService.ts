@@ -1,8 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import type {
   MissionExecutorPolicy,
   MissionPlannerAttempt,
@@ -22,6 +18,7 @@ import type {
   PlannerTaskType
 } from "../../../shared/types";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 
 type MissionPlanningLogger = {
   debug?: (event: string, data?: Record<string, unknown>) => void;
@@ -48,6 +45,7 @@ export type MissionPlanningRequest = {
   timeoutMs?: number;
   allowPlanningQuestions?: boolean;
   contextBundle?: MissionPlanningContextBundle;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   logger?: MissionPlanningLogger;
 };
 
@@ -161,26 +159,13 @@ function extractFirstJsonObject(text: string): string | null {
   return null;
 }
 
-function commandExists(command: string): boolean {
-  try {
-    if (process.platform === "win32") {
-      const res = spawnSync("where", [command], { encoding: "utf8" });
-      return res.status === 0;
-    }
-    const res = spawnSync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], { encoding: "utf8" });
-    return res.status === 0;
-  } catch {
-    return false;
-  }
-}
-
 function plannerSchemaJson(): Record<string, unknown> {
   const stepProperties = {
     stepId: { type: "string" },
     name: { type: "string" },
     description: { type: "string" },
     taskType: { type: "string", enum: TASK_TYPES },
-    executorHint: { type: "string", enum: ["claude", "codex", "gemini", "hosted", "either"] },
+    executorHint: { type: "string", enum: ["claude", "codex", "either"] },
     preferredScope: { type: "string", enum: ["lane", "file", "session", "global"] },
     requiresContextProfiles: {
       type: "array",
@@ -333,145 +318,6 @@ function buildPlannerPrompt(args: {
   ].join("\n");
 }
 
-async function runProcessWithTimeout(args: {
-  command: string;
-  commandArgs: string[];
-  cwd: string;
-  timeoutMs: number;
-}): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-  const child = spawn(args.command, args.commandArgs, {
-    cwd: args.cwd,
-    env: {
-      ...process.env,
-      NO_COLOR: "1",
-      TERM: "dumb"
-    },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  let stdout = "";
-  let stderr = "";
-  child.stdout?.on("data", (chunk) => {
-    const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-    stdout = (stdout + text).slice(-500_000);
-  });
-  child.stderr?.on("data", (chunk) => {
-    const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-    stderr = (stderr + text).slice(-300_000);
-  });
-
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // ignore
-    }
-  }, Math.max(1_000, Math.floor(args.timeoutMs)));
-
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.on("error", reject);
-    child.on("exit", (code) => resolve(code));
-  }).finally(() => {
-    clearTimeout(timer);
-  });
-
-  return { exitCode, stdout, stderr, timedOut };
-}
-
-async function runCodexPlanner(args: {
-  cwd: string;
-  prompt: string;
-  timeoutMs: number;
-}): Promise<{ rawResponse: string; commandPreview: string }> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mission-planner-codex-"));
-  const schemaPath = path.join(tmpDir, "schema.json");
-  const outPath = path.join(tmpDir, "out.txt");
-  fs.writeFileSync(schemaPath, JSON.stringify(plannerSchemaJson(), null, 2), "utf8");
-
-  const cliArgs = [
-    "exec",
-    "--color",
-    "never",
-    "--output-schema",
-    schemaPath,
-    "--output-last-message",
-    outPath,
-    "--sandbox",
-    "read-only",
-    "--ask-for-approval",
-    "never",
-    "--cd",
-    args.cwd,
-    "--skip-git-repo-check",
-    args.prompt
-  ];
-
-  const commandPreview = ["codex", ...cliArgs.map((entry) => (/\s/.test(entry) ? JSON.stringify(entry) : entry))].join(" ");
-  const result = await runProcessWithTimeout({
-    command: "codex",
-    commandArgs: cliArgs,
-    cwd: args.cwd,
-    timeoutMs: args.timeoutMs
-  });
-
-  try {
-    if (result.timedOut) {
-      throw new Error("Planner timed out.");
-    }
-    if (result.exitCode !== 0) {
-      throw new Error(`Codex exited with code ${result.exitCode}. ${result.stderr}`.trim());
-    }
-    const raw = fs.readFileSync(outPath, "utf8");
-    if (!raw.trim()) throw new Error("Codex returned empty output.");
-    return { rawResponse: raw, commandPreview };
-  } finally {
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
-  }
-}
-
-async function runClaudePlanner(args: {
-  cwd: string;
-  prompt: string;
-  timeoutMs: number;
-}): Promise<{ rawResponse: string; commandPreview: string }> {
-  const schemaJson = JSON.stringify(plannerSchemaJson());
-  const cliArgs = [
-    "-p",
-    "--output-format",
-    "json",
-    "--json-schema",
-    schemaJson,
-    "--permission-mode",
-    "plan",
-    "--no-session-persistence",
-    args.prompt
-  ];
-  const commandPreview = ["claude", ...cliArgs.map((entry) => (/\s/.test(entry) ? JSON.stringify(entry) : entry))].join(" ");
-  const result = await runProcessWithTimeout({
-    command: "claude",
-    commandArgs: cliArgs,
-    cwd: args.cwd,
-    timeoutMs: args.timeoutMs
-  });
-
-  if (result.timedOut) {
-    throw new Error("Planner timed out.");
-  }
-  if (result.exitCode !== 0) {
-    throw new Error(`Claude exited with code ${result.exitCode}. ${result.stderr}`.trim());
-  }
-  if (!result.stdout.trim()) {
-    throw new Error("Claude returned empty output.");
-  }
-  return { rawResponse: result.stdout, commandPreview };
-}
-
 function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
   const record = isRecord(step) ? step : {};
   return {
@@ -479,7 +325,7 @@ function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
     name: normalizeText(record.name, `Step ${index + 1}`),
     description: normalizeText(record.description, "Execute mission work for this step."),
     taskType: toEnum(record.taskType, TASK_TYPES, "code"),
-    executorHint: toEnum(record.executorHint, ["claude", "codex", "gemini", "hosted", "either"] as const, "either"),
+    executorHint: toEnum(record.executorHint, ["claude", "codex", "either"] as const, "either"),
     preferredScope: toEnum(record.preferredScope, ["lane", "file", "session", "global"] as const, "lane"),
     requiresContextProfiles: (() => {
       const values = toStringArray(record.requiresContextProfiles)
@@ -773,18 +619,19 @@ export function buildDeterministicPlannerPlan(args: {
   };
 }
 
-function plannerEngineOrder(requested: MissionPlannerEngine): MissionPlannerResolvedEngine[] {
-  if (requested === "claude_cli") return commandExists("claude") ? ["claude_cli"] : [];
-  if (requested === "codex_cli") return commandExists("codex") ? ["codex_cli"] : [];
-  if (requested === "gemini_cli") return commandExists("gemini") ? ["gemini_cli"] : [];
-  if (requested === "hosted_ade") return ["hosted_ade"];
+function plannerEngineOrder(
+  requested: MissionPlannerEngine,
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>
+): MissionPlannerResolvedEngine[] {
+  const availability = aiIntegrationService?.getAvailability() ?? { claude: false, codex: false };
+
+  if (requested === "claude_cli") return availability.claude ? ["claude_cli"] : [];
+  if (requested === "codex_cli") return availability.codex ? ["codex_cli"] : [];
 
   const ordered: MissionPlannerResolvedEngine[] = [];
-  if (commandExists("claude")) ordered.push("claude_cli");
-  if (commandExists("codex")) ordered.push("codex_cli");
-  if (commandExists("gemini")) ordered.push("gemini_cli");
-  ordered.push("hosted_ade");
-  return [...new Set(ordered)];
+  if (availability.claude) ordered.push("claude_cli");
+  if (availability.codex) ordered.push("codex_cli");
+  return ordered;
 }
 
 async function runPlannerAdapter(args: {
@@ -792,35 +639,32 @@ async function runPlannerAdapter(args: {
   cwd: string;
   prompt: string;
   timeoutMs: number;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
 }): Promise<PlannerAdapterResult> {
-  if (args.engine === "codex_cli") {
-    const out = await runCodexPlanner({
+  if (!args.aiIntegrationService || args.aiIntegrationService.getMode() === "guest") {
+    throw new Error("Mission planning AI is unavailable. Install/authenticate Claude Code or Codex.");
+  }
+
+  if (args.engine === "codex_cli" || args.engine === "claude_cli") {
+    const provider = args.engine === "codex_cli" ? "codex" : "claude";
+    const aiResult = await args.aiIntegrationService.planMission({
       cwd: args.cwd,
       prompt: args.prompt,
-      timeoutMs: args.timeoutMs
+      timeoutMs: args.timeoutMs,
+      provider,
+      jsonSchema: plannerSchemaJson()
     });
+    const rawResponse =
+      aiResult.structuredOutput != null && typeof aiResult.structuredOutput === "object"
+        ? JSON.stringify(aiResult.structuredOutput)
+        : aiResult.text;
     return {
-      engine: "codex_cli",
-      rawResponse: out.rawResponse,
-      commandPreview: out.commandPreview
+      engine: args.engine,
+      rawResponse,
+      commandPreview: `aiIntegrationService.planMission(provider=${provider})`
     };
   }
-  if (args.engine === "claude_cli") {
-    const out = await runClaudePlanner({
-      cwd: args.cwd,
-      prompt: args.prompt,
-      timeoutMs: args.timeoutMs
-    });
-    return {
-      engine: "claude_cli",
-      rawResponse: out.rawResponse,
-      commandPreview: out.commandPreview
-    };
-  }
-  if (args.engine === "gemini_cli") {
-    throw new Error("Gemini CLI planner adapter is unavailable in this build.");
-  }
-  throw new Error("Hosted ADE planner adapter is unavailable in local-first mode.");
+  throw new Error("Planner adapter is unavailable for the requested engine.");
 }
 
 function mapHintToExecutor(args: {
@@ -833,7 +677,6 @@ function mapHintToExecutor(args: {
 
   if (args.hint === "claude") return "claude";
   if (args.hint === "codex") return "codex";
-  if (args.hint === "gemini") return "codex";
   if (args.taskType === "code" || args.taskType === "integration" || args.taskType === "merge" || args.taskType === "test" || args.taskType === "deploy") {
     return "codex";
   }
@@ -940,7 +783,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
   const plannerRunId = randomUUID();
   const timeoutMs = Math.max(5_000, Math.min(180_000, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS)));
   const requestedEngine: MissionPlannerEngine = args.plannerEngine ?? "auto";
-  const order = plannerEngineOrder(requestedEngine);
+  const order = plannerEngineOrder(requestedEngine, args.aiIntegrationService);
   const plannerAttempts: MissionPlannerAttempt[] = [];
 
   const fallback = (
@@ -1000,7 +843,8 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         engine,
         cwd: args.projectRoot,
         prompt,
-        timeoutMs
+        timeoutMs,
+        aiIntegrationService: args.aiIntegrationService
       });
 
       const rawJson = extractFirstJsonObject(adapterResult.rawResponse);

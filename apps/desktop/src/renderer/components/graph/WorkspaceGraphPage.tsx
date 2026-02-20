@@ -2381,7 +2381,7 @@ function GraphInner() {
           <div className="h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
         </div>
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="rounded-xl shadow-card bg-card/90 px-4 py-3 text-sm text-muted-fg">
+          <div className="rounded shadow-card bg-card/90 px-4 py-3 text-sm text-muted-fg">
             <div className="flex items-center gap-2">
               <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
               Loading topology…
@@ -2407,7 +2407,7 @@ function GraphInner() {
     <div className="relative h-full w-full">
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
-      <div className="absolute left-0 right-0 top-0 z-20 bg-bg/95 px-3 py-2 shadow-card backdrop-blur">
+      <div className="absolute left-0 right-0 top-0 z-20 bg-bg border-b border-border/30 px-3 py-1.5">
         <div className="flex items-center gap-2">
           <div className="inline-flex rounded-lg bg-muted/30 p-0.5">
             {VIEW_MODES.map((mode) => (
@@ -2514,7 +2514,7 @@ function GraphInner() {
               Filters
             </Button>
             {showFiltersPanel ? (
-              <div className="absolute right-0 top-8 z-40 w-[360px] rounded-xl bg-card/95 p-2 text-xs shadow-float">
+              <div className="absolute right-0 top-8 z-40 w-[360px] rounded bg-card/95 p-2 text-xs shadow-float">
                 <div className="mb-2 rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">
                   Drag-drop integrates commits by default; use Reparent when you want to change stack hierarchy.
                 </div>
@@ -2965,7 +2965,7 @@ function GraphInner() {
 
       {contextMenu ? (
         <div
-          className="fixed z-[90] min-w-[190px] rounded-xl bg-card/95 p-1 shadow-float"
+          className="fixed z-[90] min-w-[190px] rounded bg-card/95 p-1 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseLeave={() => setContextMenu(null)}
         >
@@ -3022,7 +3022,7 @@ function GraphInner() {
       ) : null}
 
       {appearanceEditor ? (
-        <div className="fixed z-[95] w-[340px] rounded-xl bg-card/95 p-3 shadow-float" style={{ left: appearanceEditor.x, top: appearanceEditor.y }}>
+        <div className="fixed z-[95] w-[340px] rounded bg-card/95 p-3 shadow-float" style={{ left: appearanceEditor.x, top: appearanceEditor.y }}>
           <div className="mb-2 text-xs font-semibold text-fg">Customize Appearance</div>
           <div className="mb-2 text-xs text-muted-fg">Color</div>
           <div className="mb-3 flex flex-wrap gap-1.5">
@@ -3132,7 +3132,7 @@ function GraphInner() {
 
       {reparentDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(780px,100%)] rounded-2xl bg-card p-4 shadow-float">
+          <div className="w-[min(780px,100%)] rounded bg-card p-4 shadow-float">
             <div className="mb-2 text-sm font-semibold text-fg">Confirm Lane Drop</div>
             {reparentDialog.integratePlan || reparentDialog.laneIds.length === 1 ? (
               <div className="mb-2 inline-flex rounded-lg bg-muted/20 p-0.5 text-xs">
@@ -3282,7 +3282,7 @@ function GraphInner() {
 
       {prDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(980px,100%)] rounded-2xl bg-card p-4 shadow-float">
+          <div className="w-[min(980px,100%)] rounded bg-card p-4 shadow-float">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-fg">
                 {prDialog.existingPr ? `PR #${prDialog.existingPr.githubPrNumber}` : "Create Pull Request"}
@@ -3536,7 +3536,7 @@ function GraphInner() {
 
       {integrationDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(780px,100%)] rounded-2xl bg-card p-4 shadow-float">
+          <div className="w-[min(780px,100%)] rounded bg-card p-4 shadow-float">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-fg">Create Integration Lane</div>
               <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setIntegrationDialog(null)}>
@@ -3628,7 +3628,7 @@ function GraphInner() {
 
       {selectedLaneIds.length > 1 ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[60] flex justify-center">
-          <div className="pointer-events-auto rounded-xl bg-card/95 px-3 py-2 shadow-float">
+          <div className="pointer-events-auto rounded bg-card/95 px-3 py-2 shadow-float">
             <div className="mb-1 text-[11px] text-muted-fg">{selectedLaneIds.length} lanes selected</div>
             <div className="flex items-center gap-1">
               <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack")}>
@@ -3728,7 +3728,7 @@ function GraphInner() {
       ) : null}
 
       {undoToast ? (
-        <div className="absolute bottom-3 right-3 z-[90] rounded-xl bg-card/95 px-3 py-2 text-xs shadow-float">
+        <div className="absolute bottom-3 right-3 z-[90] rounded bg-card/95 px-3 py-2 text-xs shadow-float">
           <div className="mb-1">{undoToast.message}</div>
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => setUndoToast(null)}>
@@ -3752,7 +3752,7 @@ function GraphInner() {
       ) : null}
 
       {edgeSimulation ? (
-        <div className="absolute right-3 top-[66px] z-[89] w-[360px] rounded-xl bg-card/95 p-3 text-xs shadow-float">
+        <div className="absolute right-3 top-[66px] z-[89] w-[360px] rounded bg-card/95 p-3 text-xs shadow-float">
           <div className="mb-1 flex items-center justify-between gap-2">
             <div className="font-semibold text-fg">Merge Simulation</div>
             <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setEdgeSimulation(null)}>
@@ -3797,7 +3797,7 @@ function GraphInner() {
       ) : null}
 
       {conflictPanel ? (
-        <div className="absolute right-3 top-[66px] z-[89] w-[420px] rounded-xl bg-card/95 p-3 text-xs shadow-float">
+        <div className="absolute right-3 top-[66px] z-[89] w-[420px] rounded bg-card/95 p-3 text-xs shadow-float">
           <div className="mb-1 flex items-center justify-between gap-2">
             <div className="font-semibold text-fg">Conflict Resolution</div>
             <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setConflictPanel(null)}>
@@ -4089,7 +4089,7 @@ function GraphInner() {
 
       {nodeTooltip && hoveredTooltipLane ? (
         <div
-          className="pointer-events-none fixed z-[92] min-w-[240px] rounded-xl bg-card/95 px-2.5 py-2 text-[11px] shadow-float ade-tooltip-motion ade-tooltip-open"
+          className="pointer-events-none fixed z-[92] min-w-[240px] rounded bg-card/95 px-2.5 py-2 text-[11px] shadow-float ade-tooltip-motion ade-tooltip-open"
           style={{ left: nodeTooltip.x, top: nodeTooltip.y }}
         >
           <div className="font-semibold text-fg">{hoveredTooltipLane.name}</div>
@@ -4107,7 +4107,7 @@ function GraphInner() {
 
       {textPrompt ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(460px,100%)] rounded-2xl bg-card p-4 shadow-float">
+          <div className="w-[min(460px,100%)] rounded bg-card p-4 shadow-float">
             <div className="text-sm font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? (
               <div className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">
@@ -4149,7 +4149,7 @@ function GraphInner() {
 
       {edgeHover ? (
         <div
-          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded-xl bg-card/95 px-2 py-1 text-[11px] text-fg shadow-float"
+          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded bg-card/95 px-2 py-1 text-[11px] text-fg shadow-float"
           style={{ left: edgeHover.x, top: edgeHover.y }}
         >
           {edgeHover.label}

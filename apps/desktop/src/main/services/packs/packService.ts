@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
@@ -9,6 +8,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createOperationService } from "../history/operationService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type {
   Checkpoint,
   ConflictLineageV1,
@@ -20,6 +20,7 @@ import type {
   ContextPrepareDocGenResult,
   ContextStatus,
   ContextExportLevel,
+  ContextHeaderV1,
   ConflictRiskLevel,
   ConflictStatusValue,
   GetConflictExportArgs,
@@ -60,10 +61,12 @@ import {
   ADE_TASK_SPEC_END,
   ADE_TASK_SPEC_START,
   ADE_TODOS_END,
-  ADE_TODOS_START
+  ADE_TODOS_START,
+  CONTEXT_HEADER_SCHEMA_V1,
+  CONTEXT_CONTRACT_VERSION
 } from "../../../shared/contextContract";
 import { stripAnsi } from "../../utils/ansiStrip";
-import { inferTestOutcomeFromText, parseTranscriptSummary } from "./transcriptInsights";
+import { inferTestOutcomeFromText } from "./transcriptInsights";
 import { renderLanePackMarkdown } from "./lanePackTemplate";
 import { computeSectionChanges, upsertSectionByHeading } from "./packSections";
 import type { SectionLocator } from "./packSections";
@@ -185,6 +188,17 @@ function upsertPackIndex({
   );
 }
 
+function parsePackMetadataJson(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function toPackSummaryFromRow(args: {
   packKey: string;
   row: {
@@ -201,17 +215,7 @@ function toPackSummaryFromRow(args: {
   const packPath = args.row?.pack_path ?? "";
   const body = packPath ? readFileIfExists(packPath) : "";
   const exists = packPath.length ? fs.existsSync(packPath) : false;
-  const metadata = (() => {
-    const raw = args.row?.metadata_json;
-    if (!raw || !raw.trim()) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-      return parsed as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  })();
+  const metadata = parsePackMetadataJson(args.row?.metadata_json);
 
   return {
     packKey: args.packKey,
@@ -402,6 +406,7 @@ export function createPackService({
   laneService,
   sessionService,
   projectConfigService,
+  aiIntegrationService,
   operationService,
   onEvent
 }: {
@@ -413,6 +418,7 @@ export function createPackService({
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   operationService: ReturnType<typeof createOperationService>;
   onEvent?: (event: PackEvent) => void;
 }) {
@@ -599,113 +605,24 @@ export function createPackService({
     return { content: `${lines.join("\n").trim()}\n`, warnings };
   };
 
-  const DEFAULT_GENERATOR_COMMANDS: Record<string, string[]> = {
-    codex: ["codex", "exec", "-"],
-    claude: ["claude", "--print"]
-  };
+  const extractFirstJsonObject = (text: string): string | null => {
+    const raw = text.trim();
+    if (!raw) return null;
+    if (raw.startsWith("{") && raw.endsWith("}")) return raw;
 
-  const resolveContextGeneratorCommand = (provider: ContextGenerateDocsArgs["provider"]): string[] => {
-    const snapshot = projectConfigService.get();
-    const providers = isRecord(snapshot.local.providers)
-      ? snapshot.local.providers
-      : isRecord(snapshot.effective.providers)
-        ? snapshot.effective.providers
-        : {};
-    const contextTools = isRecord((providers as Record<string, unknown>).contextTools)
-      ? ((providers as Record<string, unknown>).contextTools as Record<string, unknown>)
-      : {};
-    const generators = isRecord(contextTools.generators) ? (contextTools.generators as Record<string, unknown>) : {};
-    const providerConfig = isRecord(generators[provider]) ? (generators[provider] as Record<string, unknown>) : {};
-    const rawCommand = Array.isArray(providerConfig.command) ? providerConfig.command : [];
-    const resolved = rawCommand.map((value) => String(value));
-    if (resolved.length) return resolved;
-    return DEFAULT_GENERATOR_COMMANDS[provider] ?? [];
-  };
-
-  const runContextGeneratorCommand = async (args: {
-    provider: ContextGenerateDocsArgs["provider"];
-    promptFile: string;
-    outputPrd: string;
-    outputArchitecture: string;
-  }): Promise<{ stdout: string; stderr: string; exitCode: number | null; command: string[] }> => {
-    const command = resolveContextGeneratorCommand(args.provider);
-    if (!command.length) {
-      return { stdout: "", stderr: "context_generator_command_missing", exitCode: null, command: [] };
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenced?.[1]) {
+      const inner = fenced[1].trim();
+      if (inner.startsWith("{") && inner.endsWith("}")) return inner;
     }
-    const rendered = command.map((token) =>
-      token
-        .replace(/\{\{promptFile\}\}/g, args.promptFile)
-        .replace(/\{\{projectRoot\}\}/g, projectRoot)
-        .replace(/\{\{outputPrd\}\}/g, args.outputPrd)
-        .replace(/\{\{outputArchitecture\}\}/g, args.outputArchitecture)
-    );
-    const bin = rendered[0];
-    if (!bin) return { stdout: "", stderr: "context_generator_command_invalid", exitCode: null, command: rendered };
-    // If {{promptFile}} was not consumed by the command template, feed the
-    // prompt file content via stdin so CLIs like `claude --print` can read it.
-    const commandUsesPromptFile = command.some((t) => t.includes("{{promptFile}}"));
-    let stdinInput: string | undefined;
-    if (!commandUsesPromptFile && args.promptFile) {
-      try {
-        stdinInput = fs.readFileSync(args.promptFile, "utf8");
-      } catch {
-        // fall through – the command will run without stdin
-      }
+
+    const first = raw.indexOf("{");
+    const last = raw.lastIndexOf("}");
+    if (first >= 0 && last > first) {
+      const candidate = raw.slice(first, last + 1).trim();
+      if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
     }
-    return new Promise((resolve) => {
-      const child = spawn(bin, rendered.slice(1), {
-        cwd: projectRoot,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-      const MAX_BUFFER = 4 * 1024 * 1024;
-      let stdoutLen = 0;
-      let stderrLen = 0;
-      let killed = false;
-
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdoutLen += chunk.length;
-        if (stdoutLen <= MAX_BUFFER) stdoutChunks.push(chunk);
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        stderrLen += chunk.length;
-        if (stderrLen <= MAX_BUFFER) stderrChunks.push(chunk);
-      });
-
-      const timer = setTimeout(() => {
-        killed = true;
-        child.kill("SIGTERM");
-      }, 240_000);
-
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({
-          stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-          stderr: killed
-            ? "context_generator_timeout"
-            : Buffer.concat(stderrChunks).toString("utf8"),
-          exitCode: killed ? null : code,
-          command: rendered
-        });
-      });
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({
-          stdout: "",
-          stderr: `spawn_error: ${err.message}`,
-          exitCode: null,
-          command: rendered
-        });
-      });
-
-      if (stdinInput !== undefined) {
-        child.stdin.write(stdinInput);
-        child.stdin.end();
-      } else {
-        child.stdin.end();
-      }
-    });
+    return null;
   };
 
   const writeDocWithFallback = (args: {
@@ -970,20 +887,8 @@ export function createPackService({
       },
       fallbackWrites: fallbackCount,
       insufficientContextCount,
-      hostedTiming: null,
-      hostedTimeoutCount: 0,
-      hostedLastTimeoutReason: null,
       warnings: latestWarnings
     };
-  };
-
-  const extractGeneratedSection = (stdout: string, marker: string): string => {
-    const start = `<!-- ${marker}_START -->`;
-    const end = `<!-- ${marker}_END -->`;
-    const from = stdout.indexOf(start);
-    const to = stdout.indexOf(end);
-    if (from < 0 || to < 0 || to <= from) return "";
-    return stdout.slice(from + start.length, to).trim();
   };
 
   const runContextDocGeneration = async (args: ContextGenerateDocsArgs): Promise<ContextGenerateDocsResult> => {
@@ -1006,16 +911,11 @@ export function createPackService({
       warnings.push({ code: "omitted_due_size", message: warning });
     }
 
-    const tmpRoot = path.join(path.dirname(packsDir), "context", "tmp");
-    fs.mkdirSync(tmpRoot, { recursive: true });
-    const promptFile = path.join(tmpRoot, `generate-context-${Date.now()}.md`);
-    const outputPrd = path.join(tmpRoot, `prd-${Date.now()}.ade.md`);
-    const outputArch = path.join(tmpRoot, `architecture-${Date.now()}.ade.md`);
     const prompt = [
-      "Generate two markdown documents from the provided repository context.",
-      "Output markers exactly if using stdout:",
-      "<!-- ADE_PRD_DOC_START --> ... <!-- ADE_PRD_DOC_END -->",
-      "<!-- ADE_ARCH_DOC_START --> ... <!-- ADE_ARCH_DOC_END -->",
+      "Generate two markdown documents from the provided repository context digest.",
+      "Return ONLY one JSON object with this exact shape:",
+      '{"prd":"<markdown>","architecture":"<markdown>"}',
+      "Do not include markdown fences or prose outside JSON.",
       "",
       "PRD source digest:",
       prdDigest.content,
@@ -1023,27 +923,59 @@ export function createPackService({
       "Architecture source digest:",
       archDigest.content
     ].join("\n");
-    fs.writeFileSync(promptFile, prompt, "utf8");
-
-    const cmdResult = await runContextGeneratorCommand({
-      provider,
-      promptFile,
-      outputPrd,
-      outputArchitecture: outputArch
-    });
 
     let generatedPrd = "";
     let generatedArch = "";
-    if (cmdResult.exitCode === 0) {
-      if (fs.existsSync(outputPrd)) generatedPrd = fs.readFileSync(outputPrd, "utf8");
-      if (fs.existsSync(outputArch)) generatedArch = fs.readFileSync(outputArch, "utf8");
-      if (!generatedPrd) generatedPrd = extractGeneratedSection(cmdResult.stdout, "ADE_PRD_DOC");
-      if (!generatedArch) generatedArch = extractGeneratedSection(cmdResult.stdout, "ADE_ARCH_DOC");
-    } else {
+    let outputPreview = "";
+    if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") {
       warnings.push({
         code: "generator_failed",
-        message: `provider=${provider} exitCode=${cmdResult.exitCode ?? -1} stderr=${cmdResult.stderr.slice(0, 300)}`
+        message: `provider=${provider} ai_unavailable`
       });
+    } else {
+      try {
+        const aiResult = await aiIntegrationService.generateInitialContext({
+          cwd: projectRoot,
+          provider: provider === "codex" ? "codex" : "claude",
+          prompt,
+          timeoutMs: 120_000,
+          jsonSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              prd: { type: "string" },
+              architecture: { type: "string" }
+            },
+            required: ["prd", "architecture"]
+          }
+        });
+
+        outputPreview = aiResult.text.trim().slice(0, 1_500);
+        const structured = isRecord(aiResult.structuredOutput) ? aiResult.structuredOutput : null;
+        if (structured) {
+          generatedPrd = asString(structured.prd).trim();
+          generatedArch = asString(structured.architecture).trim();
+        }
+        if (!generatedPrd || !generatedArch) {
+          const rawJson = extractFirstJsonObject(aiResult.text);
+          if (rawJson) {
+            try {
+              const parsed = JSON.parse(rawJson);
+              if (isRecord(parsed)) {
+                if (!generatedPrd) generatedPrd = asString(parsed.prd).trim();
+                if (!generatedArch) generatedArch = asString(parsed.architecture).trim();
+              }
+            } catch {
+              // fall through to deterministic fallback below.
+            }
+          }
+        }
+      } catch (error) {
+        warnings.push({
+          code: "generator_failed",
+          message: `provider=${provider} error=${error instanceof Error ? error.message : String(error)}`
+        });
+      }
     }
 
     if (!generatedPrd.trim()) {
@@ -1097,7 +1029,7 @@ export function createPackService({
       architecturePath: archWrite.writtenPath,
       usedFallbackPath: prdWrite.usedFallback || archWrite.usedFallback,
       warnings,
-      outputPreview: `${cmdResult.stdout}\n${cmdResult.stderr}`.trim().slice(0, 1500)
+      outputPreview
     };
   };
 
@@ -1403,17 +1335,8 @@ Before writing, explore to understand:
     return out;
   };
 
-  const readHostedGatewayMeta = (): { apiBaseUrl: string | null; remoteProjectId: string | null } => {
-    const snapshot = projectConfigService.get();
-    const localProviders = isRecord(snapshot.local.providers) ? snapshot.local.providers : {};
-    const effectiveProviders = isRecord(snapshot.effective.providers) ? snapshot.effective.providers : {};
-    const localHosted = isRecord(localProviders.hosted) ? localProviders.hosted : {};
-    const effectiveHosted = isRecord(effectiveProviders.hosted) ? effectiveProviders.hosted : {};
-    const hosted = { ...effectiveHosted, ...localHosted };
-
-    const apiBaseUrl = asString(hosted.apiBaseUrl).trim() || null;
-    const remoteProjectId = asString(hosted.remoteProjectId).trim() || null;
-    return { apiBaseUrl, remoteProjectId };
+  const readGatewayMeta = (): { apiBaseUrl: string | null; remoteProjectId: string | null } => {
+    return { apiBaseUrl: null, remoteProjectId: null };
   };
 
   const ensureDir = (dirPath: string) => {
@@ -1985,6 +1908,7 @@ Before writing, explore to understand:
       summary: string | null;
       lastOutputPreview: string | null;
       transcriptPath: string | null;
+      resumeCommand: string | null;
       status: string;
       tracked: number;
       startedAt: string;
@@ -1993,6 +1917,8 @@ Before writing, explore to understand:
       filesChanged: number | null;
       insertions: number | null;
       deletions: number | null;
+      touchedFilesJson: string | null;
+      failureLinesJson: string | null;
     }>(
       `
         select
@@ -2003,6 +1929,7 @@ Before writing, explore to understand:
           s.summary as summary,
           s.last_output_preview as lastOutputPreview,
           s.transcript_path as transcriptPath,
+          s.resume_command as resumeCommand,
           s.status as status,
           s.tracked as tracked,
           s.started_at as startedAt,
@@ -2010,12 +1937,14 @@ Before writing, explore to understand:
           s.exit_code as exitCode,
           d.files_changed as filesChanged,
           d.insertions as insertions,
-          d.deletions as deletions
+          d.deletions as deletions,
+          d.touched_files_json as touchedFilesJson,
+          d.failure_lines_json as failureLinesJson
         from terminal_sessions s
         left join session_deltas d on d.session_id = s.id
         where s.lane_id = ?
         order by s.started_at desc
-        limit 6
+        limit 30
       `,
       [laneId]
     );
@@ -2226,7 +2155,7 @@ Before writing, explore to understand:
 
     const inferredWhyLines = await (async (): Promise<string[]> => {
       if (!mergeBaseSha) return [];
-      const res = await runGit(["log", "--oneline", `${mergeBaseSha}..${headSha ?? "HEAD"}`, "-n", "12"], {
+      const res = await runGit(["log", "--oneline", `${mergeBaseSha}..${headSha ?? "HEAD"}`, "-n", "15"], {
         cwd: projectRoot,
         timeoutMs: 12_000
       });
@@ -2242,7 +2171,7 @@ Before writing, explore to understand:
       });
       return scored
         .sort((a, b) => b.magnitude - a.magnitude || a.file.localeCompare(b.file))
-        .slice(0, 10)
+        .slice(0, 25)
         .map(({ magnitude: _magnitude, ...rest }) => rest);
     })();
 
@@ -2263,7 +2192,7 @@ Before writing, explore to understand:
       return out;
     })();
 
-    const sessionsRows = recentSessions.slice(0, 5).map((session) => {
+    const sessionsDetailed = recentSessions.slice(0, 30).map((session) => {
       const tool = humanToolLabel(session.toolType);
       const goal = (session.goal ?? "").trim() || session.title;
       const result =
@@ -2276,79 +2205,25 @@ Before writing, explore to understand:
               : `exit ${session.exitCode}`;
       const delta =
         session.filesChanged != null ? `+${session.insertions ?? 0}/-${session.deletions ?? 0}` : "";
+      const prompt = (session.resumeCommand ?? "").trim();
+      const touchedFiles = safeJsonParseArray(session.touchedFilesJson);
+      const failureLines = safeJsonParseArray(session.failureLinesJson);
+      const commands: string[] = [];
+      if (session.title && session.title !== goal) {
+        commands.push(session.title);
+      }
       return {
         when: isoTime(session.startedAt),
         tool,
-        goal: goal.length > 80 ? `${goal.slice(0, 79)}…` : goal,
+        goal,
         result,
-        delta
+        delta,
+        prompt,
+        commands,
+        filesTouched: touchedFiles.slice(0, 20),
+        errors: failureLines.slice(0, 10)
       };
     });
-
-    const sessionHighlights = (() => {
-      const clean = (raw: string) => stripAnsi(raw).replace(/\s+/g, " ").trim();
-      const clipSummary = (value: string) => {
-        const normalized = clean(value);
-        if (normalized.length <= 260) return { summary: normalized, clipped: false };
-        return { summary: `${normalized.slice(0, 259)}…`, clipped: true };
-      };
-
-      const pickSummary = (s: { summary: string | null; lastOutputPreview: string | null; transcriptPath: string | null }) => {
-        const fromSummary = clean(String(s.summary ?? "")).trim();
-        if (fromSummary) {
-          const clipped = clipSummary(fromSummary);
-          return {
-            summary: clipped.summary,
-            summarySource: "session_summary",
-            summaryConfidence: "high",
-            summaryOmissionTags: clipped.clipped ? ["summary_clipped"] : []
-          };
-        }
-        const fromPreview = clean(String(s.lastOutputPreview ?? ""));
-        if (fromPreview) {
-          const clipped = clipSummary(fromPreview);
-          return {
-            summary: clipped.summary,
-            summarySource: "preview_tail",
-            summaryConfidence: "medium",
-            summaryOmissionTags: clipped.clipped ? ["summary_clipped"] : []
-          };
-        }
-        const transcriptTail = getTranscriptTail(s.transcriptPath);
-        const parsed = parseTranscriptSummary(transcriptTail);
-        if (!parsed) return null;
-        const clipped = clipSummary(parsed.summary);
-        return {
-          summary: clipped.summary,
-          summarySource: parsed.source,
-          summaryConfidence: parsed.confidence,
-          summaryOmissionTags: clipped.clipped ? [...parsed.omissionTags, "summary_clipped"] : parsed.omissionTags
-        };
-      };
-
-      const out: Array<{
-        when: string;
-        tool: string;
-        summary: string;
-        summarySource: string;
-        summaryConfidence: string;
-        summaryOmissionTags: string[];
-      }> = [];
-      for (const s of recentSessions) {
-        if (!s.endedAt) continue;
-        const picked = pickSummary(s);
-        if (!picked || !picked.summary.trim()) continue;
-        out.push({
-          when: isoTime(s.startedAt),
-          tool: humanToolLabel(s.toolType),
-          summary: picked.summary,
-          summarySource: picked.summarySource,
-          summaryConfidence: picked.summaryConfidence,
-          summaryOmissionTags: picked.summaryOmissionTags
-        });
-      }
-      return out.slice(0, 3);
-    })();
 
     const nextSteps = (() => {
       const items: string[] = [];
@@ -2365,17 +2240,6 @@ Before writing, explore to understand:
 
       return items;
     })();
-
-    const narrativePlaceholder =
-      providerMode === "guest"
-        ? "AI narrative is disabled in Guest Mode. Switch to Hosted or BYOK in Settings to generate."
-        : "AI narrative not yet generated. Click 'Update pack details with AI' to generate.";
-
-    const narrativeFromMarkers = extractSection(existingBody, ADE_NARRATIVE_START, ADE_NARRATIVE_END, "");
-    const legacyNarrative = narrativeFromMarkers.trim().length
-      ? narrativeFromMarkers
-      : extractSectionByHeading(existingBody, "## Narrative") ?? "";
-    const narrative = legacyNarrative.trim().length ? legacyNarrative.trim() : narrativePlaceholder;
 
     const requiredMerges = parentLane ? [parentLane.id] : [];
     const conflictState = deriveConflictStateForLane(laneId);
@@ -2447,15 +2311,13 @@ Before writing, explore to understand:
       validationLines,
       keyFiles,
       errors,
-      sessionsRows,
-      sessionHighlights,
+      sessionsDetailed,
       sessionsTotal: Number.isFinite(sessionsTotal) ? sessionsTotal : 0,
       sessionsRunning: Number.isFinite(sessionsRunning) ? sessionsRunning : 0,
       nextSteps,
       userTodosMarkers: { start: ADE_TODOS_START, end: ADE_TODOS_END },
       userTodos,
-      narrativeMarkers: { start: ADE_NARRATIVE_START, end: ADE_NARRATIVE_END },
-      narrative
+      laneDescription: lane.description ?? ""
     });
 
     return { body, lastHeadSha: headSha };
@@ -2718,7 +2580,7 @@ Before writing, explore to understand:
     if ((config.providerMode ?? "guest") === "guest") {
       lines.push("- Guest Mode active: narrative sections use local templates only.");
     } else {
-      lines.push("- Narrative sections are AI-assisted when Hosted or BYOK is configured and available.");
+      lines.push("- Narrative sections are AI-assisted when subscription providers are configured and available.");
     }
     lines.push("");
 
@@ -2990,56 +2852,566 @@ Before writing, explore to understand:
     const lanes = await laneService.list({ includeArchived: false });
     const matching = lanes.filter((lane) => lane.tags.includes(args.featureKey));
     const lines: string[] = [];
-    lines.push(`# Feature Pack: ${args.featureKey}`);
+
+    // JSON header
+    lines.push("```json");
+    lines.push(
+      JSON.stringify(
+        {
+          schema: CONTEXT_HEADER_SCHEMA_V1,
+          contractVersion: CONTEXT_CONTRACT_VERSION,
+          projectId,
+          packType: "feature",
+          featureKey: args.featureKey,
+          deterministicUpdatedAt: args.deterministicUpdatedAt,
+          laneCount: matching.length,
+          laneIds: matching.map((l) => l.id)
+        },
+        null,
+        2
+      )
+    );
+    lines.push("```");
     lines.push("");
-    lines.push(`- Deterministic updated: ${args.deterministicUpdatedAt}`);
-    lines.push(`- Trigger: ${args.reason}`);
-    lines.push(`- Lanes: ${matching.length}`);
+
+    lines.push(`# Feature Pack: ${args.featureKey}`);
+    lines.push(`> Updated: ${args.deterministicUpdatedAt} | Trigger: ${args.reason} | Lanes: ${matching.length}`);
     lines.push("");
 
     if (matching.length === 0) {
       lines.push("No lanes are tagged with this feature key yet.");
       lines.push("");
       lines.push("## How To Use");
-      lines.push(`- Add the tag '${args.featureKey}' to one or more lanes (Workspace Graph → right click lane → Customize).`);
+      lines.push(`- Add the tag '${args.featureKey}' to one or more lanes (Workspace Graph -> right click lane -> Customize).`);
       lines.push("");
       return { body: `${lines.join("\n")}\n`, laneIds: [] };
     }
 
-    lines.push("## Lanes");
-    for (const lane of matching.sort((a, b) => a.name.localeCompare(b.name))) {
-      lines.push(`- ${lane.name} (${lane.branchRef}): dirty=${lane.status.dirty} ahead=${lane.status.ahead} behind=${lane.status.behind}`);
+    // --- Feature Progress Summary ---
+    const dirtyCount = matching.filter((l) => l.status.dirty).length;
+    const cleanCount = matching.length - dirtyCount;
+    const totalAhead = matching.reduce((sum, l) => sum + l.status.ahead, 0);
+    const totalBehind = matching.reduce((sum, l) => sum + l.status.behind, 0);
+
+    lines.push("## Feature Progress Summary");
+    lines.push(`- Lanes: ${matching.length} (${dirtyCount} dirty, ${cleanCount} clean)`);
+    lines.push(`- Total ahead: ${totalAhead} | Total behind: ${totalBehind}`);
+    lines.push("");
+
+    // --- Combined File Changes ---
+    lines.push("## Combined File Changes");
+    type FeatureFileDelta = { insertions: number | null; deletions: number | null };
+    const featureDeltas = new Map<string, FeatureFileDelta>();
+
+    for (const lane of matching) {
+      const { worktreePath } = laneService.getLaneBaseAndBranch(lane.id);
+      const headSha = await getHeadSha(worktreePath);
+      const mergeBaseRes = await runGit(
+        ["merge-base", headSha ?? "HEAD", lane.baseRef?.trim() || "HEAD"],
+        { cwd: projectRoot, timeoutMs: 12_000 }
+      );
+      const mergeBaseSha = mergeBaseRes.exitCode === 0 ? mergeBaseRes.stdout.trim() : null;
+
+      if (mergeBaseSha && (headSha ?? "HEAD") !== mergeBaseSha) {
+        const diff = await runGit(
+          ["diff", "--numstat", `${mergeBaseSha}..${headSha ?? "HEAD"}`],
+          { cwd: projectRoot, timeoutMs: 20_000 }
+        );
+        if (diff.exitCode === 0) {
+          for (const diffLine of diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
+            const parts = diffLine.split("\t");
+            if (parts.length < 3) continue;
+            const insRaw = parts[0] ?? "0";
+            const delRaw = parts[1] ?? "0";
+            const filePath = parts.slice(2).join("\t").trim();
+            if (!filePath) continue;
+            const ins = insRaw === "-" ? null : Number(insRaw);
+            const del = delRaw === "-" ? null : Number(delRaw);
+            const prev = featureDeltas.get(filePath);
+            if (!prev) {
+              featureDeltas.set(filePath, {
+                insertions: Number.isFinite(ins as number) ? ins : null,
+                deletions: Number.isFinite(del as number) ? del : null
+              });
+            } else {
+              featureDeltas.set(filePath, {
+                insertions: prev.insertions == null || ins == null ? null : prev.insertions + (ins as number),
+                deletions: prev.deletions == null || del == null ? null : prev.deletions + (del as number)
+              });
+            }
+          }
+        }
+      }
+    }
+
+    if (featureDeltas.size === 0) {
+      lines.push("No file changes detected across feature lanes.");
+    } else {
+      const sorted = [...featureDeltas.entries()]
+        .sort((a, b) => {
+          const aTotal = (a[1].insertions ?? 0) + (a[1].deletions ?? 0);
+          const bTotal = (b[1].insertions ?? 0) + (b[1].deletions ?? 0);
+          return bTotal - aTotal;
+        })
+        .slice(0, 40);
+
+      lines.push("| File | Change |");
+      lines.push("|------|--------|");
+      for (const [file, delta] of sorted) {
+        const change = delta.insertions == null || delta.deletions == null ? "binary" : `+${delta.insertions}/-${delta.deletions}`;
+        lines.push(`| \`${file}\` | ${change} |`);
+      }
+      if (featureDeltas.size > 40) {
+        lines.push(`| ... | ${featureDeltas.size - 40} more files |`);
+      }
     }
     lines.push("");
 
+    // --- Rolled-up Test Results ---
+    lines.push("## Rolled-up Test Results");
+    let totalPassed = 0;
+    let totalFailed = 0;
+    let totalOtherTests = 0;
+    const failingTests: string[] = [];
+
+    for (const lane of matching) {
+      const testRows = db.all<{
+        run_id: string;
+        suite_name: string | null;
+        suite_key: string;
+        status: string;
+      }>(
+        `
+          select
+            r.id as run_id,
+            s.name as suite_name,
+            r.suite_key as suite_key,
+            r.status as status
+          from test_runs r
+          left join test_suites s on s.project_id = r.project_id and s.id = r.suite_key
+          where r.project_id = ?
+            and r.lane_id = ?
+          order by r.started_at desc
+          limit 3
+        `,
+        [projectId, lane.id]
+      );
+      for (const tr of testRows) {
+        if (tr.status === "passed") totalPassed++;
+        else if (tr.status === "failed") {
+          totalFailed++;
+          failingTests.push(`${lane.name}: ${(tr.suite_name ?? tr.suite_key).trim()}`);
+        } else {
+          totalOtherTests++;
+        }
+      }
+    }
+
+    if (totalPassed + totalFailed + totalOtherTests === 0) {
+      lines.push("- No test runs recorded across feature lanes.");
+    } else {
+      lines.push(`- Passed: ${totalPassed} | Failed: ${totalFailed} | Other: ${totalOtherTests}`);
+      if (failingTests.length) {
+        lines.push("- Failing tests:");
+        for (const ft of failingTests.slice(0, 20)) {
+          lines.push(`  - ${ft}`);
+        }
+      }
+    }
+    lines.push("");
+
+    // --- Cross-Lane Conflict Predictions ---
+    lines.push("## Cross-Lane Conflict Predictions");
+    const conflictEntries: string[] = [];
+    const matchingIds = new Set(matching.map((l) => l.id));
+    for (const lane of matching) {
+      const conflictPack = readConflictPredictionPack(lane.id);
+      if (!conflictPack) continue;
+      const overlaps = Array.isArray(conflictPack.overlaps) ? conflictPack.overlaps : [];
+      for (const ov of overlaps) {
+        if (!ov || !ov.peerId) continue;
+        if (!matchingIds.has(ov.peerId)) continue;
+        const peerName = asString(ov.peerName).trim() || ov.peerId;
+        const riskLevel = asString(ov.riskLevel).trim() || "unknown";
+        const fileCount = Array.isArray(ov.files) ? ov.files.length : 0;
+        conflictEntries.push(`- ${lane.name} <-> ${peerName}: risk=\`${riskLevel}\`, ${fileCount} overlapping files`);
+      }
+    }
+    if (conflictEntries.length === 0) {
+      lines.push("- No cross-lane conflict predictions within this feature.");
+    } else {
+      for (const entry of conflictEntries.slice(0, 20)) {
+        lines.push(entry);
+      }
+    }
+    lines.push("");
+
+    // --- Combined Session Timeline ---
+    lines.push("## Combined Session Timeline");
+    const featureSessions = db.all<{
+      id: string;
+      lane_id: string;
+      title: string;
+      tool_type: string | null;
+      started_at: string;
+      ended_at: string | null;
+      status: string;
+      exit_code: number | null;
+    }>(
+      `
+        select
+          s.id, s.lane_id, s.title, s.tool_type, s.started_at, s.ended_at, s.status, s.exit_code
+        from terminal_sessions s
+        where s.lane_id in (${matching.map(() => "?").join(",")})
+        order by s.started_at desc
+        limit 30
+      `,
+      matching.map((l) => l.id)
+    );
+
+    if (featureSessions.length === 0) {
+      lines.push("- No sessions recorded across feature lanes.");
+    } else {
+      lines.push("| When | Lane | Tool | Title | Status |");
+      lines.push("|------|------|------|-------|--------|");
+      const laneNameById = new Map(matching.map((l) => [l.id, l.name]));
+      for (const sess of featureSessions) {
+        const when = sess.started_at.length >= 16 ? sess.started_at.slice(0, 16) : sess.started_at;
+        const laneName = laneNameById.get(sess.lane_id) ?? sess.lane_id;
+        const tool = humanToolLabel(sess.tool_type);
+        const title = (sess.title ?? "").replace(/\|/g, "\\|").slice(0, 60);
+        const status = sess.status === "running" ? "RUNNING" : sess.exit_code === 0 ? "OK" : sess.exit_code != null ? `EXIT ${sess.exit_code}` : "ENDED";
+        lines.push(`| ${when} | ${laneName} | ${tool} | ${title} | ${status} |`);
+      }
+    }
+    lines.push("");
+
+    // --- Combined Errors ---
+    lines.push("## Combined Errors");
+    const allErrors: string[] = [];
+    for (const lane of matching) {
+      const lanePackBody = readFileIfExists(getLanePackPath(lane.id));
+      const errSection = extractSectionByHeading(lanePackBody, "## Errors & Issues");
+      if (errSection && errSection.trim() !== "No errors detected.") {
+        for (const errLine of errSection.split("\n").map((l) => l.trim()).filter(Boolean)) {
+          const cleaned = errLine.startsWith("- ") ? errLine.slice(2) : errLine;
+          if (cleaned.length) allErrors.push(`[${lane.name}] ${cleaned}`);
+        }
+      }
+    }
+    if (allErrors.length === 0) {
+      lines.push("No errors detected across feature lanes.");
+    } else {
+      for (const err of allErrors.slice(0, 30)) {
+        lines.push(`- ${err}`);
+      }
+    }
+    lines.push("");
+
+    // --- Per-Lane Details ---
     for (const lane of matching.sort((a, b) => a.stackDepth - b.stackDepth || a.name.localeCompare(b.name))) {
       const lanePackBody = readFileIfExists(getLanePackPath(lane.id));
       const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
-      const todos = extractSection(lanePackBody, ADE_TODOS_START, ADE_TODOS_END, "");
 
-      lines.push(`## Lane: ${lane.name}`);
-      lines.push(`- Lane ID: ${lane.id}`);
-      lines.push(`- Branch: ${lane.branchRef}`);
-      lines.push(`- Base: ${lane.baseRef}`);
-      lines.push(`- Status: ${lane.status.dirty ? "dirty" : "clean"}; ahead ${lane.status.ahead}; behind ${lane.status.behind}`);
-      lines.push("");
+      // Lane test status
+      const laneTest = db.get<{ status: string; suite_name: string | null; suite_key: string }>(
+        `
+          select r.status as status, s.name as suite_name, r.suite_key as suite_key
+          from test_runs r
+          left join test_suites s on s.project_id = r.project_id and s.id = r.suite_key
+          where r.project_id = ? and r.lane_id = ?
+          order by r.started_at desc limit 1
+        `,
+        [projectId, lane.id]
+      );
+
+      // Lane file change count
+      const laneFileCount = (() => {
+        const { worktreePath: laneWt } = laneService.getLaneBaseAndBranch(lane.id);
+        try {
+          const lanePackContent = readFileIfExists(getLanePackPath(lane.id));
+          const keyFilesMatch = /## Key Files \((\d+) files touched\)/.exec(lanePackContent);
+          if (keyFilesMatch) return Number(keyFilesMatch[1]);
+        } catch { /* fall through */ }
+        return 0;
+      })();
+
+      lines.push(`### Lane: ${lane.name}`);
+      lines.push(`- Branch: \`${lane.branchRef}\` | Status: ${lane.status.dirty ? "dirty" : "clean"} | Ahead: ${lane.status.ahead} | Behind: ${lane.status.behind}`);
       if (intent.trim().length) {
-        lines.push("### Intent");
-        lines.push(intent.trim());
-        lines.push("");
+        lines.push(`- Intent: ${intent.trim().slice(0, 200)}`);
       }
-      if (todos.trim().length) {
-        lines.push("### Todos");
-        lines.push(todos.trim());
-        lines.push("");
+      lines.push(`- Files changed: ${laneFileCount}`);
+      if (laneTest) {
+        const testLabel = (laneTest.suite_name ?? laneTest.suite_key).trim();
+        lines.push(`- Latest test: ${statusFromCode(laneTest.status as TestRunStatus)} (${testLabel})`);
+      } else {
+        lines.push("- Latest test: NOT RUN");
       }
+      lines.push("");
     }
 
-    lines.push("## Narrative");
-    lines.push("This feature pack is primarily deterministic aggregation. Use lane packs for detailed session context.");
+    lines.push("---");
+    lines.push(`*Feature pack: deterministic aggregation across ${matching.length} lanes. Updated: ${args.deterministicUpdatedAt}*`);
     lines.push("");
 
     return { body: `${lines.join("\n")}\n`, laneIds: matching.map((lane) => lane.id) };
+  };
+
+  const buildPlanPackBody = async (args: {
+    laneId: string;
+    reason: string;
+    deterministicUpdatedAt: string;
+  }): Promise<{ body: string; headSha: string | null }> => {
+    const lanes = await laneService.list({ includeArchived: true });
+    const lane = lanes.find((l) => l.id === args.laneId);
+    if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
+
+    const { worktreePath } = laneService.getLaneBaseAndBranch(args.laneId);
+    const headSha = await getHeadSha(worktreePath);
+
+    const lines: string[] = [];
+
+    // JSON header
+    lines.push("```json");
+    lines.push(
+      JSON.stringify(
+        {
+          schema: CONTEXT_HEADER_SCHEMA_V1,
+          contractVersion: CONTEXT_CONTRACT_VERSION,
+          projectId,
+          packType: "plan",
+          laneId: args.laneId,
+          headSha,
+          deterministicUpdatedAt: args.deterministicUpdatedAt
+        },
+        null,
+        2
+      )
+    );
+    lines.push("```");
+    lines.push("");
+
+    // Check if a mission is linked to this lane
+    const mission = db.get<{
+      id: string;
+      title: string;
+      prompt: string;
+      status: string;
+      priority: string;
+      created_at: string;
+      updated_at: string;
+      started_at: string | null;
+      completed_at: string | null;
+    }>(
+      `
+        select id, title, prompt, status, priority, created_at, updated_at, started_at, completed_at
+        from missions
+        where lane_id = ? and project_id = ?
+        order by updated_at desc
+        limit 1
+      `,
+      [args.laneId, projectId]
+    );
+
+    if (mission?.id) {
+      // --- Mission-linked plan ---
+      lines.push(`# Plan: ${mission.title}`);
+      lines.push(`> Lane: ${lane.name} | Mission: ${mission.id} | Status: ${mission.status} | Priority: ${mission.priority}`);
+      lines.push("");
+
+      lines.push("## Original Prompt");
+      lines.push("```");
+      lines.push(mission.prompt.trim());
+      lines.push("```");
+      lines.push("");
+
+      lines.push("## Mission Metadata");
+      lines.push(`- Mission ID: ${mission.id}`);
+      lines.push(`- Status: ${mission.status}`);
+      lines.push(`- Priority: ${mission.priority}`);
+      lines.push(`- Created: ${mission.created_at}`);
+      lines.push(`- Updated: ${mission.updated_at}`);
+      if (mission.started_at) lines.push(`- Started: ${mission.started_at}`);
+      if (mission.completed_at) lines.push(`- Completed: ${mission.completed_at}`);
+      lines.push("");
+
+      // Query mission steps
+      const steps = db.all<{
+        id: string;
+        step_index: number;
+        title: string;
+        detail: string | null;
+        kind: string;
+        status: string;
+        lane_id: string | null;
+        metadata_json: string | null;
+        started_at: string | null;
+        completed_at: string | null;
+      }>(
+        `
+          select id, step_index, title, detail, kind, status, lane_id, metadata_json, started_at, completed_at
+          from mission_steps
+          where mission_id = ? and project_id = ?
+          order by step_index asc
+        `,
+        [mission.id, projectId]
+      );
+
+      const completedSteps = steps.filter((s) => s.status === "completed").length;
+      lines.push("## Steps");
+      lines.push(`Progress: ${completedSteps}/${steps.length} completed`);
+      lines.push("");
+
+      if (steps.length === 0) {
+        lines.push("- No steps defined yet.");
+      } else {
+        lines.push("| # | Step | Status | Kind | Started | Completed |");
+        lines.push("|---|------|--------|------|---------|-----------|");
+        for (const step of steps) {
+          const desc = step.detail ? ` - ${step.detail.slice(0, 80).replace(/\|/g, "\\|")}` : "";
+          lines.push(
+            `| ${Number(step.step_index) + 1} | ${step.title.replace(/\|/g, "\\|")}${desc} | ${step.status} | ${step.kind} | ${step.started_at ?? "-"} | ${step.completed_at ?? "-"} |`
+          );
+        }
+
+        // Step dependencies from metadata
+        const depsLines: string[] = [];
+        for (const step of steps) {
+          const meta = parseRecord(step.metadata_json);
+          const deps = meta && Array.isArray(meta.dependencies) ? meta.dependencies : [];
+          if (deps.length) {
+            depsLines.push(`- Step ${Number(step.step_index) + 1} (${step.title}): depends on ${deps.join(", ")}`);
+          }
+        }
+        if (depsLines.length) {
+          lines.push("");
+          lines.push("### Step Dependencies");
+          for (const dl of depsLines) lines.push(dl);
+        }
+      }
+      lines.push("");
+
+      // Timeline
+      const timelineEntries = steps
+        .filter((s) => s.started_at || s.completed_at)
+        .sort((a, b) => (a.started_at ?? a.completed_at ?? "").localeCompare(b.started_at ?? b.completed_at ?? ""));
+      if (timelineEntries.length) {
+        lines.push("## Timeline");
+        for (const step of timelineEntries) {
+          const start = step.started_at ?? "-";
+          const end = step.completed_at ?? "-";
+          lines.push(`- Step ${Number(step.step_index) + 1} (${step.title}): started=${start}, completed=${end}`);
+        }
+        lines.push("");
+      }
+
+      // Handoff and retry policies from mission metadata
+      const missionMeta = db.get<{ metadata_json: string | null }>(
+        "select metadata_json from missions where id = ? and project_id = ?",
+        [mission.id, projectId]
+      );
+      const missionMetaParsed = parseRecord(missionMeta?.metadata_json);
+      if (missionMetaParsed) {
+        const policies: string[] = [];
+        if (missionMetaParsed.handoffPolicy) policies.push(`- Handoff policy: ${JSON.stringify(missionMetaParsed.handoffPolicy)}`);
+        if (missionMetaParsed.retryPolicy) policies.push(`- Retry policy: ${JSON.stringify(missionMetaParsed.retryPolicy)}`);
+        if (policies.length) {
+          lines.push("## Policies");
+          for (const p of policies) lines.push(p);
+          lines.push("");
+        }
+      }
+    } else {
+      // --- No mission linked: structured template ---
+      const lanePackBody = readFileIfExists(getLanePackPath(args.laneId));
+      const intent = extractSection(lanePackBody, ADE_INTENT_START, ADE_INTENT_END, "");
+      const taskSpec = extractSection(lanePackBody, ADE_TASK_SPEC_START, ADE_TASK_SPEC_END, "");
+
+      lines.push(`# Plan: ${lane.name}`);
+      lines.push(`> Lane: ${lane.name} | Branch: \`${lane.branchRef}\` | No mission linked`);
+      lines.push("");
+
+      lines.push("## Objective");
+      lines.push(intent.trim().length ? intent.trim() : "Not yet defined");
+      lines.push("");
+
+      lines.push("## Current State");
+      // File change count from lane pack
+      const keyFilesMatch = /## Key Files \((\d+) files touched\)/.exec(lanePackBody);
+      const fileCount = keyFilesMatch ? keyFilesMatch[1] : "0";
+      lines.push(`- Files changed: ${fileCount}`);
+      lines.push(`- Branch status: ${lane.status.dirty ? "dirty" : "clean"}, ahead ${lane.status.ahead}, behind ${lane.status.behind}`);
+
+      // Test status
+      const latestTest = db.get<{ status: string; suite_name: string | null; suite_key: string }>(
+        `
+          select r.status as status, s.name as suite_name, r.suite_key as suite_key
+          from test_runs r
+          left join test_suites s on s.project_id = r.project_id and s.id = r.suite_key
+          where r.project_id = ? and r.lane_id = ?
+          order by r.started_at desc limit 1
+        `,
+        [projectId, args.laneId]
+      );
+      if (latestTest) {
+        const testLabel = (latestTest.suite_name ?? latestTest.suite_key).trim();
+        lines.push(`- Latest test: ${statusFromCode(latestTest.status as TestRunStatus)} (${testLabel})`);
+      } else {
+        lines.push("- Latest test: NOT RUN");
+      }
+      lines.push("");
+
+      lines.push("## Steps");
+      lines.push("- (define steps for this lane's work)");
+      lines.push("");
+
+      lines.push("## Dependencies");
+      // Check pack graph for blocking relations
+      const packKey = `lane:${args.laneId}`;
+      const packRow = getPackIndexRow(packKey);
+      if (packRow?.metadata_json) {
+        const packMeta = parseRecord(packRow.metadata_json);
+        if (packMeta?.graph && isRecord(packMeta.graph)) {
+          const graphRelations = Array.isArray((packMeta.graph as Record<string, unknown>).relations)
+            ? ((packMeta.graph as Record<string, unknown>).relations as PackRelation[])
+            : [];
+          const blockingRels = graphRelations.filter(
+            (r) => r.relationType === "blocked_by" || r.relationType === "depends_on"
+          );
+          if (blockingRels.length) {
+            for (const rel of blockingRels) {
+              lines.push(`- ${rel.relationType}: ${rel.targetPackKey}`);
+            }
+          } else {
+            lines.push("- No blocking dependencies detected.");
+          }
+        } else {
+          lines.push("- No blocking dependencies detected.");
+        }
+      } else {
+        lines.push("- No blocking dependencies detected.");
+      }
+      if (lane.parentLaneId) {
+        const parentLane = lanes.find((l) => l.id === lane.parentLaneId);
+        if (parentLane) lines.push(`- Parent lane: ${parentLane.name} (\`${parentLane.branchRef}\`)`);
+      }
+      lines.push("");
+
+      lines.push("## Acceptance Criteria");
+      if (taskSpec.trim().length) {
+        lines.push(taskSpec.trim());
+      } else {
+        lines.push("- (add acceptance criteria here)");
+      }
+      lines.push("");
+    }
+
+    lines.push("---");
+    lines.push(`*Plan pack: auto-generated for lane ${lane.name}. Updated: ${args.deterministicUpdatedAt}*`);
+    lines.push("");
+
+    return { body: `${lines.join("\n")}\n`, headSha };
   };
 
   const buildMissionPackBody = async (args: {
@@ -3093,8 +3465,11 @@ Before writing, explore to understand:
       id: string;
       step_index: number;
       title: string;
+      detail: string | null;
+      kind: string;
       status: string;
       lane_id: string | null;
+      metadata_json: string | null;
       started_at: string | null;
       completed_at: string | null;
       updated_at: string;
@@ -3104,8 +3479,11 @@ Before writing, explore to understand:
           id,
           step_index,
           title,
+          detail,
+          kind,
           status,
           lane_id,
+          metadata_json,
           started_at,
           completed_at,
           updated_at
@@ -3117,21 +3495,47 @@ Before writing, explore to understand:
       [args.missionId, projectId]
     );
 
-    const artifacts = db.get<{ count: number }>(
-      "select count(*) as count from mission_artifacts where mission_id = ? and project_id = ?",
-      [args.missionId, projectId]
-    );
-    const interventions = db.get<{ open_count: number; total_count: number }>(
+    // Detailed artifacts (not just count)
+    const artifactRows = db.all<{
+      id: string;
+      artifact_type: string;
+      title: string;
+      description: string | null;
+      lane_id: string | null;
+      created_at: string;
+    }>(
       `
-        select
-          sum(case when status = 'open' then 1 else 0 end) as open_count,
-          count(*) as total_count
-        from mission_interventions
-        where mission_id = ?
-          and project_id = ?
+        select id, artifact_type, title, description, lane_id, created_at
+        from mission_artifacts
+        where mission_id = ? and project_id = ?
+        order by created_at desc
+        limit 40
       `,
       [args.missionId, projectId]
     );
+
+    // Detailed interventions (not just count)
+    const interventionRows = db.all<{
+      id: string;
+      intervention_type: string;
+      status: string;
+      title: string;
+      body: string;
+      requested_action: string | null;
+      resolution_note: string | null;
+      created_at: string;
+      resolved_at: string | null;
+    }>(
+      `
+        select id, intervention_type, status, title, body, requested_action, resolution_note, created_at, resolved_at
+        from mission_interventions
+        where mission_id = ? and project_id = ?
+        order by created_at desc
+        limit 40
+      `,
+      [args.missionId, projectId]
+    );
+
     const handoffs = db.all<{
       handoff_type: string;
       producer: string;
@@ -3144,7 +3548,7 @@ Before writing, explore to understand:
         where mission_id = ?
           and project_id = ?
         order by created_at desc
-        limit 16
+        limit 40
       `,
       [args.missionId, projectId]
     );
@@ -3153,25 +3557,62 @@ Before writing, explore to understand:
       id: string;
       status: string;
       context_profile: string;
+      last_error: string | null;
       created_at: string;
       updated_at: string;
+      started_at: string | null;
+      completed_at: string | null;
     }>(
       `
-        select id, status, context_profile, created_at, updated_at
+        select id, status, context_profile, last_error, created_at, updated_at, started_at, completed_at
         from orchestrator_runs
         where mission_id = ?
           and project_id = ?
         order by created_at desc
-        limit 8
+        limit 20
       `,
       [args.missionId, projectId]
     );
 
     const lines: string[] = [];
-    lines.push(`# Mission Pack: ${mission.title}`);
+
+    // JSON header
+    lines.push("```json");
+    lines.push(
+      JSON.stringify(
+        {
+          schema: CONTEXT_HEADER_SCHEMA_V1,
+          contractVersion: CONTEXT_CONTRACT_VERSION,
+          projectId,
+          packType: "mission",
+          missionId: mission.id,
+          laneId: mission.lane_id,
+          status: mission.status,
+          deterministicUpdatedAt: args.deterministicUpdatedAt,
+          stepCount: steps.length,
+          runId: args.runId ?? null
+        },
+        null,
+        2
+      )
+    );
+    lines.push("```");
     lines.push("");
+
+    lines.push(`# Mission Pack: ${mission.title}`);
+    lines.push(`> Status: ${mission.status} | Priority: ${mission.priority} | Mode: ${mission.execution_mode}`);
+    lines.push("");
+
+    // Original prompt prominently at the top
+    lines.push("## Original Prompt");
+    lines.push("```");
+    lines.push(mission.prompt.trim());
+    lines.push("```");
+    lines.push("");
+
+    lines.push("## Mission Metadata");
     lines.push(`- Mission ID: ${mission.id}`);
-    lines.push(`- Deterministic updated: ${args.deterministicUpdatedAt}`);
+    lines.push(`- Updated: ${args.deterministicUpdatedAt}`);
     lines.push(`- Trigger: ${args.reason}`);
     lines.push(`- Status: ${mission.status}`);
     lines.push(`- Priority: ${mission.priority}`);
@@ -3182,46 +3623,173 @@ Before writing, explore to understand:
     lines.push(`- Updated: ${mission.updated_at}`);
     if (mission.started_at) lines.push(`- Started: ${mission.started_at}`);
     if (mission.completed_at) lines.push(`- Completed: ${mission.completed_at}`);
-    lines.push("");
-
-    lines.push("## Prompt");
-    lines.push("```");
-    lines.push(mission.prompt.trim());
-    lines.push("```");
-    lines.push("");
-
-    lines.push("## Step Progress");
-    if (!steps.length) {
-      lines.push("- No mission steps.");
-      lines.push("");
-    } else {
-      lines.push("| # | Step | Status | Lane | Started | Completed |");
-      lines.push("|---|------|--------|------|---------|-----------|");
-      for (const step of steps) {
-        lines.push(
-          `| ${Number(step.step_index) + 1} | ${step.title.replace(/\|/g, "\\|")} | ${step.status} | ${step.lane_id ?? "-"} | ${step.started_at ?? "-"} | ${step.completed_at ?? "-"} |`
-        );
-      }
-      lines.push("");
-    }
-
-    lines.push("## Artifacts & Interventions");
-    lines.push(`- Artifacts: ${Number(artifacts?.count ?? 0)}`);
-    lines.push(`- Interventions (open/total): ${Number(interventions?.open_count ?? 0)}/${Number(interventions?.total_count ?? 0)}`);
     if (mission.outcome_summary) lines.push(`- Outcome summary: ${mission.outcome_summary}`);
     if (mission.last_error) lines.push(`- Last error: ${mission.last_error}`);
     lines.push("");
 
+    // Mission duration
+    if (mission.started_at) {
+      const endTime = mission.completed_at ?? args.deterministicUpdatedAt;
+      lines.push("## Mission Duration");
+      lines.push(`- Start: ${mission.started_at}`);
+      lines.push(`- End: ${mission.completed_at ?? "(in progress)"}`);
+      const startMs = new Date(mission.started_at).getTime();
+      const endMs = new Date(endTime).getTime();
+      if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+        const durationMin = Math.round((endMs - startMs) / 60_000);
+        lines.push(`- Duration: ${durationMin}m`);
+      }
+      lines.push("");
+    }
+
+    // Step Progress with detail, kind, dependencies
+    const completedSteps = steps.filter((s) => s.status === "completed").length;
+    lines.push("## Step Progress");
+    lines.push(`Progress: ${completedSteps}/${steps.length} completed`);
+    lines.push("");
+    if (!steps.length) {
+      lines.push("- No mission steps.");
+      lines.push("");
+    } else {
+      lines.push("| # | Step | Status | Kind | Lane | Started | Completed |");
+      lines.push("|---|------|--------|------|------|---------|-----------|");
+      for (const step of steps) {
+        const detail = step.detail ? ` - ${step.detail.slice(0, 60).replace(/\|/g, "\\|")}` : "";
+        lines.push(
+          `| ${Number(step.step_index) + 1} | ${step.title.replace(/\|/g, "\\|")}${detail} | ${step.status} | ${step.kind} | ${step.lane_id ?? "-"} | ${step.started_at ?? "-"} | ${step.completed_at ?? "-"} |`
+        );
+      }
+      lines.push("");
+
+      // Per-step error history from metadata
+      const stepErrors: string[] = [];
+      for (const step of steps) {
+        const meta = parseRecord(step.metadata_json);
+        if (!meta) continue;
+        const errors = Array.isArray(meta.errors) ? meta.errors : [];
+        const lastError = typeof meta.last_error === "string" ? meta.last_error : null;
+        if (errors.length) {
+          for (const err of errors.slice(-5)) {
+            stepErrors.push(`- Step ${Number(step.step_index) + 1} (${step.title}): ${String(err).slice(0, 200)}`);
+          }
+        } else if (lastError) {
+          stepErrors.push(`- Step ${Number(step.step_index) + 1} (${step.title}): ${lastError.slice(0, 200)}`);
+        }
+      }
+      if (stepErrors.length) {
+        lines.push("### Step Error History");
+        for (const se of stepErrors.slice(0, 20)) lines.push(se);
+        lines.push("");
+      }
+    }
+
+    // Step Timeline
+    const timelineSteps = steps.filter((s) => s.started_at || s.completed_at);
+    if (timelineSteps.length) {
+      lines.push("## Step Timeline");
+      const timelineEvents: Array<{ time: string; label: string }> = [];
+      for (const step of timelineSteps) {
+        if (step.started_at) {
+          timelineEvents.push({ time: step.started_at, label: `Step ${Number(step.step_index) + 1} (${step.title}) started` });
+        }
+        if (step.completed_at) {
+          timelineEvents.push({ time: step.completed_at, label: `Step ${Number(step.step_index) + 1} (${step.title}) completed [${step.status}]` });
+        }
+      }
+      timelineEvents.sort((a, b) => a.time.localeCompare(b.time));
+      for (const ev of timelineEvents) {
+        lines.push(`- ${ev.time}: ${ev.label}`);
+      }
+      lines.push("");
+    }
+
+    // Per-step session references
+    lines.push("## Step Sessions");
+    let hasStepSessions = false;
+    for (const step of steps) {
+      if (!step.lane_id) continue;
+      const stepSessions = db.all<{
+        id: string;
+        title: string;
+        tool_type: string | null;
+        started_at: string;
+        ended_at: string | null;
+        status: string;
+        exit_code: number | null;
+      }>(
+        `
+          select id, title, tool_type, started_at, ended_at, status, exit_code
+          from terminal_sessions
+          where lane_id = ?
+            and started_at >= ?
+          order by started_at asc
+          limit 8
+        `,
+        [step.lane_id, step.started_at ?? step.updated_at]
+      );
+      if (stepSessions.length) {
+        hasStepSessions = true;
+        lines.push(`### Step ${Number(step.step_index) + 1}: ${step.title}`);
+        for (const sess of stepSessions) {
+          const tool = humanToolLabel(sess.tool_type);
+          const outcome = sess.status === "running" ? "RUNNING" : sess.exit_code === 0 ? "OK" : sess.exit_code != null ? `EXIT ${sess.exit_code}` : "ENDED";
+          lines.push(`- ${sess.started_at} | ${tool} | ${(sess.title ?? "").slice(0, 60)} | ${outcome}`);
+        }
+        lines.push("");
+      }
+    }
+    if (!hasStepSessions) {
+      lines.push("- No per-step sessions recorded.");
+      lines.push("");
+    }
+
+    // Artifacts with detail
+    lines.push("## Artifacts");
+    if (!artifactRows.length) {
+      lines.push("- No artifacts recorded.");
+    } else {
+      lines.push(`Total: ${artifactRows.length}`);
+      lines.push("");
+      for (const art of artifactRows) {
+        const desc = art.description ? ` - ${art.description.slice(0, 100)}` : "";
+        lines.push(`- [${art.artifact_type}] ${art.title}${desc} (${art.created_at})`);
+      }
+    }
+    lines.push("");
+
+    // Interventions with detail
+    lines.push("## Interventions");
+    const openInterventions = interventionRows.filter((i) => i.status === "open").length;
+    if (!interventionRows.length) {
+      lines.push("- No interventions recorded.");
+    } else {
+      lines.push(`Total: ${interventionRows.length} (${openInterventions} open)`);
+      lines.push("");
+      for (const intv of interventionRows) {
+        lines.push(`- [${intv.status}] ${intv.intervention_type}: ${intv.title}`);
+        if (intv.body.trim()) lines.push(`  ${intv.body.trim().slice(0, 200)}`);
+        if (intv.requested_action) lines.push(`  Requested: ${intv.requested_action.slice(0, 150)}`);
+        if (intv.resolution_note) lines.push(`  Resolution: ${intv.resolution_note.slice(0, 150)}`);
+      }
+    }
+    lines.push("");
+
+    // Orchestrator Runs (increased cap to 20)
     lines.push("## Orchestrator Runs");
     if (!runs.length) {
       lines.push("- No orchestrator runs linked yet.");
     } else {
       for (const run of runs) {
-        lines.push(`- ${run.id} · ${run.status} · profile=${run.context_profile} · updated=${run.updated_at}`);
+        const duration = run.started_at && run.completed_at
+          ? `${Math.round((new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 60_000)}m`
+          : run.started_at ? "in progress" : "-";
+        lines.push(`- ${run.id} | ${run.status} | profile=${run.context_profile} | duration=${duration} | updated=${run.updated_at}`);
+        if (run.last_error) lines.push(`  error: ${run.last_error.slice(0, 200)}`);
       }
     }
     lines.push("");
 
+    // Step Handoffs (increased cap to 40)
     lines.push("## Step Handoffs");
     if (!handoffs.length) {
       lines.push("- No step handoffs recorded.");
@@ -3232,7 +3800,7 @@ Before writing, explore to understand:
           ? String((payload.result as Record<string, unknown>).summary ?? "")
           : "";
         lines.push(
-          `- ${handoff.created_at} · ${handoff.handoff_type} · producer=${handoff.producer}${summary ? ` · ${summary}` : ""}`
+          `- ${handoff.created_at} | ${handoff.handoff_type} | producer=${handoff.producer}${summary ? ` | ${summary}` : ""}`
         );
       }
     }
@@ -3248,10 +3816,8 @@ Before writing, explore to understand:
       }
     }
 
-    lines.push("## Narrative");
-    lines.push(
-      "Mission packs are deterministic mission-level context snapshots used by orchestrator resume and handoff flows."
-    );
+    lines.push("---");
+    lines.push(`*Mission pack: deterministic context snapshot. Updated: ${args.deterministicUpdatedAt}*`);
     lines.push("");
 
     return {
@@ -3852,6 +4418,35 @@ Before writing, explore to understand:
       });
     },
 
+    async refreshPlanPack(args: { laneId: string; reason: string }): Promise<PackSummary> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const packKey = `plan:${laneId}`;
+      const deterministicUpdatedAt = nowIso();
+      const built = await buildPlanPackBody({
+        laneId,
+        reason: args.reason,
+        deterministicUpdatedAt
+      });
+      const packPath = getPlanPackPath(laneId);
+      return persistPackRefresh({
+        packKey,
+        packType: "plan",
+        packPath,
+        laneId,
+        body: built.body,
+        deterministicUpdatedAt,
+        narrativeUpdatedAt: null,
+        lastHeadSha: built.headSha,
+        metadata: {
+          reason: args.reason,
+          laneId
+        },
+        eventType: "refresh_triggered",
+        eventPayload: { trigger: args.reason, laneId }
+      });
+    },
+
     async savePlanPack(args: { laneId: string; body: string; reason: string }): Promise<PackSummary> {
       const laneId = args.laneId.trim();
       if (!laneId) throw new Error("laneId is required");
@@ -3916,11 +4511,16 @@ Before writing, explore to understand:
       });
     },
 
-    updateNarrative(args: { packKey: string; narrative: string; source?: string }): PackSummary {
+    updateNarrative(args: { packKey: string; narrative: string; source?: string; metadata?: Record<string, unknown> }): PackSummary {
       const packKey = args.packKey.trim();
       if (!packKey) throw new Error("packKey is required");
       const row = getPackIndexRow(packKey);
       if (!row?.pack_path) throw new Error(`Pack not found: ${packKey}`);
+      const existingMetadata = parsePackMetadataJson(row.metadata_json) ?? {};
+      const nextMetadata: Record<string, unknown> = {
+        ...existingMetadata,
+        ...(args.metadata ?? {})
+      };
 
       const existing = readFileIfExists(row.pack_path);
       const { updated: updatedBody, insertedMarkers } = replaceNarrativeSection(existing, args.narrative);
@@ -3928,16 +4528,24 @@ Before writing, explore to understand:
       fs.writeFileSync(row.pack_path, updatedBody, "utf8");
 
       const now = nowIso();
+      const provider = typeof nextMetadata.provider === "string" ? nextMetadata.provider : null;
+      const model = typeof nextMetadata.model === "string" ? nextMetadata.model : null;
       createPackEvent({
         packKey,
         eventType: "narrative_update",
         payload: {
           source: args.source ?? "user",
-          insertedMarkers
+          insertedMarkers,
+          ...(provider ? { provider } : {}),
+          ...(model ? { model } : {})
         }
       });
 
       const version = createPackVersion({ packKey, packType: row.pack_type, body: updatedBody });
+      nextMetadata.source = args.source ?? "user";
+      nextMetadata.versionId = version.versionId;
+      nextMetadata.versionNumber = version.versionNumber;
+      nextMetadata.contentHash = version.contentHash;
 
       upsertPackIndex({
         db,
@@ -3949,12 +4557,7 @@ Before writing, explore to understand:
         deterministicUpdatedAt: row.deterministic_updated_at ?? now,
         narrativeUpdatedAt: now,
         lastHeadSha: row.last_head_sha ?? null,
-        metadata: {
-          source: args.source ?? "user",
-          versionId: version.versionId,
-          versionNumber: version.versionNumber,
-          contentHash: version.contentHash
-        }
+        metadata: nextMetadata
       });
 
       return toPackSummaryFromRow({
@@ -4439,7 +5042,7 @@ Before writing, explore to understand:
       }
 
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-      const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+      const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
       const docsMeta = readContextDocMeta();
       const conflictRiskSummaryLines = buildLaneConflictRiskSummaryLines(laneId);
 
@@ -4680,7 +5283,7 @@ Before writing, explore to understand:
       }
       const pack = this.getProjectPack();
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-      const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+      const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
       const docsMeta = readContextDocMeta();
 
       const lanes = await laneService.list({ includeArchived: false });
@@ -4783,7 +5386,7 @@ Before writing, explore to understand:
 
       const pack = this.getConflictPack({ laneId, peerLaneId });
       const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-      const { apiBaseUrl, remoteProjectId } = readHostedGatewayMeta();
+      const { apiBaseUrl, remoteProjectId } = readGatewayMeta();
 
       const predictionPack = readConflictPredictionPack(laneId);
       const matrix = Array.isArray(predictionPack?.matrix) ? predictionPack!.matrix! : [];
@@ -4929,86 +5532,108 @@ Before writing, explore to understand:
       });
     },
 
-    applyHostedNarrative(args: {
-      laneId: string;
-      narrative: string;
-      metadata?: Record<string, unknown>;
-    }): PackSummary {
-      const packKey = `lane:${args.laneId}`;
-      const lanePackPath = getLanePackPath(args.laneId);
-      const existing = readFileIfExists(lanePackPath);
-      if (!existing.trim().length) {
-        throw new Error(`Lane pack not found for lane ${args.laneId}`);
+    async getFeatureExport(args: { featureKey: string; level: ContextExportLevel }): Promise<PackExport> {
+      const featureKey = args.featureKey.trim();
+      if (!featureKey) throw new Error("featureKey is required");
+      const level = args.level;
+      if (level !== "lite" && level !== "standard" && level !== "deep") {
+        throw new Error(`Invalid export level: ${String(level)}`);
       }
-
-      const { updated: updatedBody, insertedMarkers } = replaceNarrativeSection(existing, args.narrative);
-      ensureDirFor(lanePackPath);
-      fs.writeFileSync(lanePackPath, updatedBody, "utf8");
-
-      const now = nowIso();
-      const existingRow = db.get<{
-        deterministic_updated_at: string | null;
-        last_head_sha: string | null;
-      }>(
-        `
-          select deterministic_updated_at, last_head_sha
-          from packs_index
-          where pack_key = ?
-            and project_id = ?
-          limit 1
-        `,
-        [packKey, projectId]
-      );
-
-      createPackEvent({
-        packKey,
-        eventType: "narrative_update",
-        payload: {
-          laneId: args.laneId,
-          source: "hosted",
-          insertedMarkers,
-          ...(args.metadata ?? {})
-        }
-      });
-
-      const version = createPackVersion({ packKey, packType: "lane", body: updatedBody });
-
-      const metadata = {
-        source: "hosted",
-        ...(args.metadata ?? {}),
-        versionId: version.versionId,
-        versionNumber: version.versionNumber,
-        contentHash: version.contentHash
-      };
-
-      upsertPackIndex({
-        db,
+      const pack = this.getFeaturePack(featureKey);
+      const packKey = `feature:${featureKey}`;
+      const header = {
+        schema: CONTEXT_HEADER_SCHEMA_V1,
+        contractVersion: CONTEXT_CONTRACT_VERSION,
         projectId,
         packKey,
-        laneId: args.laneId,
-        packType: "lane",
-        packPath: lanePackPath,
-        deterministicUpdatedAt: existingRow?.deterministic_updated_at ?? now,
-        narrativeUpdatedAt: now,
-        lastHeadSha: existingRow?.last_head_sha ?? null,
-        metadata
-      });
-
-      maybeCleanupPacks();
-
+        packType: "feature" as const,
+        exportLevel: level
+      } satisfies ContextHeaderV1;
+      const content = pack.exists ? pack.body : "";
+      const approxTokens = Math.ceil(content.length / 4);
+      const maxTokens = level === "lite" ? 30_000 : level === "standard" ? 60_000 : 120_000;
+      const truncated = approxTokens > maxTokens;
+      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
       return {
         packKey,
-        packType: "lane",
-        path: lanePackPath,
-        exists: true,
-        deterministicUpdatedAt: existingRow?.deterministic_updated_at ?? now,
-        narrativeUpdatedAt: now,
-        lastHeadSha: existingRow?.last_head_sha ?? null,
-        versionId: version.versionId,
-        versionNumber: version.versionNumber,
-        contentHash: version.contentHash,
-        metadata,
-        body: updatedBody
+        packType: "feature",
+        level,
+        header,
+        content: finalContent,
+        approxTokens: Math.ceil(finalContent.length / 4),
+        maxTokens,
+        truncated,
+        warnings: truncated ? ["Feature pack content was truncated to fit token budget."] : []
+      };
+    },
+
+    async getPlanExport(args: { laneId: string; level: ContextExportLevel }): Promise<PackExport> {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required");
+      const level = args.level;
+      if (level !== "lite" && level !== "standard" && level !== "deep") {
+        throw new Error(`Invalid export level: ${String(level)}`);
+      }
+      const pack = this.getPlanPack(laneId);
+      const packKey = `plan:${laneId}`;
+      const header = {
+        schema: CONTEXT_HEADER_SCHEMA_V1,
+        contractVersion: CONTEXT_CONTRACT_VERSION,
+        projectId,
+        packKey,
+        packType: "plan" as const,
+        exportLevel: level
+      } satisfies ContextHeaderV1;
+      const content = pack.exists ? pack.body : "";
+      const approxTokens = Math.ceil(content.length / 4);
+      const maxTokens = level === "lite" ? 30_000 : level === "standard" ? 60_000 : 120_000;
+      const truncated = approxTokens > maxTokens;
+      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
+      return {
+        packKey,
+        packType: "plan",
+        level,
+        header,
+        content: finalContent,
+        approxTokens: Math.ceil(finalContent.length / 4),
+        maxTokens,
+        truncated,
+        warnings: truncated ? ["Plan pack content was truncated to fit token budget."] : []
+      };
+    },
+
+    async getMissionExport(args: { missionId: string; level: ContextExportLevel }): Promise<PackExport> {
+      const missionId = args.missionId.trim();
+      if (!missionId) throw new Error("missionId is required");
+      const level = args.level;
+      if (level !== "lite" && level !== "standard" && level !== "deep") {
+        throw new Error(`Invalid export level: ${String(level)}`);
+      }
+      const pack = this.getMissionPack(missionId);
+      const packKey = `mission:${missionId}`;
+      const header = {
+        schema: CONTEXT_HEADER_SCHEMA_V1,
+        contractVersion: CONTEXT_CONTRACT_VERSION,
+        projectId,
+        packKey,
+        packType: "mission" as const,
+        exportLevel: level
+      } satisfies ContextHeaderV1;
+      const content = pack.exists ? pack.body : "";
+      const approxTokens = Math.ceil(content.length / 4);
+      const maxTokens = level === "lite" ? 30_000 : level === "standard" ? 60_000 : 120_000;
+      const truncated = approxTokens > maxTokens;
+      const finalContent = truncated ? content.slice(0, maxTokens * 4) : content;
+      return {
+        packKey,
+        packType: "mission",
+        level,
+        header,
+        content: finalContent,
+        approxTokens: Math.ceil(finalContent.length / 4),
+        maxTokens,
+        truncated,
+        warnings: truncated ? ["Mission pack content was truncated to fit token budget."] : []
       };
     },
 

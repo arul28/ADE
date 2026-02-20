@@ -205,7 +205,7 @@ export function PRsPage() {
               {stackedChains.map((chain) => {
                 const rootPr = prByLaneId.get(chain.rootLaneId) ?? null;
                 return (
-                  <div key={chain.rootLaneId} className="rounded-xl shadow-card bg-card/60 ring-1 ring-border/10 overflow-hidden">
+                  <div key={chain.rootLaneId} className="rounded shadow-card bg-card/60 ring-1 ring-border/10 overflow-hidden">
                     <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-gradient-to-r from-muted/40 via-muted/20 to-transparent border-b border-border/15">
                       <div className="text-xs font-bold text-fg tracking-tight">{chain.rootLaneName}</div>
                       <Button
@@ -280,7 +280,7 @@ export function PRsPage() {
               ) : null}
             </div>
           ) : (
-            <div className="rounded-xl shadow-card bg-card/60 ring-1 ring-border/10 overflow-hidden">
+            <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 overflow-hidden">
               <div className="divide-y divide-border/15">
                 {allPrsSorted.map((pr) => {
                   const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
@@ -338,7 +338,7 @@ export function PRsPage() {
           </div>
 
           {/* Branch info */}
-          <div className="rounded-xl shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
             <div className="text-xs font-semibold text-fg uppercase tracking-wider">Branches</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
               <span className="text-muted-fg/70 font-medium">Base</span>
@@ -349,7 +349,7 @@ export function PRsPage() {
           </div>
 
           {/* Changes */}
-          <div className="rounded-xl shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
             <div className="text-xs font-semibold text-fg uppercase tracking-wider">Changes</div>
             <div className="flex items-center gap-5">
               <span className="text-sm font-bold font-mono text-emerald-400">+{selectedPr.additions}</span>
@@ -358,7 +358,7 @@ export function PRsPage() {
           </div>
 
           {/* Lane info */}
-          <div className="rounded-xl shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
             <div className="text-xs font-semibold text-fg uppercase tracking-wider">Lane</div>
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="text-fg font-medium">{laneById.get(selectedPr.laneId)?.name ?? selectedPr.laneId}</span>
@@ -374,7 +374,7 @@ export function PRsPage() {
           </div>
 
           {/* Timestamps */}
-          <div className="rounded-xl shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
             <div className="text-xs font-semibold text-fg uppercase tracking-wider">Timestamps</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
               <span className="text-muted-fg/60 font-medium">Created</span>
@@ -480,7 +480,7 @@ export function PRsPage() {
       {/* Land Stack modal */}
       {landStackDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="w-[min(720px,100%)] rounded-2xl bg-card/95 p-5 shadow-float backdrop-blur-xl ring-1 ring-border/20">
+          <div className="w-[min(720px,100%)] rounded bg-card border border-border/40 p-4 shadow-float ring-1 ring-border/20">
             <div className="flex items-center justify-between gap-2">
               <div className="text-base font-bold text-fg tracking-tight">Land Stack</div>
               <Button size="sm" variant="ghost" onClick={() => setLandStackDialog(null)}>
@@ -488,17 +488,17 @@ export function PRsPage() {
               </Button>
             </div>
             <div className="mt-1.5 text-xs text-muted-fg/70">Root: <span className="font-semibold text-fg">{landStackDialog.rootLaneName}</span></div>
-            <div className="mt-4 flex items-center justify-between gap-2 rounded-xl bg-muted/20 px-3 py-2.5">
+            <div className="mt-4 flex items-center justify-between gap-2 rounded bg-muted/20 px-3 py-2.5">
               <div className="text-xs text-muted-fg">Merge method: <span className="font-mono font-medium text-fg">{mergeMethod}</span></div>
               <Button size="sm" variant="primary" className="shadow-card font-semibold" disabled={landStackDialog.running} onClick={() => void runLandStack()}>
                 {landStackDialog.running ? "Landing..." : "Land Stack"}
               </Button>
             </div>
             {landStackDialog.error ? (
-              <div className="mt-4 rounded-xl bg-red-500/10 border border-red-500/20 p-3 text-xs text-red-200">{landStackDialog.error}</div>
+              <div className="mt-4 rounded bg-red-500/10 border border-red-500/20 p-3 text-xs text-red-200">{landStackDialog.error}</div>
             ) : null}
             {landStackDialog.results ? (
-              <div className="mt-4 max-h-[50vh] overflow-auto rounded-xl bg-muted/15 ring-1 ring-border/10">
+              <div className="mt-4 max-h-[50vh] overflow-auto rounded bg-muted/15 ring-1 ring-border/10">
                 <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-fg/60 font-semibold border-b border-border/10">Results</div>
                 <div className="divide-y divide-border/10">
                   {landStackDialog.results.map((r, idx) => (

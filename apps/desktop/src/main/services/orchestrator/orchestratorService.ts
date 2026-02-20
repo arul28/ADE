@@ -349,7 +349,7 @@ function normalizeAttemptStatus(value: string): OrchestratorAttemptStatus {
 }
 
 function normalizeExecutorKind(value: string): OrchestratorExecutorKind {
-  if (value === "claude" || value === "codex" || value === "gemini" || value === "shell" || value === "manual") return value;
+  if (value === "claude" || value === "codex" || value === "shell" || value === "manual") return value;
   return "manual";
 }
 
@@ -1822,7 +1822,7 @@ export function createOrchestratorService({
         : (integrationConfig.scenario as PrepareResolverSessionArgs["scenario"] | undefined) ?? "single-merge";
     const integrationLaneName =
       typeof integrationConfig.integrationLaneName === "string" ? integrationConfig.integrationLaneName : undefined;
-    const allowHostedFallback = integrationConfig.allowHostedFallback === true;
+    const allowSubscriptionFallback = integrationConfig.allowSubscriptionFallback === true || integrationConfig.allowLegacyFallback === true;
 
     appendTimelineEvent({
       runId: args.run.id,
@@ -1835,7 +1835,7 @@ export function createOrchestratorService({
         sourceLaneIds,
         externalProvider,
         scenario,
-        allowHostedFallback
+        allowSubscriptionFallback
       }
     });
 
@@ -1886,7 +1886,7 @@ export function createOrchestratorService({
       };
     }
 
-    if (allowHostedFallback && sourceLaneIds.length === 1) {
+    if (allowSubscriptionFallback && sourceLaneIds.length === 1) {
       try {
         const preview: ConflictProposalPreview = await conflictService.prepareProposal({
           laneId: sourceLaneIds[0]!,
@@ -1902,7 +1902,7 @@ export function createOrchestratorService({
           stepId: args.step.id,
           attemptId: args.attempt.id,
           eventType: "integration_chain_stage",
-          reason: "hosted_byok_fallback_completed",
+          reason: "subscription_fallback_completed",
           detail: {
             proposalId: proposal.id,
             source: proposal.source
@@ -1912,7 +1912,7 @@ export function createOrchestratorService({
           status: "succeeded",
           result: normalizeEnvelope({
             success: true,
-            summary: "Hosted/BYOK fallback generated a deterministic conflict proposal.",
+            summary: "Subscription fallback generated a deterministic conflict proposal.",
             outputs: {
               proposalId: proposal.id,
               confidence: proposal.confidence,
@@ -1922,7 +1922,7 @@ export function createOrchestratorService({
             trackedSession: true
           }),
           metadata: {
-            integrationStage: "hosted_byok_fallback",
+            integrationStage: "subscription_fallback",
             proposalId: proposal.id,
             proposalSource: proposal.source
           }
@@ -1933,7 +1933,7 @@ export function createOrchestratorService({
           stepId: args.step.id,
           attemptId: args.attempt.id,
           eventType: "integration_chain_stage",
-          reason: "hosted_byok_fallback_failed",
+          reason: "subscription_fallback_failed",
           detail: {
             error: error instanceof Error ? error.message : String(error)
           }
@@ -1965,7 +1965,7 @@ export function createOrchestratorService({
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
-    if (kind !== "claude" && kind !== "codex" && kind !== "gemini") return null;
+    if (kind !== "claude" && kind !== "codex") return null;
     return {
       kind,
       start: async (args) => {
@@ -1983,7 +1983,7 @@ export function createOrchestratorService({
             cols: 120,
             rows: 36,
             title,
-            toolType: kind === "gemini" ? "other" : kind
+            toolType: kind
           });
           return {
             status: "accepted",
@@ -1991,8 +1991,7 @@ export function createOrchestratorService({
             metadata: {
               adapterKind: kind,
               adapterState: "scaffold_session_started",
-              localFirst: true,
-              byokParity: true
+              localFirst: true
             }
           };
         } catch (error) {

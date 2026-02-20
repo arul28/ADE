@@ -18,7 +18,6 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPackService } from "../packs/packService";
 import type { createConflictService } from "../conflicts/conflictService";
-import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createTestService } from "../tests/testService";
 import cron from "node-cron";
 
@@ -134,7 +133,6 @@ export function createAutomationService({
   projectConfigService,
   packService,
   conflictService,
-  hostedAgentService,
   testService,
   onEvent
 }: {
@@ -146,7 +144,6 @@ export function createAutomationService({
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
-  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
   testService?: ReturnType<typeof createTestService>;
   onEvent?: (payload: { type: "runs-updated"; automationId?: string; runId?: string }) => void;
 }) {
@@ -169,23 +166,11 @@ export function createAutomationService({
     }
   };
 
-  const isHostedEnabled = (): boolean => {
-    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    return providerMode === "hosted" && Boolean(hostedAgentService?.getStatus().enabled);
-  };
-
-  const isByokEnabled = (): boolean => {
-    const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    return providerMode === "byok";
-  };
-
   const evaluateCondition = async (condition: string | undefined, ctx: TriggerContext): Promise<boolean> => {
     const raw = (condition ?? "").trim();
     if (!raw) return true;
     if (raw === "true") return true;
     if (raw === "false") return false;
-    if (raw === "hosted-enabled") return isHostedEnabled();
-    if (raw === "byok-enabled") return isByokEnabled();
     if (raw === "provider-enabled") return (projectConfigService.get().effective.providerMode ?? "guest") !== "guest";
     if (raw === "lane-present") return Boolean(ctx.laneId);
     // Unknown condition: default false, but log for visibility.

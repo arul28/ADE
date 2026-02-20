@@ -25,7 +25,7 @@ export function SplitPane({
       id={id}
       orientation="horizontal"
       className={cn(
-        "h-full w-full overflow-hidden rounded-xl bg-card/40 shadow-card backdrop-blur-sm",
+        "h-full w-full overflow-hidden rounded bg-card/40",
         className
       )}
       defaultLayout={defaultLayout}

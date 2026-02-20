@@ -148,7 +148,7 @@ export function CreatePrModal({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 p-4 shadow-float backdrop-blur-xl focus:outline-none max-h-[84vh] overflow-y-auto">
+        <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-card border border-border/40 p-3 shadow-float focus:outline-none max-h-[84vh] overflow-y-auto">
           <Dialog.Title className="text-sm font-semibold text-fg">Create Pull Request</Dialog.Title>
           <Dialog.Description className="mt-1 text-xs text-muted-fg">
             {step === "select-type" && "Choose a PR creation mode."}
@@ -169,7 +169,7 @@ export function CreatePrModal({
                       setStep("configure");
                     }}
                     className={cn(
-                      "flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors",
+                      "flex w-full items-center gap-3 rounded border px-4 py-3 text-left transition-colors",
                       "border-border bg-card/50 hover:bg-card/80 hover:border-accent/30"
                     )}
                   >

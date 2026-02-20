@@ -54,9 +54,8 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
-import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createByokLlmService } from "../byok/byokLlmService";
+import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createPackService } from "../packs/packService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
@@ -87,7 +86,7 @@ type ConflictProposalRow = {
   lane_id: string;
   peer_lane_id: string | null;
   prediction_id: string | null;
-  source: "hosted" | "local";
+  source: "subscription" | "local";
   confidence: number | null;
   explanation: string | null;
   diff_patch: string;
@@ -151,6 +150,10 @@ const STALE_MS = 5 * 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function safeJsonArray<T>(raw: string | null): T[] {
@@ -431,6 +434,59 @@ function extractCommitPathsFromUnifiedDiff(diffPatch: string): string[] {
   return Array.from(paths).sort((a, b) => a.localeCompare(b));
 }
 
+function extractDiffPatchFromText(text: string): string {
+  const fence = text.match(/```diff\s*\n([\s\S]*?)\n```/i);
+  if (fence?.[1]) {
+    const raw = fence[1].trim();
+    return raw.length ? `${raw}\n` : "";
+  }
+  return "";
+}
+
+function stripDiffFence(text: string): string {
+  return text.replace(/```diff\s*\n[\s\S]*?\n```/gi, "").trim();
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const raw = text.trim();
+  if (!raw) return null;
+  if (raw.startsWith("{") && raw.endsWith("}")) return raw;
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    const inner = fenced[1].trim();
+    if (inner.startsWith("{") && inner.endsWith("}")) return inner;
+  }
+
+  const first = raw.indexOf("{");
+  const last = raw.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    const candidate = raw.slice(first, last + 1).trim();
+    if (candidate.startsWith("{") && candidate.endsWith("}")) return candidate;
+  }
+  return null;
+}
+
+function parseStructuredObject(text: string): Record<string, unknown> | null {
+  const candidate = extractFirstJsonObject(text);
+  if (!candidate) return null;
+  try {
+    const parsed = JSON.parse(candidate);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeConfidence(value: unknown): number | null {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return null;
+  if (raw < 0) return 0;
+  if (raw > 1) return 1;
+  return raw;
+}
+
 function parseHunksFromDiff(diffText: string, kind: ConflictFileHunkV1["kind"]): ConflictFileHunkV1[] {
   const hunks: ConflictFileHunkV1[] = [];
   for (const line of diffText.split(/\r?\n/)) {
@@ -483,10 +539,9 @@ export function createConflictService({
   projectRoot,
   laneService,
   projectConfigService,
+  aiIntegrationService,
   packService,
   operationService,
-  hostedAgentService,
-  byokLlmService,
   conflictPacksDir,
   onEvent
 }: {
@@ -496,10 +551,9 @@ export function createConflictService({
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   packService?: ReturnType<typeof createPackService>;
   operationService?: ReturnType<typeof createOperationService>;
-  hostedAgentService?: ReturnType<typeof createHostedAgentService>;
-  byokLlmService?: ReturnType<typeof createByokLlmService>;
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
@@ -1910,6 +1964,27 @@ export function createConflictService({
     return null;
   };
 
+  const readConflictResolutionConfig = () => {
+    const config = projectConfigService.get().effective.ai?.conflictResolution ?? {};
+    const thresholdRaw = Number(config.autoApplyThreshold ?? NaN);
+    const threshold = Number.isFinite(thresholdRaw) ? Math.max(0, Math.min(1, thresholdRaw)) : 0.85;
+    return {
+      changeTarget: config.changeTarget ?? "ai_decides",
+      postResolution: config.postResolution ?? "staged",
+      prBehavior: config.prBehavior ?? "do_nothing",
+      autonomy: config.autonomy ?? "propose_only",
+      autoApplyThreshold: threshold
+    } as const;
+  };
+
+  const mapPostResolutionToApplyMode = (
+    postResolution: ReturnType<typeof readConflictResolutionConfig>["postResolution"]
+  ): ApplyConflictProposalArgs["applyMode"] => {
+    if (postResolution === "unstaged") return "unstaged";
+    if (postResolution === "commit") return "commit";
+    return "staged";
+  };
+
   const prepareProposal = async (args: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
     cleanupPreparedContexts();
 
@@ -1918,12 +1993,9 @@ export function createConflictService({
     const peerLaneId = args.peerLaneId?.trim() || null;
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    const usingHosted = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
-    const usingByok = providerMode === "byok";
-    if (usingByok && !byokLlmService) {
-      throw new Error("BYOK provider is enabled but BYOK LLM service is unavailable.");
-    }
-    const provider: ConflictProposalProvider = usingHosted ? "hosted" : "byok";
+    const aiMode = aiIntegrationService?.getMode() ?? "guest";
+    const subscriptionAvailable = providerMode !== "guest" && aiMode === "subscription" && Boolean(aiIntegrationService);
+    const provider: ConflictProposalProvider = "subscription";
 
     const lanes = await listActiveLanes();
     const lane = lanes.find((entry) => entry.id === laneId);
@@ -1938,8 +2010,8 @@ export function createConflictService({
     }
 
     const warnings: string[] = [];
-    if (!usingHosted && !usingByok) {
-      warnings.push("Provider mode is not Hosted/BYOK; building context for external resolver only.");
+    if (!subscriptionAvailable) {
+      warnings.push("Subscription AI is unavailable; proposal preview is prepared for manual/external resolution.");
     }
     const MAX_FILES = 6;
     const MAX_DIFF_CHARS = 6_000;
@@ -2416,36 +2488,65 @@ export function createConflictService({
     }
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    const usingHosted = providerMode === "hosted" && hostedAgentService?.getStatus().enabled;
-    const usingByok = providerMode === "byok";
-
-    if (!usingHosted && !usingByok) {
-      throw new Error("AI conflict resolution requires Hosted or BYOK provider mode.");
-    }
-    if (usingByok && !byokLlmService) {
-      throw new Error("BYOK provider is enabled but BYOK LLM service is unavailable.");
+    const aiMode = aiIntegrationService?.getMode() ?? "guest";
+    const subscriptionReady = providerMode !== "guest" && aiMode === "subscription" && Boolean(aiIntegrationService);
+    if (!subscriptionReady || !aiIntegrationService) {
+      throw new Error("AI conflict resolution requires a subscription provider (Claude and/or Codex CLI).");
     }
 
-    const provider: ConflictProposalProvider = usingHosted ? "hosted" : "byok";
+    const provider: ConflictProposalProvider = "subscription";
     if (provider !== prepared.provider) {
       throw new Error("Provider mode changed since preview. Prepare a fresh preview before requesting AI.");
     }
 
-    const result = usingHosted
-      ? await hostedAgentService!.requestConflictProposal({
-          laneId,
-          peerLaneId,
-          conflictContext: prepared.conflictContext
-        })
-      : await byokLlmService!.proposeConflictResolution({
-          laneId,
-          peerLaneId,
-          conflictContext: prepared.conflictContext
-        });
+    const laneGit = laneService.getLaneBaseAndBranch(laneId);
+    const outputSchema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        explanation: { type: "string" },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+        diffPatch: { type: "string" }
+      },
+      required: ["explanation", "confidence", "diffPatch"]
+    };
+    const prompt = [
+      "You are ADE's conflict resolution assistant.",
+      "Produce a safe proposal using only provided context. Do not invent files or hunks.",
+      "",
+      "Return JSON with keys: explanation, confidence (0..1), diffPatch (unified diff).",
+      "If context is insufficient for a safe patch, set diffPatch to an empty string and explain why.",
+      "",
+      "Conflict Context JSON:",
+      JSON.stringify(prepared.conflictContext, null, 2)
+    ].join("\n");
+
+    const aiResult = await aiIntegrationService.requestConflictProposal({
+      laneId,
+      cwd: laneGit.worktreePath,
+      prompt,
+      jsonSchema: outputSchema
+    });
+    const structured =
+      (isRecord(aiResult.structuredOutput) ? aiResult.structuredOutput : null) ??
+      parseStructuredObject(aiResult.text) ??
+      {};
+    const diffPatchFromStructured = asString(structured.diffPatch).trim();
+    const explanationFromStructured = asString(structured.explanation).trim();
+    const result = {
+      diffPatch: diffPatchFromStructured.length ? `${diffPatchFromStructured}\n` : extractDiffPatchFromText(aiResult.text),
+      explanation: explanationFromStructured.length ? explanationFromStructured : stripDiffFence(aiResult.text),
+      rawContent: aiResult.text,
+      confidence: normalizeConfidence(structured.confidence),
+      model: aiResult.model,
+      provider: aiResult.provider,
+      sessionId: aiResult.sessionId
+    };
 
     const createdAt = new Date().toISOString();
     const proposalId = randomUUID();
     const predictionId = getLatestPredictionId(laneId, peerLaneId);
+    const resolutionConfig = readConflictResolutionConfig();
 
     db.run(
       `
@@ -2474,18 +2575,21 @@ export function createConflictService({
         laneId,
         peerLaneId,
         predictionId,
-        usingHosted ? "hosted" : "local",
+        "local",
         result.confidence,
         result.explanation,
         result.diffPatch,
-        usingHosted ? (result as any).jobId : null,
-        usingHosted ? (result as any).artifactId : null,
+        null,
+        null,
         JSON.stringify({
           provider,
-          model: usingHosted ? null : (result as any).model,
+          model: result.model,
+          providerName: result.provider,
+          sessionId: result.sessionId,
           rawContent: result.rawContent,
           contextDigest,
-          preparedAt: prepared.preparedAt
+          preparedAt: prepared.preparedAt,
+          resolutionConfig
         }),
         createdAt,
         createdAt
@@ -2494,6 +2598,35 @@ export function createConflictService({
 
     const row = getProposalRow(proposalId);
     if (!row) throw new Error("Failed to persist conflict proposal");
+
+    if (
+      resolutionConfig.autonomy === "auto_apply" &&
+      typeof result.confidence === "number" &&
+      result.confidence >= resolutionConfig.autoApplyThreshold &&
+      result.diffPatch.trim().length > 0
+    ) {
+      try {
+        const applyMode = mapPostResolutionToApplyMode(resolutionConfig.postResolution) ?? "staged";
+        const generatedCommitMessage =
+          applyMode === "commit"
+            ? `Resolve conflicts in ${lane.name} (${new Date().toISOString().slice(0, 10)})`
+            : undefined;
+        return await applyProposal({
+          laneId,
+          proposalId,
+          applyMode,
+          ...(generatedCommitMessage ? { commitMessage: generatedCommitMessage } : {})
+        });
+      } catch (error) {
+        logger.warn("conflicts.proposal_auto_apply_failed", {
+          laneId,
+          peerLaneId,
+          proposalId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
     return rowToProposal(row);
   };
 
@@ -3011,8 +3144,13 @@ export function createConflictService({
       throw new Error("Proposal does not include a diff patch");
     }
 
-    const applyMode = args.applyMode ?? "unstaged";
-    const commitMessage = args.commitMessage?.trim() ?? "";
+    const resolutionConfig = readConflictResolutionConfig();
+    const applyMode = args.applyMode ?? mapPostResolutionToApplyMode(resolutionConfig.postResolution) ?? "staged";
+    const commitMessage =
+      args.commitMessage?.trim() ??
+      (applyMode === "commit"
+        ? `Resolve conflicts via ADE (${new Date().toISOString().slice(0, 10)})`
+        : "");
     if (applyMode === "commit" && !commitMessage) {
       throw new Error("commitMessage is required when applyMode='commit'");
     }

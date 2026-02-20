@@ -946,7 +946,7 @@ export function LanesPage() {
             <div className="relative" ref={branchDropdownRef}>
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/30 bg-[--color-surface-overlay] px-2.5 py-1 text-xs font-medium text-fg shadow-card transition-colors hover:bg-emerald-500/12"
+                className="inline-flex items-center gap-1.5 rounded border border-emerald-500/30 bg-[--color-surface-overlay] px-2.5 py-1 text-xs font-medium text-fg shadow-card transition-colors hover:bg-emerald-500/12"
                 onClick={() => setBranchDropdownOpen((prev) => !prev)}
                 disabled={branchCheckoutBusy}
               >
@@ -955,7 +955,7 @@ export function LanesPage() {
                 <ChevronDown className="h-3 w-3 opacity-60" />
               </button>
               {branchDropdownOpen ? (
-                <div className="absolute left-0 top-full z-50 mt-1 w-72 max-h-80 overflow-auto rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+                <div className="absolute left-0 top-full z-50 mt-1 w-72 max-h-80 overflow-auto rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
                   <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Local branches</div>
                   {localPrimaryBranches.map((branch) => (
                     <button
@@ -1008,7 +1008,7 @@ export function LanesPage() {
             </div>
           ) : null}
           {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
-            <div className="inline-flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-800">
+            <div className="inline-flex items-center gap-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-800">
               <span>{branchCheckoutError}</span>
               <button
                 type="button"
@@ -1026,7 +1026,7 @@ export function LanesPage() {
               value={laneFilter}
               onChange={(event) => setLaneFilter(event.target.value)}
               placeholder="Filter lanes (is:dirty is:pinned type:worktree)"
-              className="h-7 min-w-[280px] rounded-xl bg-muted/30 shadow-card px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
+              className="h-7 min-w-[280px] rounded bg-muted/30 shadow-card px-2 pr-7 text-xs outline-none placeholder:text-muted-fg"
             />
             {laneFilter.trim().length > 0 ? (
               <button
@@ -1045,7 +1045,7 @@ export function LanesPage() {
               <Plus className="h-3 w-3 mr-0.5" /> Lane <ChevronDown className="h-3 w-3 ml-0.5 opacity-60" />
             </Button>
             {addLaneDropdownOpen ? (
-              <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-xl border border-border/60 bg-[--color-surface-overlay] py-1 shadow-float backdrop-blur-xl">
+              <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
@@ -1113,7 +1113,7 @@ export function LanesPage() {
               key={lane.id}
               type="button"
               className={cn(
-                "group inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-xs transition-colors",
+                "group inline-flex max-w-[320px] shrink-0 items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
                 isSelected
                   ? "bg-accent/20 text-fg shadow-card ring-1 ring-accent/40 font-semibold"
                   : isVisible
@@ -1235,7 +1235,7 @@ export function LanesPage() {
             <div className="text-[11px] text-muted-fg">{visibleRestackSuggestions.length} lane(s) behind parent</div>
           </div>
           {showAutoRebaseSettingsHint ? (
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/25 bg-sky-500/8 px-2 py-1.5">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded border border-sky-500/25 bg-sky-500/8 px-2 py-1.5">
               <div className="text-[11px] text-sky-700">
                 Auto-rebase is off. Enable it in Settings to auto-restack child lanes after parent updates.
               </div>
@@ -1250,7 +1250,7 @@ export function LanesPage() {
               if (!lane) return null;
               const busy = restackBusyLaneId === s.laneId;
               return (
-                <div key={`restack:${s.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded-xl shadow-card bg-card/40 p-2">
+                <div key={`restack:${s.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded shadow-card bg-card/40 p-2">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
@@ -1278,7 +1278,7 @@ export function LanesPage() {
               <div className="text-[11px] text-muted-fg">+ {visibleRestackSuggestions.length - 3} more suggestions.</div>
             ) : null}
             {restackSuggestionError ? (
-              <div className="rounded-xl bg-red-500/10 p-2 text-[11px] text-red-200">{restackSuggestionError}</div>
+              <div className="rounded bg-red-500/10 p-2 text-[11px] text-red-200">{restackSuggestionError}</div>
             ) : null}
           </div>
         </div>
@@ -1286,7 +1286,7 @@ export function LanesPage() {
 
       {showAutoRebaseSettingsHint && visibleRestackSuggestions.length === 0 ? (
         <div className="border-b border-border/15 bg-sky-500/8 px-2 py-2">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/25 bg-card/30 px-2 py-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-sky-500/25 bg-card/30 px-2 py-1.5">
             <div className="text-[11px] text-sky-700">
               Auto-rebase is off. Enable it in Settings to auto-restack child lanes after parent updates.
             </div>
@@ -1308,7 +1308,7 @@ export function LanesPage() {
               const lane = lanesById.get(status.laneId) ?? null;
               if (!lane) return null;
               return (
-                <div key={`auto-rebase:${status.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded-xl bg-card/40 p-2 shadow-card">
+                <div key={`auto-rebase:${status.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded bg-card/40 p-2 shadow-card">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
@@ -1410,7 +1410,7 @@ export function LanesPage() {
             <Button
               variant="ghost"
               size="sm"
-              className="rounded-xl bg-bg/80 backdrop-blur-sm shadow-card hover:bg-muted/60"
+              className="rounded bg-bg/80 backdrop-blur-sm shadow-card hover:bg-muted/60"
               onClick={() => setExpandedLaneId(null)}
               title="Exit fullscreen (Esc)"
             >
@@ -1431,7 +1431,7 @@ export function LanesPage() {
         const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
         return (
           <div
-            className="fixed z-40 min-w-[190px] rounded-xl bg-[--color-surface-overlay] p-1 shadow-float backdrop-blur-xl"
+            className="fixed z-40 min-w-[190px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
             style={{ left: laneContextMenu.x, top: laneContextMenu.y }}
             onPointerDown={(e) => e.stopPropagation()}
           >
@@ -1468,7 +1468,7 @@ export function LanesPage() {
       <Dialog.Root open={manageOpen} onOpenChange={setManageOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
-          <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-card/95 backdrop-blur-xl p-4 shadow-float focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded bg-card border border-border/40 p-3 shadow-float focus:outline-none">
             <div className="mb-4 flex items-center justify-between gap-3">
               <Dialog.Title className="text-lg font-semibold">Manage lane</Dialog.Title>
               <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
@@ -1479,31 +1479,31 @@ export function LanesPage() {
               <div className="text-sm text-muted-fg">Primary lane cannot be archived or deleted.</div>
             ) : (
               <div className="space-y-3">
-                <div className="rounded-xl shadow-card bg-bg/40 p-3 text-xs">
+                <div className="rounded shadow-card bg-bg/40 p-3 text-xs">
                   <div><span className="text-muted-fg">Lane:</span> {managedLane.name}</div>
                   <div><span className="text-muted-fg">Branch:</span> {managedLane.branchRef}</div>
                   <div className="truncate"><span className="text-muted-fg">Worktree:</span> {managedLane.worktreePath}</div>
                 </div>
-                <div className="rounded-xl shadow-card bg-bg/40 p-3">
+                <div className="rounded shadow-card bg-bg/40 p-3">
                   <div className="mb-2 text-xs font-semibold">Archive</div>
                   <div className="mb-2 text-xs text-muted-fg">Hide lane from ADE without deleting worktree or branches.</div>
                   <Button size="sm" variant="outline" disabled={laneActionBusy} onClick={() => { archiveManagedLane().catch(() => {}); }}>
                     Archive lane from ADE
                   </Button>
                 </div>
-                <div className="rounded-xl shadow-card bg-red-50 p-3">
+                <div className="rounded shadow-card bg-red-50 p-3">
                   <div className="mb-2 text-xs font-semibold text-red-900">Delete</div>
                   <div className="mb-2 text-xs text-red-800">This removes the lane worktree from disk.</div>
                   <div className="mb-2 grid gap-2 md:grid-cols-3">
-                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                    <label className="inline-flex items-center gap-2 rounded bg-card/60 shadow-card px-2 py-1 text-xs">
                       <input type="radio" name="lane-delete-mode" checked={deleteMode === "worktree"} onChange={() => setDeleteMode("worktree")} />
                       Worktree only
                     </label>
-                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                    <label className="inline-flex items-center gap-2 rounded bg-card/60 shadow-card px-2 py-1 text-xs">
                       <input type="radio" name="lane-delete-mode" checked={deleteMode === "local_branch"} onChange={() => setDeleteMode("local_branch")} />
                       + local branch
                     </label>
-                    <label className="inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                    <label className="inline-flex items-center gap-2 rounded bg-card/60 shadow-card px-2 py-1 text-xs">
                       <input type="radio" name="lane-delete-mode" checked={deleteMode === "remote_branch"} onChange={() => setDeleteMode("remote_branch")} />
                       + local + remote
                     </label>
@@ -1511,10 +1511,10 @@ export function LanesPage() {
                   {deleteMode === "remote_branch" ? (
                     <div className="mb-2">
                       <label className="mb-1 block text-xs text-muted-fg">Remote name</label>
-                      <input value={deleteRemoteName} onChange={(event) => setDeleteRemoteName(event.target.value)} className="h-8 w-full rounded-xl bg-card/60 shadow-card px-2 text-xs outline-none" placeholder="origin" />
+                      <input value={deleteRemoteName} onChange={(event) => setDeleteRemoteName(event.target.value)} className="h-8 w-full rounded bg-card/60 shadow-card px-2 text-xs outline-none" placeholder="origin" />
                     </div>
                   ) : null}
-                  <label className="mb-2 inline-flex items-center gap-2 rounded-xl bg-card/60 shadow-card px-2 py-1 text-xs">
+                  <label className="mb-2 inline-flex items-center gap-2 rounded bg-card/60 shadow-card px-2 py-1 text-xs">
                     <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} />
                     Force delete
                   </label>
@@ -1522,9 +1522,9 @@ export function LanesPage() {
                     <label className="mb-1 block text-xs text-muted-fg">
                       Type <span className="font-semibold text-red-900">{deletePhrase}</span> to confirm
                     </label>
-                    <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} className="h-8 w-full rounded-xl bg-card/60 shadow-card px-2 text-xs outline-none" />
+                    <input value={deleteConfirmText} onChange={(event) => setDeleteConfirmText(event.target.value)} className="h-8 w-full rounded bg-card/60 shadow-card px-2 text-xs outline-none" />
                   </div>
-                  {laneActionError ? <div className="mb-2 rounded-xl bg-red-100 shadow-card px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
+                  {laneActionError ? <div className="mb-2 rounded bg-red-100 shadow-card px-2 py-1 text-xs text-red-900">{laneActionError}</div> : null}
                   <Button size="sm" variant="primary" disabled={laneActionBusy || deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()} onClick={() => { deleteManagedLane().catch(() => {}); }}>
                     {laneActionBusy ? "Working..." : "Delete lane"}
                   </Button>
@@ -1539,7 +1539,7 @@ export function LanesPage() {
       <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(560px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Create lane</Dialog.Title>
               <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
@@ -1552,13 +1552,13 @@ export function LanesPage() {
                   value={createLaneName}
                   onChange={(e) => setCreateLaneName(e.target.value)}
                   placeholder="e.g. feature/auth-refresh"
-                  className="mt-1 h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
+                  className="mt-1 h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
                   autoFocus
                 />
               </div>
 
               {/* Child lane toggle */}
-              <label className="flex items-center gap-2 rounded-xl bg-muted/20 px-3 py-2 text-xs cursor-pointer">
+              <label className="flex items-center gap-2 rounded bg-muted/20 px-3 py-2 text-xs cursor-pointer">
                 <input
                   type="checkbox"
                   checked={createAsChild}
@@ -1577,7 +1577,7 @@ export function LanesPage() {
                   <select
                     value={createParentLaneId}
                     onChange={(event) => setCreateParentLaneId(event.target.value)}
-                    className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
+                    className="h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none"
                   >
                     <option value="">Select a parent lane...</option>
                     {lanes.map((lane) => (
@@ -1591,7 +1591,7 @@ export function LanesPage() {
                   <select
                     value={createBaseBranch}
                     onChange={(event) => setCreateBaseBranch(event.target.value)}
-                    className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none"
+                    className="h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none"
                   >
                     {createBranches.filter((b) => !b.isRemote).map((branch) => (
                       <option key={branch.name} value={branch.name}>
@@ -1650,7 +1650,7 @@ export function LanesPage() {
       <Dialog.Root open={attachOpen} onOpenChange={setAttachOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/5 backdrop-blur-md" />
-          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded-2xl bg-bg/95 backdrop-blur-xl p-3 shadow-float focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
             <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="text-sm font-semibold">Attach lane</Dialog.Title>
               <Dialog.Close asChild><Button variant="ghost" size="sm">Esc</Button></Dialog.Close>
@@ -1658,11 +1658,11 @@ export function LanesPage() {
             <div className="mt-3 space-y-2">
               <div>
                 <div className="mb-1 text-xs text-muted-fg">Lane name</div>
-                <input value={attachName} onChange={(e) => setAttachName(e.target.value)} placeholder="e.g. bugfix/from-other-worktree" className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg" autoFocus />
+                <input value={attachName} onChange={(e) => setAttachName(e.target.value)} placeholder="e.g. bugfix/from-other-worktree" className="h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg" autoFocus />
               </div>
               <div>
                 <div className="mb-1 text-xs text-muted-fg">Attached path</div>
-                <input value={attachPath} onChange={(e) => setAttachPath(e.target.value)} placeholder="/absolute/path/to/existing/worktree" className="h-10 w-full rounded-xl bg-muted/30 shadow-card px-3 font-mono text-xs outline-none placeholder:text-muted-fg" />
+                <input value={attachPath} onChange={(e) => setAttachPath(e.target.value)} placeholder="/absolute/path/to/existing/worktree" className="h-10 w-full rounded bg-muted/30 shadow-card px-3 font-mono text-xs outline-none placeholder:text-muted-fg" />
               </div>
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">

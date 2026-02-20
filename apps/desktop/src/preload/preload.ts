@@ -19,6 +19,7 @@ import type {
   AutomationSaveDraftResult,
   AutomationSimulateRequest,
   AutomationSimulateResult,
+  AiSettingsStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -99,19 +100,6 @@ import type {
   ExportHistoryArgs,
   ExportHistoryResult,
   ExportConfigBundleResult,
-  HostedArtifactResult,
-  HostedBootstrapConfig,
-  HostedGitHubAppStatus,
-  HostedGitHubConnectStartResult,
-  HostedGitHubDisconnectResult,
-  HostedGitHubEventsResult,
-  HostedJobStatusResult,
-  HostedJobSubmissionArgs,
-  HostedJobSubmissionResult,
-  HostedMirrorDeleteResult,
-  HostedSignInArgs,
-  HostedSignInResult,
-  HostedStatus,
   AgentTool,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -142,6 +130,9 @@ import type {
   GetLaneExportArgs,
   GetProjectExportArgs,
   GetConflictExportArgs,
+  GetFeatureExportArgs,
+  GetPlanExportArgs,
+  GetMissionExportArgs,
   GetMissionPackArgs,
   RefreshMissionPackArgs,
   ListPackEventsSinceArgs,
@@ -269,6 +260,9 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (): Promise<KeybindingsSnapshot> => ipcRenderer.invoke(IPC.keybindingsGet),
     set: async (overrides: KeybindingOverride[]): Promise<KeybindingsSnapshot> =>
       ipcRenderer.invoke(IPC.keybindingsSet, { overrides })
+  },
+  ai: {
+    getStatus: async (): Promise<AiSettingsStatus> => ipcRenderer.invoke(IPC.aiGetStatus)
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> => ipcRenderer.invoke(IPC.agentToolsDetect)
@@ -569,6 +563,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.packsGetLaneExport, args),
     getConflictExport: async (args: GetConflictExportArgs): Promise<PackExport> =>
       ipcRenderer.invoke(IPC.packsGetConflictExport, args),
+    getFeatureExport: async (args: GetFeatureExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetFeatureExport, args),
+    getPlanExport: async (args: GetPlanExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetPlanExport, args),
+    getMissionExport: async (args: GetMissionExportArgs): Promise<PackExport> =>
+      ipcRenderer.invoke(IPC.packsGetMissionExport, args),
     refreshLanePack: async (laneId: string): Promise<PackSummary> => ipcRenderer.invoke(IPC.packsRefreshLanePack, { laneId }),
     refreshProjectPack: async (args: { laneId?: string | null } = {}): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsRefreshProjectPack, args),
@@ -580,10 +580,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.packsSavePlanPack, args),
     refreshMissionPack: async (args: RefreshMissionPackArgs): Promise<PackSummary> =>
       ipcRenderer.invoke(IPC.packsRefreshMissionPack, args),
-    applyHostedNarrative: async (args: { laneId: string; narrative: string }): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsApplyHostedNarrative, args),
-    generateNarrative: async (laneId: string): Promise<PackSummary> =>
-      ipcRenderer.invoke(IPC.packsGenerateNarrative, { laneId }),
+    refreshPlanPack: async (laneId: string): Promise<PackSummary> =>
+      ipcRenderer.invoke(IPC.packsRefreshPlanPack, { laneId }),
     listVersions: async (args: { packKey: string; limit?: number }): Promise<PackVersionSummary[]> =>
       ipcRenderer.invoke(IPC.packsListVersions, args),
     getVersion: async (versionId: string): Promise<PackVersion> => ipcRenderer.invoke(IPC.packsGetVersion, { versionId }),
@@ -639,26 +637,6 @@ contextBridge.exposeInMainWorld("ade", {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.prsEvent, listener);
-    }
-  },
-  hosted: {
-    getStatus: async (): Promise<HostedStatus> => ipcRenderer.invoke(IPC.hostedGetStatus),
-    getBootstrapConfig: async (): Promise<HostedBootstrapConfig | null> => ipcRenderer.invoke(IPC.hostedGetBootstrapConfig),
-    applyBootstrapConfig: async (): Promise<HostedBootstrapConfig> => ipcRenderer.invoke(IPC.hostedApplyBootstrapConfig),
-    signIn: async (args: HostedSignInArgs = {}): Promise<HostedSignInResult> => ipcRenderer.invoke(IPC.hostedSignIn, args),
-    signOut: async (): Promise<void> => ipcRenderer.invoke(IPC.hostedSignOut),
-    deleteMirrorData: async (): Promise<HostedMirrorDeleteResult> => ipcRenderer.invoke(IPC.hostedDeleteMirrorData),
-    submitJob: async (args: HostedJobSubmissionArgs): Promise<HostedJobSubmissionResult> =>
-      ipcRenderer.invoke(IPC.hostedSubmitJob, args),
-    getJob: async (jobId: string): Promise<HostedJobStatusResult> =>
-      ipcRenderer.invoke(IPC.hostedGetJob, { jobId }),
-    getArtifact: async (artifactId: string): Promise<HostedArtifactResult> =>
-      ipcRenderer.invoke(IPC.hostedGetArtifact, { artifactId }),
-    github: {
-      getStatus: async (): Promise<HostedGitHubAppStatus> => ipcRenderer.invoke(IPC.hostedGithubGetStatus),
-      connectStart: async (): Promise<HostedGitHubConnectStartResult> => ipcRenderer.invoke(IPC.hostedGithubConnectStart),
-      disconnect: async (): Promise<HostedGitHubDisconnectResult> => ipcRenderer.invoke(IPC.hostedGithubDisconnect),
-      listEvents: async (): Promise<HostedGitHubEventsResult> => ipcRenderer.invoke(IPC.hostedGithubListEvents)
     }
   },
   history: {

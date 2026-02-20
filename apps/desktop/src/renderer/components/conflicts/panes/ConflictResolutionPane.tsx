@@ -14,6 +14,18 @@ import { cn } from "../../ui/cn";
 import { ResolverTerminalModal } from "../modals/ResolverTerminalModal";
 import { AbortDialog } from "../modals/AbortDialog";
 
+type ConflictPolicyDraft = {
+  changeTarget: "target" | "source" | "ai_decides";
+  postResolution: "unstaged" | "staged" | "commit";
+  prBehavior: "do_nothing" | "open_pr" | "add_to_existing";
+  autonomy: "propose_only" | "auto_apply";
+  autoApplyThreshold: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 function Spinner({ className }: { className?: string }) {
   return (
     <svg className={`animate-spin ${className ?? "h-4 w-4"}`} viewBox="0 0 24 24" fill="none">
@@ -50,6 +62,57 @@ export function ConflictResolutionPane() {
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
   const targetLaneId = proposalPeerLaneId ?? selectedLane?.parentLaneId ?? primaryLane?.id ?? null;
   const targetLane = React.useMemo(() => lanes.find((l) => l.id === targetLaneId) ?? null, [lanes, targetLaneId]);
+  const [policyDraft, setPolicyDraft] = React.useState<ConflictPolicyDraft | null>(null);
+  const [policySaving, setPolicySaving] = React.useState(false);
+  const [policyError, setPolicyError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void window.ade.projectConfig
+      .get()
+      .then((snapshot) => {
+        if (cancelled) return;
+        const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
+        const conflict = isRecord(effectiveAi.conflictResolution)
+          ? (effectiveAi.conflictResolution as Record<string, unknown>)
+          : {};
+        setPolicyDraft({
+          changeTarget:
+            conflict.changeTarget === "target" || conflict.changeTarget === "source" || conflict.changeTarget === "ai_decides"
+              ? (conflict.changeTarget as ConflictPolicyDraft["changeTarget"])
+              : "ai_decides",
+          postResolution:
+            conflict.postResolution === "unstaged" || conflict.postResolution === "staged" || conflict.postResolution === "commit"
+              ? (conflict.postResolution as ConflictPolicyDraft["postResolution"])
+              : "staged",
+          prBehavior:
+            conflict.prBehavior === "do_nothing" || conflict.prBehavior === "open_pr" || conflict.prBehavior === "add_to_existing"
+              ? (conflict.prBehavior as ConflictPolicyDraft["prBehavior"])
+              : "do_nothing",
+          autonomy:
+            conflict.autonomy === "propose_only" || conflict.autonomy === "auto_apply"
+              ? (conflict.autonomy as ConflictPolicyDraft["autonomy"])
+              : "propose_only",
+          autoApplyThreshold:
+            typeof conflict.autoApplyThreshold === "number" && Number.isFinite(conflict.autoApplyThreshold)
+              ? String(conflict.autoApplyThreshold)
+              : "0.85"
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPolicyDraft({
+          changeTarget: "ai_decides",
+          postResolution: "staged",
+          prBehavior: "do_nothing",
+          autonomy: "propose_only",
+          autoApplyThreshold: "0.85"
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Fetch ADE AI suggestion when source/target pair changes
   React.useEffect(() => {
@@ -91,8 +154,140 @@ export function ConflictResolutionPane() {
     <div className="h-full overflow-auto p-3 space-y-4">
       <div className="text-xs font-semibold text-fg uppercase tracking-wide">Resolution</div>
 
+      {/* 0. Policy controls (persisted to ai.conflict_resolution) */}
+      <div className="rounded border border-border bg-card/30 p-3 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-medium text-fg">AI Resolution Policy</div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!policyDraft || policySaving}
+            onClick={() => {
+              if (!policyDraft) return;
+              setPolicySaving(true);
+              setPolicyError(null);
+              void window.ade.projectConfig
+                .get()
+                .then((snapshot) => {
+                  const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+                  const threshold = Number(policyDraft.autoApplyThreshold);
+                  const nextAi = {
+                    ...localAi,
+                    conflictResolution: {
+                      changeTarget: policyDraft.changeTarget,
+                      postResolution: policyDraft.postResolution,
+                      prBehavior: policyDraft.prBehavior,
+                      autonomy: policyDraft.autonomy,
+                      ...(Number.isFinite(threshold) ? { autoApplyThreshold: Math.max(0, Math.min(1, threshold)) } : {})
+                    }
+                  };
+                  return window.ade.projectConfig.save({
+                    shared: snapshot.shared,
+                    local: {
+                      ...snapshot.local,
+                      ai: nextAi
+                    }
+                  });
+                })
+                .catch((err) => {
+                  setPolicyError(err instanceof Error ? err.message : String(err));
+                })
+                .finally(() => setPolicySaving(false));
+            }}
+          >
+            {policySaving ? "Saving..." : "Save Policy"}
+          </Button>
+        </div>
+
+        {policyDraft ? (
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <div>
+              <div className="mb-1 text-[11px] text-muted-fg">Where to apply changes</div>
+              <select
+                className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+                value={policyDraft.changeTarget}
+                onChange={(e) =>
+                  setPolicyDraft((prev) =>
+                    prev ? { ...prev, changeTarget: e.target.value as ConflictPolicyDraft["changeTarget"] } : prev
+                  )
+                }
+              >
+                <option value="target">Target branch</option>
+                <option value="source">Source branch</option>
+                <option value="ai_decides">AI decides</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="mb-1 text-[11px] text-muted-fg">Post-resolution action</div>
+              <select
+                className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+                value={policyDraft.postResolution}
+                onChange={(e) =>
+                  setPolicyDraft((prev) =>
+                    prev ? { ...prev, postResolution: e.target.value as ConflictPolicyDraft["postResolution"] } : prev
+                  )
+                }
+              >
+                <option value="unstaged">Apply unstaged</option>
+                <option value="staged">Stage changes</option>
+                <option value="commit">Commit changes</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="mb-1 text-[11px] text-muted-fg">PR behavior</div>
+              <select
+                className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+                value={policyDraft.prBehavior}
+                onChange={(e) =>
+                  setPolicyDraft((prev) =>
+                    prev ? { ...prev, prBehavior: e.target.value as ConflictPolicyDraft["prBehavior"] } : prev
+                  )
+                }
+              >
+                <option value="do_nothing">Do nothing</option>
+                <option value="open_pr">Open PR if missing</option>
+                <option value="add_to_existing">Add to existing PR</option>
+              </select>
+            </div>
+
+            <div>
+              <div className="mb-1 text-[11px] text-muted-fg">AI autonomy</div>
+              <select
+                className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+                value={policyDraft.autonomy}
+                onChange={(e) =>
+                  setPolicyDraft((prev) =>
+                    prev ? { ...prev, autonomy: e.target.value as ConflictPolicyDraft["autonomy"] } : prev
+                  )
+                }
+              >
+                <option value="propose_only">Propose only</option>
+                <option value="auto_apply">Auto-apply above threshold</option>
+              </select>
+            </div>
+
+            {policyDraft.autonomy === "auto_apply" ? (
+              <div className="md:col-span-2">
+                <div className="mb-1 text-[11px] text-muted-fg">Confidence threshold (0-1)</div>
+                <input
+                  className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
+                  value={policyDraft.autoApplyThreshold}
+                  onChange={(e) =>
+                    setPolicyDraft((prev) => (prev ? { ...prev, autoApplyThreshold: e.target.value } : prev))
+                  }
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {policyError ? <div className="text-[11px] text-red-500">{policyError}</div> : null}
+      </div>
+
       {/* 1. Worktree Selection + ADE AI Suggestion */}
-      <div className="rounded-xl shadow-card bg-card/30 p-3 space-y-3">
+      <div className="rounded shadow-card bg-card/30 p-3 space-y-3">
         <div className="text-xs font-medium text-fg">Worktree to resolve in</div>
         <div className="flex gap-2">
           {(["target", "source"] as const).map((choice) => {
@@ -135,7 +330,7 @@ export function ConflictResolutionPane() {
 
       {/* 2. Active git conflict — continue/abort */}
       {gitConflict?.inProgress && gitConflict.kind && (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-3 space-y-2">
+        <div className="rounded border border-red-500/30 bg-red-500/5 p-3 space-y-2">
           <div className="text-xs font-semibold text-red-600">
             Active {gitConflict.kind} — {gitConflict.conflictedFiles.length} conflicted files
           </div>

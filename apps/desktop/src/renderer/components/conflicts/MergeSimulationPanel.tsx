@@ -51,7 +51,7 @@ export function MergeSimulationPanel({
   };
 
   return (
-    <div className="space-y-2 rounded-xl shadow-card bg-card/30 p-3">
+    <div className="space-y-2 rounded shadow-card bg-card/30 p-3">
       <div className="text-[13px] font-semibold text-fg/70">Merge Simulation</div>
       <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
         <select
