@@ -66,6 +66,19 @@ import type {
   HostedSignInResult,
   HostedStatus,
   AgentTool,
+  AgentChatApproveArgs,
+  AgentChatCreateArgs,
+  AgentChatDisposeArgs,
+  AgentChatEventEnvelope,
+  AgentChatInterruptArgs,
+  AgentChatListArgs,
+  AgentChatModelInfo,
+  AgentChatModelsArgs,
+  AgentChatResumeArgs,
+  AgentChatSendArgs,
+  AgentChatSession,
+  AgentChatSessionSummary,
+  AgentChatSteerArgs,
   AutomationsEventPayload,
   AutomationRuleSummary,
   AutomationRun,
@@ -343,6 +356,18 @@ declare global {
         updateMeta: (args: { sessionId: string; pinned?: boolean; goal?: string | null; toolType?: string | null; resumeCommand?: string | null }) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
+      };
+      agentChat: {
+        list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
+        create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        send: (args: AgentChatSendArgs) => Promise<void>;
+        steer: (args: AgentChatSteerArgs) => Promise<void>;
+        interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
+        resume: (args: AgentChatResumeArgs) => Promise<AgentChatSession>;
+        approve: (args: AgentChatApproveArgs) => Promise<void>;
+        models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
+        dispose: (args: AgentChatDisposeArgs) => Promise<void>;
+        onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => () => void;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;

@@ -90,7 +90,7 @@ function runtimeFromStatus(status: TerminalSessionStatus): TerminalRuntimeState 
 function normalizeToolType(raw: unknown): TerminalToolType | null {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (!value) return null;
-  const allowed: TerminalToolType[] = ["shell", "claude", "codex", "cursor", "aider", "continue", "other"];
+  const allowed: TerminalToolType[] = ["shell", "claude", "codex", "codex-chat", "claude-chat", "cursor", "aider", "continue", "other"];
   return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
 }
 

@@ -51,6 +51,7 @@ Main-process responsibilities:
 - Automations and job engine execution
 - Process/test runners
 - AI integration (AgentExecutor interface, dual SDK, MCP server)
+- Agent chat service (Codex App Server + Claude multi-turn chat sessions)
 
 ### Renderer Process (untrusted)
 
@@ -72,6 +73,7 @@ Core service groups:
 - Core execution: lane/session/pty/file/diff/git/process/test/history
 - Context and risk systems: pack service, conflict service, restack suggestion service, auto-rebase service, job engine
 - AI Integration: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service, MCP server, GitHub service, PR service + polling
+- Agent Chat: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn)
 - Automation: automation service + automation planner service
 - Missions: mission service (Phase 1 mission lifecycle CRUD + eventing)
 
@@ -102,6 +104,7 @@ High-frequency/broadcast event channels include:
 - `ade.missions.event`
 - `ade.lanes.restackSuggestions.event`
 - `ade.lanes.autoRebase.event`
+- `ade.agentChat.event`
 - `ade.project.missing`
 
 The preload layer mirrors these domains into typed methods and event subscription helpers for renderer use.
@@ -133,6 +136,7 @@ On `before-quit`, ADE performs defensive cleanup (each step isolated by try/catc
 - Dispose file watchers
 - Stop tests and managed processes
 - Dispose PTY sessions
+- Dispose agent chat sessions (terminate app-server processes, persist Claude session state)
 - Flush and close SQLite
 
 Uncaught exception and unhandled rejection handlers log structured errors through the main logger.
@@ -149,5 +153,6 @@ Desktop architecture is mature and production-oriented for current scope:
 - Security boundaries (`contextIsolation`, preload-only IPC surface) are enforced.
 - Head-change and session-end pipelines keep packs/conflicts/automations synchronized.
 - AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
+- Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
 
 Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan.md`.

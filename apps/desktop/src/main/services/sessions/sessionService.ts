@@ -21,7 +21,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
   const normalizeToolType = (raw: unknown): TerminalToolType | null => {
     const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
     if (!value) return null;
-    const allowed: TerminalToolType[] = ["shell", "claude", "codex", "cursor", "aider", "continue", "other"];
+    const allowed: TerminalToolType[] = ["shell", "claude", "codex", "codex-chat", "claude-chat", "cursor", "aider", "continue", "other"];
     return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
   };
 
@@ -234,7 +234,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
     }: {
       sessionId: string;
       laneId: string;
-      ptyId: string;
+      ptyId: string | null;
       tracked: boolean;
       title: string;
       startedAt: string;
@@ -257,7 +257,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         [
           sessionId,
           laneId,
-          ptyId,
+          ptyId ?? null,
           tracked ? 1 : 0,
           title,
           startedAt,
@@ -265,6 +265,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
           normalizedToolType,
           normalizedResumeCommand ?? null
         ]
+      );
+    },
+
+    reopen(sessionId: string): void {
+      db.run(
+        `
+          update terminal_sessions
+          set status = 'running',
+              ended_at = null,
+              exit_code = null
+          where id = ?
+        `,
+        [sessionId]
       );
     },
 

@@ -48,6 +48,15 @@ type ProviderDraft = {
   };
 };
 
+type ChatSettingsDraft = {
+  defaultProvider: "codex" | "claude" | "last_used";
+  defaultApprovalPolicy: "auto" | "approve_mutations" | "approve_all";
+  sendOnEnter: boolean;
+  codexSandbox: "read-only" | "workspace-write" | "danger-full-access";
+  claudePermissionMode: "plan" | "acceptEdits" | "bypassPermissions";
+  sessionBudgetUsd: string;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -148,6 +157,47 @@ function validateProviderDraft(draft: ProviderDraft, hasBootstrapConfig: boolean
   }
 
   return null;
+}
+
+function readChatSettingsDraft(snapshot: ProjectConfigSnapshot): ChatSettingsDraft {
+  const localChat = snapshot.local.ai?.chat;
+  const effectiveChat = snapshot.effective.ai?.chat;
+  const chat = {
+    ...(effectiveChat ?? {}),
+    ...(localChat ?? {})
+  };
+
+  const defaultProvider = (() => {
+    const value = chat.defaultProvider;
+    return value === "codex" || value === "claude" || value === "last_used" ? value : "last_used";
+  })();
+
+  const defaultApprovalPolicy = (() => {
+    const value = chat.defaultApprovalPolicy;
+    return value === "auto" || value === "approve_mutations" || value === "approve_all" ? value : "approve_mutations";
+  })();
+
+  const codexSandbox = (() => {
+    const value = chat.codexSandbox;
+    return value === "read-only" || value === "workspace-write" || value === "danger-full-access" ? value : "workspace-write";
+  })();
+
+  const claudePermissionMode = (() => {
+    const value = chat.claudePermissionMode;
+    return value === "plan" || value === "acceptEdits" || value === "bypassPermissions" ? value : "acceptEdits";
+  })();
+
+  const budget = Number(chat.sessionBudgetUsd ?? 10);
+  const sessionBudgetUsd = Number.isFinite(budget) && budget > 0 ? String(budget) : "10";
+
+  return {
+    defaultProvider,
+    defaultApprovalPolicy,
+    sendOnEnter: chat.sendOnEnter ?? true,
+    codexSandbox,
+    claudePermissionMode,
+    sessionBudgetUsd
+  };
 }
 
 const THEME_META: Record<
@@ -276,6 +326,7 @@ export function SettingsPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [providerDraft, setProviderDraft] = useState<ProviderDraft | null>(null);
+  const [chatDraft, setChatDraft] = useState<ChatSettingsDraft | null>(null);
   const [hostedStatus, setHostedStatus] = useState<HostedStatus | null>(null);
   const [hostedBootstrapConfig, setHostedBootstrapConfig] = useState<HostedBootstrapConfig | null>(null);
   const [hostedBusy, setHostedBusy] = useState(false);
@@ -292,6 +343,7 @@ export function SettingsPage() {
   const [hostedGithubEvents, setHostedGithubEvents] = useState<HostedGitHubEvent[]>([]);
   const [hostedGithubBusy, setHostedGithubBusy] = useState(false);
   const [hostedGithubPollingUntil, setHostedGithubPollingUntil] = useState<number | null>(null);
+  const [chatBusy, setChatBusy] = useState(false);
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -314,6 +366,7 @@ export function SettingsPage() {
       .then((snapshot) => {
         if (!cancelled) {
           setProviderDraft(readProviderDraft(snapshot));
+          setChatDraft(readChatSettingsDraft(snapshot));
           const localSeconds = typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
           const effectiveSeconds =
             typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
@@ -454,13 +507,14 @@ export function SettingsPage() {
     return <EmptyState title="Settings" description={`Failed to load settings: ${loadError}`} />;
   }
 
-  if (!info || !providerDraft) {
+  if (!info || !providerDraft || !chatDraft) {
     return <EmptyState title="Settings" description="Loading..." />;
   }
 
   const refreshProviderDraftAndHostedState = async () => {
     const snapshot = await window.ade.projectConfig.get();
     setProviderDraft(readProviderDraft(snapshot));
+    setChatDraft(readChatSettingsDraft(snapshot));
     const localSeconds = typeof snapshot.local.github?.prPollingIntervalSeconds === "number" ? snapshot.local.github.prPollingIntervalSeconds : null;
     const effectiveSeconds =
       typeof snapshot.effective.github?.prPollingIntervalSeconds === "number" ? snapshot.effective.github.prPollingIntervalSeconds : null;
@@ -535,6 +589,54 @@ export function SettingsPage() {
       setSaveNotice("Provider configuration saved to .ade/local.yaml.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const saveChatSettings = async () => {
+    if (!chatDraft) return;
+    setActionError(null);
+    setSaveNotice(null);
+    setChatBusy(true);
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      const currentLocalAi = snapshot.local.ai ?? {};
+      const budgetRaw = chatDraft.sessionBudgetUsd.trim();
+      if (budgetRaw.length) {
+        const budget = Number(budgetRaw);
+        if (!Number.isFinite(budget) || budget <= 0) {
+          setActionError("Chat session budget must be a positive number.");
+          return;
+        }
+      }
+
+      const nextChat = {
+        defaultProvider: chatDraft.defaultProvider,
+        defaultApprovalPolicy: chatDraft.defaultApprovalPolicy,
+        sendOnEnter: chatDraft.sendOnEnter,
+        codexSandbox: chatDraft.codexSandbox,
+        claudePermissionMode: chatDraft.claudePermissionMode,
+        ...(budgetRaw.length ? { sessionBudgetUsd: Number(budgetRaw) } : {})
+      };
+
+      const nextLocal = {
+        ...snapshot.local,
+        ai: {
+          ...currentLocalAi,
+          chat: nextChat
+        }
+      };
+
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: nextLocal
+      });
+
+      await refreshProviderDraftAndHostedState();
+      setSaveNotice("Chat settings saved to .ade/local.yaml.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setChatBusy(false);
     }
   };
 
@@ -696,6 +798,141 @@ export function SettingsPage() {
               Save Provider
             </Button>
             <div className="text-xs text-muted-fg">Current: {providerMode}</div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">Agent Chat</div>
+          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+            <label className="text-xs text-muted-fg">
+              Default provider
+              <select
+                value={chatDraft.defaultProvider}
+                onChange={(event) =>
+                  setChatDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          defaultProvider: event.target.value as ChatSettingsDraft["defaultProvider"]
+                        }
+                      : prev
+                  )
+                }
+                className="mt-1 h-8 w-full rounded border border-border bg-bg/50 px-2 text-xs text-fg"
+              >
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+                <option value="last_used">Last used</option>
+              </select>
+            </label>
+
+            <label className="text-xs text-muted-fg">
+              Approval policy
+              <select
+                value={chatDraft.defaultApprovalPolicy}
+                onChange={(event) =>
+                  setChatDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          defaultApprovalPolicy: event.target.value as ChatSettingsDraft["defaultApprovalPolicy"]
+                        }
+                      : prev
+                  )
+                }
+                className="mt-1 h-8 w-full rounded border border-border bg-bg/50 px-2 text-xs text-fg"
+              >
+                <option value="auto">Auto (never ask)</option>
+                <option value="approve_mutations">Approve mutations</option>
+                <option value="approve_all">Approve all</option>
+              </select>
+            </label>
+
+            <label className="text-xs text-muted-fg">
+              Codex chat sandbox
+              <select
+                value={chatDraft.codexSandbox}
+                onChange={(event) =>
+                  setChatDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          codexSandbox: event.target.value as ChatSettingsDraft["codexSandbox"]
+                        }
+                      : prev
+                  )
+                }
+                className="mt-1 h-8 w-full rounded border border-border bg-bg/50 px-2 text-xs text-fg"
+              >
+                <option value="read-only">Read-only</option>
+                <option value="workspace-write">Workspace write</option>
+                <option value="danger-full-access">Full access</option>
+              </select>
+            </label>
+
+            <label className="text-xs text-muted-fg">
+              Claude permission mode
+              <select
+                value={chatDraft.claudePermissionMode}
+                onChange={(event) =>
+                  setChatDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          claudePermissionMode: event.target.value as ChatSettingsDraft["claudePermissionMode"]
+                        }
+                      : prev
+                  )
+                }
+                className="mt-1 h-8 w-full rounded border border-border bg-bg/50 px-2 text-xs text-fg"
+              >
+                <option value="plan">Plan</option>
+                <option value="acceptEdits">Accept edits</option>
+                <option value="bypassPermissions">Bypass permissions</option>
+              </select>
+            </label>
+
+            <label className="text-xs text-muted-fg">
+              Session budget (USD)
+              <input
+                value={chatDraft.sessionBudgetUsd}
+                onChange={(event) =>
+                  setChatDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          sessionBudgetUsd: event.target.value
+                        }
+                      : prev
+                  )
+                }
+                className="mt-1 h-8 w-full rounded border border-border bg-bg/50 px-2 text-xs text-fg"
+                placeholder="10"
+              />
+            </label>
+
+            <label className="flex items-end gap-2 pb-1 text-xs text-muted-fg">
+              <input
+                type="checkbox"
+                checked={chatDraft.sendOnEnter}
+                onChange={(event) =>
+                  setChatDraft((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          sendOnEnter: event.target.checked
+                        }
+                      : prev
+                  )
+                }
+              />
+              <span>Send on Enter</span>
+            </label>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <Button size="sm" disabled={chatBusy} onClick={() => void saveChatSettings()}>
+              {chatBusy ? "Saving..." : "Save Chat Settings"}
+            </Button>
           </div>
         </div>
 
