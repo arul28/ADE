@@ -6,12 +6,12 @@
 
 This document is the **authoritative contract** for ADE context artifacts used by:
 
-- long-running, parallel “orchestrator mode” workflows
+- long-running, parallel "orchestrator mode" workflows
 - spawning new agents with clean context windows
-- Hosted / self-hosted Hosted gateway and BYOK LLM jobs
+- AI integration service consuming bounded exports via Vercel AI SDK
 - Guest-mode, deterministic-only workflows (no AI providers)
 
-The contract prioritizes **reviewability** (diffable, structured artifacts) and **bounded context** (token-budgeted exports), rather than raw “dump everything” prompts.
+The contract prioritizes **reviewability** (diffable, structured artifacts) and **bounded context** (token-budgeted exports), rather than raw "dump everything" prompts.
 
 ---
 
@@ -20,64 +20,41 @@ The contract prioritizes **reviewability** (diffable, structured artifacts) and 
 - **Stable parsing**: Packs and exports have stable headers and stable section markers.
 - **Diff-friendly**: Context artifacts are structured, concise, and avoid transcript slabs by default.
 - **Budgeted exports**: Orchestrators consume `Lite`/`Standard` exports by default. `Deep` is explicit and on-demand.
-- **Provider-neutral Hosted**: Hosted is a remote gateway and may be self-hosted by setting `providers.hosted.apiBaseUrl` in `.ade/local.yaml`. No AWS assumptions.
+- **Provider-neutral AI**: AI is powered by Vercel AI SDK, which spawns subscription-powered CLI tools locally. No remote gateway assumptions.
 - **Guest mode useful**: Packs, versions, events, diffs, and exports are all usable without any AI provider.
-- **Explainable handoffs**: Every hosted job submission records whether context was delivered inline vs by mirror-ref, with reason codes and explicit fallbacks.
+- **Explainable handoffs**: Every AI job submission records context delivery metadata with reason codes and explicit fallbacks.
 
 Non-goals:
 
 - Orchestrator UI / agent runner implementation (out of scope here).
-- Full “pack dump” exports by default (intentionally avoided).
+- Full "pack dump" exports by default (intentionally avoided).
 
 ---
 
-## Hosted Job Context Delivery (Inline vs Mirror Ref)
+## AI Job Context Delivery
 
-ADE has two distinct context paths:
+AI jobs (narratives, conflict proposals, PR drafts) consume **bounded exports** (for example `LaneExportStandard`) locally via the AI integration service.
 
-1. **Bounded export (`packBody`)**: a token-budgeted export generated on desktop and sent inline as part of a job request.
-2. **Hosted mirror**: content-addressed blobs (repo files, packs, transcripts) plus manifests uploaded to the hosted backend.
+Context is consumed entirely on the local machine:
 
-Historically, hosted jobs always used inline `packBody`. Mirror sync existed for future/advanced hosted use, but packs/transcripts were not discoverable because they were uploaded as orphaned blobs with no manifest mapping.
+- Bounded exports are built from pack data (token-budgeted, redacted).
+- The AI integration service passes exports to CLI tools spawned by Vercel AI SDK.
+- No network transmission of context is required — all processing is local.
+- Exports are still structured, token-budgeted, and redacted for safety.
 
-### Current Policy (Stable + Backward Compatible)
+This is intentionally deterministic and observable:
 
-Hosted jobs may be submitted with either:
+- Pack events like `narrative_requested` record the delivery mode and metadata.
+- The export level, approximate token count, and provider information are tracked.
 
-- **Inline params** (default): `params` contains `packBody` and other context fields.
-- **Mirror-ref params** (for large/conflict jobs or when user prefers): `params` contains:
-  - `__adeContextRef` (sha256 reference to the canonical JSON params stored in the mirror blob bucket)
-  - `__adeContextInline` (a reduced inline fallback payload)
+### Expected Behavior Matrix
 
-Workers resolve `__adeContextRef` before building prompts. If resolution fails, they fall back to `__adeContextInline`.
-
-Reason codes are surfaced via desktop events (`narrative_requested`, etc.) and via hosted job submission metadata.
-
-### Data Path Diagram
-
-```mermaid
-flowchart TD
-  A["Desktop: packService.refreshLanePack()"] --> B["Desktop: buildLaneExport (Lite/Standard/Deep)"]
-  B --> C["Desktop: hostedAgentService.submitJob()"]
-  C --> D{"Context delivery policy"}
-  D -->|Inline| E["API: POST /projects/:id/jobs (params inline)"]
-  D -->|Mirror-ref| F["API: POST /projects/:id/upload (params JSON blob)"]
-  F --> G["API: POST /projects/:id/jobs (__adeContextRef + __adeContextInline)"]
-  E --> H["SQS -> jobWorker"]
-  G --> H["SQS -> jobWorker"]
-  H --> I{"Resolve __adeContextRef?"}
-  I -->|Yes| J["S3: blobs bucket get(projectId/sha256)"]
-  I -->|No / failed| K["Use __adeContextInline fallback"]
-  J --> L["buildPromptTemplate()"]
-  K --> L["buildPromptTemplate()"]
-  L --> M["LLM gateway -> artifact"]
-```
-
-### Why This Exists
-
-- Keeps hosted job payloads compact and deterministic.
-- Allows richer context delivery without silently depending on mirror freshness.
-- Preserves backward compatibility for existing export consumers (exports/markers unchanged).
+| Scenario | AI Context | Notes |
+|----------|-----------|------|
+| New lane with active session | bounded export consumed locally | Works whenever a subscription provider is available |
+| No subscription provider (guest mode) | no AI context needed | Deterministic packs still refresh normally |
+| Conflict-heavy lane | bounded export with conflict data | Conflict risk summary included in lane exports |
+| Periodic delta handoff | delta digest + bounded export | Deterministic ordering, optional omission metadata preserved |
 
 ## Pack Keys
 
@@ -129,7 +106,7 @@ Every pack and export must contain a machine-readable header as a **JSON code fe
   "versionId": "ver-...",
   "versionNumber": 42,
   "contentHash": "sha256...",
-  "providerMode": "hosted",
+  "providerMode": "subscription",
   "graph": {
     "schema": "ade.packGraph.v1",
     "relations": [
@@ -159,9 +136,7 @@ Every pack and export must contain a machine-readable header as a **JSON code fe
       "recommendedLevel": "deep"
     }
   ],
-  "exportedAt": "2026-02-14T00:00:01.000Z",
-  "apiBaseUrl": "https://hosted.example.com",
-  "remoteProjectId": "proj_..."
+  "exportedAt": "2026-02-14T00:00:01.000Z"
 }
 ```
 
@@ -186,10 +161,7 @@ Every pack and export must contain a machine-readable header as a **JSON code fe
   - `versionNumber` (nullable)
   - `contentHash` (nullable)
 - Provider:
-  - `providerMode` (`guest` | `hosted` | `byok` | `cli`)
-- Hosted gateway diagnostics (safe metadata only):
-  - `apiBaseUrl` (nullable)
-  - `remoteProjectId` (nullable)
+  - `providerMode` (`guest` | `subscription`)
 
 Notes:
 
@@ -263,122 +235,41 @@ Exports are bounded views of packs designed for consumption by LLM jobs and orch
 
 ### Levels
 
----
-
-## v3 Addendum — Hosted Hybrid Context + Conflict Integrity + Mirror Cleanup
-
-> Last updated: 2026-02-16
-
-This addendum documents the production-hardening behavior added in contract version 3.
-
-### End-to-end backend flow
-
-```mermaid
-flowchart TD
-  A["Repo change or session end"] --> B["Pack refresh (lane/project/conflict)"]
-  B --> C["Pack manifests + context fingerprint updated"]
-  C --> D["Hosted sync uploads blobs + manifests"]
-  D --> E["Context policy decides inline vs mirror-ref"]
-  E --> F["Job submission includes __adeHandoff + provenance"]
-  F --> G["Worker resolves __adeContextRef or inline fallback"]
-  G --> H["Prompt built with Context Provenance block"]
-  H --> I["Model response"]
-  I --> J["Artifact persisted + job metrics"]
-  D --> K["Mirror cleanup planner (reachable/orphan scan)"]
-  K --> L["Delete stale orphan blobs (safe window + caps)"]
-```
-
-### Deterministic source selection rules
-
-1. `inline` is used only when payload is small and safe.
-2. Conflict jobs (`ProposeConflictResolution`, `ConflictResolution`) force `mirror` unless ref path is impossible.
-3. Mirror-ref submit/fetch failures degrade to `inline_fallback` with explicit warning fields.
-4. Every hosted job includes `reasonCode` and `contextSource` in `__adeHandoff`.
-5. Prompts always include context provenance, staleness signals, and selected file-set summary.
-
-### Why mirror is not full-repo-by-default
-
-- ADE intentionally sends bounded, scoped context.
-- Full-repo payloads are expensive, noisy, and less deterministic.
-- Mirror is a storage/transport path for bounded context artifacts and selected blobs, not a blind full checkout.
-
-### Fallback behavior contract
-
-- Submit side:
-  - mirror path can include `__adeContextRef` + reduced `__adeContextInline`.
-- Worker side:
-  - if ref resolves: `contextSource=mirror`.
-  - if ref fails: `contextSource=inline_fallback`, warnings include retrieval failure.
-- Result metadata:
-  - includes source, reason code, warnings, and confidence level.
-
-### Scenario matrix
-
-| Scenario | Delivery | Expected behavior |
-|---|---|---|
-| New lane with active session | inline or mirror (policy) | Fresh pack exports, deterministic handoff, explicit reason code |
-| Conflict-heavy lane | mirror preferred/forced | Conflict context includes `relevantFilesForConflict` and `fileContexts` |
-| Stale mirror | mirror + stale warning or inline fallback | Staleness surfaced in handoff + UI, no hidden failure |
-| No mirror / upload failure | inline_fallback | Job still submitted; warning and fallback telemetry recorded |
-| Periodic delta handoff | bounded delta + exports | Deterministic ordering, optional omission metadata preserved |
-
-### Export levels
-
 - `Lite`
   - Default for spawning new agents and quick context.
   - Strictly bounded; focuses on task spec, intent, key deltas, and blockers.
 - `Standard`
-  - Default for Hosted/BYOK narrative generation and most orchestrator steps.
+  - Default for narrative generation and most orchestrator steps.
   - Includes broader summaries (sessions table, validation, errors) while staying bounded.
 - `Deep`
   - Explicit and on-demand.
   - Includes additional low-signal sections (e.g. narrative text) within a larger budget.
 
-### Orchestrator context policy profiles
+---
 
-- `orchestrator_deterministic_v1` (default):
-  - narrative excluded by default,
-  - docs included as digest refs,
-  - bounded lane/project exports (`standard`/`lite` defaults).
-- `orchestrator_narrative_opt_in_v1` (explicit):
-  - narrative inclusion enabled,
-  - larger bounded export defaults,
-  - still subject to token/file budgets.
-- Each orchestrated attempt records the selected profile id and context snapshot cursor for replay/audit.
+## Data Path Diagram
 
-### Project docs handling contract
-
-- Default orchestrator context includes PRD + architecture document digest refs (`path`, `sha256`, `bytes`) for auditability.
-- Full doc bodies are only included when step policy explicitly requests full docs.
-- Snapshot metadata must explicitly declare docs mode (`digest_ref` vs `full_body`) and truncation state.
-
-### Budget guidance (approximate)
-
-Budgets are enforced via a lightweight heuristic (`~4 chars/token`), then clipped as a safety net.
-
-- Lane exports:
-  - Lite: ~800 tokens max
-  - Standard: ~2800 tokens max
-  - Deep: ~8000 tokens max (bounded, on-demand)
-
-Other pack types have similar tiered budgets, but lane exports are the primary orchestrator substrate.
-
-### Lane export required content (all levels)
-
-- Header fence (`ade.context.v1`)
-- `## Task Spec` section with markers
-- `## Intent` section with markers
-- `## Conflict Risk Summary` (bounded)
-- `## What Changed` (bounded)
-- `## Validation` (bounded)
-- `## Errors & Issues` (bounded, ANSI-stripped, deduped)
-- `## Sessions` (summary table only; avoid transcript dumps)
-- `## Next Steps` / blockers (actionable checklist)
-- `## Notes / Todos` (optional; bounded; marker-preserving)
-
-`Deep` may additionally include:
-
-- `## Narrative (Deep)` with narrative markers (bounded)
+```
+Pack refresh (lane/project/conflict)
+  │
+  ▼
+Build bounded export (Lite/Standard/Deep)
+  │
+  ▼
+AI Integration Service (local)
+  │
+  ▼
+Vercel AI SDK spawns CLI tool (claude/codex)
+  │
+  ▼
+CLI tool processes export locally
+  │
+  ▼
+Result returned
+  │
+  ▼
+Pack event recorded + narrative applied
+```
 
 ---
 
@@ -403,9 +294,9 @@ Sources:
 Findings and concrete ADE decisions:
 
 - Entire CLI stores agent session metadata on a separate git branch (`entire/checkpoints/v1`) and links it to commits, enabling rewind/resume and audit trails.
-  - ADE already provides immutable pack versions + checkpoints + append-only pack events; this change improves hosted handoffs by adding explicit delivery-mode reason codes and mirror-ref fallback behavior so the cloud path remains audit-friendly.
+  - ADE already provides immutable pack versions + checkpoints + append-only pack events; context delivery is explicit and deterministic with delivery-mode metadata for auditability.
 - OneContext positions a unified, agent-self-managed context layer with trajectory recording and cross-agent continuation.
-  - ADE’s approach remains deterministic-first: stable pack headers/markers + bounded exports + compact delta digests. This change makes hosted delivery explicit and deterministic (inline vs mirror-ref) rather than implicit/opaque.
+  - ADE's approach remains deterministic-first: stable pack headers/markers + bounded exports + compact delta digests. Context delivery is explicit and local-first via Vercel AI SDK.
 
 It should include (at minimum):
 
@@ -510,11 +401,59 @@ Rule: **Agents consume exports**; packs/versions are used for auditability and d
 
 ---
 
+## Orchestrator Context Policy Profiles
+
+- `orchestrator_deterministic_v1` (default):
+  - narrative excluded by default,
+  - docs included as digest refs,
+  - bounded lane/project exports (`standard`/`lite` defaults).
+- `orchestrator_narrative_opt_in_v1` (explicit):
+  - narrative inclusion enabled,
+  - larger bounded export defaults,
+  - still subject to token/file budgets.
+- Each orchestrated attempt records the selected profile id and context snapshot cursor for replay/audit.
+
+### Project docs handling contract
+
+- Default orchestrator context includes PRD + architecture document digest refs (`path`, `sha256`, `bytes`) for auditability.
+- Full doc bodies are only included when step policy explicitly requests full docs.
+- Snapshot metadata must explicitly declare docs mode (`digest_ref` vs `full_body`) and truncation state.
+
+### Budget guidance (approximate)
+
+Budgets are enforced via a lightweight heuristic (`~4 chars/token`), then clipped as a safety net.
+
+- Lane exports:
+  - Lite: ~800 tokens max
+  - Standard: ~2800 tokens max
+  - Deep: ~8000 tokens max (bounded, on-demand)
+
+Other pack types have similar tiered budgets, but lane exports are the primary orchestrator substrate.
+
+### Lane export required content (all levels)
+
+- Header fence (`ade.context.v1`)
+- `## Task Spec` section with markers
+- `## Intent` section with markers
+- `## Conflict Risk Summary` (bounded)
+- `## What Changed` (bounded)
+- `## Validation` (bounded)
+- `## Errors & Issues` (bounded, ANSI-stripped, deduped)
+- `## Sessions` (summary table only; avoid transcript dumps)
+- `## Next Steps` / blockers (actionable checklist)
+- `## Notes / Todos` (optional; bounded; marker-preserving)
+
+`Deep` may additionally include:
+
+- `## Narrative (Deep)` with narrative markers (bounded)
+
+---
+
 ## Optional: Git-Native Sharing (Design Note)
 
-For multi-machine handoffs without Hosted, ADE can optionally provide a git-native sharing mechanism:
+For multi-machine handoffs, ADE can optionally provide a git-native sharing mechanism:
 
-- A dedicated “pack branch” storing export artifacts:
+- A dedicated "pack branch" storing export artifacts:
   - `refs/ade/exports/<projectId>`
 - Commits contain only:
   - `exports/<packKey>/<exportLevel>.md`
@@ -524,7 +463,7 @@ For multi-machine handoffs without Hosted, ADE can optionally provide a git-nati
   - `ADE-VersionId: ver-...`
   - `ADE-CheckpointId: chk-...`
 
-This is intentionally **optional** and should never replace local `.ade/` durable state. It exists to enable “Entire-style” context sharing in organizations that prohibit Hosted usage.
+This is intentionally **optional** and should never replace local `.ade/` durable state. It exists to enable git-native context sharing in organizations that prefer local-only workflows.
 
 ---
 
@@ -537,17 +476,6 @@ New optional schemas:
 - `ade.contextDocStatus.v1`
 - `ade.contextDocRun.v1`
 - `ade.conflictExternalRun.v1`
-
-New optional hosted telemetry envelope:
-
-- `ade.hostedNarrativeTiming.v1`
-  - `submitDurationMs`
-  - `queueWaitMs`
-  - `pollDurationMs`
-  - `artifactFetchMs`
-  - `totalDurationMs`
-  - `timeoutMs`
-  - `timeoutReason`
 
 Compatibility guarantees:
 

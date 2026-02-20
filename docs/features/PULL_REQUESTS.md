@@ -239,7 +239,7 @@ Workflow for stacked lanes with chained PRs:
 | `packService` | Exists | Provides lane pack content for auto-drafting PR descriptions. |
 | `laneService` | Exists | Lane-PR association, parent-child relationships for stacking. |
 | `operationService` | Exists | Records PR land operations in the history timeline. |
-| `hostedAgentService` | Exists (optional) | In hosted mode, generates AI-drafted PR title and body via the cloud proxy. |
+| `aiIntegrationService` | Exists (optional) | Generates AI-drafted PR title and body locally via AgentExecutor (Claude or Codex CLI). |
 | `byokLlmService` | Exists (optional) | In BYOK mode, generates AI-drafted PR description body using the user's own LLM key. |
 
 ### Authentication

@@ -201,6 +201,13 @@ import type {
   TerminalProfilesSnapshot,
   TerminalSessionSummary,
   ResolveMissionInterventionArgs,
+  PlanMissionArgs,
+  PlanMissionResult,
+  ListPlannerRunsArgs,
+  GetPlannerAttemptArgs,
+  MissionPlannerAttempt,
+  MissionPlannerRun,
+  DeleteMissionArgs,
   MissionArtifact,
   MissionDetail,
   MissionIntervention,
@@ -313,6 +320,7 @@ contextBridge.exposeInMainWorld("ade", {
     get: async (missionId: string): Promise<MissionDetail | null> => ipcRenderer.invoke(IPC.missionsGet, { missionId }),
     create: async (args: CreateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsCreate, args),
     update: async (args: UpdateMissionArgs): Promise<MissionDetail> => ipcRenderer.invoke(IPC.missionsUpdate, args),
+    delete: async (args: DeleteMissionArgs): Promise<void> => ipcRenderer.invoke(IPC.missionsDelete, args),
     updateStep: async (args: UpdateMissionStepArgs): Promise<MissionStep> => ipcRenderer.invoke(IPC.missionsUpdateStep, args),
     addArtifact: async (args: AddMissionArtifactArgs): Promise<MissionArtifact> => ipcRenderer.invoke(IPC.missionsAddArtifact, args),
     addIntervention: async (args: AddMissionInterventionArgs): Promise<MissionIntervention> =>
@@ -324,6 +332,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.missionsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.missionsEvent, listener);
     }
+  },
+  planner: {
+    planMission: async (args: PlanMissionArgs): Promise<PlanMissionResult> => ipcRenderer.invoke(IPC.plannerPlanMission, args),
+    getRuns: async (args: ListPlannerRunsArgs = {}): Promise<MissionPlannerRun[]> => ipcRenderer.invoke(IPC.plannerGetRuns, args),
+    getAttempt: async (args: GetPlannerAttemptArgs): Promise<MissionPlannerAttempt | null> =>
+      ipcRenderer.invoke(IPC.plannerGetAttempt, args)
   },
   orchestrator: {
     listRuns: async (args: ListOrchestratorRunsArgs = {}): Promise<OrchestratorRun[]> =>

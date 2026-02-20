@@ -15,6 +15,7 @@ import {
   Rocket,
   Route,
   Star,
+  Terminal,
   TriangleAlert,
   Waypoints
 } from "lucide-react";
@@ -22,15 +23,16 @@ import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react"
 import type {
   MissionArtifactType,
   MissionDetail,
+  MissionExecutorPolicy,
   MissionIntervention,
+  MissionPlannerEngine,
   MissionPriority,
   MissionStatus,
-  MissionStep,
   MissionStepStatus,
   MissionSummary,
   OrchestratorAttempt,
-  OrchestratorRunGraph,
-  OrchestratorStep
+  OrchestratorExecutorKind,
+  OrchestratorRunGraph
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -55,6 +57,10 @@ type CreateDraft = {
   priority: MissionPriority;
   executionMode: "local" | "relay";
   targetMachineId: string;
+  plannerEngine: MissionPlannerEngine;
+  executorPolicy: MissionExecutorPolicy;
+  allowPlanningQuestions: boolean;
+  autoStart: boolean;
 };
 
 type ArtifactDraft = {
@@ -73,7 +79,7 @@ type InterventionDraft = {
 const STATUS_COLUMNS: Array<{ status: MissionStatus; label: string; hint: string }> = [
   { status: "queued", label: "Queued", hint: "Ready to launch" },
   { status: "in_progress", label: "Running", hint: "Actively executing" },
-  { status: "intervention_required", label: "Needs Input", hint: "Awaiting decision" },
+  { status: "intervention_required", label: "Action Needed", hint: "Awaiting decision" },
   { status: "completed", label: "Completed", hint: "Finished with outcomes" },
   { status: "failed", label: "Failed", hint: "Needs recovery" },
   { status: "canceled", label: "Canceled", hint: "Stopped intentionally" }
@@ -103,6 +109,31 @@ const FLOATING_SHAPES = [
   { Icon: Star, size: "h-2.5 w-2.5", x: "left-[45%]", y: "top-[12%]", delay: "2s", opacity: "opacity-[0.1]" },
   { Icon: Pentagon, size: "h-3.5 w-3.5", x: "left-[78%]", y: "top-[25%]", delay: "1.5s", opacity: "opacity-[0.11]" },
   { Icon: Hexagon, size: "h-4 w-4", x: "left-[22%]", y: "top-[65%]", delay: "1s", opacity: "opacity-[0.08]" }
+];
+
+const PLANNER_ENGINES: Array<{ value: MissionPlannerEngine; label: string }> = [
+  { value: "auto", label: "Auto (recommended)" },
+  { value: "claude_cli", label: "Claude (CLI)" },
+  { value: "codex_cli", label: "Codex (CLI)" },
+  { value: "gemini_cli", label: "Gemini (CLI)" },
+  { value: "hosted_ade", label: "Hosted ADE" }
+];
+const EXECUTOR_POLICIES: Array<{ value: MissionExecutorPolicy; label: string; description: string }> = [
+  {
+    value: "both",
+    label: "Both (recommended)",
+    description: "Codex for code-heavy steps; Claude for planning/review/docs."
+  },
+  {
+    value: "codex",
+    label: "Codex only",
+    description: "Route all mission execution steps to Codex."
+  },
+  {
+    value: "claude",
+    label: "Claude only",
+    description: "Route all mission execution steps to Claude."
+  }
 ];
 
 function statusTone(status: MissionStatus): string {
@@ -161,6 +192,12 @@ function formatWhen(iso: string | null): string {
   return new Date(ts).toLocaleString();
 }
 
+function shortId(value: string | null | undefined, width = 8): string {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed.length) return "-";
+  return trimmed.slice(0, width);
+}
+
 function relativeWhen(iso: string): string {
   const ts = Date.parse(iso);
   if (Number.isNaN(ts)) return iso;
@@ -189,55 +226,6 @@ function countByStatus(missions: MissionSummary[]) {
   return map;
 }
 
-function stepActions(step: MissionStep): Array<{ label: string; status: MissionStepStatus; variant: "primary" | "outline" | "ghost" }> {
-  if (step.status === "pending") {
-    return [{ label: "Start", status: "running", variant: "primary" }];
-  }
-  if (step.status === "running") {
-    return [
-      { label: "Done", status: "succeeded", variant: "primary" },
-      { label: "Block", status: "blocked", variant: "outline" },
-      { label: "Fail", status: "failed", variant: "ghost" }
-    ];
-  }
-  if (step.status === "blocked") {
-    return [
-      { label: "Resume", status: "running", variant: "primary" },
-      { label: "Fail", status: "failed", variant: "ghost" }
-    ];
-  }
-  if (step.status === "failed") {
-    return [{ label: "Retry", status: "running", variant: "primary" }];
-  }
-  return [];
-}
-
-function statusActions(status: MissionStatus): Array<{ label: string; status: MissionStatus; variant: "primary" | "outline" | "ghost" }> {
-  if (status === "queued") {
-    return [
-      { label: "Start", status: "in_progress", variant: "primary" },
-      { label: "Cancel", status: "canceled", variant: "outline" }
-    ];
-  }
-  if (status === "in_progress") {
-    return [
-      { label: "Mark Complete", status: "completed", variant: "primary" },
-      { label: "Fail", status: "failed", variant: "ghost" }
-    ];
-  }
-  if (status === "intervention_required") {
-    return [
-      { label: "Resume", status: "in_progress", variant: "primary" },
-      { label: "Fail", status: "failed", variant: "outline" },
-      { label: "Cancel", status: "canceled", variant: "ghost" }
-    ];
-  }
-  if (status === "failed" || status === "canceled" || status === "completed") {
-    return [{ label: "Requeue", status: "queued", variant: "outline" }];
-  }
-  return [];
-}
-
 export function MissionsPage() {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -255,12 +243,10 @@ export function MissionsPage() {
 
   const [createBusy, setCreateBusy] = React.useState(false);
   const [missionActionBusy, setMissionActionBusy] = React.useState(false);
-  const [stepBusyId, setStepBusyId] = React.useState<string | null>(null);
   const [artifactBusy, setArtifactBusy] = React.useState(false);
   const [interventionBusy, setInterventionBusy] = React.useState(false);
   const [outcomeBusy, setOutcomeBusy] = React.useState(false);
   const [runBusy, setRunBusy] = React.useState(false);
-  const [attemptBusyId, setAttemptBusyId] = React.useState<string | null>(null);
 
   const [showForm, setShowForm] = React.useState(false);
   const [launchAnimating, setLaunchAnimating] = React.useState(false);
@@ -268,12 +254,12 @@ export function MissionsPage() {
   /* Collapsible detail sections */
   const [expandedSections, setExpandedSections] = React.useState<Record<string, boolean>>({
     info: true,
-    outcome: true,
+    outcome: false,
     steps: true,
     orchestrator: true,
     interventions: true,
     artifacts: true,
-    timeline: false
+    timeline: true
   });
 
   const toggleSection = (key: string) =>
@@ -285,7 +271,11 @@ export function MissionsPage() {
     laneId: "",
     priority: "normal",
     executionMode: "local",
-    targetMachineId: ""
+    targetMachineId: "",
+    plannerEngine: "auto",
+    executorPolicy: "both",
+    allowPlanningQuestions: false,
+    autoStart: true
   });
   const [artifactDraft, setArtifactDraft] = React.useState<ArtifactDraft>({
     artifactType: "pr",
@@ -319,6 +309,127 @@ export function MissionsPage() {
     }
     return map;
   }, [runGraph]);
+
+  const runningAttemptCount = React.useMemo(
+    () => runGraph?.attempts.filter((attempt) => attempt.status === "running").length ?? 0,
+    [runGraph]
+  );
+
+  const sessionAttempts = React.useMemo(
+    () =>
+      (runGraph?.attempts ?? [])
+        .filter((attempt) => attempt.executorSessionId)
+        .map((attempt) => ({
+          attemptId: attempt.id,
+          stepId: attempt.stepId,
+          stepTitle: runGraph?.steps.find((step) => step.id === attempt.stepId)?.title ?? "Step",
+          sessionId: attempt.executorSessionId!,
+          executorKind: attempt.executorKind,
+          status: attempt.status
+        })),
+    [runGraph]
+  );
+
+  const liveSessionAttempts = React.useMemo(
+    () => sessionAttempts.filter((entry) => entry.status === "running"),
+    [sessionAttempts]
+  );
+
+  const [liveSessionTailById, setLiveSessionTailById] = React.useState<Record<string, string>>({});
+
+  const openInterventions = React.useMemo(
+    () => selectedMission?.interventions.filter((entry) => entry.status === "open") ?? [],
+    [selectedMission]
+  );
+
+  const runtimeLaneIds = React.useMemo(
+    () =>
+      Array.from(
+        new Set((runGraph?.steps ?? []).map((step) => step.laneId).filter((laneId): laneId is string => Boolean(laneId)))
+      ),
+    [runGraph]
+  );
+
+  const runtimeLaneStrip = React.useMemo(() => {
+    if (!runGraph) return [];
+    const laneByStepId = new Map<string, string | null>();
+    for (const step of runGraph.steps) {
+      laneByStepId.set(step.id, step.laneId);
+    }
+    return runtimeLaneIds.map((laneId) => {
+      const stepCount = runGraph.steps.filter((step) => step.laneId === laneId).length;
+      const runningCount = runGraph.attempts.filter((attempt) => {
+        const attemptLaneId = laneByStepId.get(attempt.stepId);
+        return attemptLaneId === laneId && attempt.status === "running";
+      }).length;
+      return {
+        laneId,
+        laneName: lanes.find((lane) => lane.id === laneId)?.name ?? laneId,
+        stepCount,
+        runningCount
+      };
+    });
+  }, [runGraph, runtimeLaneIds, lanes]);
+
+  const plannerSummary = React.useMemo(() => {
+    if (!selectedMission?.steps.length) return null;
+    for (const step of selectedMission.steps) {
+      const planner =
+        step.metadata && typeof step.metadata.planner === "object" && !Array.isArray(step.metadata.planner)
+          ? (step.metadata.planner as Record<string, unknown>)
+          : null;
+      if (!planner) continue;
+      return {
+        strategy: typeof planner.strategy === "string" ? planner.strategy : "deterministic_split",
+        version: typeof planner.version === "string" ? planner.version : "ade.missionPlanner.v1"
+      };
+    }
+    return {
+      strategy: "deterministic_split",
+      version: "ade.missionPlanner.v1"
+    };
+  }, [selectedMission]);
+
+  const plannerRunSummary = React.useMemo(() => {
+    const events = selectedMission?.events ?? [];
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const entry = events[index];
+      if (!entry || entry.eventType !== "mission_plan_generated") continue;
+      const payload = entry.payload && typeof entry.payload === "object" && !Array.isArray(entry.payload) ? entry.payload : {};
+      const record = payload as Record<string, unknown>;
+      return {
+        requestedEngine: typeof record.requestedEngine === "string" ? record.requestedEngine : "auto",
+        resolvedEngine: typeof record.resolvedEngine === "string" ? record.resolvedEngine : "deterministic_fallback",
+        degraded: record.degraded === true,
+        reasonCode: typeof record.reasonCode === "string" ? record.reasonCode : null,
+        planHash: typeof record.planHash === "string" ? record.planHash : null,
+        normalizedPlanHash: typeof record.normalizedPlanHash === "string" ? record.normalizedPlanHash : null
+      };
+    }
+    return null;
+  }, [selectedMission]);
+
+  const runAutopilotState = React.useMemo(() => {
+    const autopilot =
+      runGraph?.run.metadata && typeof runGraph.run.metadata.autopilot === "object" && !Array.isArray(runGraph.run.metadata.autopilot)
+        ? (runGraph.run.metadata.autopilot as Record<string, unknown>)
+        : null;
+    const enabled = autopilot?.enabled === true;
+    const executor = typeof autopilot?.executorKind === "string" ? autopilot.executorKind : null;
+    return {
+      enabled,
+      executor
+    };
+  }, [runGraph]);
+
+  const canStartOrRerun = !runGraph || runGraph.run.status === "succeeded" || runGraph.run.status === "failed" || runGraph.run.status === "canceled";
+  const canCancelRun = Boolean(
+    runGraph &&
+      runGraph.run.status !== "succeeded" &&
+      runGraph.run.status !== "failed" &&
+      runGraph.run.status !== "canceled"
+  );
+  const canResumeRun = runGraph?.run.status === "paused";
 
   const refreshMissionList = React.useCallback(
     async (opts: { preserveSelection?: boolean; silent?: boolean } = {}) => {
@@ -427,12 +538,91 @@ export function MissionsPage() {
     setOutcomeDraft(selectedMission?.outcomeSummary ?? "");
   }, [selectedMission?.id, selectedMission?.outcomeSummary]);
 
+  React.useEffect(() => {
+    if (liveSessionAttempts.length === 0) {
+      setLiveSessionTailById({});
+      return;
+    }
+
+    let cancelled = false;
+    const updateTails = async () => {
+      const entries = await Promise.all(
+        liveSessionAttempts.map(async (entry) => {
+          try {
+            const tail = await window.ade.sessions.readTranscriptTail({
+              sessionId: entry.sessionId,
+              maxBytes: 2400
+            });
+            return [entry.sessionId, tail] as const;
+          } catch {
+            return [entry.sessionId, ""] as const;
+          }
+        })
+      );
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [sessionId, tail] of entries) {
+        next[sessionId] = tail;
+      }
+      setLiveSessionTailById(next);
+    };
+
+    void updateTails();
+    const timer = window.setInterval(() => {
+      void updateTails();
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [liveSessionAttempts]);
+
+  const startRunForMission = React.useCallback(
+    async (args: {
+      missionId: string;
+      laneId?: string | null;
+      executorKind: OrchestratorExecutorKind;
+    }) => {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) return;
+      const defaultExecutorKind: OrchestratorExecutorKind = args.executorKind;
+
+      if (args.laneId) {
+        try {
+          await window.ade.packs.refreshLanePack(args.laneId);
+        } catch {
+          // Orchestrator also retries pack bootstrap server-side when lane pack is empty.
+        }
+      }
+      try {
+        await window.ade.packs.refreshProjectPack({
+          laneId: args.laneId ?? undefined
+        });
+      } catch {
+        // Non-fatal in launcher path.
+      }
+
+      const started = await window.ade.orchestrator.startRunFromMission({
+        missionId,
+        runMode: "autopilot",
+        autopilotOwnerId: "missions-autopilot",
+        defaultExecutorKind,
+        defaultRetryLimit: 1
+      });
+
+      return started;
+    },
+    []
+  );
+
   const launchMission = async () => {
     const prompt = createDraft.prompt.trim();
     if (!prompt.length) {
       setError("Mission prompt is required.");
       return;
     }
+    const fallbackLaneId = lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? "";
+    const resolvedLaneId = createDraft.laneId.trim() || fallbackLaneId;
 
     setLaunchAnimating(true);
     setCreateBusy(true);
@@ -440,16 +630,23 @@ export function MissionsPage() {
       const created = await window.ade.missions.create({
         title: createDraft.title.trim() || undefined,
         prompt,
-        laneId: createDraft.laneId || undefined,
+        laneId: resolvedLaneId || undefined,
         priority: createDraft.priority,
         executionMode: createDraft.executionMode,
-        targetMachineId: createDraft.targetMachineId.trim() || undefined
+        targetMachineId: createDraft.targetMachineId.trim() || undefined,
+        plannerEngine: createDraft.plannerEngine,
+        executorPolicy: createDraft.executorPolicy,
+        allowPlanningQuestions: createDraft.allowPlanningQuestions,
+        autostart: createDraft.autoStart,
+        launchMode: "autopilot",
+        autopilotExecutor: createDraft.executorPolicy === "claude" ? "claude" : "codex"
       });
 
-      setCreateDraft((prev) => ({ ...prev, title: "", prompt: "" }));
+      setCreateDraft((prev) => ({ ...prev, title: "", prompt: "", allowPlanningQuestions: false }));
       setSelectedMissionId(created.id);
       await refreshMissionList({ preserveSelection: true, silent: true });
       await loadMissionDetail(created.id);
+      await loadOrchestratorGraph(created.id);
       setError(null);
       setShowForm(false);
     } catch (err) {
@@ -471,6 +668,25 @@ export function MissionsPage() {
       });
       setSelectedMission(updated);
       await refreshMissionList({ preserveSelection: true, silent: true });
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMissionActionBusy(false);
+    }
+  };
+
+  const deleteMission = async () => {
+    if (!selectedMission) return;
+    const confirmed = window.confirm(`Delete mission "${selectedMission.title}" and all runtime history?`);
+    if (!confirmed) return;
+    setMissionActionBusy(true);
+    try {
+      await window.ade.missions.delete({ missionId: selectedMission.id });
+      setSelectedMissionId(null);
+      setSelectedMission(null);
+      setRunGraph(null);
+      await refreshMissionList({ preserveSelection: false, silent: true });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -573,72 +789,26 @@ export function MissionsPage() {
     }
   };
 
-  const updateStep = async (step: MissionStep, status: MissionStepStatus) => {
-    if (!selectedMission) return;
-    setStepBusyId(step.id);
-    try {
-      await window.ade.missions.updateStep({
-        missionId: selectedMission.id,
-        stepId: step.id,
-        status,
-        ...(status === "failed" ? { note: "Marked failed from Missions tab." } : {})
-      });
-      await loadMissionDetail(selectedMission.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setStepBusyId(null);
-    }
-  };
-
-  const addQuickIntervention = async () => {
-    if (!selectedMission) return;
-    setInterventionBusy(true);
-    try {
-      await window.ade.missions.addIntervention({
-        missionId: selectedMission.id,
-        interventionType: "manual_input",
-        title: "Operator input requested",
-        body: "Mission requests human input before proceeding.",
-        laneId: selectedMission.laneId ?? undefined
-      });
-      await loadMissionDetail(selectedMission.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setInterventionBusy(false);
-    }
-  };
-
   const startOrchestratorRun = async () => {
     if (!selectedMission) return;
     setRunBusy(true);
     try {
-      await window.ade.orchestrator.startRunFromMission({
+      const fallbackExecutor: OrchestratorExecutorKind =
+        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex" || runAutopilotState.executor === "gemini"
+          ? (runAutopilotState.executor as OrchestratorExecutorKind)
+          : "codex";
+      await window.ade.missions.update({
         missionId: selectedMission.id,
-        defaultExecutorKind: "manual",
-        defaultRetryLimit: 1
+        status: "in_progress"
+      });
+      await startRunForMission({
+        missionId: selectedMission.id,
+        laneId: selectedMission.laneId,
+        executorKind: fallbackExecutor
       });
       await loadOrchestratorGraph(selectedMission.id);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunBusy(false);
-    }
-  };
-
-  const tickRun = async () => {
-    if (!runGraph) return;
-    setRunBusy(true);
-    try {
-      await window.ade.orchestrator.tickRun({ runId: runGraph.run.id });
-      if (selectedMission) {
-        await loadOrchestratorGraph(selectedMission.id);
-      }
+      await loadMissionDetail(selectedMission.id);
+      await refreshMissionList({ preserveSelection: true, silent: true });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -679,43 +849,8 @@ export function MissionsPage() {
     }
   };
 
-  const startStepAttempt = async (step: OrchestratorStep) => {
-    if (!runGraph) return;
-    setAttemptBusyId(step.id);
-    try {
-      await window.ade.orchestrator.startAttempt({
-        runId: runGraph.run.id,
-        stepId: step.id,
-        ownerId: "missions-ui"
-      });
-      if (selectedMission) {
-        await loadOrchestratorGraph(selectedMission.id);
-      }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAttemptBusyId(null);
-    }
-  };
-
-  const completeStepAttempt = async (attemptId: string, status: "succeeded" | "failed" | "blocked" | "canceled") => {
-    setAttemptBusyId(attemptId);
-    try {
-      await window.ade.orchestrator.completeAttempt({
-        attemptId,
-        status,
-        ...(status === "failed" ? { errorClass: "deterministic", errorMessage: "Marked failed by operator." } : {})
-      });
-      if (selectedMission) {
-        await loadOrchestratorGraph(selectedMission.id);
-      }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAttemptBusyId(null);
-    }
+  const openRunningTerminals = () => {
+    navigate("/terminals?status=running");
   };
 
   const openArtifact = async (uri: string | null) => {
@@ -959,6 +1094,48 @@ export function MissionsPage() {
                         </label>
                         <div className="space-y-2">
                           <label className="space-y-1">
+                            <div className="text-[11px] text-muted-fg">Planner engine</div>
+                            <select
+                              value={createDraft.plannerEngine}
+                              onChange={(event) =>
+                                setCreateDraft((prev) => ({
+                                  ...prev,
+                                  plannerEngine: event.target.value as MissionPlannerEngine
+                                }))
+                              }
+                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
+                            >
+                              {PLANNER_ENGINES.map((entry) => (
+                                <option key={entry.value} value={entry.value}>
+                                  {entry.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="space-y-1">
+                            <div className="text-[11px] text-muted-fg">Executor policy</div>
+                            <select
+                              value={createDraft.executorPolicy}
+                              onChange={(event) =>
+                                setCreateDraft((prev) => ({
+                                  ...prev,
+                                  executorPolicy: event.target.value as MissionExecutorPolicy
+                                }))
+                              }
+                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
+                            >
+                              {EXECUTOR_POLICIES.map((entry) => (
+                                <option key={entry.value} value={entry.value}>
+                                  {entry.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="rounded-lg border border-border/25 bg-muted/20 p-2 text-[11px] text-muted-fg">
+                            {EXECUTOR_POLICIES.find((entry) => entry.value === createDraft.executorPolicy)?.description ??
+                              "ADE will route execution deterministically by policy."}
+                          </div>
+                          <label className="space-y-1">
                             <div className="text-[11px] text-muted-fg">Target machine id (optional)</div>
                             <input
                               value={createDraft.targetMachineId}
@@ -966,6 +1143,26 @@ export function MissionsPage() {
                               className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
                               placeholder="machine-nyc-01"
                             />
+                          </label>
+                          <label className="flex items-center gap-2 rounded-lg border border-border/25 bg-muted/20 px-2 py-1.5 text-[11px] text-fg">
+                            <input
+                              type="checkbox"
+                              checked={createDraft.autoStart}
+                              onChange={(event) => setCreateDraft((prev) => ({ ...prev, autoStart: event.target.checked }))}
+                              className="h-3.5 w-3.5"
+                            />
+                            Start mission immediately after creation
+                          </label>
+                          <label className="flex items-center gap-2 rounded-lg border border-border/25 bg-muted/20 px-2 py-1.5 text-[11px] text-fg">
+                            <input
+                              type="checkbox"
+                              checked={createDraft.allowPlanningQuestions}
+                              onChange={(event) =>
+                                setCreateDraft((prev) => ({ ...prev, allowPlanningQuestions: event.target.checked }))
+                              }
+                              className="h-3.5 w-3.5"
+                            />
+                            Allow planner follow-up questions during planning only
                           </label>
                           <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
                             <Button
@@ -979,11 +1176,11 @@ export function MissionsPage() {
                               ) : (
                                 <Rocket className={cn("h-4 w-4 transition-transform", launchAnimating && "-translate-y-1")} />
                               )}
-                              Launch Mission
+                              {createDraft.autoStart ? "Launch + Start mission" : "Launch mission"}
                             </Button>
                           </motion.div>
                           <div className="rounded-lg border border-border/25 bg-muted/20 p-2 text-[11px] text-muted-fg">
-                            Missions persist locally now and are ready for orchestrator + machine routing phases.
+                            Launch can auto-start orchestrator runs and attach tracked terminal sessions in autopilot mode.
                           </div>
                         </div>
                       </motion.div>
@@ -1007,11 +1204,11 @@ export function MissionsPage() {
             <motion.div variants={staggerItem}>
               <EmptyState
                 title="No missions yet"
-                description="Launch your first mission from the intake form to start tracking queue, interventions, and outcomes."
+                description="Launch your first mission from the intake form to start automatic execution tracking with input requests only when needed."
               />
             </motion.div>
           ) : (
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.95fr)]">
+            <div className="space-y-4">
               {/* ─── KANBAN BOARD ─── */}
               <motion.section
                 variants={staggerItem}
@@ -1027,19 +1224,19 @@ export function MissionsPage() {
 
                 <div className="overflow-x-auto pb-1">
                   <motion.div
-                    className="flex min-w-max gap-3 pr-2"
+                    className="flex min-w-max gap-3"
                     variants={staggerContainerSlow}
                     initial="initial"
                     animate="animate"
                   >
                     {STATUS_COLUMNS.map((column) => {
-                      const inColumn = missions.filter((mission) => mission.status === column.status);
-                      return (
-                        <motion.div
-                          key={column.status}
-                          variants={staggerItem}
-                          className="w-[280px] shrink-0 rounded-xl border border-border/25 bg-card/45 overflow-hidden"
-                        >
+                    const inColumn = missions.filter((mission) => mission.status === column.status);
+                    return (
+                      <motion.div
+                        key={column.status}
+                        variants={staggerItem}
+                        className="w-[260px] shrink-0 rounded-xl border border-border/25 bg-card/45 overflow-hidden"
+                      >
                           {/* Column header with accent bar */}
                           <div
                             className="border-b border-border/20 px-2 py-2"
@@ -1132,7 +1329,7 @@ export function MissionsPage() {
                                       {mission.openInterventions > 0 ? (
                                         <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-300">
                                           <TriangleAlert className="h-3 w-3" />
-                                          {mission.openInterventions} open intervention{mission.openInterventions === 1 ? "" : "s"}
+                                          {mission.openInterventions} input request{mission.openInterventions === 1 ? "" : "s"}
                                         </div>
                                       ) : null}
                                     </motion.button>
@@ -1141,9 +1338,9 @@ export function MissionsPage() {
                               </motion.div>
                             )}
                           </div>
-                        </motion.div>
-                      );
-                    })}
+                      </motion.div>
+                    );
+                  })}
                   </motion.div>
                 </div>
               </motion.section>
@@ -1172,6 +1369,122 @@ export function MissionsPage() {
                       initial="initial"
                       animate="animate"
                     >
+                      {runtimeLaneStrip.length > 0 ? (
+                        <motion.div variants={staggerItem} className="rounded-xl border border-border/30 bg-card/50 p-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-fg">Active Lanes</div>
+                          <div className="mt-2 overflow-x-auto">
+                            <div className="flex min-w-max gap-2">
+                              {runtimeLaneStrip.map((entry) => (
+                                <button
+                                  key={entry.laneId}
+                                  type="button"
+                                  onClick={() => jumpToLane(entry.laneId)}
+                                  className="rounded-lg border border-border/25 bg-muted/10 px-2 py-1.5 text-left text-[10px] text-muted-fg transition-colors hover:border-accent/40 hover:bg-accent/5"
+                                >
+                                  <div className="truncate text-fg">{entry.laneName}</div>
+                                  <div className="mt-0.5">
+                                    steps {entry.stepCount} · running {entry.runningCount}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </motion.div>
+                      ) : null}
+
+                      <motion.div variants={staggerItem} className="rounded-xl border border-accent/30 bg-accent/5 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <div className="text-xs font-semibold text-fg">Mission Control</div>
+                            <div className="mt-1 text-[11px] text-muted-fg">
+                              {selectedMission.status === "intervention_required"
+                                ? `Needs input. ${openInterventions.length} input request${openInterventions.length === 1 ? "" : "s"} must be resolved.`
+                                : selectedMission.status === "in_progress"
+                                  ? "Mission is in progress. Runtime execution details are in Orchestrator Runtime below."
+                                  : selectedMission.status === "queued"
+                                    ? "Mission is queued and has not started runtime execution yet."
+                                    : selectedMission.status === "completed"
+                                      ? "Mission is marked completed. You can move it back to queued if you want to re-run."
+                                      : selectedMission.status === "failed"
+                                        ? "Mission failed. Check input requests and timeline for recovery context."
+                                        : "Mission is canceled. Requeue to run again."}
+                            </div>
+                          </div>
+                          <div className="rounded border border-border/30 bg-card/40 px-2 py-1 text-[10px] text-muted-fg">
+                            run attempts: {runGraph?.attempts.length ?? 0} · running: {runningAttemptCount}
+                          </div>
+                        </div>
+                        <div className="mt-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
+                          planner: {plannerSummary?.strategy ?? "deterministic_split"} ({plannerSummary?.version ?? "ade.missionPlanner.v1"}) ·
+                          run mode: {runAutopilotState.enabled ? `autopilot${runAutopilotState.executor ? `/${runAutopilotState.executor}` : ""}` : "manual"}
+                        </div>
+                        {plannerRunSummary ? (
+                          <div className="mt-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
+                            planner engine: {plannerRunSummary.requestedEngine} to {plannerRunSummary.resolvedEngine}
+                            {plannerRunSummary.degraded ? ` · degraded (${plannerRunSummary.reasonCode ?? "unknown_reason"})` : " · validated"}
+                            {plannerRunSummary.normalizedPlanHash ? ` · plan ${shortId(plannerRunSummary.normalizedPlanHash, 10)}` : ""}
+                          </div>
+                        ) : null}
+                        {runGraph ? (
+                          <div className="mt-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
+                            lanes touched: {runtimeLaneIds.length ? runtimeLaneIds.map((id) => shortId(id)).join(", ") : "none"} · snapshots:{" "}
+                            {runGraph.contextSnapshots.length} · handoffs: {runGraph.handoffs.length} · claims: {runGraph.claims.length}
+                          </div>
+                        ) : null}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" onClick={openRunningTerminals}>
+                            <Terminal className="h-3.5 w-3.5" />
+                            View running terminals
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => navigate("/context")}>
+                            Context inventory
+                          </Button>
+                        </div>
+                        {sessionAttempts.length > 0 ? (
+                          <div className="mt-2 space-y-2 rounded border border-border/20 bg-card/35 p-2 text-[10px] text-muted-fg">
+                            <div className="text-fg">Active/linked executor sessions</div>
+                            {sessionAttempts.slice(0, 6).map((entry) => {
+                              const tail = liveSessionTailById[entry.sessionId] ?? "";
+                              return (
+                                <div key={entry.attemptId} className="rounded border border-border/20 bg-muted/10 px-2 py-1.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="truncate">
+                                      {entry.executorKind} · {entry.stepTitle} · session {shortId(entry.sessionId)} · {entry.status}
+                                    </span>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-6 px-2 text-[10px]"
+                                      onClick={() =>
+                                        navigate(
+                                          `/lanes?sessionId=${encodeURIComponent(entry.sessionId)}&inspectorTab=terminals`
+                                        )
+                                      }
+                                    >
+                                      Open
+                                    </Button>
+                                  </div>
+                                  {entry.status === "running" ? (
+                                    <pre className="mt-1 max-h-28 overflow-auto rounded border border-border/15 bg-card/40 p-1.5 font-mono text-[10px] leading-relaxed text-muted-fg">
+                                      {tail.trim().length > 0 ? tail : "Waiting for terminal output..."}
+                                    </pre>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                            {liveSessionAttempts.length > 0 ? (
+                              <div className="text-[10px] text-muted-fg">
+                                Live streams: {liveSessionAttempts.length} running session{liveSessionAttempts.length === 1 ? "" : "s"} · refreshes every ~2.5s
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="mt-2 rounded border border-dashed border-border/25 bg-card/30 px-2 py-1.5 text-[10px] text-muted-fg">
+                            No executor sessions attached yet. Start a run in autopilot mode to spawn tracked sessions.
+                          </div>
+                        )}
+                      </motion.div>
+
                       {/* ── Info Card ── */}
                       <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/65 overflow-hidden">
                         <button
@@ -1179,7 +1492,7 @@ export function MissionsPage() {
                           onClick={() => toggleSection("info")}
                           className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
                         >
-                          <span className="text-xs font-semibold text-fg">Mission Info</span>
+                          <span className="text-xs font-semibold text-fg">Mission Prompt & Metadata</span>
                           <span className="text-[10px] text-muted-fg">{expandedSections.info ? "Collapse" : "Expand"}</span>
                         </button>
                         <AnimatePresence>
@@ -1225,34 +1538,27 @@ export function MissionsPage() {
                                 </div>
 
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {statusActions(selectedMission.status).map((action) => (
-                                    <Button
-                                      key={`${selectedMission.id}:${action.status}`}
-                                      size="sm"
-                                      variant={action.variant}
-                                      disabled={missionActionBusy}
-                                      onClick={() => void updateMissionStatus(action.status)}
-                                    >
-                                      {missionActionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                                      {action.label}
-                                    </Button>
-                                  ))}
-
-                                  {selectedMission.status === "in_progress" ? (
+                                  {(selectedMission.status === "failed" ||
+                                    selectedMission.status === "completed" ||
+                                    selectedMission.status === "canceled") ? (
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      disabled={interventionBusy}
-                                      onClick={() => void addQuickIntervention()}
+                                      title="Move mission back to queued so it can be started again."
+                                      disabled={missionActionBusy}
+                                      onClick={() => void updateMissionStatus("queued")}
                                     >
-                                      {interventionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TriangleAlert className="h-3.5 w-3.5" />}
-                                      Need Input
+                                      {missionActionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                                      Move to queued
                                     </Button>
                                   ) : null}
 
                                   <Button size="sm" variant="ghost" onClick={() => jumpToLane(selectedMission.laneId)} disabled={!selectedMission.laneId}>
                                     <Waypoints className="h-3.5 w-3.5" />
-                                    Open lane
+                                    Open lane workspace
+                                  </Button>
+                                  <Button size="sm" variant="ghost" disabled={missionActionBusy} onClick={() => void deleteMission()}>
+                                    Delete mission
                                   </Button>
                                 </div>
                               </div>
@@ -1270,7 +1576,7 @@ export function MissionsPage() {
                         >
                           <div className="flex items-center gap-2 text-xs font-semibold text-fg">
                             <CheckCircle2 className="h-3.5 w-3.5 text-accent" />
-                            Outcome Summary
+                            Outcome / Operator Notes
                           </div>
                           <span className="text-[10px] text-muted-fg">{expandedSections.outcome ? "Collapse" : "Expand"}</span>
                         </button>
@@ -1288,18 +1594,13 @@ export function MissionsPage() {
                                   value={outcomeDraft}
                                   onChange={(event) => setOutcomeDraft(event.target.value)}
                                   className="h-20 w-full resize-y rounded-lg border border-border/30 bg-muted/15 px-2 py-1.5 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                                  placeholder="Capture what shipped, validations run, and follow-up items."
+                                  placeholder="Optional. Capture what shipped, validations run, follow-ups, or handoff notes."
                                 />
                                 <div className="mt-2 flex flex-wrap gap-2">
                                   <Button size="sm" variant="outline" disabled={outcomeBusy} onClick={() => void saveOutcome()}>
                                     {outcomeBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Clock3 className="h-3.5 w-3.5" />}
-                                    Save summary
+                                    Save notes
                                   </Button>
-                                  {selectedMission.status !== "completed" ? (
-                                    <Button size="sm" variant="primary" disabled={missionActionBusy} onClick={() => void updateMissionStatus("completed")}>
-                                      Mark complete
-                                    </Button>
-                                  ) : null}
                                 </div>
                               </div>
                             </motion.div>
@@ -1307,14 +1608,14 @@ export function MissionsPage() {
                         </AnimatePresence>
                       </motion.div>
 
-                      {/* ── Mission Steps (vertical timeline) ── */}
+                      {/* ── Mission Plan Steps (vertical timeline) ── */}
                       <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
                           onClick={() => toggleSection("steps")}
                           className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
                         >
-                          <span className="text-xs font-semibold text-fg">Mission Steps</span>
+                          <span className="text-xs font-semibold text-fg">Mission Plan Steps</span>
                           <span className="text-[10px] text-muted-fg">
                             {selectedMission.steps.length} step{selectedMission.steps.length !== 1 ? "s" : ""}
                           </span>
@@ -1329,53 +1630,64 @@ export function MissionsPage() {
                               className="overflow-hidden"
                             >
                               <div className="px-3 pb-3">
+                                <div className="mb-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
+                                  These are planning steps generated from your mission prompt. Runtime execution state lives in{" "}
+                                  <span className="text-fg">Orchestrator Runtime</span>.
+                                </div>
                                 <div className="relative">
                                   {/* Vertical timeline line */}
                                   {selectedMission.steps.length > 1 && (
                                     <div className="absolute left-[7px] top-3 bottom-3 w-[2px] bg-border/30" />
                                   )}
                                   <div className="space-y-3">
-                                    {selectedMission.steps.map((step) => (
-                                      <div key={step.id} className="relative flex gap-3">
-                                        {/* Timeline dot */}
-                                        <div className="relative z-10 mt-1 flex-shrink-0">
-                                          <div
-                                            className={cn(
-                                              "h-4 w-4 rounded-full border-2 border-card/60",
-                                              stepDotColor(step.status),
-                                              step.status === "running" && "ade-glow-pulse"
-                                            )}
-                                          />
-                                        </div>
-                                        {/* Step content */}
-                                        <div className="flex-1 rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
-                                          <div className="flex items-start justify-between gap-2">
-                                            <div className="min-w-0">
-                                              <div className="truncate text-xs font-medium text-fg">
-                                                {step.index + 1}. {step.title}
-                                              </div>
-                                              <div className="mt-0.5 text-[10px] text-muted-fg">{step.detail || "Placeholder step for Phase 1 mission intake."}</div>
+                                    {selectedMission.steps.map((step) => {
+                                      const dependencyIndices = Array.isArray(step.metadata?.dependencyIndices)
+                                        ? step.metadata.dependencyIndices
+                                            .map((value) => Number(value))
+                                            .filter((value) => Number.isFinite(value))
+                                            .map((value) => Math.floor(value) + 1)
+                                        : [];
+                                      const doneCriteria =
+                                        typeof step.metadata?.doneCriteria === "string" ? step.metadata.doneCriteria : null;
+                                      const joinPolicy =
+                                        typeof step.metadata?.joinPolicy === "string" ? step.metadata.joinPolicy : null;
+                                      const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : step.kind;
+
+                                      return (
+                                        <div key={step.id} className="relative flex gap-3">
+                                          <div className="relative z-10 mt-1 flex-shrink-0">
+                                            <div
+                                              className={cn(
+                                                "h-4 w-4 rounded-full border-2 border-card/60",
+                                                stepDotColor(step.status),
+                                                step.status === "running" && "ade-glow-pulse"
+                                              )}
+                                            />
+                                          </div>
+                                          <div className="flex-1 rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
+                                            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-fg">
+                                              {stepType}
+                                              {joinPolicy ? ` · join=${joinPolicy}` : ""}
+                                              {dependencyIndices.length ? ` · depends on step ${dependencyIndices.join(", ")}` : ""}
                                             </div>
-                                            <Chip className={cn("border px-1.5 py-0.5 text-[10px]", stepTone(step.status))}>{step.status}</Chip>
-                                          </div>
-                                          <div className="mt-2 flex flex-wrap gap-1.5">
-                                            {stepActions(step).map((action) => (
-                                              <Button
-                                                key={`${step.id}:${action.status}`}
-                                                size="sm"
-                                                variant={action.variant}
-                                                className="h-7 px-2 text-[11px]"
-                                                disabled={stepBusyId === step.id}
-                                                onClick={() => void updateStep(step, action.status)}
-                                              >
-                                                {stepBusyId === step.id ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                                                {action.label}
-                                              </Button>
-                                            ))}
+                                            <div className="mb-1 text-[10px] text-muted-fg">{step.detail || "Deterministic planner step."}</div>
+                                            {doneCriteria ? (
+                                              <div className="mb-1 rounded border border-border/15 bg-card/35 px-1.5 py-1 text-[10px] text-muted-fg">
+                                                done when: {doneCriteria}
+                                              </div>
+                                            ) : null}
+                                            <div className="flex items-start justify-between gap-2">
+                                              <div className="min-w-0">
+                                                <div className="truncate text-xs font-medium text-fg">
+                                                  {step.index + 1}. {step.title}
+                                                </div>
+                                              </div>
+                                              <Chip className={cn("border px-1.5 py-0.5 text-[10px]", stepTone(step.status))}>{step.status}</Chip>
+                                            </div>
                                           </div>
                                         </div>
-                                      </div>
-                                    ))}
+                                      );
+                                    })}
                                   </div>
                                 </div>
                               </div>
@@ -1409,19 +1721,23 @@ export function MissionsPage() {
                               className="overflow-hidden"
                             >
                               <div className="px-3 pb-3 space-y-2">
+                                <div className="rounded-lg border border-border/20 bg-card/35 px-2 py-2 text-[10px] text-muted-fg">
+                                  Autopilot is the default runtime mode. ADE schedules runnable steps automatically from the deterministic
+                                  plan and only requests intervention when explicitly blocked.
+                                </div>
                                 <div className="flex flex-wrap gap-2">
-                                  <Button size="sm" variant="outline" disabled={runBusy} onClick={() => void startOrchestratorRun()}>
+                                  <Button size="sm" variant="outline" disabled={runBusy || !canStartOrRerun} onClick={() => void startOrchestratorRun()}>
                                     {runBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                                    Start run from mission steps
+                                    {runGraph ? "Rerun mission" : "Start run"}
                                   </Button>
-                                  <Button size="sm" variant="outline" disabled={runBusy || !runGraph} onClick={() => void tickRun()}>
-                                    Tick
+                                  <Button size="sm" variant="ghost" disabled={runBusy || !canCancelRun} onClick={() => void cancelRun()}>
+                                    Cancel
                                   </Button>
-                                  <Button size="sm" variant="outline" disabled={runBusy || !runGraph} onClick={() => void resumeRun()}>
+                                  <Button size="sm" variant="ghost" disabled={runBusy || !canResumeRun} onClick={() => void resumeRun()}>
                                     Resume
                                   </Button>
-                                  <Button size="sm" variant="ghost" disabled={runBusy || !runGraph} onClick={() => void cancelRun()}>
-                                    Cancel
+                                  <Button size="sm" variant="ghost" onClick={openRunningTerminals}>
+                                    View terminals
                                   </Button>
                                 </div>
                                 {!runGraph ? (
@@ -1435,6 +1751,11 @@ export function MissionsPage() {
                                       <div>status: {runGraph.run.status} · profile: {runGraph.run.contextProfile}</div>
                                       <div>steps: {runGraph.steps.length} · attempts: {runGraph.attempts.length} · claims: {runGraph.claims.length}</div>
                                     </div>
+                                    {runGraph.attempts.length === 0 ? (
+                                      <div className="rounded border border-dashed border-border/20 bg-card/30 px-2 py-2 text-[10px] text-muted-fg">
+                                        No attempts started yet.
+                                      </div>
+                                    ) : null}
                                     <div className="space-y-2">
                                       {runGraph.steps
                                         .slice()
@@ -1442,7 +1763,6 @@ export function MissionsPage() {
                                         .map((step) => {
                                           const attempts = attemptsByStep.get(step.id) ?? [];
                                           const latestAttempt = attempts[0] ?? null;
-                                          const attemptBusy = attemptBusyId === step.id || (latestAttempt && attemptBusyId === latestAttempt.id);
                                           return (
                                             <div key={step.id} className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
                                               <div className="flex items-center justify-between gap-2">
@@ -1457,24 +1777,30 @@ export function MissionsPage() {
                                                 attempts: {attempts.length}
                                                 {latestAttempt ? ` · latest #${latestAttempt.attemptNumber} (${latestAttempt.status})` : ""}
                                               </div>
-                                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                                {step.status === "ready" ? (
-                                                  <Button size="sm" variant="primary" className="h-7 px-2 text-[11px]" disabled={Boolean(attemptBusy)} onClick={() => void startStepAttempt(step)}>
-                                                    {attemptBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                                                    Start attempt
+                                              {latestAttempt ? (
+                                                <div className="mt-1 text-[10px] text-muted-fg">
+                                                  executor: {latestAttempt.executorKind}
+                                                  {latestAttempt.executorSessionId
+                                                    ? ` · session ${shortId(latestAttempt.executorSessionId)}`
+                                                    : " · session not attached"}
+                                                </div>
+                                              ) : null}
+                                              {latestAttempt?.executorSessionId ? (
+                                                <div className="mt-2">
+                                                  <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    className="h-7 px-2 text-[11px]"
+                                                    onClick={() =>
+                                                      navigate(
+                                                        `/lanes?sessionId=${encodeURIComponent(latestAttempt.executorSessionId!)}&inspectorTab=terminals`
+                                                      )
+                                                    }
+                                                  >
+                                                    Open terminal
                                                   </Button>
-                                                ) : null}
-                                                {latestAttempt && latestAttempt.status === "running" ? (
-                                                  <>
-                                                    <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={Boolean(attemptBusy)} onClick={() => void completeStepAttempt(latestAttempt.id, "succeeded")}>
-                                                      Complete
-                                                    </Button>
-                                                    <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" disabled={Boolean(attemptBusy)} onClick={() => void completeStepAttempt(latestAttempt.id, "failed")}>
-                                                      Fail
-                                                    </Button>
-                                                  </>
-                                                ) : null}
-                                              </div>
+                                                </div>
+                                              ) : null}
                                             </div>
                                           );
                                         })}
@@ -1499,7 +1825,7 @@ export function MissionsPage() {
                         </AnimatePresence>
                       </motion.div>
 
-                      {/* ── Interventions ── */}
+                      {/* ── Input Requests ── */}
                       <motion.div variants={staggerItem} className="rounded-xl border border-border/25 bg-card/60 overflow-hidden">
                         <button
                           type="button"
@@ -1508,7 +1834,7 @@ export function MissionsPage() {
                         >
                           <div className="flex items-center gap-2 text-xs font-semibold text-fg">
                             <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />
-                            Interventions
+                            Input Requests
                           </div>
                           <span className="text-[10px] text-muted-fg">
                             {selectedMission.interventions.filter((i) => i.status === "open").length} open
@@ -1526,7 +1852,7 @@ export function MissionsPage() {
                               <div className="px-3 pb-3 space-y-2">
                                 {selectedMission.interventions.length === 0 ? (
                                   <div className="rounded-lg border border-dashed border-border/25 bg-muted/10 px-2 py-3 text-center text-[11px] text-muted-fg">
-                                    No interventions logged.
+                                    No input requests.
                                   </div>
                                 ) : (
                                   selectedMission.interventions.map((intervention) => (
@@ -1573,7 +1899,7 @@ export function MissionsPage() {
                                 )}
 
                                 <div className="mt-3 rounded-lg border border-border/20 bg-card/50 p-2">
-                                  <div className="text-[11px] font-medium text-fg">Add intervention</div>
+                                  <div className="text-[11px] font-medium text-fg">Add input request</div>
                                   <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
                                     <select
                                       value={interventionDraft.interventionType}
@@ -1607,7 +1933,7 @@ export function MissionsPage() {
                                   <div className="mt-2">
                                     <Button size="sm" variant="outline" disabled={interventionBusy} onClick={() => void addIntervention()}>
                                       {interventionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                                      Add intervention
+                                      Add input request
                                     </Button>
                                   </div>
                                 </div>

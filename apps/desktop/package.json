@@ -7,8 +7,8 @@
   "scripts": {
     "generate:bootstrap": "node scripts/generate-bootstrap-defaults.cjs",
     "prebuild": "npm run generate:bootstrap",
-    "predev": "npm run generate:bootstrap",
-    "dev": "node ./scripts/ensure-electron.cjs && concurrently -k -n renderer,main,electron \"vite --port 5173\" \"tsup --watch\" \"wait-on tcp:5173 && wait-on file:dist/main/main.cjs && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "predev": "npm run generate:bootstrap && node ./scripts/clear-vite-cache.cjs",
+    "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
     "build": "tsup && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

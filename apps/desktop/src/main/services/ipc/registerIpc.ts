@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -195,8 +196,16 @@ import type {
   MissionStatus,
   MissionStepHandoff,
   MissionSummary,
+  MissionExecutorPolicy,
+  MissionPlannerAttempt,
+  MissionPlannerRun,
   ResolveMissionInterventionArgs,
   CreateMissionArgs,
+  PlanMissionArgs,
+  PlanMissionResult,
+  ListPlannerRunsArgs,
+  GetPlannerAttemptArgs,
+  DeleteMissionArgs,
   CancelOrchestratorRunArgs,
   CompleteOrchestratorAttemptArgs,
   GetOrchestratorGateReportArgs,
@@ -207,6 +216,7 @@ import type {
   OrchestratorAttempt,
   OrchestratorClaim,
   OrchestratorContextSnapshot,
+  OrchestratorExecutorKind,
   OrchestratorGateReport,
   OrchestratorRun,
   OrchestratorRunGraph,
@@ -249,6 +259,7 @@ import type { createCiService } from "../ci/ciService";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createMissionService } from "../missions/missionService";
+import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import { redactSecrets } from "../../utils/redaction";
 
@@ -334,6 +345,97 @@ function normalizeMissionStatus(value: string): MissionStatus {
     return value;
   }
   return "queued";
+}
+
+function sha256Utf8(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function buildMissionPlannerDocsDigest(projectRoot: string): Array<{ path: string; sha256: string; bytes: number }> {
+  const roots = [path.join(projectRoot, "docs", "PRD.md"), path.join(projectRoot, "docs", "architecture")];
+  const docs: Array<{ path: string; sha256: string; bytes: number }> = [];
+
+  const visit = (candidatePath: string) => {
+    if (!fs.existsSync(candidatePath)) return;
+    const stat = fs.statSync(candidatePath);
+    if (stat.isDirectory()) {
+      const entries = fs.readdirSync(candidatePath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) continue;
+        visit(path.join(candidatePath, entry.name));
+      }
+      return;
+    }
+    if (!stat.isFile()) return;
+    if (!candidatePath.toLowerCase().endsWith(".md")) return;
+    const content = fs.readFileSync(candidatePath, "utf8");
+    docs.push({
+      path: path.relative(projectRoot, candidatePath).replace(/\\/g, "/"),
+      sha256: sha256Utf8(content),
+      bytes: Buffer.byteLength(content, "utf8")
+    });
+  };
+
+  for (const root of roots) {
+    visit(root);
+  }
+  docs.sort((a, b) => a.path.localeCompare(b.path));
+  return docs.slice(0, 60);
+}
+
+function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "claude" || raw === "codex" || raw === "gemini" || raw === "shell" || raw === "manual") return raw;
+  return "codex";
+}
+
+function normalizeMissionExecutorPolicy(value: unknown): MissionExecutorPolicy {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "claude" || raw === "codex" || raw === "both") return raw;
+  return "both";
+}
+
+function defaultExecutorForPolicy(policy: MissionExecutorPolicy): OrchestratorExecutorKind {
+  if (policy === "claude") return "claude";
+  return "codex";
+}
+
+function buildMissionPlanningContextBundle(args: {
+  ctx: AppContext;
+  laneId: string | null;
+  executionMode: string;
+  targetMachineId: string | null;
+}) {
+  const operationRows = args.ctx.db.all<{ kind: string; status: string; ended_at: string | null }>(
+    `
+      select kind, status, ended_at
+      from operations
+      where project_id = ?
+      order by coalesce(ended_at, started_at) desc
+      limit 24
+    `,
+    [args.ctx.projectId]
+  );
+  return {
+    missionProfile: {
+      projectId: args.ctx.projectId,
+      projectRoot: args.ctx.project.rootPath,
+      laneId: args.laneId,
+      executionMode: args.executionMode,
+      targetMachineId: args.targetMachineId
+    },
+    operationSummary: {
+      total: operationRows.length,
+      recent: operationRows
+    },
+    docsDigest: buildMissionPlannerDocsDigest(args.ctx.project.rootPath),
+    constraints: [
+      "no user interaction unless blocked",
+      "no arbitrary shell",
+      "prefer minimal parallelism unless independent",
+      "runtime must be deterministic from validated plan artifact"
+    ]
+  };
 }
 
 function buildContextInventorySnapshot(ctx: AppContext): ContextInventorySnapshot {
@@ -971,6 +1073,60 @@ export function registerIpc({
     return ctx.automationPlannerService.simulate(arg);
   });
 
+  ipcMain.handle(IPC.plannerPlanMission, async (_event, arg: PlanMissionArgs): Promise<PlanMissionResult> => {
+    const ctx = getCtx();
+    const prompt = typeof arg?.prompt === "string" ? arg.prompt.trim() : "";
+    if (!prompt.length) throw new Error("Mission prompt is required.");
+    const title =
+      typeof arg?.title === "string" && arg.title.trim().length > 0
+        ? arg.title.trim()
+        : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
+    const plannerEngine = arg?.plannerEngine ?? "auto";
+    const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
+    const executorPolicy = normalizeMissionExecutorPolicy(arg?.executorPolicy);
+    const planning = await planMissionOnce({
+      missionId: typeof arg?.missionId === "string" ? arg.missionId.trim() : undefined,
+      title,
+      prompt,
+      laneId,
+      plannerEngine,
+      timeoutMs: arg?.planningTimeoutMs,
+      allowPlanningQuestions: arg?.allowPlanningQuestions,
+      projectRoot: ctx.project.rootPath,
+      contextBundle: buildMissionPlanningContextBundle({
+        ctx,
+        laneId,
+        executionMode: "local",
+        targetMachineId: null
+      }),
+      logger: ctx.logger
+    });
+    const plannedSteps = plannerPlanToMissionSteps({
+      plan: planning.plan,
+      requestedEngine: planning.run.requestedEngine,
+      resolvedEngine: planning.run.resolvedEngine,
+      executorPolicy,
+      degraded: planning.run.degraded,
+      reasonCode: planning.run.reasonCode,
+      validationErrors: planning.run.validationErrors
+    });
+    return {
+      plan: planning.plan,
+      run: planning.run,
+      plannedSteps
+    };
+  });
+
+  ipcMain.handle(IPC.plannerGetRuns, async (_event, arg: ListPlannerRunsArgs = {}): Promise<MissionPlannerRun[]> => {
+    const ctx = getCtx();
+    return ctx.missionService.listPlannerRuns(arg);
+  });
+
+  ipcMain.handle(IPC.plannerGetAttempt, async (_event, arg: GetPlannerAttemptArgs): Promise<MissionPlannerAttempt | null> => {
+    const ctx = getCtx();
+    return ctx.missionService.getPlannerAttempt(arg);
+  });
+
   ipcMain.handle(IPC.missionsList, async (_event, arg: ListMissionsArgs = {}): Promise<MissionSummary[]> => {
     const ctx = getCtx();
     return ctx.missionService.list(arg);
@@ -983,7 +1139,54 @@ export function registerIpc({
 
   ipcMain.handle(IPC.missionsCreate, async (_event, arg: CreateMissionArgs): Promise<MissionDetail> => {
     const ctx = getCtx();
-    const created = ctx.missionService.create(arg);
+    const prompt = typeof arg?.prompt === "string" ? arg.prompt.trim() : "";
+    if (!prompt.length) throw new Error("Mission prompt is required.");
+    const title =
+      typeof arg?.title === "string" && arg.title.trim().length > 0
+        ? arg.title.trim()
+        : prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "Mission";
+    const plannerEngine = arg?.plannerEngine ?? "auto";
+    const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : null;
+    const executorPolicy = normalizeMissionExecutorPolicy(arg?.executorPolicy);
+    const executionMode = arg?.executionMode ?? "local";
+    const targetMachineId = typeof arg?.targetMachineId === "string" ? arg.targetMachineId.trim() || null : null;
+
+    const planning = await planMissionOnce({
+      title,
+      prompt,
+      laneId,
+      plannerEngine,
+      timeoutMs: arg?.planningTimeoutMs,
+      allowPlanningQuestions: arg?.allowPlanningQuestions,
+      projectRoot: ctx.project.rootPath,
+      contextBundle: buildMissionPlanningContextBundle({
+        ctx,
+        laneId,
+        executionMode,
+        targetMachineId
+      }),
+      logger: ctx.logger
+    });
+
+    const plannedSteps = plannerPlanToMissionSteps({
+      plan: planning.plan,
+      requestedEngine: planning.run.requestedEngine,
+      resolvedEngine: planning.run.resolvedEngine,
+      executorPolicy,
+      degraded: planning.run.degraded,
+      reasonCode: planning.run.reasonCode,
+      validationErrors: planning.run.validationErrors
+    });
+
+    const created = ctx.missionService.create({
+      ...arg,
+      plannedSteps,
+      plannerRun: {
+        ...planning.run,
+        missionId: ""
+      },
+      plannerPlan: planning.plan
+    });
     try {
       await ctx.packService.refreshMissionPack({
         missionId: created.id,
@@ -996,6 +1199,58 @@ export function registerIpc({
         error: error instanceof Error ? error.message : String(error)
       });
     }
+
+    const autostart = arg?.autostart !== false;
+    if (autostart) {
+      const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
+      const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
+        ? "manual"
+        : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? defaultExecutorForPolicy(executorPolicy));
+      try {
+        ctx.missionService.update({
+          missionId: created.id,
+          status: "in_progress"
+        });
+        ctx.orchestratorService.startRunFromMission({
+          missionId: created.id,
+          runMode,
+          autopilotOwnerId: "missions-autopilot",
+          defaultExecutorKind,
+          defaultRetryLimit: 1,
+          metadata: {
+            launchSource: "missions.create",
+            plannerRunId: planning.run.id,
+            plannerEngineRequested: planning.run.requestedEngine,
+            plannerEngineResolved: planning.run.resolvedEngine,
+            plannerExecutorPolicy: executorPolicy,
+            plannerDegraded: planning.run.degraded,
+            plannerReasonCode: planning.run.reasonCode
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.logger.warn("missions.autostart_failed", {
+          missionId: created.id,
+          runMode,
+          defaultExecutorKind,
+          error: message
+        });
+        try {
+          ctx.missionService.addIntervention({
+            missionId: created.id,
+            interventionType: "policy_block",
+            title: "Mission launch requires action",
+            body: `Automatic run launch failed: ${message}`,
+            requestedAction: "Review planner/runtime configuration and retry the blocked step."
+          });
+        } catch {
+          // ignore best-effort intervention creation
+        }
+      }
+    }
+
+    const detail = ctx.missionService.get(created.id);
+    if (detail) return detail;
     return created;
   });
 
@@ -1015,6 +1270,11 @@ export function registerIpc({
       });
     }
     return updated;
+  });
+
+  ipcMain.handle(IPC.missionsDelete, async (_event, arg: DeleteMissionArgs): Promise<void> => {
+    const ctx = getCtx();
+    ctx.missionService.delete(arg);
   });
 
   ipcMain.handle(IPC.missionsUpdateStep, async (_event, arg: UpdateMissionStepArgs): Promise<MissionStep> => {

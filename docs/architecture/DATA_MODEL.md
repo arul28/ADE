@@ -57,7 +57,7 @@ All tables use TEXT primary keys containing UUIDs (generated via `crypto.randomU
 
 - Globally unique identifiers that work across projects and machines
 - No auto-increment coordination
-- Safe for distributed scenarios (future hosted agent sync)
+- Safe for distributed scenarios (future relay sync)
 
 ### ISO 8601 Timestamps
 
@@ -1022,7 +1022,7 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - **Terminal Sessions** --> Session delta computation, pack generation
 - **Session Deltas** --> Lane pack body, project pack body
 - **Operations** --> History page, proposal undo tracking
-- **Packs Index** --> Pack viewer UI, hosted agent sync
+- **Packs Index** --> Pack viewer UI, relay sync
 - **Conflict Predictions** --> Conflict radar UI, conflict pack generation, risk matrix
 - **Conflict Proposals** --> Conflict resolution UI, proposal apply/undo flow
 - **Pull Requests** --> PR page UI, PR polling service, lane status indicators

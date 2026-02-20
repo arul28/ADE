@@ -15,7 +15,7 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
 5. [System Architecture](#5-system-architecture)
 6. [Technology Stack](#6-technology-stack)
 7. [Application Structure (Tabs)](#7-application-structure-tabs)
-   - 7.1 [Run (▶)](#71-run-)
+   - 7.1 [Run](#71-run-)
    - 7.2 [Lanes](#72-lanes)
    - 7.3 [Files](#73-files)
    - 7.4 [Terminals](#74-terminals)
@@ -34,7 +34,7 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
     - 10.2 [Automations](#102-automations)
     - 10.3 [Workspace Graph](#103-workspace-graph)
     - 10.4 [Job Engine](#104-job-engine)
-    - 10.5 [Hosted Agent](#105-hosted-agent)
+    - 10.5 [AI Integration](#105-ai-integration)
 11. [Security and Privacy](#11-security-and-privacy)
 12. [Configuration Model](#12-configuration-model)
 13. [Non-Goals and Out of Scope](#13-non-goals-and-out-of-scope)
@@ -46,7 +46,7 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
 
 ## 1. Product Overview
 
-ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and integrates with a hosted cloud agent for narrative generation and conflict resolution proposals.
+ADE (Agentic Development Environment) is a desktop application that serves as a development operations cockpit for agentic coding workflows. It provides developers with a unified control plane to manage multiple parallel development lanes (git worktrees), terminal sessions, managed processes, test suites, and project configuration. ADE automates context tracking through its Packs system, predicts conflicts between parallel work streams, and orchestrates AI-powered multi-agent workflows through its AI Integration Layer -- native agent SDKs unified behind an AgentExecutor interface, a local MCP server, and an AI orchestrator that coordinates agents (Claude Code, Codex) using the developer's existing CLI subscriptions.
 
 ADE is built with Electron and ships as a cross-platform desktop application for macOS, Windows, and Linux.
 
@@ -62,12 +62,15 @@ Software teams increasingly use AI coding agents (Claude Code, Codex, Cursor, an
 - **Integration risk**: Parallel work on overlapping files leads to merge conflicts discovered too late, at merge time.
 - **Context-switching overhead**: Moving between branches, terminals, and tools requires mental reconstruction of each work stream's state and intent.
 - **Lack of observability**: There is no single view showing what is happening across all active development surfaces simultaneously.
+- **No unified orchestration**: Developers manually coordinate which agent works on what, in which branch, with what context. There is no system to plan, dispatch, and supervise multi-agent workflows end to end.
 
 ### The Vision
 
-ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Think of it as "mission control for agentic development."
+ADE is the orchestration layer for agentic development. It watches what each agent does, tracks context through immutable checkpoints and durable packs, predicts conflicts between parallel work, and surfaces integration risks before they become merge nightmares. Its AI orchestrator -- powered by native agent SDKs and a local MCP server -- can plan multi-step missions, spawn agents into isolated lanes, inject context packs into agent prompts, and route human interventions back through the ADE UI. All AI execution is subscription-powered: developers use their existing Claude Pro/Max or ChatGPT Plus subscriptions through CLI tools spawned as subprocesses, with no separate accounts or credentials required.
 
-ADE does not replace the IDE or the git CLI. ADE already integrates deeply with external agent CLIs via tracked sessions and automation flows, and is evolving toward first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
+Think of ADE as "mission control for agentic development."
+
+ADE does not replace the IDE or the git CLI. It integrates deeply with external agent CLIs via tracked sessions, automation flows, and first-class mission/orchestrator execution as defined in `docs/final-plan.md`.
 
 ---
 
@@ -114,23 +117,49 @@ An immutable execution snapshot created at session boundaries and commit boundar
 
 A terminal session within a lane, tracked with rich metadata including title, goal, tool/agent type, start/end timestamps, head SHAs at start and end, exit code, and a linked checkpoint. Sessions produce transcripts stored locally by default.
 
-### Hosted Agent
+### AI Integration Layer
 
-A read-only cloud mirror that uses LLMs to generate pack narratives (reasoning and summaries), propose conflict resolutions (unified diff patches), and draft PR descriptions. The hosted agent never mutates the repository. All patches are shown as diffs for user review before local application.
+The AI Integration Layer replaces the former cloud-based agent model with a fully local architecture. It consists of three components:
+
+- **Agent SDKs**: The execution layer uses native SDKs for each agent: `ai-sdk-provider-claude-code` (community Vercel AI SDK provider wrapping `@anthropic-ai/claude-agent-sdk`) for Claude and `@openai/codex-sdk` (official OpenAI SDK) for Codex. ADE's `AgentExecutor` interface unifies both behind a common `execute()` / `resume()` contract. Each SDK spawns its CLI as a subprocess, inheriting the user's existing subscription authentication -- no separate credentials are needed.
+- **MCP Server**: A local JSON-RPC 2.0 server (`apps/mcp-server`) that exposes ADE's infrastructure as tools to the AI orchestrator. Tools include `spawn_agent`, `read_context`, `create_lane`, `check_conflicts`, `merge_lane`, `ask_user`, `run_tests`, and others.
+- **AI Orchestrator**: A Claude session (via the AgentExecutor interface) connected to the MCP server. The orchestrator receives mission prompts and context packs, plans multi-step workflows, spawns agents in separate lanes, monitors progress, and routes interventions to the user through the ADE UI.
+
+The AI Integration Layer never mutates the repository directly. All file changes, git operations, and test runs are performed by the agents it spawns or by the user through the existing local core.
+
+### Per-Task-Type Model Routing
+
+Users can configure which AI model and provider to use for each task type. Task types include planning, implementation, review, conflict resolution, narratives, and PR descriptions. For example, a user might configure Claude for planning and code review while using Codex for implementation tasks.
 
 ### Job Engine
 
-An asynchronous task scheduler that triggers on events (session end, head change, staged set change) and runs idempotent, coalesced jobs. The job engine coordinates the refresh pipeline: status update, checkpoint creation, pack materialization, conflict prediction, and hosted sync.
-
-### Guest Mode
-
-ADE can be used without an account or LLM provider. In Guest Mode, all local features work (lanes, terminals, git operations, processes, tests) but context tracking (packs, narratives, LLM-powered conflict resolution) is disabled. Guest Mode is the default state before onboarding completes and users can remain in it indefinitely.
+An asynchronous task scheduler that triggers on events (session end, head change, staged set change) and runs idempotent, coalesced jobs. The job engine coordinates the refresh pipeline: status update, checkpoint creation, pack materialization, conflict prediction, and AI augmentation requests.
 
 ---
 
 ## 5. System Architecture
 
-ADE follows a strict trust boundary model with three layers:
+ADE follows a strict trust boundary model with three process layers plus an AI Integration Layer:
+
+```
+ADE Desktop (Electron)
++-- Renderer (React UI)
+|   +-- Missions tab (AI orchestrator control center)
+|   +-- Activity feed (real-time agent output)
+|   +-- Intervention panel (human-in-the-loop)
+|   +-- All other tabs unchanged
++-- Main Process (Node.js, trusted)
+|   +-- AI Integration Service
+|   |   +-- AgentExecutor Interface (execution abstraction)
+|   |   |   +-- ClaudeExecutor (ai-sdk-provider-claude-code, subscription)
+|   |   |   +-- CodexExecutor (@openai/codex-sdk, subscription)
+|   |   +-- AI Orchestrator (Claude session + MCP tools)
+|   |   +-- Per-task-type model routing
+|   +-- MCP Server (exposes ADE tools to AI)
+|   +-- Existing Services (unchanged)
+|   +-- SQLite (sql.js)
++-- Preload Bridge (typed IPC)
+```
 
 ### Main Process (Trusted)
 
@@ -143,7 +172,7 @@ The Electron main process is the only component with filesystem and process acce
 - Job engine and pipeline execution
 - Local database (SQLite via sql.js)
 - Pack materialization and checkpoint capture
-- Hosted mirror sync
+- AI Integration Service (AgentExecutor interface, MCP server, orchestrator)
 
 ### Renderer Process (Untrusted UI)
 
@@ -153,19 +182,22 @@ The React-based renderer handles all user interface rendering. It never directly
 
 The preload script exposes a narrow, typed API surface to the renderer via Electron's `contextBridge`. It enforces a strict IPC channel allowlist. Context isolation is enabled and Node integration is disabled in the renderer.
 
-### Hosted Agent (Read-Only Cloud)
+### AI Integration Layer
 
-The cloud backend maintains a content-addressed mirror of the repository (minus configurable excludes) and runs LLM-powered jobs to produce narrative augmentations and patch proposals. It never mutates the repo. The local core is the only component that applies patches, runs tests, or performs git operations.
+The AI Integration Layer runs within the main process and provides all AI capabilities. It consists of:
+
+- **Agent SDK executors**: ADE's `AgentExecutor` interface unifies two native SDKs behind a common `execute()` / `resume()` contract. The `ClaudeExecutor` uses `ai-sdk-provider-claude-code` (a community Vercel AI SDK provider that wraps `@anthropic-ai/claude-agent-sdk`) to spawn the `claude` CLI as a subprocess, inheriting the user's Claude Pro/Max subscription. The `CodexExecutor` uses `@openai/codex-sdk` (the official OpenAI SDK) to spawn the `codex` CLI directly, inheriting the user's ChatGPT Plus subscription. Both executors support streaming output, session management, and tool interception.
+- **MCP Server**: A local server (`apps/mcp-server`) exposing ADE tools via JSON-RPC 2.0 over stdio transport. This gives the AI orchestrator programmatic access to ADE's lane management, context packs, conflict detection, test execution, and user intervention infrastructure.
+- **AI Orchestrator**: A long-running Claude session connected to the MCP server. The orchestrator receives mission prompts enriched with context packs, decomposes them into steps, spawns agents in isolated lanes, monitors execution through checkpoints and session events, and escalates decisions to the user via the intervention panel.
 
 ### Provider Model
 
-All LLM reasoning is abstracted behind a single internal provider interface (`ManagerProvider`) with three implementations:
+AI capabilities are gated by the provider mode:
 
-- **Hosted** (default): Calls ADE Cloud backend.
-- **BYOK** (Bring Your Own Key): Calls model APIs directly from the desktop, no mirror required.
-- **CLI**: Runs local tools (Codex, Claude Code) interactively.
+- **Guest**: No AI features. All local features work (lanes, terminals, git operations, processes, tests, packs, conflict prediction). No CLI tools required. This is the default state and users can remain in it indefinitely.
+- **Subscription**: Uses existing CLI subscriptions (Claude Pro/Max via `claude` CLI, ChatGPT Plus via `codex` CLI) through their respective SDKs. Each SDK spawns its CLI tool as a subprocess that inherits the user's subscription authentication. No separate credentials, accounts, or configuration are required beyond having the CLI tools installed and authenticated.
 
-The deterministic pack pipeline functions even if the LLM provider is disabled.
+The deterministic pack pipeline functions regardless of provider mode. Packs, checkpoints, conflict prediction, lane management, and all local features operate without any AI provider.
 
 For detailed architecture, see [Architecture Documentation](#9-architecture-documentation).
 
@@ -190,26 +222,16 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 | Graph/Canvas | React Flow |
 | Routing | React Router |
 | Layout | react-resizable-panels |
-
-### Cloud Backend (Hosted Agent)
-
-| Layer | Technology |
-|-------|-----------|
-| Infrastructure as Code | SST (deploys to AWS) |
-| Authentication | Clerk OAuth (GitHub), desktop PKCE loopback, API Gateway JWT authorizer |
-| API | API Gateway (HTTP API) + AWS Lambda |
-| Queue | Amazon SQS (job ingestion, retries, DLQ) |
-| Workers | AWS Lambda (SQS-triggered) |
-| Storage | Amazon S3 (mirror blobs, manifests, artifacts) |
-| Metadata | Amazon DynamoDB |
-| Secrets | AWS Secrets Manager |
-| Observability | CloudWatch Logs/Metrics |
+| AI Execution | AgentExecutor interface (ADE-owned abstraction) |
+| AI Providers | `ai-sdk-provider-claude-code` (Claude), `@openai/codex-sdk` (Codex) |
+| AI Tool Protocol | MCP Server (`apps/mcp-server`), JSON-RPC 2.0, stdio transport |
+| GitHub Integration | `gh` CLI (local), personal access tokens |
 
 ---
 
 ## 7. Application Structure (Tabs)
 
-ADE currently uses a 12-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, Files, and Missions tabs to default-filter to the active lane context. The app can be used in Guest Mode (no account required) with context tracking disabled.
+ADE uses a 12-tab application shell with a slim icon rail (50px) on the left side. The selected lane persists across tabs, allowing Run, Terminals, Conflicts, PRs, Files, and Missions tabs to default-filter to the active lane context. All local features work without any AI provider configured; AI-powered features (narratives, orchestrator, conflict proposals) require a subscription provider.
 
 Current tab routes:
 - `/project` (Play)
@@ -229,7 +251,7 @@ The detailed ownership model for future additions (including Machines) is mainta
 
 ### 7.1 Run (▶)
 
-The Run tab (denoted by a ▶ play/pause icon) is the project-level command center for running everything in your development stack. It includes a lane selector (determining which worktree commands execute in), a stack button row for one-click startup of configured process subsets, individual managed process controls with live log streaming, test suite buttons with run history, and a configuration editor. New in the Run tab: AI-suggested run prompts that detect new test suites or services after merges and propose new buttons; CI/CD workflow sync that imports jobs from GitHub Actions / GitLab CI / etc. as local run buttons; and an Agent CLI Tools section that detects installed AI coding tools (Claude Code, Codex, Cursor, Aider, Continue), displays their commands and skills, and provides quick-launch into tracked terminals.
+The Run tab (denoted by a play/pause icon) is the project-level command center for running everything in your development stack. It includes a lane selector (determining which worktree commands execute in), a stack button row for one-click startup of configured process subsets, individual managed process controls with live log streaming, test suite buttons with run history, and a configuration editor. New in the Run tab: AI-suggested run prompts that detect new test suites or services after merges and propose new buttons; CI/CD workflow sync that imports jobs from GitHub Actions / GitLab CI / etc. as local run buttons; and an Agent CLI Tools section that detects installed AI coding tools (Claude Code, Codex, Cursor, Aider, Continue), displays their commands and skills, and provides quick-launch into tracked terminals.
 
 See: [features/PROJECT_HOME.md](features/PROJECT_HOME.md)
 
@@ -247,13 +269,13 @@ See: [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md)
 
 ### 7.4 Terminals
 
-The Terminals tab is a global session list optimized for high session volume. It displays all terminal sessions across lanes with filters (lane, status, tool type, has errors), pin support, and jump-to-lane navigation. Each row shows the lane name, session title/goal, status (running/exited/failure), last output preview, start time, and duration. A secondary grid view (V1) renders multiple sessions simultaneously with lightweight preview frames for unfocused sessions to avoid rendering too many live xterm instances.
+The Terminals tab is a global session list optimized for high session volume. It displays all terminal sessions across lanes with filters (lane, status, tool type, has errors), pin support, and jump-to-lane navigation. Each row shows the lane name, session title/goal, status (running/exited/failure), last output preview, start time, and duration. A secondary grid view (V1) renders multiple sessions simultaneously with lightweight preview frames for unfocused sessions to avoid rendering too many live xterm instances. When AI is available, sessions also receive AI-enhanced summaries providing intent detection, outcome assessment, and suggested next steps — displayed alongside the deterministic summary in session cards.
 
 See: [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md)
 
 ### 7.5 Conflicts
 
-The Conflicts tab is the project-wide conflict radar. It aggregates predicted and active conflicts across all lanes, displaying a left-side list of affected lanes with stack blocker highlights, and a right-side content area with the pairwise lane risk matrix, merge simulation panel (source lane to target lane/branch dry-run), conflict pack viewer, and hosted proposal workflow (generate, review diff, apply, run tests). Conflict badges in the Lanes tab provide at-a-glance risk visibility, and real-time overlap indicators update within seconds of staged or dirty changes.
+The Conflicts tab is the project-wide conflict radar. It aggregates predicted and active conflicts across all lanes, displaying a left-side list of affected lanes with stack blocker highlights, and a right-side content area with the pairwise lane risk matrix, merge simulation panel (source lane to target lane/branch dry-run), conflict pack viewer, and AI proposal workflow (generate via the agent SDKs, review diff, apply, run tests). Conflict badges in the Lanes tab provide at-a-glance risk visibility, and real-time overlap indicators update within seconds of staged or dirty changes.
 
 See: [features/CONFLICTS.md](features/CONFLICTS.md)
 
@@ -271,13 +293,13 @@ See: [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md)
 
 ### 7.8 PRs
 
-The PRs tab manages GitHub pull request workflows. It displays stacked PR chains aligned to the lane stack graph on the left, and parallel (non-stacked) PRs in a separate list. The right side shows selected PR detail including checks, review status, and description. Per-lane PR operations (create, link, push, update description from packs) are available in the lane inspector PR sub-tab. The tab supports the "land stack" guided flow for merging stacked PRs in dependency order with checks gating.
+The PRs tab manages GitHub pull request workflows. It displays stacked PR chains aligned to the lane stack graph on the left, and parallel (non-stacked) PRs in a separate list. The right side shows selected PR detail including checks, review status, and description. Per-lane PR operations (create, link, push, update description from packs) are available in the lane inspector PR sub-tab. The tab supports the "land stack" guided flow for merging stacked PRs in dependency order with checks gating. GitHub integration uses the local `gh` CLI or personal access tokens.
 
 See: [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md)
 
 ### 7.9 History
 
-The History tab provides an ADE-native operations timeline (distinct from `git log`). It shows a chronological event stream covering terminal sessions ended, checkpoints created, lane sync operations, conflict predictions, plan version changes, proposal applications, and PR events. Events are filterable by lane, feature key, and event type. Each event detail panel shows links to affected lanes, packs, checkpoints, plan versions, and proposals, with "replay context" and "undo" actions where applicable. A feature history view aggregates all sessions, checkpoints, and plan revisions for a given issue or feature key.
+The History tab provides an ADE-native operations timeline (distinct from `git log`). It shows a chronological event stream covering terminal sessions ended, checkpoints created, lane sync operations, conflict predictions, plan version changes, proposal applications, orchestrator runs, and PR events. Events are filterable by lane, feature key, and event type. Each event detail panel shows links to affected lanes, packs, checkpoints, plan versions, and proposals, with "replay context" and "undo" actions where applicable. A feature history view aggregates all sessions, checkpoints, and plan revisions for a given issue or feature key.
 
 See: [features/HISTORY.md](features/HISTORY.md)
 
@@ -289,13 +311,15 @@ See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
 
 ### 7.11 Missions
 
-The Missions tab is the Phase 1 intake and tracking surface for plain-English task execution. It provides quick mission launch (lane, priority, execution target), status-lane board views, intervention queues, mission step progress, outcomes, artifacts (including PR links), and mission timeline events. It is intentionally orchestrator-ready and machine-routing-ready for future phases.
+The Missions tab is the AI orchestrator control center. It provides quick mission launch (prompt, lane, priority, execution target), status-lane board views, intervention queues, mission step progress with DAG visualization, orchestrator run controls (start, pause, resume, cancel), attempt history, outcomes, artifacts (including PR links), and mission timeline events. The AI orchestrator (a Claude session via the AgentExecutor interface connected to the MCP server) decomposes missions into steps, spawns agents in isolated lanes, monitors progress through checkpoints and session events, and routes decisions to the user through the intervention panel.
+
+Mission detail supports starting orchestrator runs from mission steps. Operators can tick/resume/cancel runs, start attempts, and complete running attempts. Step DAG state, attempt history, and timeline events are visible from mission detail. Mission intake applies a deterministic planner split pass (dependencies, join policy, done criteria metadata). Autopilot launch mode persists executor/run-mode metadata and can auto-advance after tracked session completion.
 
 See: [features/MISSIONS.md](features/MISSIONS.md)
 
 ### 7.12 Settings
 
-The Settings tab provides application preferences including hosted agent enable/disable, mirror exclude pattern editing, process/test configuration export/import, keyboard shortcuts reference, provider configuration (hosted/BYOK/CLI), theme selection (Clean Paper light or Bloomberg Terminal dark), and automation enable/disable with last-run status.
+The Settings tab provides application preferences including AI provider configuration (guest mode or subscription-powered via installed CLI tools), per-task-type model routing (which model/provider handles planning, implementation, review, conflict resolution, narratives, and PR descriptions), per-feature AI toggles (enable/disable individual AI capabilities: narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator), AI usage dashboard (per-feature usage bars, subscription status with rate limits, budget controls with daily limits, usage history trends), detected CLI tools status and health, process/test configuration export/import, keyboard shortcuts reference, theme selection (Clean Paper light or Bloomberg Terminal dark), and automation enable/disable with last-run status. Budget controls defined here tie into Night Shift (Phase 4), which reuses the same per-feature limits and counters for unattended batch execution.
 
 See: [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md)
 
@@ -311,13 +335,13 @@ Each feature area is specified in detail in the following documents. These are t
 | 2 | Run (Command Center) | [features/PROJECT_HOME.md](features/PROJECT_HOME.md) | Project command center with play/pause icon. Covers managed process lifecycle, stack buttons, test suites, lane-scoped command execution, AI-suggested run prompts, CI/CD workflow sync, agent CLI tools registry (Claude Code, Codex, Cursor, Aider, Continue), and project configuration editing. |
 | 3 | Files and Editor | [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md) | IDE-style file workbench. Covers workspace scope selection, file explorer tree, Monaco editor with diff modes, quick edit, conflict marker editing, and atomic save operations. |
 | 4 | Terminals and Sessions | [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md) | PTY-based embedded terminals. Covers lane-scoped sessions, transcript capture, session metadata tracking, checkpoint creation on session end, agent command shortcuts, and the session end contract. |
-| 5 | Conflicts | [features/CONFLICTS.md](features/CONFLICTS.md) | Conflict prediction and resolution radar. Covers per-lane conflict prediction, pairwise lane-lane risk matrix, merge simulation, near-real-time updates from staged/dirty changes, and hosted proposal workflows. |
-| 6 | Pull Requests | [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md) | GitHub PR integration. Covers PR creation and linking per lane, checks/review status display, description drafting from packs, stacked PR chain visualization, and the land stack guided merge flow. |
+| 5 | Conflicts | [features/CONFLICTS.md](features/CONFLICTS.md) | Conflict prediction and resolution radar. Covers per-lane conflict prediction, pairwise lane-lane risk matrix, merge simulation, near-real-time updates from staged/dirty changes, and AI-powered proposal workflows via the agent SDKs. |
+| 6 | Pull Requests | [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md) | GitHub PR integration via local `gh` CLI and PATs. Covers PR creation and linking per lane, checks/review status display, description drafting from packs, stacked PR chain visualization, and the land stack guided merge flow. |
 | 7 | History | [features/HISTORY.md](features/HISTORY.md) | ADE operations timeline. Covers chronological event stream, feature history aggregation, event detail with jump links, context replay from checkpoints, undo capabilities, and graph visualization (V1). |
 | 8 | Packs | [features/PACKS.md](features/PACKS.md) | Durable context and history system. Covers immutable checkpoints, append-only pack events, pack versioning with head pointers, materialized current views, all six pack types, the update pipeline, and privacy/retention controls. |
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
-| 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | Mission intake and tracking for plain-English goals. Covers queue/status lifecycle, mission steps, interventions, artifacts (including PR links), timeline events, and relay-ready metadata for future orchestrator phases. |
-| 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, hosted agent consent), trust surfaces, operation previews, escape hatches, and theme/keybinding configuration. |
+| 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
+| 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, and theme/keybinding settings. |
 | 12 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | Trigger-action workflows. Covers session-end and commit triggers, scheduled actions, pack updates, conflict prediction, test execution, and configuration via `.ade/actions.yaml`. |
 
 ---
@@ -328,16 +352,15 @@ Each architecture area is specified in detail in the following documents. These 
 
 | # | Architecture Area | Document | Summary |
 |---|-------------------|----------|---------|
-| 1 | System Overview | [architecture/SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) | Top-level component breakdown (desktop UI, local core engine, hosted agent), the happy-path data flow from lane creation through PR landing, key contracts, and the swappable provider model. |
+| 1 | System Overview | [architecture/SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) | Top-level component breakdown (desktop UI, local core engine, AI Integration Layer), the happy-path data flow from lane creation through PR landing, key contracts, and the subscription-based provider model. |
 | 2 | Desktop App | [architecture/DESKTOP_APP.md](architecture/DESKTOP_APP.md) | Electron process model (main, renderer, preload), IPC contracts and typed channel allowlist, PTY hosting in the main process, and the recommended folder/repo layout. |
-| 3 | Data Model | [architecture/DATA_MODEL.md](architecture/DATA_MODEL.md) | Local SQLite schema covering projects, workspaces, lanes, stacks, sessions, processes, tests, operations, checkpoints, pack events, pack versions, pack heads, missions (mission/step/event/artifact/intervention), planning threads, plan versions, and conflict predictions. |
+| 3 | Data Model | [architecture/DATA_MODEL.md](architecture/DATA_MODEL.md) | Local SQLite schema covering projects, workspaces, lanes, stacks, sessions, processes, tests, operations, checkpoints, pack events, pack versions, pack heads, missions (mission/step/event/artifact/intervention), planning threads, plan versions, conflict predictions, orchestrator timeline events, and orchestrator gate reports. |
 | 4 | Git Engine | [architecture/GIT_ENGINE.md](architecture/GIT_ENGINE.md) | Git worktree management, drift status computation (ahead/behind/dirty), sync operations (merge and rebase with undo), dry-run conflict prediction, and stack-aware restack operations. |
-| 5 | Job Engine | [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md) | Event-driven pipeline with coalescing rules. Covers all event types, idempotent job definitions, the lane refresh pipeline (checkpoint through hosted sync), real-time conflict pass, re-plan pipeline, and failure handling. |
-| 6 | Hosted Agent | [architecture/HOSTED_AGENT.md](architecture/HOSTED_AGENT.md) | Read-only cloud mirror architecture. Covers the repo mirror model with sync policies, cloud job types (narrative augmentation, conflict proposals, PR descriptions), security/trust requirements, cost controls, and provider swappability. |
-| 7 | Cloud Backend | [architecture/CLOUD_BACKEND.md](architecture/CLOUD_BACKEND.md) | Concrete AWS stack specification. Covers Clerk authentication (GitHub/Google social sign-in), API Gateway/Lambda endpoints, SQS job queuing, S3 mirror storage with content-addressed blobs, DynamoDB metadata, LLM gateway design, and SST deployment. |
-| 8 | Configuration | [architecture/CONFIGURATION.md](architecture/CONFIGURATION.md) | `.ade/` folder structure, config layering (app defaults, `ade.yaml` shared baseline, `local.yaml` machine overrides), schemas for processes, stack buttons, test suites, lane profiles, overlay policies, validation rules, and trust/change confirmation. |
-| 9 | Security and Privacy | [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) | Default security posture. Covers the trust boundary model, secret/exclude defaults for hosted mirrors, terminal transcript privacy, process/test command trust confirmation, and the safety contract for proposals (diff review before apply, undo points). |
-| 10 | UI Framework | [architecture/UI_FRAMEWORK.md](architecture/UI_FRAMEWORK.md) | Locked UI technology decisions, visual direction (Clean Paper light and Bloomberg Terminal dark themes), app shell layout, typography system (serif headers, monospace data), and high-density console design principles. |
+| 5 | Job Engine | [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md) | Event-driven pipeline with coalescing rules. Covers all event types, idempotent job definitions, the lane refresh pipeline (checkpoint through AI augmentation), real-time conflict pass, re-plan pipeline, and failure handling. |
+| 6 | AI Integration | [architecture/AI_INTEGRATION.md](architecture/AI_INTEGRATION.md) | Local AI integration architecture. Covers the AgentExecutor interface, native agent SDK executors, MCP server tool surface, AI orchestrator session management, per-task-type model routing, subscription authentication passthrough, and the safety contract for AI-generated proposals. |
+| 7 | Configuration | [architecture/CONFIGURATION.md](architecture/CONFIGURATION.md) | `.ade/` folder structure, config layering (app defaults, `ade.yaml` shared baseline, `local.yaml` machine overrides), schemas for processes, stack buttons, test suites, lane profiles, overlay policies, validation rules, and trust/change confirmation. |
+| 8 | Security and Privacy | [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) | Default security posture. Covers the trust boundary model, terminal transcript privacy, process/test command trust confirmation, and the safety contract for proposals (diff review before apply, undo points). |
+| 9 | UI Framework | [architecture/UI_FRAMEWORK.md](architecture/UI_FRAMEWORK.md) | Locked UI technology decisions, visual direction (Clean Paper light and Bloomberg Terminal dark themes), app shell layout, typography system (serif headers, monospace data), and high-density console design principles. |
 
 ---
 
@@ -361,15 +384,15 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 - Default orchestrator context profile excludes narrative text; narrative inclusion is explicit opt-in.
 - Orchestrator context defaults to PRD/architecture digest refs and bounded exports; full doc bodies are included only when step policy requires it.
 
-**Update pipeline**: On session end, the pipeline creates a checkpoint, appends events, materializes lane/project/feature packs, predicts conflicts, updates conflict packs if needed, syncs to the hosted mirror, and optionally requests narrative augmentation. This pipeline runs through the job engine with coalescing to avoid redundant work.
+**Update pipeline**: On session end, the pipeline creates a checkpoint, appends events, materializes lane/project/feature packs, predicts conflicts, updates conflict packs if needed, and optionally requests AI narrative augmentation via the agent SDKs. This pipeline runs through the job engine with coalescing to avoid redundant work.
 
-**Storage**: Packs are stored under `.ade/packs/` with immutable versions, head pointers, and materialized current views. History artifacts (checkpoints, events) are stored under `.ade/history/`. All storage is local-only by default.
+**Storage**: Packs are stored under `.ade/packs/` with immutable versions, head pointers, and materialized current views. History artifacts (checkpoints, events) are stored under `.ade/history/`. All storage is local-only.
 
 See: [features/PACKS.md](features/PACKS.md)
 
 ### 10.2 Automations
 
-Automations allow users to wire triggers to actions so that ADE stays synchronized without manual intervention. MVP triggers include terminal session end, commit created, and scheduled intervals. MVP actions include pack updates, hosted mirror sync, conflict prediction, test runs, and custom commands. Automations are configured in `.ade/actions.yaml` and can be enabled/disabled from the Settings tab.
+Automations allow users to wire triggers to actions so that ADE stays synchronized without manual intervention. MVP triggers include terminal session end, commit created, and scheduled intervals. MVP actions include pack updates, conflict prediction, test runs, AI augmentation requests, and custom commands. Automations are configured in `.ade/actions.yaml` and can be enabled/disabled from the Settings tab.
 
 See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
 
@@ -381,15 +404,43 @@ See: [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md)
 
 ### 10.4 Job Engine
 
-The job engine is the coordination backbone that keeps all ADE state synchronized. It processes events (session end, HEAD change, staged set change, branch switch, base update) and dispatches idempotent, coalesced jobs. Per-lane coalescing ensures only one refresh pipeline runs at a time with at most one pending follow-up. Pairwise conflict passes use short debounce for staged/dirty events. Hosted mirror sync is forced on session end and coalesced during active work. Failure handling is explicit: failed checkpoints mark lanes as stale, failed materializations preserve prior pack versions, and failed predictions mark risk as "unknown" rather than "clean."
+The job engine is the coordination backbone that keeps all ADE state synchronized. It processes events (session end, HEAD change, staged set change, branch switch, base update) and dispatches idempotent, coalesced jobs. Per-lane coalescing ensures only one refresh pipeline runs at a time with at most one pending follow-up. Pairwise conflict passes use short debounce for staged/dirty events. AI augmentation (narrative generation, conflict proposals) is triggered on session end and coalesced during active work. Failure handling is explicit: failed checkpoints mark lanes as stale, failed materializations preserve prior pack versions, and failed predictions mark risk as "unknown" rather than "clean."
 
 See: [architecture/JOB_ENGINE.md](architecture/JOB_ENGINE.md)
 
-### 10.5 Hosted Agent
+### 10.5 AI Integration
 
-The hosted agent provides narrative augmentation and conflict resolution proposals without ever mutating the repository. It maintains a content-addressed mirror in S3 (file blobs keyed by SHA-256, per-lane manifests mapping paths to blob hashes). Sync is forced on session end and coalesced during active work. Cloud jobs include narrative pack augmentation, conflict proposal generation, and PR description drafting. All outputs are returned as markdown narratives or unified diff patches with confidence metadata. Cost controls include per-job token and file-read budgets, content-hash-keyed caching, and session-end-triggered execution (not keystroke-triggered).
+The AI Integration Layer provides narrative augmentation, conflict resolution proposals, mission orchestration, and PR description drafting -- all without ever directly mutating the repository.
 
-See: [architecture/HOSTED_AGENT.md](architecture/HOSTED_AGENT.md) and [architecture/CLOUD_BACKEND.md](architecture/CLOUD_BACKEND.md)
+**AgentExecutor Interface**: ADE's own thin abstraction that unifies both agent SDKs behind a common `execute()` / `resume()` contract. The orchestrator and all callers work against this interface, enabling provider-agnostic orchestration. Two executor implementations are used:
+
+- `ClaudeExecutor` (via `ai-sdk-provider-claude-code`): A community Vercel AI SDK provider that wraps `@anthropic-ai/claude-agent-sdk` to spawn the `claude` CLI as a subprocess. Inherits the user's Claude Pro/Max subscription authentication. This is a subscription auth workaround while Anthropic's policy on third-party tool usage is in flux. Supports streaming, session persistence, tool interception via `canUseTool`, and message injection for context pack delivery.
+- `CodexExecutor` (via `@openai/codex-sdk`): The official OpenAI SDK, used directly to spawn the `codex` CLI as a subprocess. Inherits the user's ChatGPT Plus subscription authentication. Subscription auth is natively supported.
+
+**MCP Server** (`apps/mcp-server`): A local JSON-RPC 2.0 server over stdio transport that exposes ADE's infrastructure as tools callable by the AI orchestrator. Tool surface includes:
+
+- `spawn_agent` -- launch an agent in a specified lane
+- `read_context` -- retrieve pack contents for a lane, feature, or project
+- `create_lane` -- create a new worktree lane for isolated work
+- `check_conflicts` -- run conflict prediction between lanes
+- `merge_lane` -- merge a lane into its target branch
+- `ask_user` -- route an intervention request to the ADE UI
+- `run_tests` -- execute test suites in a lane's worktree
+
+**AI Orchestrator**: A long-running Claude session (via the AgentExecutor interface) connected to the MCP server. The orchestrator:
+
+1. Receives a mission prompt enriched with bounded context pack exports.
+2. Decomposes the mission into a step DAG with dependencies, join policies, and done criteria.
+3. Spawns agents (Claude Code, Codex) into isolated lanes via MCP tools.
+4. Monitors agent progress through session events, checkpoints, and pack updates.
+5. Routes human-in-the-loop decisions through the intervention panel.
+6. Advances the step DAG deterministically based on session outcomes (success/failure/canceled).
+
+**Per-task-type model routing**: Users configure which model/provider handles each task type in Settings. The AI Integration Layer routes requests accordingly, allowing mixed-provider workflows (e.g., Claude for planning, Codex for implementation).
+
+**Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
+
+**Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget enforcement is the foundation for Night Shift (Phase 4) budget caps — the same per-feature limits and counters are reused for unattended batch execution.
 
 ---
 
@@ -400,15 +451,15 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 **Trust boundaries**:
 
 - The local core (main process) is the only component that edits files, runs git operations, runs tests, and performs undo/rollback.
-- The hosted agent is read-only and returns artifacts (narratives, patch proposals) only.
+- The AI Integration Layer spawns agents as subprocesses but never directly mutates the repository. All agent outputs (patches, proposals, narratives) are mediated through ADE's local core.
 - The renderer is untrusted and communicates exclusively through a typed IPC allowlist.
 - Process and test commands execute only in the main process, never in the renderer.
 
-**Secrets and excludes**:
+**Secrets and privacy**:
 
-- Hosted mirror excludes obvious secret files by default (`.env*`, `*.pem`, `*.key`, `*id_rsa*`), build outputs (`dist/`, `build/`, `.next/`, `coverage/`), and dependencies (`node_modules/`).
-- Per-project exclude overrides are supported.
-- Terminal transcripts are stored locally by default and are never uploaded unless explicitly enabled with redaction.
+- Terminal transcripts are stored locally and are never transmitted externally.
+- Per-project privacy controls determine what context is included in AI prompts and pack exports.
+- Default exclude patterns cover obvious secret files (`.env*`, `*.pem`, `*.key`, `*id_rsa*`), build outputs (`dist/`, `build/`, `.next/`, `coverage/`), and dependencies (`node_modules/`).
 
 **Process/test command trust**:
 
@@ -418,15 +469,15 @@ ADE's security model is built on explicit trust boundaries and conservative defa
 
 **Proposal safety**:
 
-- Patches from the hosted agent are always shown as diffs before application.
+- Patches from AI agents (conflict proposals, code suggestions) are always shown as diffs before application.
 - Applying a patch creates an operation record and undo point.
 - Auto-apply, if ever enabled, must be per-action opt-in and test-gated.
 
-**Authentication**:
+**Subscription authentication**:
 
-- Clerk OAuth with GitHub/Google social sign-in for hosted agent access.
-- Tokens stored in the OS keychain, never in plaintext.
-- All mirror and job operations scoped to `(user, project)`.
+- AI authentication is handled entirely by the CLI tools themselves (Claude Code, Codex). ADE does not store, manage, or transmit any AI service credentials.
+- Each agent SDK spawns its CLI tool as a subprocess that inherits the user's existing authentication state (browser session, OS keychain, or CLI config file as managed by each tool).
+- GitHub integration uses the local `gh` CLI (which manages its own OAuth flow) or user-provided personal access tokens stored in the OS keychain.
 
 ---
 
@@ -438,8 +489,8 @@ ADE configuration lives in the `.ade/` folder at the project root, which is git-
 
 | File | Purpose | Shareable |
 |------|---------|-----------|
-| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, providers) | Yes (opt-in) |
-| `.ade/local.yaml` | Machine-specific overrides | No |
+| `.ade/ade.yaml` | Shared baseline config (processes, stack buttons, test suites, lane profiles, overlay policies, AI task-type routing defaults) | Yes (opt-in) |
+| `.ade/local.yaml` | Machine-specific overrides (including local AI provider preferences and CLI tool paths) | No |
 | `.ade/actions.yaml` | Automation trigger-action definitions | Yes (opt-in) |
 | `.ade/packs/` | Pack versions and materialized views | No |
 | `.ade/history/` | Checkpoints and events | No |
@@ -455,6 +506,24 @@ ADE configuration lives in the `.ade/` folder at the project root, which is git-
 
 Arrays of objects merge by stable `id`. Unresolved references (such as stack buttons referencing unknown process IDs) fail validation. Commands are never executed until config passes validation.
 
+**AI task-type routing config**:
+
+Per-task-type model routing is configured in `ade.yaml` (shareable defaults) and overridable in `local.yaml`. Each task type maps to a provider and optional model preference:
+
+```yaml
+ai:
+  provider: subscription  # or "guest" to disable AI features
+  routing:
+    planning: { provider: claude-code }
+    implementation: { provider: codex-cli }
+    review: { provider: claude-code }
+    conflict-resolution: { provider: claude-code }
+    narratives: { provider: claude-code }
+    pr-descriptions: { provider: claude-code }
+```
+
+When a configured CLI tool is not installed or not authenticated, ADE falls back gracefully: the task type is marked as unavailable and the user is prompted to install or authenticate the tool.
+
 ---
 
 ## 13. Non-Goals and Out of Scope
@@ -462,6 +531,7 @@ Arrays of objects merge by stable `id`. Unresolved references (such as stack but
 - **ADE is not an IDE replacement.** It does not provide code intelligence, language servers, autocompletion, or debugging. The Monaco editor is intentionally scoped to focused edits and diff review, not full development.
 - **ADE does not replace the git CLI.** It provides a UI for common git workflows (stage, commit, push, branch, stash, sync) but does not aim to cover every git operation. Power users can always drop to an external terminal.
 - **ADE is not a closed agent runtime.** ADE supports external agent CLIs and orchestration workflows but does not lock execution to a proprietary agent implementation.
+- **ADE does not manage AI service accounts or billing directly.** Users bring their own CLI subscriptions (Claude Pro/Max, ChatGPT Plus). ADE tracks local usage (call counts, token estimates) and displays detected subscription tiers, but does not interact with billing systems or enforce provider-side limits.
 - **Mobile/relay support is roadmap scope, not a non-goal.** Desktop is the current primary runtime, while relay + iOS capabilities are planned in `docs/final-plan.md`.
 - **No multi-repo support in V1.** Each ADE instance manages a single git repository. Multi-repo orchestration may be considered post-V1.
 - **No real-time collaboration.** ADE is a single-user tool per desktop instance. Team features are limited to shared config and stacked PR workflows.
@@ -479,6 +549,9 @@ Arrays of objects merge by stable `id`. Unresolved references (such as stack but
 | Terminal reliability | Stable embedded terminals at scale | 10+ concurrent PTY sessions with no data loss, resize glitches, or cross-lane cwd leaks |
 | Process management | One-click dev environment startup | All configured processes reachable and controllable from Projects (Home) tab without external tools |
 | Checkpoint durability | Every session produces a durable checkpoint | 100% of completed sessions yield an immutable checkpoint with SHA anchors and deterministic deltas |
+| Mission orchestration | End-to-end mission execution with minimal manual intervention | Multi-step missions complete with agent spawning, context injection, and conflict checking through the orchestrator |
+| AI provider flexibility | Users can mix providers per task type | Per-task-type routing works correctly with at least two different CLI providers simultaneously |
+| AI usage visibility | Users can see per-feature AI consumption at a glance | Usage dashboard loads in <1s, per-feature breakdown is accurate within 5% of actual token usage |
 
 ---
 
@@ -500,37 +573,14 @@ This PRD intentionally focuses on product scope and behavior, while roadmap exec
 |------|--------|------------|
 | **PTY stability across platforms** | Terminal sessions are the primary user interaction; instability blocks all workflows | Maintain a standing platform reliability gate (macOS/Windows/Linux smoke coverage) before advancing runtime-heavy roadmap phases. |
 | **Conflict prediction accuracy** | False positives erode trust; false negatives defeat the purpose | Start with conservative git merge-tree analysis. Mark uncertain predictions as "unknown" rather than "clean." Iterate with user feedback. |
-| **Pack system complexity** | Five pack types with immutable versioning and materialization could be over-engineered for MVP | Keep deterministic pack materialization incremental, with explicit rebuild/recovery commands and strict schema/version contracts. |
-| **Hosted mirror security** | Uploading repository content to the cloud carries inherent risk | Hosted sync is opt-in. Default exclude list covers secrets and build artifacts. Encryption at rest and in transit. Strict tenant isolation. Bounded retention with user controls. |
-| **LLM cost control** | Narrative and proposal jobs could incur unexpected costs | Per-job token and file-read budgets. Content-hash caching. Execution tied to session boundaries, not keystrokes. Coalesced sync with configurable thresholds. |
+| **Pack system complexity** | Six pack types with immutable versioning and materialization could be over-engineered for MVP | Keep deterministic pack materialization incremental, with explicit rebuild/recovery commands and strict schema/version contracts. |
+| **CLI tool availability** | Users must have `claude` and/or `codex` CLI installed and authenticated for AI features to work | Detect CLI tools at startup and surface clear status in Settings. Graceful degradation: all local features work without any CLI tools. Provide installation guidance in-app. |
+| **Subscription authentication fragility** | CLI tools manage their own auth; ADE cannot fix auth failures | Surface CLI auth status prominently. Provide clear error messages when a CLI tool reports auth failure. Link to each tool's auth documentation. Never cache or proxy auth tokens. |
+| **Context window limits** | AI orchestrator and agents have finite context windows; large projects may exceed them | Bounded pack exports by default. Context profiles exclude narrative text unless opted in. Incremental context delivery via MCP tools rather than single-prompt stuffing. |
 | **Electron performance at scale** | Many concurrent terminals, file watchers, and git operations could degrade performance | Lazy xterm rendering (only focused sessions get full rendering). Coalesced event processing. Incremental materializers keyed by checkpoint IDs. Git-native operations preferred over filesystem walks. |
 | **Scope creep toward IDE** | Pressure to add code intelligence, debugging, or full editing could dilute the product | Non-goals are explicitly documented. Monaco is scoped to focused edits and diff review. Users are expected to use their preferred IDE alongside ADE. |
-
----
-
-## 2026-02-19 Addendum — Phase 2 Orchestrator Runtime v2
-
-The product now includes a deterministic orchestrator runtime surface in the desktop app:
-
-- Missions:
-  - Mission detail now supports starting orchestrator runs from mission steps.
-  - Operators can tick/resume/cancel runs, start attempts, and complete running attempts.
-  - Step DAG state, attempt history, and timeline events are visible from mission detail.
-- Context:
-  - Context inventory now includes orchestrator timeline event counts.
-  - Gate report readout is available with per-gate pass/warn/fail and reason details.
-  - Attempt-level context provenance is visible (snapshot docs mode/truncation, pack refs, handoff/delta provenance).
-- Runtime model:
-  - Scheduling, retries/backoff, claims, and transition logic are deterministic code paths.
-  - AI remains advisory-only and is not the run coordinator.
-  - Default context profile remains deterministic with narrative excluded unless explicitly opted in.
-
-Persistence expansion:
-
-- `orchestrator_timeline_events`
-- `orchestrator_gate_reports`
-
-These are append-only/audit-focused tables for runtime traceability and quality-gate snapshots.
+| **Multi-agent coordination complexity** | Orchestrator managing multiple concurrent agents across lanes introduces scheduling, conflict, and resource contention challenges | Deterministic step DAG with explicit dependencies and join policies. Session-backed attempts with clear success/failure/canceled outcomes. Conservative concurrency defaults with user-configurable limits. |
+| **Claude subscription auth policy uncertainty** | Anthropic may restrict subscription OAuth in third-party tools | Community Vercel provider workaround; AgentExecutor interface enables quick switch to official SDK if policy changes. |
 
 ---
 

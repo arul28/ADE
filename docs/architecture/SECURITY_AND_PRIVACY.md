@@ -2,9 +2,9 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-19
 
-This document describes how ADE protects user data, source code, and development workflows across both the local desktop application and the optional hosted cloud services.
+This document describes how ADE protects user data, source code, and development workflows. ADE is a fully local-first desktop application — all code, configuration, and AI processing remain on the user's machine.
 
 ---
 
@@ -18,8 +18,6 @@ This document describes how ADE protects user data, source code, and development
   - [IPC Security](#ipc-security)
   - [Secret Protection](#secret-protection)
   - [Configuration Trust](#configuration-trust)
-  - [Hosted Mirror Security](#hosted-mirror-security)
-  - [Transcript Privacy](#transcript-privacy)
   - [Proposal Safety](#proposal-safety)
   - [Git Safety](#git-safety)
   - [Audit Trail](#audit-trail)
@@ -30,9 +28,9 @@ This document describes how ADE protects user data, source code, and development
 
 ## Overview
 
-ADE's security architecture is built on the principle of local-first data sovereignty. All source code, configuration, and development state remain on the user's machine by default. No data leaves the local environment without explicit, informed consent. When cloud features are enabled, a strict read-only contract ensures the hosted service can never modify the user's repository.
+ADE's security architecture is built on the principle of local-first data sovereignty. All source code, configuration, and development state remain on the user's machine. No data leaves the local environment unless the user explicitly invokes an AI-powered feature, in which case the Vercel AI SDK spawns local CLI tools (Claude Code, Codex) that communicate with their respective services using the user's own existing subscriptions.
 
-The architecture addresses threats across multiple layers: process isolation within the Electron application, secret protection during mirror uploads, command trust for shared configuration, and proposal safety for AI-generated changes.
+The architecture addresses threats across multiple layers: process isolation within the Electron application, secret protection in AI context exports, command trust for shared configuration, and proposal safety for AI-generated changes.
 
 ---
 
@@ -40,7 +38,7 @@ The architecture addresses threats across multiple layers: process isolation wit
 
 ### Why Local-First?
 
-Developers' source code is their most sensitive asset. Cloud-first architectures require users to trust a third party with their entire codebase, which is unacceptable for many organizations and individuals. By making cloud features strictly opt-in and read-only, ADE provides the benefits of AI-assisted development without requiring users to relinquish control of their code.
+Developers' source code is their most sensitive asset. Cloud-first architectures require users to trust a third party with their entire codebase, which is unacceptable for many organizations and individuals. ADE keeps everything local — AI features are powered by spawning CLI tools that the developer already has installed and subscribed to, using the Vercel AI SDK. No ADE-operated cloud service ever sees the user's code.
 
 ### Why Strict Process Isolation?
 
@@ -64,9 +62,9 @@ The following five principles guide all security-related design decisions in ADE
 
 | Principle | Description |
 |-----------|-------------|
-| **Local-first** | All code stays on the user's machine by default. No data leaves without explicit opt-in. Cloud features are additive, never required. |
+| **Local-first** | All code stays on the user's machine. AI runs locally via CLI tools (Claude Code, Codex) using existing subscriptions through the Vercel AI SDK. No ADE-operated cloud service is involved. |
 | **Least privilege** | The renderer process has zero direct system access. The main process services expose only typed, validated operations through a strict IPC allowlist. |
-| **Read-only cloud** | The hosted agent NEVER mutates the repository. All proposals are previewed locally and applied under user control. |
+| **AI via local CLI** | AI features are powered by spawning `claude` and `codex` CLI processes locally. ADE never holds or transmits API keys — CLI tools use their own authenticated sessions. |
 | **Audit trail** | Every operation is recorded with timestamps, SHA transitions, and metadata for full traceability and undo capability. |
 | **Reversibility** | Git operations track pre/post HEAD SHA. Destructive operations require confirmation. Operations can be undone through the operation timeline. |
 
@@ -162,52 +160,32 @@ contextBridge.exposeInMainWorld("ade", {
 
 ### Secret Protection
 
-ADE implements multiple layers of protection to prevent secrets from being exposed, uploaded, or committed.
-
-#### Default Exclude Patterns
-
-The following patterns are excluded from hosted mirror uploads by default:
-
-| Category | Patterns |
-|----------|----------|
-| Environment files | `.env`, `.env.*`, `.env.local`, `.env.production` |
-| Private keys | `*.pem`, `*.key`, `*.p12`, `*.pfx` |
-| Certificates | `*.cert`, `*.crt`, `*.ca-bundle` |
-| Credential files | `credentials.json`, `service-account.json`, `keyfile.json` |
-| Token files | `.npmrc` (may contain tokens), `.pypirc`, `.docker/config.json` |
-| SSH keys | `id_rsa`, `id_ed25519`, `*.pub` (in `.ssh/`) |
-| Cloud configs | `aws-credentials`, `.aws/credentials` |
+ADE implements multiple layers of protection to prevent secrets from being exposed or committed.
 
 #### Secret Storage
 
 | Secret Type | Storage Location | Encryption |
 |-------------|-----------------|------------|
-| Hosted Clerk OAuth tokens | `~/.ade/hosted/hosted-auth.v1.bin` | Electron `safeStorage` (OS-level encryption via macOS Keychain / Windows DPAPI / Linux Secret Service) |
-| BYOK API keys | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
 | GitHub PAT (local) | `.ade/local.yaml` (gitignored) | Plaintext on disk (protected by OS file permissions) |
 
-**Important**: API keys for BYOK providers must ONLY be placed in `local.yaml`, never in `ade.yaml`. The config validation system warns if it detects an `apiKey` field in the shared config file.
+ADE does not store any API keys or authentication tokens. AI features are powered by CLI tools (Claude Code, Codex) that manage their own authentication independently.
 
-#### Redaction Rules
+#### AI Context Exports (Bounded Payloads)
 
-When uploading content to the hosted mirror, ADE applies redaction rules to strip potential secrets from transcripts and file contents:
-
-- Environment variable values matching common secret patterns (`*_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`)
-- Strings matching known token formats (JWT patterns, API key prefixes)
-- Custom redaction patterns configurable in `.ade/ade.yaml` under `mirror.redact`
-
-#### AI Job Payloads (Bounded Exports)
-
-When Hosted or BYOK is enabled, ADE’s default LLM inputs are **token-budgeted context exports**, not raw pack dumps or transcript slabs.
+When AI features are invoked via the Vercel AI SDK, ADE's inputs are **token-budgeted context exports**, not raw pack dumps or transcript slabs.
 
 - Lane narrative generation uses `LaneExportStandard` (bounded).
 - Conflict proposals use `LaneExportLite` (lane + optional peer) and `ConflictExportStandard` (bounded).
 
-Before any outbound request (Hosted or BYOK), ADE applies redaction to export content to reduce the risk of leaking secrets.
+Before any AI invocation, ADE applies redaction to export content to reduce the risk of leaking secrets embedded in code or configuration.
 
-Notes:
-- Guest mode remains fully functional: packs/events/versions/checkpoints/exports are generated deterministically without any network calls.
-- Hosted can be self-hosted by configuring `providers.hosted.apiBaseUrl` in `.ade/local.yaml`; diagnostics should reference `apiBaseUrl` and `remoteProjectId` (no AWS assumptions).
+#### Redaction Rules
+
+ADE applies redaction rules to strip potential secrets from context sent to AI tools:
+
+- Environment variable values matching common secret patterns (`*_KEY`, `*_SECRET`, `*_TOKEN`, `*_PASSWORD`)
+- Strings matching known token formats (JWT patterns, API key prefixes)
+- Custom redaction patterns configurable in `.ade/ade.yaml` under `ai.redact`
 
 ### Configuration Trust
 
@@ -215,65 +193,9 @@ See [CONFIGURATION.md](./CONFIGURATION.md) for the full trust model specificatio
 
 **Summary**: Process and test commands defined in `ade.yaml` (shared config) require explicit user approval before execution. Trust is tracked via SHA-256 hash comparison. Changes to the shared config invalidate trust and prompt the user for re-approval. Commands in `local.yaml` (personal config) are always trusted.
 
-### Hosted Mirror Security
-
-When the optional cloud features are enabled, the following security measures protect uploaded data.
-
-#### Encryption
-
-| Layer | Method | Details |
-|-------|--------|---------|
-| At rest | S3 SSE-S256 | Server-side encryption with Amazon S3-managed keys |
-| In transit | TLS 1.3 | All API communication encrypted |
-| DynamoDB | Encryption at rest | AWS-managed encryption for all table data |
-
-#### Tenant Isolation
-
-Each user's data is fully isolated:
-
-- **S3**: Blobs stored under `<projectId>/` prefix. IAM policies prevent cross-tenant access at the bucket policy level.
-- **DynamoDB**: All queries include `userId` as the partition key. Lambda functions operate within the authenticated user's scope only.
-- **API Gateway**: JWT authorizer validates Clerk-issued JWT on every request. User identity extracted from token claims, not request parameters.
-
-#### Access Logging
-
-All API access is logged with:
-
-- Timestamp (ISO 8601)
-- User ID (JWT `sub`)
-- Action type (upload, download, job-submit, delete)
-- Resource identifiers (project ID, lane ID, blob hash)
-- Request metadata (IP address, user agent)
-
-Logs are stored in CloudWatch with a configurable retention period (default: 90 days).
-
-#### Data Retention
-
-- Default retention: 30 days for artifacts, indefinite for blobs (until project deleted)
-- Configurable per-project retention policy
-- User can delete all hosted data at any time via API or desktop UI
-- Deletion is recursive: deleting a project removes all blobs, manifests, artifacts, and metadata
-- Deletion is confirmed (not soft-deleted) — data is permanently removed from S3 and DynamoDB
-
-### Transcript Privacy
-
-Terminal session transcripts are a particularly sensitive data category because they may contain commands with inline secrets, output from credential management tools, or application logs with sensitive data.
-
-**Local storage**: Transcripts are stored in `.ade/transcripts/` on the local machine. They are included in `.ade/` which is excluded from git by default.
-
-**Upload policy**: Transcript upload to the hosted mirror is opt-in and configurable per project:
-
-```yaml
-# In ade.yaml
-mirror:
-  uploadTranscripts: false    # Default: false
-```
-
-When upload is enabled, redaction rules are applied before transmission. Transcripts are never shared across tenants.
-
 ### Proposal Safety
 
-When the hosted agent generates proposals (conflict resolutions, PR descriptions), the following safety measures ensure the user maintains full control.
+When the AI orchestrator generates proposals (conflict resolutions, PR descriptions) via the Vercel AI SDK, the following safety measures ensure the user maintains full control.
 
 **Preview before apply**: All proposals are displayed as diffs in the desktop UI before any changes are made to the repository. The user explicitly chooses to apply or discard each proposal.
 
@@ -282,7 +204,7 @@ When the hosted agent generates proposals (conflict resolutions, PR descriptions
 - Pre-apply state (HEAD SHA, working tree hash)
 - Post-apply state (new HEAD SHA, modified files)
 - The proposal content itself
-- Timestamp and source (which job generated the proposal)
+- Timestamp and source (which task generated the proposal)
 
 **Undo capability**: Operations can be undone through the operation timeline. Undo restores the pre-apply state using the recorded SHA references.
 
@@ -335,7 +257,7 @@ The audit trail provides a complete record of significant operations for debuggi
 
 **Storage**: Operations are stored in the SQLite database (`kvDb.ts`) in a dedicated table with indexed timestamps and lane IDs.
 
-**Retention**: Local audit trail is retained indefinitely (until the user explicitly clears it or deletes the `.ade/` directory). The audit trail is not uploaded to the hosted mirror.
+**Retention**: Local audit trail is retained indefinitely (until the user explicitly clears it or deletes the `.ade/` directory).
 
 **Queryable fields**: Operations can be queried by lane, time range, operation type, or SHA reference. The History page in the UI provides a visual timeline of operations.
 
@@ -352,15 +274,14 @@ The audit trail provides a complete record of significant operations for debuggi
 ### Configuration System
 
 - **Trust model**: SHA-based approval for shared config commands (see [CONFIGURATION.md](./CONFIGURATION.md))
-- **Secret detection**: Warns if `apiKey` found in `ade.yaml` instead of `local.yaml`
 - **Validation**: Schema validation prevents malformed config from being saved
 
-### Hosted Mirror
+### AI Orchestrator
 
-- **Exclude rules**: Default and configurable patterns prevent secret upload (see [HOSTED_AGENT.md](./HOSTED_AGENT.md))
-- **Redaction**: Secret patterns stripped from transcripts and file contents before upload
-- **Encryption**: SSE-S256 at rest, TLS 1.3 in transit
-- **Tenant isolation**: IAM policies and partition key scoping
+- **Vercel AI SDK**: Spawns `claude` and `codex` CLI processes for AI tasks
+- **MCP Server**: Exposes ADE tools to the AI orchestrator
+- **Redaction**: Secret patterns stripped from context exports before AI invocation
+- **Bounded exports**: Token-budgeted context payloads prevent excessive data exposure
 
 ### Git Operations
 
@@ -368,12 +289,6 @@ The audit trail provides a complete record of significant operations for debuggi
 - **Force push safety**: `--force-with-lease` only
 - **Operation tracking**: Pre/post SHA recorded for undo capability
 - **History service**: Stores operations in SQLite for audit trail
-
-### Cloud Backend
-
-- **Clerk JWT**: All API requests authenticated and authorized
-- **CloudWatch logging**: All access logged with user identity and action type
-- **Data deletion**: Recursive, confirmed deletion via API (see [CLOUD_BACKEND.md](./CLOUD_BACKEND.md))
 
 ---
 
@@ -389,13 +304,7 @@ The audit trail provides a complete record of significant operations for debuggi
 | Operation tracking (audit trail) | Done | Pre/post SHA recorded for git operations |
 | Path validation for file operations | Done | Lane root scoping enforced |
 | Force push safety (`--force-with-lease`) | Done | Hard-coded in git service |
-| Default exclude patterns for secrets | Done | Pattern list defined and enforced in mirror sync + exports |
-| Secret redaction rules | Done | `redactSecrets()` and `redactSecretsDeep()` in `apps/desktop/src/main/utils/redaction.ts`; applied to all outbound AI payloads and mirror uploads |
-| Hosted mirror encryption | Done | S3 SSE-S256 at rest, TLS 1.3 in transit (Phase 6 cloud backend) |
-| Tenant isolation (IAM/DynamoDB) | Done | IAM policies + DynamoDB partition key scoping + JWT authorizer (Phase 6) |
-| Access logging (CloudWatch) | Done | All API access logged with user ID, action type, resource IDs (Phase 6) |
-| Data retention and deletion | Done | Recursive project deletion via API and desktop UI; configurable retention (Phase 6) |
-| Transcript upload redaction | Done | Opt-in upload with redaction rules applied before transmission (Phase 6) |
-| Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in ConflictsPage proposal list (Phase 6) |
+| Secret redaction rules | Done | `redactSecrets()` and `redactSecretsDeep()` in `apps/desktop/src/main/utils/redaction.ts`; applied to all outbound AI context payloads |
+| Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in ConflictsPage proposal list |
 
-**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety) and cloud security features (mirror encryption, tenant isolation, access logging, data retention, secret redaction, transcript privacy, proposal confidence) are all implemented across Phases -1 through 8.
+**Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety, secret redaction, proposal confidence) is fully implemented. ADE is a local-only application with no cloud backend — AI features are powered by local CLI tools via the agent SDKs (AgentExecutor interface).

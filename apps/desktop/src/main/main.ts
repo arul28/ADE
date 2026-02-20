@@ -39,6 +39,12 @@ import { createRestackSuggestionService } from "./services/lanes/restackSuggesti
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
+import type { Logger } from "./services/logging/logger";
+
+if (process.env.VITE_DEV_SERVER_URL) {
+  // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.
+  app.commandLine.appendSwitch("disable-http-cache");
+}
 
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -46,7 +52,7 @@ function getRendererUrl(): string {
   return `file://${path.join(__dirname, "../renderer/index.html")}`;
 }
 
-async function createWindow(): Promise<BrowserWindow> {
+async function createWindow(logger?: Logger): Promise<BrowserWindow> {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -61,6 +67,19 @@ async function createWindow(): Promise<BrowserWindow> {
 
   win.setMenuBarVisibility(false);
 
+  if (process.env.VITE_DEV_SERVER_URL) {
+    try {
+      await win.webContents.session.clearCache();
+      await win.webContents.session.clearStorageData({
+        storages: ["serviceworkers", "cachestorage"]
+      });
+    } catch (error) {
+      logger?.warn("renderer.dev_cache_clear_failed", {
+        err: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
   // Block unexpected external navigation/window creation.
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, url) => {
@@ -73,6 +92,26 @@ async function createWindow(): Promise<BrowserWindow> {
     if (url === allowed) return;
     event.preventDefault();
   });
+
+  let recoveredOutdatedOptimizeDep = false;
+  const devBase = process.env.VITE_DEV_SERVER_URL;
+  if (devBase) {
+    win.webContents.session.webRequest.onCompleted({ urls: [`${devBase}/*`] }, (details) => {
+      if (recoveredOutdatedOptimizeDep) return;
+      const isOutdatedOptimizeDep =
+        details.statusCode === 504 &&
+        details.url.includes("/node_modules/.vite/deps/") &&
+        details.url.includes("v=");
+      if (!isOutdatedOptimizeDep) return;
+
+      recoveredOutdatedOptimizeDep = true;
+      logger?.warn("renderer.optimize_dep_outdated", {
+        statusCode: details.statusCode,
+        url: details.url
+      });
+      void win.webContents.reloadIgnoringCache();
+    });
+  }
 
   await win.loadURL(getRendererUrl());
 
@@ -355,6 +394,8 @@ app.whenReady().then(async () => {
       }
     });
 
+    let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
+
     const ptyService = createPtyService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
@@ -364,9 +405,18 @@ app.whenReady().then(async () => {
       logger,
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
-      onSessionEnded: ({ laneId, sessionId }) => {
+      onSessionEnded: ({ laneId, sessionId, exitCode }) => {
         jobEngine.onSessionEnded({ laneId, sessionId });
         automationService?.onSessionEnded({ laneId, sessionId });
+        if (orchestratorServiceRef) {
+          void orchestratorServiceRef
+            .onTrackedSessionEnded({
+              laneId,
+              sessionId,
+              exitCode
+            })
+            .catch(() => {});
+        }
       },
       loadPty
     });
@@ -430,6 +480,7 @@ app.whenReady().then(async () => {
       ptyService,
       onEvent: (event) => broadcast(IPC.orchestratorEvent, event)
     });
+    orchestratorServiceRef = orchestratorService;
 
     const automationPlannerService = createAutomationPlannerService({
       logger,
@@ -645,11 +696,11 @@ app.whenReady().then(async () => {
     globalStatePath
   });
 
-  await createWindow();
+  await createWindow(ctxRef.logger);
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow();
+      await createWindow(ctxRef.logger);
     }
   });
 

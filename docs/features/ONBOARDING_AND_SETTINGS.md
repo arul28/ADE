@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-19
 
 ---
 
@@ -28,16 +28,17 @@
 
 Onboarding and Settings are the gateway into ADE. Onboarding provides a safe,
 guided flow for initializing ADE in an existing repository. Settings manages user
-preferences, theme, provider configuration, and keybindings.
+preferences, theme, AI provider detection, per-task model routing, and keybindings.
 
 ADE operates inside a developer's existing git repository, which means it must be
-transparent about what it creates, what it modifies, and what data (if any) leaves
-the machine. The onboarding flow ensures developers understand and consent to ADE's
-behavior before any changes are made. The settings page provides ongoing control
-over those same concerns. Together, these features establish the trust foundation
-that every other ADE feature builds on.
+transparent about what it creates and what it modifies. No account creation or
+sign-up is required — ADE detects existing CLI tool subscriptions (Claude Code,
+Codex) and uses them via ADE's AgentExecutor interface. The onboarding flow ensures developers
+understand and consent to ADE's behavior before any changes are made. The settings
+page provides ongoing control over those same concerns. Together, these features
+establish the trust foundation that every other ADE feature builds on.
 
-**Current status**: Onboarding wizard (defaults detection, config review, existing-lane import, initial deterministic pack generation), guest mode, hosted agent consent + bootstrap flow, and provider configuration (Hosted/BYOK/CLI) are **implemented and working** (Phases 3, 6, 8). Onboarding now seeds the Project Pack with a lightweight deterministic bootstrap (codebase map + docs index + git history seed) so the initial context is immediately useful even before any AI details are generated.
+**Current status**: Onboarding wizard (defaults detection, config review, existing-lane import, initial deterministic pack generation), AI provider auto-detection, and per-task model routing are **implemented and working**. Onboarding now seeds the Project Pack with a lightweight deterministic bootstrap (codebase map + docs index + git history seed) so the initial context is immediately useful even before any AI narratives are generated.
 
 ---
 
@@ -47,8 +48,9 @@ that every other ADE feature builds on.
 
 The first-time setup when a developer opens a repository in ADE. It handles
 repository selection, default detection (scanning for build tools and test
-frameworks), `.ade/` directory creation, configuration review, and optional hosted
-agent consent. The flow runs once per repository; subsequent opens skip to the main UI.
+frameworks), `.ade/` directory creation, and configuration review. No account
+creation or authentication is required. The flow runs once per repository;
+subsequent opens skip to the main UI.
 
 ### Trust Model
 
@@ -57,32 +59,24 @@ ADE distinguishes between shared and local configuration:
 | Config File | Scope | Trust Level |
 |------------|-------|-------------|
 | `.ade/ade.yaml` | Shared (committed) | Requires explicit approval before executing processes or tests |
-| `.ade/local.yaml` | Local (gitignored) | Always trusted; stores API keys, preferences, overrides |
+| `.ade/local.yaml` | Local (gitignored) | Always trusted; stores preferences and overrides |
 
 The trust boundary exists because `.ade/ade.yaml` is a shared file that any team
 member can modify. ADE prevents execution of untrusted shared config by showing
 previews, maintaining an audit trail, and providing escape hatches.
 
-### Provider Configuration
+### AI Provider Detection
 
-| Provider | Description | Data Residency |
-|----------|-------------|----------------|
-| **Hosted Agent** | ADE cloud handles LLM calls, conflict prediction, mirror hosting | Data transmitted to ADE servers |
-| **BYOK** | User provides their own API key (OpenAI, Anthropic, etc.) | Data transmitted to chosen LLM provider |
-| **CLI (Local)** | Local tools only, no LLM features, heuristic conflict prediction | No data leaves the machine |
+ADE automatically detects installed CLI tools and their subscription status:
 
-### Guest Mode
+| Provider State | Description | AI Features |
+|----------------|-------------|-------------|
+| **Guest** | No CLI tools detected or installed | All local features work (lanes, terminals, git, processes, tests, packs). AI-powered features are unavailable. |
+| **Subscription** | Claude Code and/or Codex CLI detected with active subscriptions | Full AI features via agent SDKs — narratives, conflict proposals, PR descriptions, mission planning |
 
-ADE can be used without creating an account or configuring an LLM provider. In **Guest Mode**:
-
-- All local features work: lanes, terminals, git operations, process management, test suites, file editing
-- Deterministic context tracking works locally: packs, checkpoints, pack events, and operation history continue to record and refresh
-- AI-powered features are disabled: hosted mirror sync, hosted narratives, hosted conflict proposals, and AI PR drafting
-- Conflict prediction and merge simulation still run locally; only AI-generated resolution proposals are unavailable
-
-Guest Mode is the default state before onboarding is completed. Users can remain in Guest Mode indefinitely. A persistent banner shows: "Running in Guest Mode — AI details disabled. [Set up provider →]" with a link to the Settings page.
-
-Guest Mode ensures ADE is immediately useful for git workflow management and terminal orchestration even without any cloud or LLM setup.
+AI features become available when CLI tools are installed. There is no separate
+sign-up, authentication, or API key configuration. ADE spawns `claude` and `codex`
+CLI processes using existing subscriptions through the agent SDKs.
 
 ---
 
@@ -106,7 +100,7 @@ Presented as a step-by-step wizard (`OnboardingPage`) when the opened repository
 | `pyproject.toml` | Suggests `pip install -e .`, `pytest` |
 | `.github/workflows/` | Parses YAML workflow files, imports test/lint commands from CI steps |
 
-Detection also generates default automation rules (session-end conflict prediction and hourly mirror sync) and default provider configuration (context tool generators for Codex and Claude).
+Detection also generates default automation rules (session-end conflict prediction) and default provider configuration (context tool generators for Codex and Claude).
 
 **Step 3 — Review Config**: Full-page form showing suggested processes, tests, stack buttons, and automations. User can edit each section before saving. Supports "Append" mode (merge with existing) and "Replace" mode (overwrite). Automations are displayed alongside processes and tests for review.
 
@@ -114,13 +108,13 @@ Detection also generates default automation rules (session-end conflict predicti
 
 **Step 5 — Import Branches**: For branches selected in Step 4, sequentially creates ADE lanes. Each import creates a lane with the branch ref and optionally sets a parent lane. Progress is shown per-branch with success/failure status.
 
-**Step 6 — Generate Packs**: Triggers initial deterministic pack generation for the project and all imported lanes. If Hosted or BYOK is configured, AI details are generated in the background after the deterministic refresh:
+**Step 6 — Generate Packs**: Triggers initial deterministic pack generation for the project and all imported lanes. When CLI tools are detected, AI narratives are generated in the background after the deterministic refresh via the agent SDKs:
 
 - **Project Pack bootstrap**: Builds a lightweight project map (top-level folders, key files, git history seed) and seeds the Project Pack.
 - **Documentation import**: Indexes the repository's `docs/` directory and key markdown files into the Project Pack bootstrap.
 - **Lane Pack generation**: For each imported lane, generates an initial Lane Pack by analyzing the branch's diff against the base, commit history, and session data.
 
-In Guest Mode, deterministic packs are still generated; only AI details are skipped.
+When no CLI tools are detected, deterministic packs are still generated; only AI narratives are skipped.
 
 **Step 7 — Complete**: Wizard closes, main UI loads, toast confirms initialization. Users can re-run initial pack generation later from Settings.
 
@@ -128,7 +122,7 @@ In Guest Mode, deterministic packs are still generated; only AI details are skip
 
 - **"What ADE will do" dialogs**: Show exact commands before executing new or changed shared config
 - **Operation timeline**: Full audit trail in the History tab
-- **Escape hatches**: Undo operations, delete `.ade/`, disable hosted agent
+- **Escape hatches**: Undo operations, delete `.ade/`
 
 ### Settings Page
 
@@ -145,11 +139,85 @@ In Guest Mode, deterministic packs are still generated; only AI details are skip
 | `sky` | Sky | Light blue tones |
 | `pats` | Pat's | Custom accent theme |
 
-**Provider Configuration**: Radio selector for Guest/Hosted/BYOK/CLI.
-- **Guest**: No AI provider, all local features work, AI details disabled.
-- **Hosted**: ADE cloud agent. Includes Clerk OAuth for authentication, bootstrap config, mirror sync controls, context delivery mode selector (Auto/Inline/Mirror Preferred), and GitHub App connection.
-- **BYOK**: Provider dropdown (Anthropic/OpenAI/Gemini), model selector, API key input (password field). Keys stored in `local.yaml`.
-- **CLI**: Local tools only (Codex CLI, Claude CLI). No data leaves the machine.
+**AI Provider**: Displays detected CLI tools with their subscription status.
+- **Claude Code**: Detected/Not detected, subscription tier (Pro/Max)
+- **Codex**: Detected/Not detected, subscription tier (Plus/Pro)
+- **Status indicators**: Green (detected and active), gray (not detected)
+
+**Task Model Routing**: Per-task-type configuration for which provider and model to use. Each row has a provider dropdown and a model dropdown. Model lists are populated dynamically at startup.
+
+| Task Type | Description | Default Provider | Default Model | Available Models |
+|-----------|-------------|-----------------|---------------|-----------------|
+| `planning` | Mission and task planning | Claude | `sonnet` | Claude: opus, sonnet, haiku. Codex: gpt-5.3-codex, gpt-5.2-codex, codex-mini-latest, o4-mini, o3 |
+| `implementation` | Code generation and edits | Codex | `gpt-5.3-codex` | Same pool |
+| `review` | Code review and analysis | Claude | `sonnet` | Same pool |
+| `conflict_resolution` | Merge conflict proposals | Claude | `sonnet` | Same pool |
+| `narrative` | Pack narrative generation | Claude | `haiku` | Same pool |
+| `pr_description` | Pull request descriptions | Claude | `haiku` | Same pool |
+| `terminal_summary` | Terminal session summaries | Claude | `haiku` | Same pool |
+
+Model discovery:
+- **Claude models**: Populated via `supportedModels()` SDK method at startup. Displayed as aliases (`opus`, `sonnet`, `haiku`) with full model IDs shown on hover.
+- **Codex models**: Hardcoded list (SDK does not expose a discovery method): `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-5.1-codex-max`, `codex-mini-latest`, `o4-mini`, `o3`.
+- Users can assign any available model to any task type — defaults are suggestions, not requirements.
+
+**AI Feature Toggles**: Per-feature controls for enabling/disabling individual AI capabilities. Each toggle controls whether ADE uses AI for that specific feature. When disabled, the feature falls back to deterministic behavior (or is simply unavailable).
+
+| Feature | Description | Default | Fallback |
+|---------|-------------|---------|----------|
+| `narratives` | AI-generated lane pack narratives | On | Deterministic template-based narratives |
+| `conflict_proposals` | AI-powered merge conflict resolution proposals | On | Manual resolution only |
+| `pr_descriptions` | AI-drafted pull request descriptions | On | Empty or template-based descriptions |
+| `terminal_summaries` | AI-enhanced terminal session summaries | On | Deterministic pattern-matching summaries |
+| `mission_planning` | AI-powered mission step decomposition | On | Deterministic keyword-based planner |
+| `orchestrator` | AI orchestrator for mission execution | On | Manual step-by-step execution |
+
+Each toggle persists to `.ade/local.yaml` under `ai.features`. When a feature is disabled, its usage counter stops incrementing and no AI calls are made for that feature type.
+
+**AI Usage Dashboard**: A real-time usage tracking surface showing AI consumption across all ADE features.
+
+The dashboard includes:
+- **Usage bar per feature**: Visual progress bars showing AI calls made per feature (narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator) within the current billing period.
+- **Session totals**: Aggregate token/call counts per provider (Claude, Codex) with breakdown by feature.
+- **Subscription status**: Detected subscription tier for each provider (Claude Pro/Max, ChatGPT Plus/Pro) with known rate limits displayed when available. ADE reads rate limit headers from CLI responses when exposed.
+- **Budget controls**: Per-feature call limits that users can set. When a limit is reached, ADE pauses AI calls for that feature and surfaces a notification. Budget controls are the foundation for Night Shift budget caps (Phase 4).
+- **Usage history**: Sparkline or bar chart showing daily/weekly AI usage trends.
+- **Export**: Usage data exportable as JSON for external tracking.
+
+Usage data is stored locally in SQLite (`ai_usage_log` table) with columns: `id`, `timestamp`, `feature`, `provider`, `model`, `input_tokens`, `output_tokens`, `duration_ms`, `success`, `session_id` (optional link to terminal/mission session).
+
+The usage dashboard connects to Night Shift (Phase 4) by providing the budget enforcement infrastructure — Night Shift budget caps reuse the same per-feature limits and usage counters.
+
+**AI Permissions & Sandbox Configuration**: A dedicated section for controlling how Claude and Codex agents operate when invoked by ADE. These settings determine the security posture and autonomy level of AI agents across all ADE features.
+
+**Claude Permissions**:
+
+| Setting | Options | Default | Description |
+|---------|---------|---------|-------------|
+| Permission Mode | `plan` / `acceptEdits` / `bypassPermissions` | `plan` | `plan` = read-only analysis (safest). `acceptEdits` = auto-approve file edits. `bypassPermissions` = full autonomy (use with caution). |
+| Settings Sources | Checkboxes: User / Project / Local | None checked | Controls whether Claude loads `.claude/settings.json` files. By default, ADE controls all settings. Check "Project" to honor project-level Claude configuration. |
+| CLAUDE.md Loading | Toggle | Off | When enabled (requires "Project" settings source), Claude reads the project's CLAUDE.md for additional context. |
+| Per-Session Budget | USD input | $5.00 | Maximum spend per AI session. Claude stops when budget is reached. |
+| Sandbox Mode | Toggle | On | Enable filesystem sandbox isolation. |
+
+**Codex Permissions**:
+
+| Setting | Options | Default | Description |
+|---------|---------|---------|-------------|
+| Sandbox Level | `read-only` / `workspace-write` / `danger-full-access` | `workspace-write` | `read-only` = can read files but not write. `workspace-write` = can write within the lane worktree. `danger-full-access` = no filesystem restrictions. |
+| Approval Mode | `untrusted` / `on-request` / `never` | `on-request` | `untrusted` = approve every tool use. `on-request` = approve mutations only. `never` = full autonomy. |
+| Writable Paths | Path list editor | Empty | Additional paths the agent may write to beyond the current lane worktree (only applies in `workspace-write` mode). |
+| Command Allowlist | Command list editor | Empty (default set) | Shell commands the agent is allowed to run. Empty uses the SDK default set. Add specific commands to restrict or expand. |
+| `codex.toml` Honoring | Info display | Read-only | Shows whether a project-level `codex.toml` exists and notes that ADE's settings override it. |
+
+**Settings Honoring Behavior**:
+
+Both Claude and Codex have project-level configuration files (`.claude/settings.json` and `codex.toml` respectively). ADE's behavior with these files:
+
+- **Claude**: `.claude/settings.json` is NOT loaded by default. ADE controls all Claude settings via the SDK. Users can opt in to loading project settings by checking "Project" in Settings Sources. This is a deliberate design choice — ADE's permission policies should not be overridden by project-level Claude configuration.
+- **Codex**: `codex.toml` is loaded as a base layer, but ADE's SDK config always takes priority. This means project-level `codex.toml` provides defaults, but ADE's Settings always win. Users can see the effective configuration in Settings.
+
+These settings persist to `.ade/local.yaml` under `ai.permissions.claude` and `ai.permissions.codex`.
 
 **Automations**: Embedded `AutomationsSection` showing all automation rules with enable/disable toggles, "Run Now" buttons, and history links. Provides a summary view without leaving Settings.
 
@@ -157,14 +225,11 @@ In Guest Mode, deterministic packs are still generated; only AI details are skip
 
 **Keybindings**: Table showing all shortcuts with action, scope, default binding, user override, and effective binding. Supports text-based override input with chord normalization and conflict detection (warns when two actions share the same key binding).
 
-**Data Management**: Three actions:
+**Data Management**: Two actions:
 - **Clear local data**: Removes packs, logs, and transcripts.
 - **Export config**: Exports the project configuration as a bundle.
-- **Delete hosted mirror data**: Removes hosted mirror state (requires confirmation).
 
-**GitHub**: Local GitHub token management. Configure PATs for GitHub API access. PR polling interval configuration.
-
-**Guest Mode Banner**: When no provider is configured, a persistent banner appears at the top of every page: "Running in Guest Mode — AI details disabled. [Set up provider →]". The banner links to the Provider Configuration section.
+**GitHub**: Local GitHub token management. Configure PATs stored in `local.yaml` for GitHub API access. PR polling interval configuration. GitHub integration uses the local `gh` CLI or PATs.
 
 ---
 
@@ -197,6 +262,14 @@ In Guest Mode, deterministic packs are still generated; only AI details are skip
 | `ade.onboarding.detectExistingLanes()` | Exists | Scans for local branches, returns `OnboardingExistingLaneCandidate[]` with ahead/behind/remote/isCurrent per branch |
 | `ade.onboarding.generateInitialPacks(args)` | Exists | Triggers initial pack generation for project and selected lane IDs |
 | `ade.onboarding.complete()` | Exists | Marks onboarding as complete, returns `OnboardingStatus` |
+| `ade.ai.getUsage()` | Planned | Returns usage stats per feature/provider |
+| `ade.ai.getFeatureToggles()` | Planned | Returns current toggle states |
+| `ade.ai.setFeatureToggles(toggles)` | Planned | Update toggle states |
+| `ade.ai.getBudgets()` | Planned | Returns budget limits |
+| `ade.ai.setBudgets(budgets)` | Planned | Update budget limits |
+| `ade.ai.getPermissions()` | Planned | Returns current Claude and Codex permission/sandbox settings |
+| `ade.ai.setPermissions(settings)` | Planned | Update Claude and Codex permission/sandbox settings |
+| `ade.ai.getAvailableModels()` | Planned | Returns available models per provider (from SDK discovery and hardcoded lists) |
 
 ### Component Architecture
 
@@ -219,16 +292,27 @@ OnboardingPage (route: /onboarding, 7-step wizard)
 SettingsPage (route: /settings)
   +-- AppInfoSection (version, Electron, Node, platform, arch)
   +-- ThemeSection (6 theme swatches: e-paper, bloomberg, github, rainbow, sky, pats)
-  +-- ProviderSection
-  |    +-- Guest / Hosted / BYOK / CLI radio selector
-  |    +-- HostedConfig (Clerk OAuth, bootstrap, mirror sync, context delivery, GitHub App)
-  |    +-- BYOKConfig (provider dropdown: Anthropic/OpenAI/Gemini, model selector, API key)
-  |    +-- CLIConfig (local tools only)
+  +-- AIProviderSection
+  |    +-- DetectedToolsList (Claude Code status, Codex status with subscription tier)
+  |    +-- TaskRoutingTable (task type → provider → model per row)
+  +-- AIFeatureTogglesSection
+  |    +-- Per-feature toggle switches with status indicators
+  |    +-- "Disable all AI" master toggle
+  +-- AIUsageDashboardSection
+  |    +-- UsageBarPerFeature (visual progress bars)
+  |    +-- SubscriptionStatusCards (provider tiers, rate limits)
+  |    +-- BudgetControlsTable (per-feature limits)
+  |    +-- UsageHistoryChart (sparkline/bar)
+  |    +-- ExportButton (JSON export)
+  +-- AIPermissionsSandboxSection
+  |    +-- ClaudePermissionsCard (permission mode, settings sources, CLAUDE.md, budget, sandbox)
+  |    +-- CodexPermissionsCard (sandbox level, approval mode, writable paths, command allowlist)
+  |    +-- SettingsHonoringInfo (display of .claude/settings.json and codex.toml status)
   +-- AutomationsSection (per-rule summary with run-now, history, toggle)
   +-- TerminalProfilesSection (profile CRUD: name, command, args, cwd, env)
   +-- KeybindingsSection (table: action, scope, default, override, effective + conflict detection)
   +-- GitHubSection (local PAT management, PR polling interval)
-  +-- DataManagementSection (clear data, export config, delete hosted mirror)
+  +-- DataManagementSection (clear data, export config)
 ```
 
 ### Data Flow
@@ -245,11 +329,12 @@ candidates with ahead/behind/remote status. User selects branches to import as l
 `ade.onboarding.complete()` marks onboarding done. Wizard closes, main UI loads.
 
 **Settings**: Renderer calls `ade.app.getInfo()` for metadata. Theme changes apply
-via CSS class toggle and persist to `localStorage`. Provider changes save to
-`local.yaml` via `projectConfig.save()`. Keybinding overrides save via the
-keybindings service to `kvDb`. Terminal profile changes save via the terminal
-profiles service to `kvDb`. Data management actions use dedicated IPC calls with
-confirmation dialogs.
+via CSS class toggle and persist to `localStorage`. AI provider detection runs
+automatically on settings load, displaying detected CLI tools and their status.
+Task routing changes save to `local.yaml` via `projectConfig.save()`. Keybinding
+overrides save via the keybindings service to `kvDb`. Terminal profile changes save
+via the terminal profiles service to `kvDb`. Data management actions use dedicated
+IPC calls with confirmation dialogs.
 
 ---
 
@@ -278,11 +363,48 @@ automations: []
 
 **`.ade/local.yaml`** (local, gitignored):
 ```yaml
-provider:
-  type: "byok"
-  apiKey: "sk-..."
-  llmProvider: "openai"
-  model: "gpt-4"
+ai:
+  providers:
+    claude:
+      detected: true
+      subscription: "pro"
+    codex:
+      detected: true
+      subscription: "plus"
+  taskRouting:
+    planning: { provider: "claude", model: "sonnet" }
+    implementation: { provider: "codex", model: "gpt-4.1" }
+    review: { provider: "claude", model: "sonnet" }
+    conflict_resolution: { provider: "claude", model: "sonnet" }
+    narrative: { provider: "claude", model: "haiku" }
+    pr_description: { provider: "claude", model: "haiku" }
+    terminal_summary: { provider: "claude", model: "haiku" }
+  features:
+    narratives: true
+    conflict_proposals: true
+    pr_descriptions: true
+    terminal_summaries: true
+    mission_planning: true
+    orchestrator: true
+  budgets:
+    narratives: { daily_limit: 50 }
+    conflict_proposals: { daily_limit: 20 }
+    pr_descriptions: { daily_limit: 30 }
+    terminal_summaries: { daily_limit: 100 }
+    mission_planning: { daily_limit: 10 }
+    orchestrator: { daily_limit: 5 }
+  permissions:
+    claude:
+      permission_mode: plan
+      settings_sources: []
+      claude_md_loading: false
+      max_budget_usd: 5.00
+      sandbox: true
+    codex:
+      approval_mode: on-request
+      sandbox_permissions: workspace-write
+      writable_paths: []
+      command_allowlist: []
 preferences:
   theme: "dark"
   confirmBeforeExecute: true
@@ -326,7 +448,7 @@ interface OnboardingStatus {
 |----------|-----------|---------|
 | `.ade/` directory | Onboarding Step 3 | Root for all ADE configuration |
 | `.ade/ade.yaml` | Onboarding Step 3/4 | Shared project configuration |
-| `.ade/local.yaml` | Onboarding Step 3 | Local preferences and secrets |
+| `.ade/local.yaml` | Onboarding Step 3 | Local preferences and AI provider config |
 | `.git/info/exclude` entry | Onboarding Step 3 | Prevents `local.yaml` from being committed |
 
 ---
@@ -344,49 +466,50 @@ interface OnboardingStatus {
 | ONBOARD-005 | Settings page (app info) | Displays version, Electron, Node, platform, arch | DONE |
 | ONBOARD-006 | Theme toggle | Dark/light switch with persistence | DONE |
 
-### Implemented (Phase 6 / Phase 8)
+### Implemented
 
 | ID | Task | Description | Status |
 |----|------|-------------|--------|
-| ONBOARD-007 | Project defaults detection | Scan for `package.json`, `Makefile`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `docker-compose.yml`, `.github/workflows/`. Also detects package manager (npm/yarn/pnpm) and parses CI workflow YAML for test/lint commands. | DONE — Phase 8 |
-| ONBOARD-008 | Onboarding wizard UI | 7-step wizard (welcome, detect-defaults, review-config, detect-branches, import-branches, generate-packs, complete) with progress indicator | DONE — Phase 8 |
-| ONBOARD-009 | Suggested process definitions | Generate entries from detection results (install, build per detected ecosystem) | DONE — Phase 8 |
-| ONBOARD-010 | Suggested test definitions | Generate test entries from detection + CI-derived commands (filtered to test/lint patterns, max 6) | DONE — Phase 8 |
-| ONBOARD-011 | Config review step | Edit suggested config (processes, tests, stacks, automations) with append/replace mode before saving | DONE — Phase 8 |
-| ONBOARD-012 | Hosted agent consent flow | Consent screen with data explanation | DONE — Phase 6 (consent checkboxes in SettingsPage + StartupAuthPage) |
+| ONBOARD-007 | Project defaults detection | Scan for `package.json`, `Makefile`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `docker-compose.yml`, `.github/workflows/`. Also detects package manager (npm/yarn/pnpm) and parses CI workflow YAML for test/lint commands. | DONE |
+| ONBOARD-008 | Onboarding wizard UI | 7-step wizard (welcome, detect-defaults, review-config, detect-branches, import-branches, generate-packs, complete) with progress indicator | DONE |
+| ONBOARD-009 | Suggested process definitions | Generate entries from detection results (install, build per detected ecosystem) | DONE |
+| ONBOARD-010 | Suggested test definitions | Generate test entries from detection + CI-derived commands (filtered to test/lint patterns, max 6) | DONE |
+| ONBOARD-011 | Config review step | Edit suggested config (processes, tests, stacks, automations) with append/replace mode before saving | DONE |
 | ONBOARD-013 | "What ADE will do" previews | Pre-execution dialogs for shared config | PARTIAL — onboarding previews implemented; generic pre-execution dialogs TBD |
-| ONBOARD-014 | Provider configuration UI | Guest/Hosted/BYOK/CLI selector with config forms | DONE — Phase 6/8 (SettingsPage with Clerk OAuth, BYOK multi-provider, CLI config) |
-| ONBOARD-015 | API key management | Secure input, local.yaml storage, validation | DONE — Phase 6 (password input in SettingsPage, stored in local.yaml, validated before save) |
-| ONBOARD-016 | Keybindings viewer | Shortcut table by scope with action, default, override, effective columns | DONE — Phase 8 |
-| ONBOARD-017 | Keybindings customization | Text-based override input with chord normalization and conflict detection | DONE — Phase 8 (text override UI; click-to-record deferred) |
-| ONBOARD-018 | Data management | Clear local data (packs/logs/transcripts), export config bundle, delete hosted mirror data | DONE — Phase 8 |
-| ONBOARD-019 | Welcome guide | In-app getting started with feature highlights | DONE — Phase 8 (onboarding welcome step) |
-| ONBOARD-020 | Project switching | Recent projects list with quick-switch | DONE — Phase 8 |
-| ONBOARD-021 | Initial codebase scan for pack seeding | Build a lightweight deterministic project bootstrap (repo map + git history seed) for the Project Pack | DONE — Phase 8 |
-| ONBOARD-022 | Existing documentation import | Index `docs/` and key markdown files into the Project Pack bootstrap; AI details can summarize when Hosted/BYOK is enabled | DONE — Phase 8 |
-| ONBOARD-023 | Existing lane/branch detection | Detect existing branches via `git for-each-ref`, compute ahead/behind counts, check remote tracking, filter already-tracked lanes | DONE — Phase 8 |
-| ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | DONE — Phase 8 |
-| ONBOARD-025 | Guest mode | No-account usage with local features only; AI details disabled | DONE |
-| ONBOARD-026 | Guest mode banner | Persistent "Guest Mode" banner with provider setup link | DONE |
-| ONBOARD-027 | Terminal profiles service | Default launch profiles (Shell, Claude, Codex, Aider) with user customization. Persisted via kvDb. | DONE — Phase 8 |
-| ONBOARD-028 | Terminal profiles UI | TerminalProfilesSection in Settings for profile CRUD (name, command, args, cwd, env) | DONE — Phase 8 |
-| ONBOARD-029 | Suggested automations in onboarding | Default automation rules (session-end conflict prediction, hourly mirror sync) generated as part of suggested config | DONE — Phase 8 |
-| ONBOARD-030 | Suggested provider config in onboarding | Default context tool generators (Codex, Claude) and conflict resolvers generated in suggested config | DONE — Phase 8 |
-| ONBOARD-031 | GitHub settings section | Local PAT management and PR polling interval configuration | DONE — Phase 8 |
+| ONBOARD-014 | AI provider detection UI | Detected CLI tools display with subscription status and per-task model routing | DONE |
+| ONBOARD-016 | Keybindings viewer | Shortcut table by scope with action, default, override, effective columns | DONE |
+| ONBOARD-017 | Keybindings customization | Text-based override input with chord normalization and conflict detection | DONE (text override UI; click-to-record deferred) |
+| ONBOARD-018 | Data management | Clear local data (packs/logs/transcripts), export config bundle | DONE |
+| ONBOARD-019 | Welcome guide | In-app getting started with feature highlights | DONE (onboarding welcome step) |
+| ONBOARD-020 | Project switching | Recent projects list with quick-switch | DONE |
+| ONBOARD-021 | Initial codebase scan for pack seeding | Build a lightweight deterministic project bootstrap (repo map + git history seed) for the Project Pack | DONE |
+| ONBOARD-022 | Existing documentation import | Index `docs/` and key markdown files into the Project Pack bootstrap; AI narratives generated when CLI tools are detected | DONE |
+| ONBOARD-023 | Existing lane/branch detection | Detect existing branches via `git for-each-ref`, compute ahead/behind counts, check remote tracking, filter already-tracked lanes | DONE |
+| ONBOARD-024 | Initial pack generation trigger | Run pack generation for project and all detected lanes during onboarding | DONE |
+| ONBOARD-027 | Terminal profiles service | Default launch profiles (Shell, Claude, Codex, Aider) with user customization. Persisted via kvDb. | DONE |
+| ONBOARD-028 | Terminal profiles UI | TerminalProfilesSection in Settings for profile CRUD (name, command, args, cwd, env) | DONE |
+| ONBOARD-029 | Suggested automations in onboarding | Default automation rules (session-end conflict prediction) generated as part of suggested config | DONE |
+| ONBOARD-030 | Suggested provider config in onboarding | Default context tool generators (Codex, Claude) and conflict resolvers generated in suggested config | DONE |
+| ONBOARD-031 | GitHub settings section | Local PAT management and PR polling interval configuration | DONE |
+| ONBOARD-032 | AI feature toggles UI and persistence | Per-feature AI enable/disable toggles with master toggle, persisted to `local.yaml` under `ai.features` | TODO |
+| ONBOARD-033 | AI usage dashboard with per-feature tracking | Real-time usage tracking surface with per-feature progress bars, session totals, and usage history | TODO |
+| ONBOARD-034 | Budget controls with daily limits | Per-feature AI call limits with notification when limits are reached; foundation for Night Shift budget caps | TODO |
+| ONBOARD-035 | Subscription status detection and display | Detected subscription tier display per provider with known rate limits from CLI response headers | TODO |
+| ONBOARD-036 | AI permissions & sandbox configuration UI | Dedicated section for Claude permission mode, Codex sandbox level, approval mode, writable paths, command allowlist. Persisted to `local.yaml` under `ai.permissions` | TODO |
+| ONBOARD-037 | Dynamic model picker for task routing | Per-task model dropdown populated from `supportedModels()` (Claude) and hardcoded list (Codex). Users can assign any model to any task type | TODO |
+| ONBOARD-038 | Settings honoring behavior display | Show whether .claude/settings.json and codex.toml exist, explain override behavior, allow opt-in for project settings sources | TODO |
 
 ### Dependency Notes
 
 - ONBOARD-007 is prerequisite for ONBOARD-009, ONBOARD-010, and ONBOARD-029/030.
 - ONBOARD-008 depends on ONBOARD-007 for detection step content.
 - ONBOARD-011 depends on ONBOARD-009/010/029/030 for suggested config.
-- ONBOARD-012, ONBOARD-014, ONBOARD-015 completed in **Phase 6** (Cloud Infrastructure).
 - ONBOARD-016/017 are independent of all other tasks.
-- ONBOARD-020 requires a project registry service (**Phase 8**).
-- ONBOARD-021 through ONBOARD-024 run deterministically in all modes; AI details are only generated when Hosted/BYOK is configured (and are skipped in Guest Mode).
-- ONBOARD-025 and ONBOARD-026 are independent and were implemented in Phase 2/3.
+- ONBOARD-020 requires a project registry service.
+- ONBOARD-021 through ONBOARD-024 run deterministically in all modes; AI narratives are only generated when CLI tools are detected.
 - ONBOARD-027/028 (terminal profiles) are independent of onboarding but integrated into Settings.
-- ONBOARD-031 (GitHub settings) depends on the GitHub service from **Phase 7**.
+- ONBOARD-031 (GitHub settings) depends on the GitHub service.
 
 ---
 
-*This document describes the Onboarding and Settings features for ADE. Basic setup (ONBOARD-001 through ONBOARD-006) and guest mode (ONBOARD-025, ONBOARD-026) are implemented. Phase 6 implements hosted agent consent and provider configuration. Phase 8 implements the full onboarding wizard (7 steps), terminal profiles, keybindings customization, automations summary in settings, and deterministic context bootstrap.*
+*This document describes the Onboarding and Settings features for ADE. Onboarding provides a guided setup wizard for initializing ADE in a repository. Settings provides AI provider detection, per-task model routing, theme management, keybindings, terminal profiles, and data management. No account creation or authentication is required — AI features are powered by detected CLI tool subscriptions via the agent SDKs.*

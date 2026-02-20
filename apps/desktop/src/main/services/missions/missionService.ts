@@ -3,6 +3,11 @@ import type {
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   CreateMissionArgs,
+  GetPlannerAttemptArgs,
+  ListPlannerRunsArgs,
+  MissionExecutorPolicy,
+  MissionPlannerAttempt,
+  MissionPlannerRun,
   ListMissionsArgs,
   MissionArtifact,
   MissionArtifactType,
@@ -18,11 +23,15 @@ import type {
   MissionStep,
   MissionStepStatus,
   MissionSummary,
+  PlannerPlan,
   ResolveMissionInterventionArgs,
+  DeleteMissionArgs,
   UpdateMissionArgs,
   UpdateMissionStepArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import { buildDeterministicMissionPlan } from "./missionPlanner";
+import type { MissionPlanStepDraft } from "./missionPlanningService";
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
@@ -121,6 +130,12 @@ type MissionInterventionRow = {
   updated_at: string;
   resolved_at: string | null;
   metadata_json: string | null;
+};
+
+type CreateMissionInternalArgs = CreateMissionArgs & {
+  plannedSteps?: MissionPlanStepDraft[];
+  plannerRun?: MissionPlannerRun | null;
+  plannerPlan?: PlannerPlan | null;
 };
 
 function nowIso(): string {
@@ -235,30 +250,69 @@ function coerceNullableString(value: unknown): string | null {
   return trimmed.length ? trimmed : null;
 }
 
-function buildInitialStepTitles(prompt: string): string[] {
-  const lines = normalizePrompt(prompt)
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+function truncateForMetadata(value: string | null, maxChars = 120_000): string | null {
+  if (!value) return null;
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n...<truncated>`;
+}
 
-  const extracted: string[] = [];
-  for (const line of lines) {
-    const bulletMatch = line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/);
-    if (!bulletMatch) continue;
-    const value = bulletMatch[1]?.trim();
-    if (!value) continue;
-    extracted.push(value.slice(0, 120));
-    if (extracted.length >= 8) break;
-  }
+function normalizeMissionExecutorPolicy(value: unknown): MissionExecutorPolicy {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "codex" || raw === "claude" || raw === "both") return raw;
+  return "both";
+}
 
-  if (extracted.length >= 2) return extracted;
+function toPlannerAttempt(value: unknown): MissionPlannerAttempt | null {
+  if (!isRecord(value)) return null;
+  const id = String(value.id ?? "").trim();
+  const engine = String(value.engine ?? "").trim();
+  const status = String(value.status ?? "").trim();
+  if (!id.length || !engine.length || (status !== "succeeded" && status !== "failed")) return null;
+  return {
+    id,
+    engine: engine as MissionPlannerAttempt["engine"],
+    status: status as MissionPlannerAttempt["status"],
+    reasonCode: typeof value.reasonCode === "string" ? (value.reasonCode as MissionPlannerAttempt["reasonCode"]) : null,
+    detail: typeof value.detail === "string" ? value.detail : null,
+    commandPreview: typeof value.commandPreview === "string" ? value.commandPreview : null,
+    rawResponse: typeof value.rawResponse === "string" ? value.rawResponse : null,
+    validationErrors: Array.isArray(value.validationErrors)
+      ? value.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+      : [],
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : nowIso()
+  };
+}
 
-  return [
-    "Review mission objective",
-    "Prepare approach",
-    "Execute changes",
-    "Capture outcomes"
-  ];
+function toPlannerRunFromEvent(row: MissionEventRow): MissionPlannerRun | null {
+  if (row.event_type !== "mission_plan_generated") return null;
+  const payload = safeParseRecord(row.payload_json);
+  if (!payload) return null;
+  const runId = String(payload.plannerRunId ?? "").trim();
+  if (!runId.length) return null;
+  const attemptsRaw = Array.isArray(payload.attempts) ? payload.attempts : [];
+  const attempts = attemptsRaw.map((entry) => toPlannerAttempt(entry)).filter((entry): entry is MissionPlannerAttempt => entry != null);
+  const validationErrors = Array.isArray(payload.validationErrors)
+    ? payload.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
+    : [];
+  return {
+    id: runId,
+    missionId: row.mission_id,
+    requestedEngine: String(payload.requestedEngine ?? "auto") as MissionPlannerRun["requestedEngine"],
+    resolvedEngine: String(payload.resolvedEngine ?? "deterministic_fallback") as MissionPlannerRun["resolvedEngine"],
+    status: payload.degraded === true ? "fallback" : "succeeded",
+    degraded: payload.degraded === true,
+    reasonCode: typeof payload.reasonCode === "string" ? (payload.reasonCode as MissionPlannerRun["reasonCode"]) : null,
+    reasonDetail: typeof payload.reasonDetail === "string" ? payload.reasonDetail : null,
+    planHash: typeof payload.planHash === "string" && payload.planHash.length > 0 ? payload.planHash : "",
+    normalizedPlanHash:
+      typeof payload.normalizedPlanHash === "string" && payload.normalizedPlanHash.length > 0 ? payload.normalizedPlanHash : "",
+    commandPreview: typeof payload.commandPreview === "string" ? payload.commandPreview : null,
+    rawResponse: typeof payload.rawResponse === "string" ? payload.rawResponse : null,
+    createdAt: row.created_at,
+    durationMs: Number.isFinite(Number(payload.durationMs)) ? Math.floor(Number(payload.durationMs)) : 0,
+    validationErrors,
+    attempts
+  };
 }
 
 function toMissionSummary(row: MissionRow): MissionSummary {
@@ -852,7 +906,39 @@ export function createMissionService({
       };
     },
 
-    create(args: CreateMissionArgs): MissionDetail {
+    listPlannerRuns(args: ListPlannerRunsArgs = {}): MissionPlannerRun[] {
+      const where: string[] = ["project_id = ?", "event_type = 'mission_plan_generated'"];
+      const params: Array<string | number | null> = [projectId];
+      const missionId = String(args.missionId ?? "").trim();
+      if (missionId.length > 0) {
+        where.push("mission_id = ?");
+        params.push(missionId);
+      }
+      const limit = Number.isFinite(args.limit) ? Math.max(1, Math.min(250, Math.floor(args.limit ?? 50))) : 50;
+      const rows = db.all<MissionEventRow>(
+        `
+          select id, mission_id, event_type, actor, summary, payload_json, created_at
+          from mission_events
+          where ${where.join(" and ")}
+          order by created_at desc
+          limit ?
+        `,
+        [...params, limit]
+      );
+      return rows.map((row) => toPlannerRunFromEvent(row)).filter((entry): entry is MissionPlannerRun => entry != null);
+    },
+
+    getPlannerAttempt(args: GetPlannerAttemptArgs): MissionPlannerAttempt | null {
+      const plannerRunId = String(args.plannerRunId ?? "").trim();
+      const attemptId = String(args.attemptId ?? "").trim();
+      if (!plannerRunId.length || !attemptId.length) return null;
+      const runs = this.listPlannerRuns({ limit: 250 });
+      const run = runs.find((entry) => entry.id === plannerRunId);
+      if (!run) return null;
+      return run.attempts.find((entry) => entry.id === attemptId) ?? null;
+    },
+
+    create(args: CreateMissionInternalArgs): MissionDetail {
       const prompt = normalizePrompt(args.prompt ?? "");
       if (!prompt.length) {
         throw new Error("Mission prompt is required.");
@@ -864,9 +950,95 @@ export function createMissionService({
       const priority = args.priority ?? "normal";
       const executionMode = args.executionMode ?? "local";
       const targetMachineId = coerceNullableString(args.targetMachineId);
+      const plannerRun = args.plannerRun ?? null;
+      const plannerPlan = args.plannerPlan ?? null;
+      const launchMode = args.launchMode === "manual" ? "manual" : "autopilot";
+      const autostart = args.autostart !== false;
+      const autopilotExecutor = args.autopilotExecutor ?? "codex";
+      const executorPolicy = normalizeMissionExecutorPolicy(args.executorPolicy);
+      const allowPlanningQuestions = args.allowPlanningQuestions === true;
+
+      const legacyPlan = buildDeterministicMissionPlan({
+        prompt,
+        laneId
+      });
+      const stepsToPersist: MissionPlanStepDraft[] =
+        Array.isArray(args.plannedSteps) && args.plannedSteps.length
+          ? [...args.plannedSteps].sort((a, b) => a.index - b.index || a.title.localeCompare(b.title))
+          : legacyPlan.steps.map((step) => ({
+              index: step.index,
+              title: step.title,
+              detail: step.detail,
+              kind: step.kind,
+              metadata: step.metadata
+            }));
 
       const id = randomUUID();
       const createdAt = nowIso();
+      const missionMetadata = {
+        source: "manual",
+        version: 2,
+        launch: {
+          autostart,
+          runMode: launchMode,
+          autopilotExecutor,
+          executorPolicy,
+          allowPlanningQuestions
+        },
+        planner: plannerRun
+          ? {
+              id: plannerRun.id,
+              requestedEngine: plannerRun.requestedEngine,
+              resolvedEngine: plannerRun.resolvedEngine,
+              status: plannerRun.status,
+              degraded: plannerRun.degraded,
+              reasonCode: plannerRun.reasonCode,
+              reasonDetail: plannerRun.reasonDetail,
+              planHash: plannerRun.planHash,
+              normalizedPlanHash: plannerRun.normalizedPlanHash,
+              commandPreview: plannerRun.commandPreview,
+              rawResponse: truncateForMetadata(plannerRun.rawResponse, 200_000),
+              durationMs: plannerRun.durationMs,
+              validationErrors: plannerRun.validationErrors,
+              attempts: plannerRun.attempts.map((attempt) => ({
+                id: attempt.id,
+                engine: attempt.engine,
+                status: attempt.status,
+                reasonCode: attempt.reasonCode,
+                detail: attempt.detail,
+                commandPreview: attempt.commandPreview,
+                rawResponse: truncateForMetadata(attempt.rawResponse, 50_000),
+                validationErrors: attempt.validationErrors,
+                createdAt: attempt.createdAt
+              }))
+            }
+          : {
+              id: null,
+              requestedEngine: args.plannerEngine ?? "auto",
+              resolvedEngine: "deterministic_fallback",
+              status: "fallback",
+              degraded: true,
+              reasonCode: "planner_unavailable",
+              reasonDetail: "Planner run was not provided. Used deterministic fallback planner.",
+              planHash: null,
+              normalizedPlanHash: null,
+              commandPreview: null,
+              rawResponse: null,
+              durationMs: null,
+              validationErrors: [],
+              attempts: []
+            },
+        plannerPlan: plannerPlan
+          ? {
+              schemaVersion: plannerPlan.schemaVersion,
+              missionSummary: plannerPlan.missionSummary,
+              assumptions: plannerPlan.assumptions,
+              risks: plannerPlan.risks,
+              stepCount: plannerPlan.steps.length,
+              handoffPolicy: plannerPlan.handoffPolicy
+            }
+          : null
+      };
 
       db.run(
         `
@@ -889,23 +1061,22 @@ export function createMissionService({
             completed_at
           ) values (?, ?, ?, ?, ?, 'queued', ?, ?, ?, null, null, ?, ?, ?, null, null)
         `,
-        [
-          id,
-          projectId,
-          laneId,
-          title,
+          [
+            id,
+            projectId,
+            laneId,
+            title,
           prompt,
-          priority,
-          executionMode,
-          targetMachineId,
-          JSON.stringify({ source: "manual", version: 1 }),
-          createdAt,
-          createdAt
-        ]
+            priority,
+            executionMode,
+            targetMachineId,
+          JSON.stringify(missionMetadata),
+            createdAt,
+            createdAt
+          ]
       );
 
-      const stepTitles = buildInitialStepTitles(prompt);
-      stepTitles.forEach((stepTitle, index) => {
+      stepsToPersist.forEach((step, index) => {
         const stepId = randomUUID();
         db.run(
           `
@@ -924,9 +1095,21 @@ export function createMissionService({
               updated_at,
               started_at,
               completed_at
-            ) values (?, ?, ?, ?, ?, null, 'placeholder', ?, 'pending', null, ?, ?, null, null)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, null, null)
           `,
-          [stepId, id, projectId, index, stepTitle, laneId, createdAt, createdAt]
+          [
+            stepId,
+            id,
+            projectId,
+            index,
+            step.title,
+            step.detail,
+            step.kind,
+            laneId,
+            JSON.stringify(step.metadata),
+            createdAt,
+            createdAt
+          ]
         );
       });
 
@@ -941,9 +1124,51 @@ export function createMissionService({
           priority,
           executionMode,
           targetMachineId,
-          preview: summarizePrompt(prompt)
+          preview: summarizePrompt(prompt),
+          plannerVersion: plannerRun ? "ade.missionPlanner.v2" : legacyPlan.plannerVersion,
+          plannerStrategy: plannerPlan?.missionSummary.strategy ?? legacyPlan.strategy,
+          plannerStepCount: stepsToPersist.length,
+          plannerKeywords: legacyPlan.keywords,
+          plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
+          plannerEngineResolved: plannerRun?.resolvedEngine ?? "deterministic_fallback",
+          plannerDegraded: plannerRun?.degraded ?? true,
+          executorPolicy
         }
       });
+
+      if (plannerRun) {
+        recordEvent({
+          missionId: id,
+          eventType: "mission_plan_generated",
+          actor: "system",
+          summary: plannerRun.degraded
+            ? `Planner fallback used (${plannerRun.reasonCode ?? "unknown_reason"}).`
+            : `Planner completed with ${plannerRun.resolvedEngine}.`,
+          payload: {
+            plannerRunId: plannerRun.id,
+            requestedEngine: plannerRun.requestedEngine,
+            resolvedEngine: plannerRun.resolvedEngine,
+            status: plannerRun.status,
+            degraded: plannerRun.degraded,
+            reasonCode: plannerRun.reasonCode,
+            reasonDetail: plannerRun.reasonDetail,
+            planHash: plannerRun.planHash,
+            normalizedPlanHash: plannerRun.normalizedPlanHash,
+            commandPreview: plannerRun.commandPreview,
+            rawResponse: truncateForMetadata(plannerRun.rawResponse, 8_000),
+            durationMs: plannerRun.durationMs,
+            validationErrors: plannerRun.validationErrors,
+            attempts: plannerRun.attempts.map((attempt) => ({
+              id: attempt.id,
+              engine: attempt.engine,
+              status: attempt.status,
+              reasonCode: attempt.reasonCode,
+              detail: attempt.detail,
+              createdAt: attempt.createdAt
+            }))
+          }
+        });
+      }
 
       emit({ missionId: id, reason: "created" });
       const detail = this.get(id);
@@ -1105,6 +1330,128 @@ export function createMissionService({
       const detail = this.get(missionId);
       if (!detail) throw new Error("Mission update failed");
       return detail;
+    },
+
+    delete(args: DeleteMissionArgs): void {
+      const missionId = args.missionId.trim();
+      if (!missionId.length) throw new Error("missionId is required.");
+      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+
+      const runRows = db.all<{ id: string }>(
+        `
+          select id
+          from orchestrator_runs
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      const runIds = runRows.map((row) => row.id);
+      const runPlaceholders = runIds.map(() => "?").join(", ");
+
+      // Delete dependents in FK-safe order because mission/orchestrator tables do not use cascade deletes.
+      db.run(
+        `
+          delete from mission_step_handoffs
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+
+      if (runIds.length) {
+        db.run(
+          `
+            delete from orchestrator_timeline_events
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_claims
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_context_snapshots
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_attempts
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_steps
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+      }
+
+      db.run(
+        `
+          delete from orchestrator_runs
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from mission_interventions
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from mission_artifacts
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from mission_events
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from mission_steps
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from missions
+          where project_id = ?
+            and id = ?
+        `,
+        [projectId, missionId]
+      );
+
+      emit({ missionId, reason: "deleted" });
     },
 
     updateStep(args: UpdateMissionStepArgs): MissionStep {

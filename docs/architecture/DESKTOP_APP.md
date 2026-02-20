@@ -50,7 +50,7 @@ Main-process responsibilities:
 - Mission lifecycle state and intervention tracking
 - Automations and job engine execution
 - Process/test runners
-- Hosted/BYOK integrations
+- AI integration (AgentExecutor interface, dual SDK, MCP server)
 
 ### Renderer Process (untrusted)
 
@@ -71,7 +71,7 @@ Core service groups:
 - Project/context bootstrapping: project service, config service, keybindings, terminal profiles, agent tools, onboarding, CI
 - Core execution: lane/session/pty/file/diff/git/process/test/history
 - Context and risk systems: pack service, conflict service, restack suggestion service, auto-rebase service, job engine
-- Integrations: hosted agent service, BYOK service, GitHub service, PR service + polling
+- AI Integration: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service, MCP server, GitHub service, PR service + polling
 - Automation: automation service + automation planner service
 - Missions: mission service (Phase 1 mission lifecycle CRUD + eventing)
 
@@ -86,7 +86,7 @@ Additional runtime loops:
 
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
-As of 2026-02-19, the contract includes `234` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github/hosted, automations/missions, layout/graph, processes/tests, and settings/config domains.
+As of 2026-02-19, the contract includes `234` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github, automations/missions, layout/graph, processes/tests, and settings/config domains.
 
 High-frequency/broadcast event channels include:
 
@@ -148,5 +148,6 @@ Desktop architecture is mature and production-oriented for current scope:
 - Broad typed IPC contract is implemented and actively used by renderer surfaces.
 - Security boundaries (`contextIsolation`, preload-only IPC surface) are enforced.
 - Head-change and session-end pipelines keep packs/conflicts/automations synchronized.
+- AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
 
 Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan.md`.

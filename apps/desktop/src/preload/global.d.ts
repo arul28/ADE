@@ -23,6 +23,7 @@ import type {
   CreateLaneArgs,
   CreateChildLaneArgs,
   DeleteLaneArgs,
+  DeleteMissionArgs,
   DiffChanges,
   DockLayout,
   GraphPersistedState,
@@ -195,6 +196,12 @@ import type {
   MissionStep,
   MissionSummary,
   MissionsEventPayload,
+  MissionPlannerAttempt,
+  MissionPlannerRun,
+  PlanMissionArgs,
+  PlanMissionResult,
+  ListPlannerRunsArgs,
+  GetPlannerAttemptArgs,
   GetOrchestratorGateReportArgs,
   GetOrchestratorRunGraphArgs,
   ListOrchestratorRunsArgs,
@@ -279,11 +286,17 @@ declare global {
         get: (missionId: string) => Promise<MissionDetail | null>;
         create: (args: CreateMissionArgs) => Promise<MissionDetail>;
         update: (args: UpdateMissionArgs) => Promise<MissionDetail>;
+        delete: (args: DeleteMissionArgs) => Promise<void>;
         updateStep: (args: UpdateMissionStepArgs) => Promise<MissionStep>;
         addArtifact: (args: AddMissionArtifactArgs) => Promise<MissionArtifact>;
         addIntervention: (args: AddMissionInterventionArgs) => Promise<MissionIntervention>;
         resolveIntervention: (args: ResolveMissionInterventionArgs) => Promise<MissionIntervention>;
         onEvent: (cb: (ev: MissionsEventPayload) => void) => () => void;
+      };
+      planner: {
+        planMission: (args: PlanMissionArgs) => Promise<PlanMissionResult>;
+        getRuns: (args?: ListPlannerRunsArgs) => Promise<MissionPlannerRun[]>;
+        getAttempt: (args: GetPlannerAttemptArgs) => Promise<MissionPlannerAttempt | null>;
       };
       orchestrator: {
         listRuns: (args?: ListOrchestratorRunsArgs) => Promise<OrchestratorRun[]>;

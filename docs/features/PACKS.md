@@ -66,7 +66,7 @@ facts (file changes, diff stats, test results) and a **narrative section** with
 human-readable summaries (initially template-based, eventually LLM-generated).
 
 **Current status**: Core pack functionality (generation, storage, display, refresh)
-is **implemented and working**. LLM-powered narratives, pack sync to hosted mirror,
+is **implemented and working**. AI-powered narratives via Vercel AI SDK
 and pack privacy controls (redaction) are **implemented** (Phase 6). Packs V2 features
 (checkpoints, versioning, event logging) are **implemented** (Phase 8). Pack retention
 and cleanup policy is **implemented** (Phase 7/8).
@@ -185,36 +185,9 @@ pack content with interactive features.
 
 - **Two clear pack scopes**: A toggle switches between the Project pack and the selected Lane pack.
 - **Refresh button**: Triggers deterministic pack regeneration (always available).
-- **AI details button**: Re-runs AI pack details on demand (lane pack only). AI details also refresh automatically in the background after deterministic refresh when Hosted/BYOK is enabled.
+- **AI details button**: Re-runs AI pack details on demand (lane pack only). AI details also refresh automatically in the background after deterministic refresh when a subscription provider is available.
 - **Activity feed**: Human-readable pack events (refreshes, AI updates, failures) with deep links into the History tab.
 - **Versions + diff**: Immutable snapshots with a built-in diff viewer.
-
----
-
-## Hosted Context Delivery (What the Cloud Jobs Actually Consume)
-
-Hosted jobs (narratives, conflict proposals, PR drafts) consume **bounded exports** (for example `LaneExportStandard`) by default.
-
-There are two delivery modes:
-
-1. **Inline**: the export(s) are embedded directly in the job payload `params` (works without mirror sync).
-2. **Mirror-ref**: for large/conflict jobs or when configured, ADE uploads the canonical JSON `params` as a content-addressed blob and submits a small `__adeContextRef` plus a reduced `__adeContextInline` fallback.
-
-This is intentionally deterministic and observable:
-
-- Pack events like `narrative_requested` record the delivery mode and reason code.
-- Settings exposes the hosted context delivery mode (Auto/Inline/Mirror Preferred).
-
-### Expected Behavior Matrix
-
-| Scenario | Mirror Sync | Hosted Job Context | Notes |
-|----------|------------|-------------------|------|
-| New lane with active session | optional | inline bounded export | Works even if mirror is disabled |
-| Stale mirror (no recent sync) | stale | inline bounded export | Jobs do not silently depend on mirror freshness |
-| Mirror disabled / no remoteProjectId | no | inline bounded export | Hosted jobs do not depend on mirror |
-| Conflict-heavy lane | optional | mirror-ref preferred (auto) | Inline fallback is reduced to keep payload compact |
-| Mirror-ref fetch fails (rare) | any | inline fallback | Worker emits `job.context_ref_failed` and proceeds with reduced fallback |
-| Periodic handoff via delta | optional | delta digest + bounded export | Deltas remain compact/deterministic |
 
 ### Pack Freshness Indicator
 
@@ -293,7 +266,7 @@ session handling logic.
   "headSha": "abc12345",
   "deterministicUpdatedAt": "2026-02-14T12:00:00Z",
   "narrativeUpdatedAt": null,
-  "providerMode": "hosted"
+  "providerMode": "subscription"
 }
 ```
 
@@ -352,7 +325,7 @@ AI narrative not yet generated.
 <!-- ADE_NARRATIVE_END -->
 
 ---
-*Updated: 2026-02-14T12:00:00Z | Trigger: session_end | Provider: hosted | [View history →](ade://packs/versions/lane:... )*
+*Updated: 2026-02-14T12:00:00Z | Trigger: session_end | Provider: subscription | [View history →](ade://packs/versions/lane:... )*
 ```
 
 Notes:
@@ -384,11 +357,7 @@ Project Pack Refreshed (if stale)
   │
   ▼
 Conflict Prediction Triggered
-  │  - Uses updated pack data for context
-  │
-  ▼
-Hosted Mirror Synced (if enabled)
-    - Pack content pushed to cloud for hosted agent access
+    - Uses updated pack data for context
 ```
 
 The pipeline is orchestrated by the job engine, which ensures:
@@ -429,7 +398,8 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `lanePackTemplate` | **Exists, implemented** | Renders deterministic lane pack markdown from raw data. Produces structured markdown with machine-readable header, all marker-bounded sections (intent, task spec, todos, narrative), sessions table with session highlights (summarySource, summaryConfidence, omission tags), validation, errors, key files, and audit footer. |
 | `transcriptInsights` | **Exists, implemented** | Parses high-signal terminal output for structured summaries. Returns `summarySource` (`explicit_final_block` or `heuristic_tail`), `summaryConfidence` (`high` or `medium`), and deterministic omission tags for clipped extractions. |
 | `redaction` | **Exists, implemented** | Secret redaction for exports. `redactSecrets()` strips API keys, tokens, private keys, GitHub PATs. `redactSecretsDeep()` recursively scans complex objects. Applied to all outbound AI payloads. |
-| `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. After deterministic refresh, automatically generates AI narratives when Hosted/BYOK is configured. |
+| `aiIntegrationService` | **Exists, implemented** | Generates AI narratives via Vercel AI SDK using subscription-powered CLI tools. Called by the job engine after deterministic pack refresh. |
+| `jobEngine` | **Exists, implemented** | Queues pack refresh jobs, deduplicates by lane, manages execution order. After deterministic refresh, automatically generates AI narratives when a subscription provider is available. |
 | `sessionService` | Exists | Provides session delta data (commands, exit codes, failure lines) for pack generation. |
 | `gitService` | Exists | Provides git diff stats, commit history, and file change information for deterministic sections. |
 | `operationService` | Exists | Records pack refresh operations in the history timeline. |
@@ -453,8 +423,8 @@ When a user adds an existing git project to ADE, packs need to be bootstrapped f
 | `ade.packs.refreshConflictPack` | `(args: { laneId: string; peerLaneId?: string \| null }) => PackSummary` | Refresh a conflict pack |
 | `ade.packs.savePlanPack` | `(args: { laneId: string; body: string }) => PackSummary` | Save/update a plan pack |
 | `ade.packs.refreshMissionPack` | `(args: { missionId: string; reason: string; runId?: string \| null }) => PackSummary` | Refresh a mission pack |
-| `ade.packs.generateNarrative` | `(laneId: string) => PackSummary` | Request an AI narrative update (Hosted/BYOK) |
-| `ade.packs.applyHostedNarrative` | `(args: { laneId: string; narrative: string; jobId?: string }) => PackSummary` | Apply an AI narrative result to a lane pack |
+| `ade.packs.generateNarrative` | `(laneId: string) => PackSummary` | Request an AI narrative update via Vercel AI SDK |
+| `ade.packs.applyNarrative` | `(args: { laneId: string; narrative: string; jobId?: string }) => PackSummary` | Apply an AI narrative result to a lane pack |
 | `ade.packs.updateNarrative` | `(args: { packKey: string; narrative: string }) => PackSummary` | Manual narrative edit (marker-based) |
 | `ade.packs.listVersions` | `(args: { packKey: string; limit?: number }) => PackVersionSummary[]` | List pack versions |
 | `ade.packs.getVersion` | `(versionId: string) => PackVersion` | Fetch a specific version |
@@ -522,18 +492,13 @@ Narrative updates are **optional** and provider-driven, but packs remain fully u
 - Deterministic packs refresh normally.
 - Narrative content is a placeholder and is preserved between `ADE_NARRATIVE_START/END`.
 
-**Hosted / BYOK (AI enabled)**:
+**Subscription Mode (AI enabled via Vercel AI SDK)**:
 - AI jobs consume **bounded exports**, not raw lane pack markdown:
   - Narrative generation uses `LaneExportStandard` by default.
-- Exports are **redacted** before leaving the local machine.
+- Exports are **redacted** before being consumed by the AI integration service.
 - Narrative updates are applied via **marker-based replacement** between:
   - `<!-- ADE_NARRATIVE_START -->` / `<!-- ADE_NARRATIVE_END -->`
   - This preserves any footer/metadata/sections outside the narrative region.
-
-Hosted is a remote gateway and may be self-hosted by setting:
-- `providers.hosted.apiBaseUrl` in `.ade/local.yaml`
-
-Diagnostics should reference `apiBaseUrl` and `remoteProjectId` (no AWS-specific assumptions).
 
 ---
 
@@ -764,15 +729,14 @@ Implemented (Phase 8).
 | ID | Task | Status |
 |----|------|--------|
 | PACK-020 | Narrative editing (user override of auto-generated content) | DONE — Phase 8 |
-| PACK-021 | LLM-powered narrative generation (hosted agent integration) | DONE — Phase 6 (`hostedAgentService.requestLaneNarrative()`, cloud `NarrativeGeneration` job worker) |
+| PACK-021 | LLM-powered narrative generation (AI integration via Vercel AI SDK) | DONE — Phase 6 (`aiIntegrationService.generateNarrative()`, local narrative generation via subscription CLI tools) |
 
 ### Operations & Management
 
 | ID | Task | Status |
 |----|------|--------|
-| PACK-023 | Pack sync to hosted mirror (cloud storage for agent access) | DONE — Phase 6 (`hostedAgentService.syncPacks()`, uploaded via mirror sync pipeline) |
 | PACK-024 | Pack retention and cleanup policy (age-based, count-based) | DONE — Phase 7 (implemented in pack service) |
-| PACK-025 | Pack privacy controls (redaction rules for sensitive content) | DONE — Phase 6 (`redactSecrets()` in desktop + cloud, exclude patterns for `.env`/creds/keys) |
+| PACK-025 | Pack privacy controls (redaction rules for sensitive content) | DONE — Phase 6 (`redactSecrets()` in desktop, exclude patterns for `.env`/creds/keys) |
 | PACK-026 | Token-budgeted pack exports (Lite/Standard/Deep) for orchestrators + AI jobs | DONE — bounded exports via `ade.packs.getLaneExport/getProjectExport/getConflictExport` |
 
 ### Initial Pack Generation
@@ -818,7 +782,7 @@ type PackExport = {
 };
 ```
 
-**Security**: All exports are passed through `redactSecrets()` before leaving the local machine. This strips API keys, tokens, private keys, and GitHub PATs regardless of provider mode.
+**Security**: All exports are passed through `redactSecrets()` before being consumed by AI services. This strips API keys, tokens, private keys, and GitHub PATs regardless of provider mode.
 
 **Machine-Readable Header**: Every export includes a JSON code fence at the top with schema `ade.context.v1`, containing identity, scope, git snapshot, version metadata, and provider info. Consumers can parse the header programmatically for routing and auditing.
 
@@ -857,7 +821,7 @@ Orchestrators and agents can consume pack changes incrementally using the delta 
 4. For agent context:
    - Get bounded export: ade.packs.getLaneExport({ laneId, level: "lite" })
    - Secrets are redacted automatically
-   - Send to agent
+   - Send to AI integration service
 ```
 
 **Why bounded exports instead of full packs?** Agents consume token-budgeted exports, not raw pack markdown. This keeps context windows clean, enables incremental updates via diffs, and allows Lite/Standard by default with Deep on-demand.
@@ -874,27 +838,25 @@ Orchestrators and agents can consume pack changes incrementally using the delta 
 
 ### Auto-Narrative Pipeline
 
-When a Hosted or BYOK provider is configured, the job engine automatically generates AI narratives after every deterministic pack refresh:
+When a subscription provider is available, the job engine automatically generates AI narratives after every deterministic pack refresh:
 
 ```
 Deterministic Pack Refresh Complete
   ↓
-IF providerMode = "hosted" or "byok":
+IF subscription providers available:
   ↓
   Build LaneExportStandard (~2,800 tokens)
     ↓
   Redact all secrets
     ↓
-  Submit AI job (narrative_requested event)
-    ↓
-  Poll for completion
+  Call aiIntegrationService.generateNarrative()
     ↓
   Apply narrative via marker-based replacement
   (between ADE_NARRATIVE_START / ADE_NARRATIVE_END)
     ↓
   Create new pack version + narrative_update event
     ↓
-ELSE IF providerMode = "guest":
+ELSE (guest mode):
   Narrative stays as template placeholder
 ```
 
@@ -902,7 +864,7 @@ Narrative metadata is recorded in the pack event payload: `providerMode`, `jobId
 
 ### Current State
 
-> **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a Hosted or BYOK provider is configured and available, narrative updates can be applied and are recorded as pack events and immutable version snapshots. Bounded exports (Lite/Standard/Deep) are available for orchestrator and AI consumption.
+> **Note**: The pack service generates deterministic content (diff stats, file lists, session summaries) with template-based narratives. This is fully functional for local workflows. When a subscription provider is available via Vercel AI SDK, narrative updates are generated locally and recorded as pack events and immutable version snapshots. Bounded exports (Lite/Standard/Deep) are available for orchestrator and AI consumption.
 
 ---
 
@@ -948,7 +910,6 @@ Lane manifests now include conflict freshness signals:
 ### UI connections
 
 - Lane inspector `Packs` view shows refreshed exports and omission warnings.
-- Settings `Hosted` view surfaces mirror sync/cleanup status and context fallback counters.
 
 ---
 
@@ -995,6 +956,7 @@ Orchestrator context snapshots now persist richer deterministic provenance for a
 - Step-aware context selection:
   - Lane/project export levels remain bounded and profile-driven.
   - Narrative remains excluded by default unless profile/policy opts in.
+  - Mission planner metadata (`dependencyIndices`, `joinPolicy`, `doneCriteria`) is now carried through mission steps/handoffs and visible from runtime surfaces.
 - Docs policy:
   - Default is digest refs for PRD/architecture docs.
   - Full body inclusion is explicit per-step policy and always byte-bounded with truncation metadata.
@@ -1009,6 +971,7 @@ Current implementation status:
 - Shipped:
   - deterministic snapshot provenance and timeline persistence,
   - bounded docs policy + truncation audit metadata,
-  - gate report persistence/readout.
+  - gate report persistence/readout,
+  - tracked-session exit reconciliation into orchestrator attempt lifecycle.
 - Scaffolded:
   - executor-backed external provider runs (tracked-session scaffolds with explicit adapter state markers).

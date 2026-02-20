@@ -31,14 +31,14 @@ The Conflicts feature surfaces integration risk early by predicting merge confli
 before they happen. Rather than discovering conflicts at merge time — when the cost
 of resolution is highest — ADE continuously monitors active lanes for overlapping
 changes and provides proactive warnings, pairwise risk analysis, merge simulation,
-and eventually hosted-agent-powered resolution proposals.
+and AI-powered resolution proposals via the agent SDKs.
 
 This feature transforms conflict management from a reactive, painful process into a
 proactive, guided workflow. Developers can see at a glance which lanes are safe to
 merge, which ones are drifting from the base branch, and which pairs of lanes are
 on a collision course.
 
-**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via hosted agent (diff preview, apply, undo) are **implemented** (Phase 6). External CLI resolution (Codex/Claude), active merge/rebase conflict management, restack suggestion integration, merge-plan workflows, and integration lane creation are **implemented** (Phase 8).
+**Current status**: Core conflict prediction, risk matrix, merge simulation, and Conflicts tab UI are **implemented and working** (Phase 5). Resolution proposals via AI agent SDKs (diff preview, apply, undo) are **implemented** (Phase 6). External CLI resolution (Codex/Claude), active merge/rebase conflict management, restack suggestion integration, merge-plan workflows, and integration lane creation are **implemented** (Phase 8).
 
 ### Roadmap Alignment (Final Plan)
 
@@ -85,20 +85,57 @@ list of conflicting files, or a full diff of the merged state.
 
 ### Resolution Proposal
 
-An LLM-generated suggested fix for a predicted or active conflict. The hosted
-agent (or BYOK provider) receives **bounded context exports** (not raw pack dumps)
-and produces a resolution diff with a confidence score.
+An AI-generated suggested fix for a predicted or active conflict. The AI agent (via AgentExecutor) receives **bounded context exports** (not raw pack dumps) and produces a resolution diff with a confidence score.
 
 Context inputs (default):
 - `LaneExportLite` for the lane
 - `LaneExportLite` for the peer lane (when peer conflicts are being resolved)
 - `ConflictExportStandard` for the specific conflict pack
 
-All outbound AI payloads must be token-budgeted and redacted.
+All outbound AI payloads are token-budgeted and redacted.
 
-Hosted context delivery note:
+#### User Configuration Options
 
-- For conflict jobs, ADE may deliver context by mirror-ref (content-addressed `__adeContextRef`) with a reduced inline fallback. This prevents large diffs from silently breaking hosted job submissions while keeping behavior deterministic and observable.
+When a user clicks "Resolve with AI", ADE presents a configuration dialog before dispatching the AI request. Users control:
+
+**Where to apply changes**:
+| Option | Description |
+|--------|-------------|
+| Target branch | Apply resolution changes in the target (destination) branch |
+| Source branch | Apply resolution changes in the source branch |
+| AI decides | Let the AI determine the optimal location based on change analysis |
+
+**Post-resolution action**:
+| Option | Description |
+|--------|-------------|
+| Unstaged | Apply changes but leave them unstaged — user reviews in git actions |
+| Staged | Apply and stage changes — user reviews before committing |
+| Commit | Apply, stage, and commit with an AI-generated commit message |
+
+**PR behavior** (when no PR is already open):
+| Option | Description |
+|--------|-------------|
+| Do nothing | Just apply the resolution, user handles PR manually |
+| Open PR | After committing, automatically open a PR |
+| Add to existing PR | If a PR exists for this lane, push the resolution commit to it |
+
+**AI autonomy level**:
+| Option | Description |
+|--------|-------------|
+| Propose only | AI generates a proposal — user must review and explicitly apply |
+| Auto-apply if confident | AI auto-applies if confidence score exceeds user-set threshold (default: 0.85) |
+
+These configuration options persist to `.ade/local.yaml` under `ai.conflict_resolution` and are remembered across sessions:
+
+```yaml
+ai:
+  conflict_resolution:
+    change_target: "ai_decides"      # target | source | ai_decides
+    post_resolution: "staged"        # unstaged | staged | commit
+    pr_behavior: "do_nothing"        # do_nothing | open_pr | add_to_existing
+    auto_apply_threshold: 0.85       # 0.0-1.0, only used when autonomy = auto_apply
+    autonomy: "propose_only"         # propose_only | auto_apply
+```
 
 ### Conflict Pack
 
@@ -221,13 +258,16 @@ The resolution pane provides three resolution paths:
 - If conflicts occur, the plan pauses — user resolves and clicks Continue
 - Integration lane creation: create a child lane from a base lane to use as the merge target
 
-**2. AI resolution proposals (Hosted/BYOK)**:
+**2. AI resolution proposals (via AgentExecutor)**:
+- **Configure**: When user clicks "Resolve with AI", a configuration panel appears with options for: change target (target branch / source branch / AI decides), post-resolution action (unstaged / staged / commit), PR behavior (do nothing / open PR / add to existing), and AI autonomy level (propose only / auto-apply if confident). These options persist across sessions.
 - Prepare proposal: refreshes packs, builds bounded context (`LaneExportLite` + `ConflictExportStandard`), shows preview with context digest, file count, and token budget
-- Send proposal: submits to hosted agent or BYOK provider
-- Each proposal shows: confidence %, source, explanation, and diff patch
-- Apply mode: unstaged / staged / commit (with custom commit message)
+- Send proposal: dispatches to `aiIntegrationService` via `AgentExecutor.execute()` — one-shot, no multi-turn conversation
+- Each proposal shows: confidence %, provider used, model used, explanation, and diff patch
+- Apply mode determined by user configuration: unstaged / staged / commit (with AI-generated or custom commit message)
+- If autonomy is set to "auto-apply" and confidence exceeds threshold, apply happens automatically with notification
 - "Apply + Continue" option: applies patch then auto-continues merge/rebase if no conflicts remain
 - Undo: reverse-applies the patch via `git apply -R`
+- Post-apply PR behavior: if configured, opens PR or pushes to existing PR after commit
 
 **3. External CLI resolver (Codex/Claude)**:
 - One-click buttons to run external CLI (Codex or Claude) with deterministic prompt + context refs
@@ -257,10 +297,12 @@ The typical workflow for managing conflicts in ADE:
    between any two lanes (or lane and base) to see the exact outcome —
    including conflict markers for conflicting files.
 
-5. **Resolution**: For active or predicted conflicts, the developer can request
-   a resolution proposal from the hosted agent (or BYOK). The provider receives
-   bounded exports (`LaneExportLite` + `ConflictExportStandard`) and produces a
-   resolution diff.
+5. **Resolution**: For active or predicted conflicts, the developer clicks "Resolve with AI"
+   and configures resolution options (change target, post-resolution action, PR behavior,
+   AI autonomy level). ADE dispatches a one-shot request to the AI integration service
+   via `AgentExecutor.execute()`. The provider receives bounded exports (`LaneExportLite` +
+   `ConflictExportStandard`) and produces a resolution diff. The entire interaction is
+   one-shot — no back-and-forth conversation.
 
 6. **Apply**: The developer previews the proposal diff, optionally edits it,
    and applies it. The application is recorded as an operation in the history
@@ -284,15 +326,19 @@ The typical workflow for managing conflicts in ADE:
 | `operationService` | Exists | Records resolution applications as operations for history/undo |
 | `packService` | Exists | Generates conflict packs and bounded exports (`LaneExport*`, `ConflictExport*`) used for AI proposal jobs |
 
-**Hosted / BYOK integration** (implemented):
+**AI resolution integration** (via AgentExecutor):
 
-- Job type: `ProposeConflictResolution`
+- Dispatch: `aiIntegrationService.requestConflictProposal()` routes through `AgentExecutor.execute()`
+- Default provider: Claude CLI with `sonnet` model, `read-only` permissions, 60s timeout
 - Input: bounded exports (token-budgeted):
   - `LaneExportLite` (lane)
   - `LaneExportLite` (peer lane, optional)
   - `ConflictExportStandard`
-- Output: Resolution diff with confidence score and explanation
+  - User configuration (change target, post-resolution action, PR behavior)
+- Output: Resolution diff with confidence score, explanation, and change target recommendation
+- Execution: One-shot — prompt + context in, result out, session ends
 - Runs asynchronously; result stored as a `conflict_proposal` record
+- Logged to `ai_usage_log` table for usage tracking
 
 ### IPC Channels
 
@@ -397,7 +443,7 @@ conflict_predictions (
 conflict_proposals (
   id TEXT PRIMARY KEY,
   prediction_id TEXT NOT NULL,     -- FK to conflict_predictions
-  source TEXT NOT NULL,            -- 'hosted' | 'local'
+  source TEXT NOT NULL,            -- 'sdk' | 'external_cli' | 'deterministic'
   confidence REAL,                 -- 0.0 to 1.0
   explanation TEXT,                -- Human-readable explanation of the approach
   diff_patch TEXT,                 -- The resolution as a unified diff patch
@@ -458,7 +504,7 @@ interface MergeSimulationResult {
 interface ConflictProposal {
   id: string;
   predictionId: string;
-  source: 'hosted' | 'local';
+  source: 'sdk' | 'external_cli' | 'deterministic';
   confidence: number;
   explanation: string;
   diffPatch: string;
@@ -527,11 +573,14 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 | ID | Task | Status |
 |----|------|--------|
 | CONF-016 | Conflict pack generation (context bundle for agent) | DONE (conflict pack generation is implemented; pack content is generated) |
-| CONF-017 | Hosted agent proposal integration (ProposeConflictResolution job) | DONE — Phase 6 (`hostedAgentService.requestConflictProposal()`, `conflictService.requestProposal()`) |
+| CONF-017 | Hosted agent proposal integration (ProposeConflictResolution job) | DONE — Phase 6 (`aiIntegrationService.requestConflictProposal() via AgentExecutor`, `conflictService.requestProposal()`) |
 | CONF-018 | Proposal diff preview in UI | DONE — Phase 6 (ConflictsPage right panel shows diff patch preview) |
 | CONF-019 | Proposal apply with operation record | DONE — Phase 6 (`conflictService.applyProposal()` with `git apply --3way`, operation tracking) |
 | CONF-020 | Proposal confidence scoring display | DONE — Phase 6 (confidence percentage shown in ConflictsPage proposal list) |
 | CONF-021 | Proposal undo via operation timeline | DONE — Phase 6 (`conflictService.undoProposal()` with `git apply -R`, operation tracking) |
+| CONF-039 | Conflict resolution configuration dialog | User-facing config panel: change target, post-resolution action, PR behavior, AI autonomy level. Persisted to `local.yaml` under `ai.conflict_resolution` | TODO |
+| CONF-040 | Auto-apply with confidence threshold | When autonomy is "auto_apply" and confidence > threshold, automatically apply resolution with user notification | TODO |
+| CONF-041 | Post-resolution PR behavior | After committing resolution, optionally open PR or push to existing PR based on user config | TODO |
 
 ### Advanced Features
 
@@ -566,7 +615,7 @@ Core prediction, UI, simulation, and resolution proposals are **DONE** (Phases 5
 
 **Phase 5 (Conflict Detection) completed** as part of the `codex/ade-phase-4-5` branch merge. The core conflict engine (CONF-001 through CONF-016) and batch assessment (CONF-023) are fully operational.
 
-**Phase 6 (Hosted Agent) completed**: CONF-017 through CONF-021 (LLM-powered resolution proposals) are fully implemented. The desktop hosted agent service submits `ProposeConflictResolution` jobs to the cloud, polls for results, and presents proposals in the Conflicts tab with diff preview, confidence scoring, apply (with operation record), and undo capabilities.
+**Phase 6 (AI Resolution Proposals) completed**: CONF-017 through CONF-021 (AI-powered resolution proposals) are fully implemented. AI integration service generates conflict proposals locally via AgentExecutor (Claude or Codex CLI). Proposals are generated on-device via one-shot SDK calls, presented in the Conflicts tab with diff preview, confidence scoring, user configuration options (change target, post-resolution action, PR behavior, autonomy level), apply (with operation record), and undo capabilities.
 
 **Phase 8 (Active Conflict Management) completed**: CONF-025 through CONF-038. Active merge/rebase conflict detection and management, external CLI resolution (Codex/Claude) with context validation and commit workflow, merge-plan sequential merge UI, integration lane creation, restack suggestions, PaneTilingLayout, proposal apply modes, batch progress tracking, and risk matrix animations are all operational.
 

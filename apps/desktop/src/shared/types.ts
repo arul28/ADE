@@ -2290,6 +2290,127 @@ export type MissionInterventionType =
 
 export type MissionInterventionStatus = "open" | "resolved" | "dismissed";
 
+export type MissionPlannerEngine = "auto" | "claude_cli" | "codex_cli" | "gemini_cli" | "hosted_ade";
+
+export type MissionExecutorPolicy = "codex" | "claude" | "both";
+
+export type MissionPlannerResolvedEngine =
+  | "claude_cli"
+  | "codex_cli"
+  | "gemini_cli"
+  | "hosted_ade"
+  | "deterministic_fallback";
+
+export type MissionPlannerReasonCode =
+  | "planner_unavailable"
+  | "planner_timeout"
+  | "planner_parse_error"
+  | "planner_schema_error"
+  | "planner_validation_error"
+  | "planner_execution_error";
+
+export type PlannerMissionDomain = "backend" | "frontend" | "infra" | "testing" | "docs" | "release" | "mixed";
+
+export type PlannerMissionComplexity = "low" | "medium" | "high";
+
+export type PlannerMissionStrategy = "sequential" | "parallel-lite" | "parallel-first";
+
+export type PlannerTaskType = "analysis" | "code" | "integration" | "test" | "review" | "merge" | "deploy" | "docs";
+
+export type PlannerExecutorHint = "claude" | "codex" | "gemini" | "hosted" | "either";
+
+export type PlannerPreferredScope = "lane" | "file" | "session" | "global";
+
+export type PlannerContextProfileRequirement = "deterministic" | "deterministic_plus_narrative";
+
+export type PlannerClaimLane = "analysis" | "backend" | "frontend" | "integration" | "conflict";
+
+export type PlannerJoinPolicy = "all_success" | "any_success" | "quorum";
+
+export type PlannerStepPlan = {
+  stepId: string;
+  name: string;
+  description: string;
+  taskType: PlannerTaskType;
+  executorHint: PlannerExecutorHint;
+  preferredScope: PlannerPreferredScope;
+  requiresContextProfiles: PlannerContextProfileRequirement[];
+  dependencies: string[];
+  joinPolicy?: PlannerJoinPolicy;
+  joinQuorum?: number;
+  artifactHints: string[];
+  claimPolicy: {
+    lanes: PlannerClaimLane[];
+    filePatterns?: string[];
+    envKeys?: string[];
+    exclusive?: boolean;
+  };
+  timeoutMs?: number;
+  maxAttempts: number;
+  retryPolicy: {
+    baseMs: number;
+    maxMs: number;
+    multiplier: number;
+    maxRetries: number;
+  };
+  outputContract: {
+    expectedSignals: string[];
+    handoffTo?: string[];
+    completionCriteria: string;
+  };
+};
+
+export type PlannerPlan = {
+  schemaVersion: "1.0";
+  missionSummary: {
+    title: string;
+    objective: string;
+    domain: PlannerMissionDomain;
+    complexity: PlannerMissionComplexity;
+    strategy: PlannerMissionStrategy;
+    parallelismCap: number;
+  };
+  assumptions: string[];
+  risks: string[];
+  steps: PlannerStepPlan[];
+  handoffPolicy: {
+    externalConflictDefault: "intervention" | "auto_internal_retry" | "manual_merge_step";
+  };
+};
+
+export type MissionPlannerAttemptStatus = "succeeded" | "failed";
+
+export type MissionPlannerAttempt = {
+  id: string;
+  engine: MissionPlannerResolvedEngine;
+  status: MissionPlannerAttemptStatus;
+  reasonCode: MissionPlannerReasonCode | null;
+  detail: string | null;
+  commandPreview: string | null;
+  rawResponse: string | null;
+  validationErrors: string[];
+  createdAt: string;
+};
+
+export type MissionPlannerRun = {
+  id: string;
+  missionId: string;
+  requestedEngine: MissionPlannerEngine;
+  resolvedEngine: MissionPlannerResolvedEngine;
+  status: "succeeded" | "fallback";
+  degraded: boolean;
+  reasonCode: MissionPlannerReasonCode | null;
+  reasonDetail: string | null;
+  planHash: string;
+  normalizedPlanHash: string;
+  commandPreview: string | null;
+  rawResponse: string | null;
+  createdAt: string;
+  durationMs: number;
+  validationErrors: string[];
+  attempts: MissionPlannerAttempt[];
+};
+
 export type MissionSummary = {
   id: string;
   title: string;
@@ -2388,6 +2509,46 @@ export type CreateMissionArgs = {
   priority?: MissionPriority;
   executionMode?: MissionExecutionMode;
   targetMachineId?: string | null;
+  plannerEngine?: MissionPlannerEngine;
+  executorPolicy?: MissionExecutorPolicy;
+  planningTimeoutMs?: number;
+  allowPlanningQuestions?: boolean;
+  autostart?: boolean;
+  launchMode?: "autopilot" | "manual";
+  autopilotExecutor?: OrchestratorExecutorKind;
+};
+
+export type PlanMissionArgs = {
+  missionId?: string;
+  title?: string;
+  prompt: string;
+  laneId?: string | null;
+  plannerEngine?: MissionPlannerEngine;
+  executorPolicy?: MissionExecutorPolicy;
+  planningTimeoutMs?: number;
+  allowPlanningQuestions?: boolean;
+};
+
+export type PlanMissionResult = {
+  plan: PlannerPlan;
+  run: MissionPlannerRun;
+  plannedSteps: Array<{
+    index: number;
+    title: string;
+    detail: string;
+    kind: string;
+    metadata: Record<string, unknown>;
+  }>;
+};
+
+export type ListPlannerRunsArgs = {
+  missionId?: string;
+  limit?: number;
+};
+
+export type GetPlannerAttemptArgs = {
+  plannerRunId: string;
+  attemptId: string;
 };
 
 export type UpdateMissionArgs = {
@@ -2435,6 +2596,10 @@ export type ResolveMissionInterventionArgs = {
   interventionId: string;
   status: Exclude<MissionInterventionStatus, "open">;
   note?: string | null;
+};
+
+export type DeleteMissionArgs = {
+  missionId: string;
 };
 
 export type MissionsEventPayload = {
@@ -2738,6 +2903,8 @@ export type StartOrchestratorRunFromMissionArgs = {
   contextProfile?: OrchestratorContextProfileId;
   schedulerState?: string;
   metadata?: Record<string, unknown> | null;
+  runMode?: "autopilot" | "manual";
+  autopilotOwnerId?: string;
   defaultExecutorKind?: OrchestratorExecutorKind;
   defaultRetryLimit?: number;
 };

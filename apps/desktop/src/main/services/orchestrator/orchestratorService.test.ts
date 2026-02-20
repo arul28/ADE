@@ -492,6 +492,73 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("maps mission planner metadata into deterministic run graph and autopilot metadata", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      fixture.db.run(
+        `
+          insert into mission_steps(
+            id,
+            mission_id,
+            project_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values
+            ('mstep-1', ?, ?, 0, 'Branch A', null, 'implementation', ?, 'pending', '{"stepType":"implementation"}', ?, ?, null, null),
+            ('mstep-2', ?, ?, 1, 'Branch B', null, 'implementation', ?, 'pending', '{"stepType":"implementation"}', ?, ?, null, null),
+            ('mstep-3', ?, ?, 2, 'Join', null, 'integration', ?, 'pending', '{"stepType":"integration","dependencyIndices":[0,1],"joinPolicy":"quorum","quorumCount":1}', ?, ?, null, null)
+        `,
+        [
+          fixture.missionId,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now,
+          fixture.missionId,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now,
+          fixture.missionId,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now
+        ]
+      );
+
+      const started = fixture.service.startRunFromMission({
+        missionId: fixture.missionId,
+        runMode: "autopilot",
+        defaultExecutorKind: "codex"
+      });
+
+      const run = fixture.service.listRuns({ missionId: fixture.missionId })[0];
+      expect(run?.metadata?.runMode).toBe("autopilot");
+      const autopilot = run?.metadata?.autopilot as Record<string, unknown> | undefined;
+      expect(autopilot?.enabled).toBe(true);
+      expect(autopilot?.executorKind).toBe("codex");
+
+      const steps = fixture.service.listSteps(started.run.id);
+      const join = steps.find((step) => step.missionStepId === "mstep-3");
+      expect(join?.joinPolicy).toBe("quorum");
+      expect(join?.quorumCount).toBe(1);
+      expect(join?.dependencyStepIds.length).toBe(2);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("applies deterministic retry/backoff scheduling before retrying", async () => {
     const fixture = await createFixture();
     try {
@@ -603,6 +670,67 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("reconciles tracked session exits and auto-advances autopilot", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "orchestrator-autopilot"
+          }
+        },
+        steps: [
+          {
+            stepKey: "first",
+            title: "First",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "codex"
+          },
+          {
+            stepKey: "second",
+            title: "Second",
+            stepIndex: 1,
+            dependencyStepKeys: ["first"],
+            laneId: fixture.laneId,
+            executorKind: "codex"
+          }
+        ]
+      });
+
+      const firstStepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!firstStepId) throw new Error("Expected first step");
+      const firstAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: firstStepId,
+        ownerId: "operator"
+      });
+      expect(firstAttempt?.status).toBe("running");
+      expect(firstAttempt?.executorSessionId).toBeTruthy();
+      if (!firstAttempt?.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: firstAttempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id });
+      const firstAfter = after.find((attempt) => attempt.id === firstAttempt.id);
+      expect(firstAfter?.status).toBe("succeeded");
+
+      const secondStepId = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "second")?.id;
+      const secondAttempt = after.find((attempt) => attempt.stepId === secondStepId);
+      expect(secondAttempt?.status).toBe("running");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("records docs truncation and context provenance metadata in snapshots", async () => {
     const fixture = await createFixture();
     try {
@@ -638,6 +766,44 @@ describe("orchestratorService", () => {
       expect(snapshot?.cursor.docsMode).toBe("full_body");
       expect((snapshot?.cursor.docsTruncatedCount ?? 0) >= 1).toBe(true);
       expect((snapshot?.cursor.docsConsumedBytes ?? 0) <= 64).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("bootstraps lane pack refresh when context snapshot sees empty lane pack", async () => {
+    let laneExportCalls = 0;
+    let laneRefreshCalls = 0;
+    const fixture = await createFixture({
+      packService: {
+        getLaneExport: async ({ laneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) => {
+          laneExportCalls += 1;
+          if (laneExportCalls === 1) {
+            throw new Error("Lane pack is empty. Refresh deterministic packs first.");
+          }
+          return buildExport(`lane:${laneId}`, "lane", level);
+        },
+        refreshLanePack: async () => {
+          laneRefreshCalls += 1;
+          return {} as any;
+        }
+      }
+    });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "bootstrap-pack", title: "Bootstrap pack", stepIndex: 0, laneId: fixture.laneId }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      expect(attempt.contextSnapshotId).toBeTruthy();
+      expect(laneRefreshCalls).toBe(1);
+      expect(laneExportCalls).toBeGreaterThanOrEqual(2);
     } finally {
       fixture.dispose();
     }

@@ -652,6 +652,144 @@ function resolveContextPolicy(args: {
   };
 }
 
+type AutopilotConfig = {
+  enabled: boolean;
+  executorKind: OrchestratorExecutorKind;
+  ownerId: string;
+};
+
+function parseAutopilotConfig(metadata: Record<string, unknown> | null | undefined): AutopilotConfig {
+  const fallback: AutopilotConfig = {
+    enabled: false,
+    executorKind: "manual",
+    ownerId: "orchestrator-autopilot"
+  };
+  if (!metadata) return fallback;
+  const raw = metadata.autopilot;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
+  const record = raw as Record<string, unknown>;
+  const executorKind = normalizeExecutorKind(String(record.executorKind ?? "manual"));
+  const enabled = record.enabled === true && executorKind !== "manual";
+  const ownerId = String(record.ownerId ?? "").trim() || "orchestrator-autopilot";
+  return {
+    enabled,
+    executorKind,
+    ownerId
+  };
+}
+
+function parseNumericDependencyIndices(metadata: Record<string, unknown>): number[] {
+  const candidates = metadata.dependencyIndices;
+  if (!Array.isArray(candidates)) return [];
+  const out: number[] = [];
+  for (const entry of candidates) {
+    const value = Number(entry);
+    if (!Number.isFinite(value)) continue;
+    out.push(Math.floor(value));
+  }
+  return out;
+}
+
+function parseStepPolicyFromMetadata(metadata: Record<string, unknown>): StartOrchestratorRunStepInput["policy"] | undefined {
+  const raw = metadata.policy;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const includeNarrative = record.includeNarrative === true;
+  const includeFullDocs = record.includeFullDocs === true;
+  const docsMaxBytes = Number(record.docsMaxBytes);
+  const claimScopes = Array.isArray(record.claimScopes)
+    ? record.claimScopes
+        .map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+          const scope = entry as Record<string, unknown>;
+          const scopeValue = String(scope.scopeValue ?? "").trim();
+          if (!scopeValue.length) return null;
+          const ttlMs = Number(scope.ttlMs);
+          const normalized: { scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number } = {
+            scopeKind: normalizeClaimScope(String(scope.scopeKind ?? "lane")),
+            scopeValue
+          };
+          if (Number.isFinite(ttlMs) && ttlMs > 0) {
+            normalized.ttlMs = Math.floor(ttlMs);
+          }
+          return normalized;
+        })
+        .filter(
+          (entry): entry is { scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number } => entry != null
+        )
+    : undefined;
+
+  return {
+    includeNarrative,
+    includeFullDocs,
+    docsMaxBytes: Number.isFinite(docsMaxBytes) && docsMaxBytes > 0 ? Math.floor(docsMaxBytes) : undefined,
+    claimScopes
+  };
+}
+
+function parseStepPriority(step: OrchestratorStep): number {
+  const raw = step.metadata?.priority;
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.floor(raw);
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "urgent") return 1;
+    if (normalized === "high") return 2;
+    if (normalized === "normal") return 3;
+    if (normalized === "low") return 4;
+    const asNumber = Number(normalized);
+    if (Number.isFinite(asNumber)) return Math.floor(asNumber);
+  }
+  return 50;
+}
+
+function buildStepDepthMap(steps: OrchestratorStep[]): Map<string, number> {
+  const byId = new Map<string, OrchestratorStep>();
+  for (const step of steps) byId.set(step.id, step);
+  const memo = new Map<string, number>();
+  const visiting = new Set<string>();
+  const visit = (stepId: string): number => {
+    const cached = memo.get(stepId);
+    if (typeof cached === "number") return cached;
+    if (visiting.has(stepId)) return 0;
+    visiting.add(stepId);
+    const step = byId.get(stepId);
+    if (!step || step.dependencyStepIds.length === 0) {
+      memo.set(stepId, 0);
+      visiting.delete(stepId);
+      return 0;
+    }
+    let maxDepth = 0;
+    for (const depId of step.dependencyStepIds) {
+      const depDepth = visit(depId);
+      maxDepth = Math.max(maxDepth, depDepth + 1);
+    }
+    memo.set(stepId, maxDepth);
+    visiting.delete(stepId);
+    return maxDepth;
+  };
+  for (const step of steps) visit(step.id);
+  return memo;
+}
+
+function stableStepOrderComparator(args: { depthById: Map<string, number>; hashByStepId: Map<string, string> }) {
+  return (a: OrchestratorStep, b: OrchestratorStep) => {
+    const depthDiff = (args.depthById.get(a.id) ?? 0) - (args.depthById.get(b.id) ?? 0);
+    if (depthDiff !== 0) return depthDiff;
+
+    const priorityDiff = parseStepPriority(a) - parseStepPriority(b);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    const planOrderDiff = a.stepIndex - b.stepIndex;
+    if (planOrderDiff !== 0) return planOrderDiff;
+
+    const hashA = args.hashByStepId.get(a.id) ?? "";
+    const hashB = args.hashByStepId.get(b.id) ?? "";
+    if (hashA !== hashB) return hashA.localeCompare(hashB);
+
+    return a.stepKey.localeCompare(b.stepKey);
+  };
+}
+
 export function createOrchestratorService({
   db,
   projectId,
@@ -670,6 +808,7 @@ export function createOrchestratorService({
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
+  const autopilotRunLocks = new Set<string>();
 
   const emit = (event: Omit<OrchestratorEvent, "at">) => {
     onEvent?.({
@@ -1383,12 +1522,39 @@ export function createOrchestratorService({
         : args.contextProfile.laneExportLevel;
     const projectExportLevel = stepType === "analysis" ? "standard" : args.contextProfile.projectExportLevel;
     const lanePackKey = args.step.laneId ? `lane:${args.step.laneId}` : null;
-    const laneExport = args.step.laneId
-      ? await packService.getLaneExport({
-          laneId: args.step.laneId,
+    const laneExport = await (async (): Promise<PackExport | null> => {
+      if (!args.step.laneId) return null;
+      const laneId = args.step.laneId;
+      try {
+        return await packService.getLaneExport({
+          laneId,
           level: laneExportLevel
-        })
-      : null;
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("Lane pack is empty")) {
+          throw error;
+        }
+        await packService.refreshLanePack({
+          laneId,
+          reason: "orchestrator_context_bootstrap"
+        });
+        appendTimelineEvent({
+          runId: args.run.id,
+          stepId: args.step.id,
+          attemptId: args.attemptId,
+          eventType: "context_pack_bootstrap",
+          reason: "lane_pack_refreshed",
+          detail: {
+            laneId
+          }
+        });
+        return await packService.getLaneExport({
+          laneId,
+          level: laneExportLevel
+        });
+      }
+    })();
     const projectExport = await packService.getProjectExport({
       level: projectExportLevel
     });
@@ -2082,6 +2248,8 @@ export function createOrchestratorService({
       contextProfile?: OrchestratorContextProfileId;
       schedulerState?: string;
       metadata?: Record<string, unknown> | null;
+      runMode?: "autopilot" | "manual";
+      autopilotOwnerId?: string;
       defaultExecutorKind?: OrchestratorExecutorKind;
       defaultRetryLimit?: number;
     }): { run: OrchestratorRun; steps: OrchestratorStep[] } {
@@ -2115,22 +2283,73 @@ export function createOrchestratorService({
         `,
         [missionId, projectId]
       );
+      const requestedRunMode = args.runMode === "manual" ? "manual" : "autopilot";
+      const requestedExecutor = normalizeExecutorKind(String(args.defaultExecutorKind ?? "codex"));
+      const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "codex" : requestedExecutor;
+      const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
+      const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
 
-      const normalized: StartOrchestratorRunStepInput[] = missionSteps.map((row, index) => {
+      const descriptors = missionSteps.map((row, index) => {
         const metadata = parseRecord(row.metadata_json) ?? {};
+        const stepIndex = Number.isFinite(Number(row.step_index)) ? Number(row.step_index) : index;
+        const explicitKey = typeof metadata.stepKey === "string" ? metadata.stepKey.trim() : "";
+        const stepKey = explicitKey.length ? explicitKey : `mission_step_${stepIndex}_${index}`;
+        return {
+          row,
+          index,
+          metadata,
+          stepIndex,
+          stepKey
+        };
+      });
+
+      const stepKeysByIndex = new Map<number, string[]>();
+      for (const descriptor of descriptors) {
+        const bucket = stepKeysByIndex.get(descriptor.stepIndex) ?? [];
+        bucket.push(descriptor.stepKey);
+        stepKeysByIndex.set(descriptor.stepIndex, bucket);
+      }
+
+      const resolveDependencyKeys = (descriptor: (typeof descriptors)[number]): string[] => {
+        const explicitKeys = Array.isArray(descriptor.metadata.dependencyStepKeys)
+          ? descriptor.metadata.dependencyStepKeys
+              .map((entry) => String(entry ?? "").trim())
+              .filter((entry) => entry.length > 0)
+          : [];
+        const indexedKeys = parseNumericDependencyIndices(descriptor.metadata).flatMap((depIndex) => stepKeysByIndex.get(depIndex) ?? []);
+        const joined = [...explicitKeys, ...indexedKeys];
+        const deduped = [...new Set(joined.filter((key) => key !== descriptor.stepKey))];
+        if (deduped.length) return deduped;
+        if (descriptor.index > 0) {
+          return [descriptors[descriptor.index - 1]!.stepKey];
+        }
+        return [];
+      };
+
+      const normalized: StartOrchestratorRunStepInput[] = descriptors.map((descriptor) => {
+        const { row, metadata } = descriptor;
         const explicitExecutor =
-          typeof metadata.executorKind === "string" ? normalizeExecutorKind(metadata.executorKind) : args.defaultExecutorKind;
-        const stepKey = `mission_step_${row.step_index}_${index}`;
+          typeof metadata.executorKind === "string" ? normalizeExecutorKind(metadata.executorKind) : fallbackExecutor;
+        const retryLimitRaw = Number(metadata.retryLimit);
+        const retryLimit = Number.isFinite(retryLimitRaw)
+          ? Math.max(0, Math.floor(retryLimitRaw))
+          : Math.max(0, Math.floor(args.defaultRetryLimit ?? 1));
+        const joinPolicy =
+          typeof metadata.joinPolicy === "string" ? normalizeJoinPolicy(String(metadata.joinPolicy)) : "all_success";
+        const quorumRaw = Number(metadata.quorumCount);
+        const quorumCount = Number.isFinite(quorumRaw) && quorumRaw > 0 ? Math.floor(quorumRaw) : undefined;
         return {
           missionStepId: row.id,
-          stepKey,
+          stepKey: descriptor.stepKey,
           title: row.title,
-          stepIndex: Number(row.step_index ?? index),
+          stepIndex: descriptor.stepIndex,
           laneId: row.lane_id,
-          dependencyStepKeys: index > 0 ? [`mission_step_${missionSteps[index - 1]!.step_index}_${index - 1}`] : [],
-          joinPolicy: "all_success",
-          retryLimit: Math.max(0, Math.floor(args.defaultRetryLimit ?? 1)),
+          dependencyStepKeys: resolveDependencyKeys(descriptor),
+          joinPolicy,
+          quorumCount,
+          retryLimit,
           executorKind: explicitExecutor,
+          policy: parseStepPolicyFromMetadata(metadata),
           metadata: {
             ...metadata,
             stepType: metadata.stepType ?? row.kind ?? "manual"
@@ -2145,7 +2364,7 @@ export function createOrchestratorService({
           stepIndex: 0,
           laneId: null,
           retryLimit: Math.max(0, Math.floor(args.defaultRetryLimit ?? 1)),
-          executorKind: args.defaultExecutorKind ?? "manual",
+          executorKind: fallbackExecutor,
           metadata: {
             stepType: "manual",
             missionPrompt: mission.prompt ?? ""
@@ -2153,14 +2372,195 @@ export function createOrchestratorService({
         });
       }
 
-      return this.startRun({
+      const plannerMetadata = descriptors
+        .map((descriptor) => descriptor.metadata?.planner)
+        .find((planner) => planner && typeof planner === "object" && !Array.isArray(planner)) as Record<string, unknown> | undefined;
+
+      const started = this.startRun({
         missionId,
         runId: args.runId,
         contextProfile: args.contextProfile,
         schedulerState: args.schedulerState,
-        metadata: args.metadata,
+        metadata: {
+          ...(args.metadata ?? {}),
+          runMode: requestedRunMode,
+          planner: {
+            source: "mission_steps",
+            stepCount: normalized.length,
+            strategy: typeof plannerMetadata?.strategy === "string" ? plannerMetadata.strategy : null,
+            version: typeof plannerMetadata?.version === "string" ? plannerMetadata.version : null
+          },
+          autopilot: {
+            enabled: autopilotEnabled,
+            executorKind: autopilotEnabled ? fallbackExecutor : "manual",
+            ownerId: autopilotOwnerId
+          }
+        },
         steps: normalized
       });
+
+      if (autopilotEnabled) {
+        void this
+          .startReadyAutopilotAttempts({
+            runId: started.run.id,
+            reason: "run_started"
+          })
+          .catch(() => {});
+      }
+
+      return started;
+    },
+
+    async startReadyAutopilotAttempts(args: { runId: string; reason?: string }): Promise<number> {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId.length) return 0;
+      if (autopilotRunLocks.has(runId)) return 0;
+
+      autopilotRunLocks.add(runId);
+      try {
+        const runRow = getRunRow(runId);
+        if (!runRow) return 0;
+        const run = toRun(runRow);
+        if (TERMINAL_RUN_STATUSES.has(run.status)) return 0;
+
+        const autopilot = parseAutopilotConfig(run.metadata);
+        if (!autopilot.enabled) return 0;
+
+        let startedAttempts = 0;
+        let loops = 0;
+        while (loops < 12) {
+          loops += 1;
+          this.tick({ runId });
+          const runSteps = listStepRows(runId).map(toStep);
+          const depthById = buildStepDepthMap(runSteps);
+          const hashByStepId = new Map<string, string>();
+          for (const step of runSteps) {
+            hashByStepId.set(step.id, createHash("sha256").update(step.stepKey).digest("hex"));
+          }
+          const readySteps = listStepRows(runId)
+            .map(toStep)
+            .filter((step) => step.status === "ready")
+            .sort(stableStepOrderComparator({ depthById, hashByStepId }));
+          if (!readySteps.length) break;
+
+          let startedInLoop = 0;
+          for (const step of readySteps) {
+            const fresh = getStepRow(step.id);
+            if (!fresh) continue;
+            if (toStep(fresh).status !== "ready") continue;
+            try {
+              await this.startAttempt({
+                runId,
+                stepId: step.id,
+                ownerId: autopilot.ownerId,
+                executorKind: autopilot.executorKind
+              });
+              startedAttempts += 1;
+              startedInLoop += 1;
+            } catch (error) {
+              appendTimelineEvent({
+                runId,
+                stepId: step.id,
+                eventType: "autopilot_attempt_start_failed",
+                reason: "autopilot_start_failed",
+                detail: {
+                  message: error instanceof Error ? error.message : String(error)
+                }
+              });
+            }
+          }
+          if (startedInLoop === 0) break;
+        }
+
+        if (startedAttempts > 0) {
+          appendTimelineEvent({
+            runId,
+            eventType: "autopilot_advance",
+            reason: args.reason ?? "autopilot_advance",
+            detail: {
+              startedAttempts,
+              executorKind: autopilot.executorKind
+            }
+          });
+        }
+
+        this.tick({ runId });
+        return startedAttempts;
+      } finally {
+        autopilotRunLocks.delete(runId);
+      }
+    },
+
+    async onTrackedSessionEnded(args: { sessionId: string; laneId?: string | null; exitCode: number | null }): Promise<number> {
+      const sessionId = String(args.sessionId ?? "").trim();
+      if (!sessionId.length) return 0;
+      const runningAttempts = db.all<AttemptRow>(
+        `
+          select
+            id,
+            run_id,
+            step_id,
+            attempt_number,
+            status,
+            executor_kind,
+            executor_session_id,
+            tracked_session_enforced,
+            context_profile,
+            context_snapshot_id,
+            error_class,
+            error_message,
+            retry_backoff_ms,
+            result_envelope_json,
+            metadata_json,
+            created_at,
+            started_at,
+            completed_at
+          from orchestrator_attempts
+          where project_id = ?
+            and executor_session_id = ?
+            and status = 'running'
+          order by created_at asc
+        `,
+        [projectId, sessionId]
+      );
+      if (!runningAttempts.length) return 0;
+
+      const finalStatus: Extract<OrchestratorAttemptStatus, "succeeded" | "failed" | "canceled"> =
+        args.exitCode == null ? "canceled" : args.exitCode === 0 ? "succeeded" : "failed";
+      const touchedRunIds = new Set<string>();
+      for (const attempt of runningAttempts) {
+        touchedRunIds.add(attempt.run_id);
+        this.completeAttempt({
+          attemptId: attempt.id,
+          status: finalStatus,
+          ...(finalStatus === "failed"
+            ? {
+                errorClass: "executor_failure" as const,
+                errorMessage: `Tracked session exited with code ${args.exitCode}.`
+              }
+            : finalStatus === "canceled"
+              ? {
+                  errorClass: "canceled" as const,
+                  errorMessage: "Tracked session ended without exit code."
+                }
+              : {}),
+          metadata: {
+            reconciledFromTrackedSession: true,
+            trackedSessionId: sessionId,
+            laneId: args.laneId ?? null,
+            exitCode: args.exitCode
+          }
+        });
+      }
+
+      for (const runId of touchedRunIds) {
+        await this.startReadyAutopilotAttempts({
+          runId,
+          reason: "session_ended"
+        });
+      }
+
+      return runningAttempts.length;
     },
 
     evaluateGateReport(): OrchestratorGateReport {
@@ -2995,6 +3395,21 @@ export function createOrchestratorService({
       const attemptRow = getAttemptRow(attemptId);
       if (!attemptRow) throw new Error("Attempt creation failed.");
       const attempt = toAttempt(attemptRow);
+      const completeAndAdvance = async (completeArgs: {
+        attemptId: string;
+        status: Extract<OrchestratorAttemptStatus, "succeeded" | "failed" | "blocked" | "canceled">;
+        result?: OrchestratorAttemptResultEnvelope;
+        errorClass?: OrchestratorErrorClass;
+        errorMessage?: string;
+        metadata?: Record<string, unknown> | null;
+      }): Promise<OrchestratorAttempt> => {
+        const completedAttempt = this.completeAttempt(completeArgs);
+        await this.startReadyAutopilotAttempts({
+          runId: run.id,
+          reason: "attempt_completed_inline"
+        });
+        return completedAttempt;
+      };
 
       const integrationResult = await tryRunConflictResolverChain({
         run,
@@ -3002,7 +3417,7 @@ export function createOrchestratorService({
         attempt
       });
       if (integrationResult) {
-        return this.completeAttempt({
+        return completeAndAdvance({
           attemptId: attempt.id,
           status: integrationResult.status,
           result: integrationResult.result,
@@ -3045,8 +3460,7 @@ export function createOrchestratorService({
               `
                 update orchestrator_attempts
                 set executor_session_id = ?,
-                    metadata_json = ?,
-                    updated_at = ?
+                    metadata_json = ?
                 where id = ?
                   and project_id = ?
               `,
@@ -3057,7 +3471,6 @@ export function createOrchestratorService({
                   ...(result.metadata ?? {}),
                   transcriptPath: sessionRow?.transcript_path ?? null
                 }),
-                nowIso(),
                 attempt.id,
                 projectId
               ]
@@ -3079,13 +3492,13 @@ export function createOrchestratorService({
           return toAttempt(getAttemptRow(attempt.id) ?? attemptRow);
         }
         if (result.status === "completed") {
-          return this.completeAttempt({
+          return completeAndAdvance({
             attemptId: attempt.id,
             status: "succeeded",
             result: result.result
           });
         }
-        return this.completeAttempt({
+        return completeAndAdvance({
           attemptId: attempt.id,
           status: "failed",
           errorClass: result.errorClass ?? "executor_failure",
@@ -3357,7 +3770,6 @@ export function createOrchestratorService({
           [args.errorMessage ?? defaultSummary, nowIso(), run.id, projectId]
         );
       }
-
       const updatedAttemptRow = getAttemptRow(args.attemptId);
       if (!updatedAttemptRow) throw new Error("Attempt not found after completion update.");
       return toAttempt(updatedAttemptRow);
@@ -3484,6 +3896,15 @@ export function createOrchestratorService({
       }
 
       const resumed = this.tick({ runId: run.id });
+      const autopilot = parseAutopilotConfig(resumed.metadata);
+      if (autopilot.enabled) {
+        void this
+          .startReadyAutopilotAttempts({
+            runId: run.id,
+            reason: "resume_run"
+          })
+          .catch(() => {});
+      }
       appendTimelineEvent({
         runId: run.id,
         eventType: "run_resumed",

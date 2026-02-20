@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-11
+> Last updated: 2026-02-19
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -29,8 +29,8 @@ The ADE configuration system manages project-level and workspace-level settings 
 
 ADE uses a two-file configuration system that balances team collaboration with personal customization:
 
-- **`.ade/ade.yaml`** (shared config) is tracked in git and shared across the team. It defines process commands, stack buttons, test suites, and provider settings that the entire team agrees on.
-- **`.ade/local.yaml`** (local config) is NOT tracked in git and contains personal overrides such as environment variables, custom paths, API keys, and personal process tweaks.
+- **`.ade/ade.yaml`** (shared config) is tracked in git and shared across the team. It defines process commands, stack buttons, test suites, and workflow settings that the entire team agrees on.
+- **`.ade/local.yaml`** (local config) is NOT tracked in git and contains personal overrides such as environment variables, custom paths, AI provider settings, and personal process tweaks.
 
 This split ensures that teams can standardize their development workflows while individual developers retain the freedom to customize their local environment without polluting the shared configuration.
 
@@ -44,7 +44,7 @@ YAML supports comments (critical for documenting config choices), has cleaner sy
 
 ### Why Two Files Instead of One?
 
-A single config file creates a constant tension between "what the team wants" and "what I need locally." Developers end up with perpetual unstaged changes to the shared config, risk accidentally committing personal API keys, and struggle with merge conflicts on config changes. The two-file approach cleanly separates these concerns: shared decisions go in `ade.yaml`, personal tweaks go in `local.yaml`.
+A single config file creates a constant tension between "what the team wants" and "what I need locally." Developers end up with perpetual unstaged changes to the shared config, risk accidentally committing personal settings, and struggle with merge conflicts on config changes. The two-file approach cleanly separates these concerns: shared decisions go in `ade.yaml`, personal tweaks go in `local.yaml`.
 
 ### Why a Trust Model?
 
@@ -67,7 +67,6 @@ project-root/
 ├── .ade/
 │   ├── ade.yaml          # Shared config (tracked in git)
 │   ├── local.yaml        # Local config (NOT tracked in git)
-│   ├── exclude           # Additional mirror exclude patterns
 │   └── transcripts/      # Terminal session transcripts
 ├── .git/
 │   └── info/
@@ -176,27 +175,30 @@ testSuites:
     timeoutMs: 120000              # Maximum execution time
     tags: ["unit"]                 # Tags for filtering
 
-# LLM provider configuration
-providers:
-  hosted:
-    type: "hosted"                 # "hosted" | "byok" | "cli"
-    # --- BYOK options (use in local.yaml only) ---
-    # provider: "anthropic"        # "anthropic" | "openai"
-    # apiKey: "sk-ant-..."         # API key (NEVER put in ade.yaml)
-    # model: "claude-sonnet-4-5-20250929"
-    # --- CLI options ---
-    # command: "ollama run llama3" # Local CLI command
-    # --- Hosted options ---
-    # prTemplate: "default"        # PR description template name
-
-# Mirror configuration (for hosted agent)
-mirror:
-  enabled: false                   # Whether to sync to hosted mirror
-  exclude:                         # Additional exclude patterns (beyond defaults)
-    - "*.sqlite"
-    - "tmp/"
-  binaryThresholdMb: 10           # Max binary file size to upload
+# AI configuration (local.yaml only)
+ai:
+  taskRouting:
+    planning:
+      provider: "claude"           # "claude" | "codex"
+      model: "sonnet"              # Model identifier
+    implementation:
+      provider: "codex"
+      model: "gpt-4.1"
+    review:
+      provider: "claude"
+      model: "sonnet"
+    conflict_resolution:
+      provider: "claude"
+      model: "sonnet"
+    narrative:
+      provider: "claude"
+      model: "haiku"
+    pr_description:
+      provider: "claude"
+      model: "haiku"
 ```
+
+The `ai` section belongs in `local.yaml` only, since it reflects the individual developer's installed CLI tools and preferences. ADE auto-detects available CLI tools (Claude Code, Codex) and populates provider information automatically. The `taskRouting` section allows per-task-type configuration of which provider and model to use.
 
 ### Trust Model
 
@@ -417,8 +419,10 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | File system watchers for config changes | Done | Emits events on change |
 | IPC endpoints for config operations | Done | `config:get`, `config:save`, `config:confirmTrust` |
 | `local.yaml` gitignore setup | Done | Added to `.git/info/exclude` on init |
+| AI provider auto-detection | Done | Detects Claude Code and Codex CLI tools |
+| Per-task model routing | Done | Task type → provider → model configuration |
 | Lane profiles | Not started | Schema designed, runtime not implemented |
 | Lane overlay policies | Done | Implemented via `laneOverlayMatcher.ts` (Phase 4) |
 | Config migration (version upgrades) | Not started | Only version 1 exists currently |
 
-**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.
+**Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.

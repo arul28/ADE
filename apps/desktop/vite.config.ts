@@ -10,6 +10,8 @@ export default defineConfig({
   base: "./",
   plugins: [react()],
   server: {
+    port: 5173,
+    strictPort: true,
     fs: {
       // Keep Vite's default workspace/node_modules access and additionally allow src/.
       // Monaco's ESM runtime pulls CSS/assets from node_modules at dev-time.

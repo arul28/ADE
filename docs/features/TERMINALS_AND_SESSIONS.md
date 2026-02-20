@@ -76,6 +76,14 @@ A **session** is a tracked terminal lifecycle from creation to exit. When a PTY 
 - **Preview**: Last few lines of output (ANSI-stripped) for display in lists without reading the full transcript.
 - **Summary**: A deterministic one-line summary generated when the session ends (via `sessionSummary.ts`, ANSI-stripped). Examples: `Ran npm test (PASS, 31 tests, 1.2s)`, `Ran npm install (FAIL, exit code 1, EACCES permission denied)`, `Ran cargo build (OK)`. The summarizer detects Jest, Vitest, and pytest output formats for test summaries.
 
+When AI is available and the `terminal_summaries` feature toggle is enabled, ADE generates an AI-enhanced summary in addition to the deterministic one. The AI summary provides:
+- **Intent detection**: What the developer was trying to accomplish (e.g., "debugging auth middleware timeout", "setting up Docker environment")
+- **Outcome assessment**: Whether the goal was achieved, partially achieved, or failed
+- **Key findings**: Important discoveries, errors, or configuration changes made during the session
+- **Next steps**: Suggested follow-up actions based on the session outcome
+
+The AI summary is generated asynchronously after the session ends using the configured `terminal_summaries` provider (default: Claude). It does not block the session end flow. The deterministic summary is always generated first and displayed immediately; the AI summary appears when ready and is stored alongside the deterministic one.
+
 ### Transcript
 
 A **transcript** is the raw terminal output saved to disk at `.ade/transcripts/<session-id>.log`. Every byte written by the PTY to stdout is appended to this file. Transcripts are stored raw (including ANSI escape codes for color/cursor control).
@@ -246,6 +254,12 @@ When a session ends, ADE computes a delta and displays it as a card below or bes
 |                                                |
 | Potential issues:                              |
 |   Line 45: TypeError: Cannot read property...  |
+|                                                |
+| AI Summary (when available):                   |
+| "Set up Docker environment for local dev.      |
+|  Successfully configured docker-compose with   |
+|  Postgres and Redis. Tests pass. Next: add     |
+|  health check endpoints."                      |
 +-----------------------------------------------+
 ```
 
@@ -316,6 +330,8 @@ The session lifecycle is a 5-step process that integrates PTY management, sessio
 4. **Delta Computation**: The session service computes the delta by running `git diff --stat` between `head_sha_start` and the current working tree state. It also scans the transcript for lines matching failure patterns (configurable regex). In parallel it generates a deterministic one-line `summary` (ANSI-stripped) and stores it on the session record. The delta is stored in the `session_deltas` table.
 
 5. **Trigger**: The job engine is notified that a session has ended. It enqueues a pack refresh job for the lane, ensuring that pack data stays current with the latest changes.
+
+6. **AI Summary** (optional): If the `terminal_summaries` feature toggle is enabled and an AI provider is available, the AI integration service generates an enhanced summary from the transcript tail and delta data. The AI summary is stored on the session record alongside the deterministic summary.
 
 ---
 
@@ -581,7 +597,7 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-025 | Session goal/purpose tagging | DONE — Phase 8 (`goal` field on session records, displayed in session labels and delta cards) |
 | TERM-026 | Tool type detection (Claude, Cursor, etc.) | DONE — Phase 8 (`toolType` field: shell/claude/codex/cursor/aider/continue/other; set via launch profiles or `updateMeta`) |
 | TERM-027 | Session transcript search | TODO — **moved to Phase 9** |
-| TERM-028 | Transcript upload opt-in (hosted mirror) | DONE — Phase 6 (toggle in SettingsPage, conditional upload in `hostedAgentService.syncTranscripts()`) |
+| TERM-028 | Transcript upload opt-in (hosted mirror) | REMOVED — transcript upload was part of the hosted backend, which has been fully removed. Transcripts are stored locally only. |
 | TERM-029 | Checkpoint creation on session end | DONE — Phase 8 (checkpoints created via packService on session end; indexed in SQLite `checkpoints` table) |
 | TERM-030 | Pin important sessions | DONE — Phase 8 (`pinned` column on session records; pinned sessions stay visible in list) |
 | TERM-031 | Grid view (multi-terminal overview) | DONE — Phase 8 (tiling grid view via `TilingLayout.tsx`, toggled from tab view in `LaneTerminalsPanel`) |
@@ -597,3 +613,5 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-036 | ANSI strip utility (`ansiStrip.ts`) | DONE — Phase 8 (CSI/OSC/charset/backspace stripping, used for previews and summaries) |
 | TERM-037 | Session update meta IPC (`ade.sessions.updateMeta`) | DONE — Phase 8 (update goal, tool type post-creation) |
 | TERM-038 | xterm viewport safety patches | DONE — Phase 8 (patch `_innerRefresh` and `syncScrollArea` to prevent teardown crashes in `TerminalView.tsx`) |
+| TERM-039 | AI-enhanced session summaries via AgentExecutor | TODO — AI summary generation from transcript tail and delta data, stored alongside deterministic summary |
+| TERM-040 | AI summary display in session cards and delta cards | TODO — AI summary section in delta card UI, shown below deterministic summary when available |

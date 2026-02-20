@@ -191,7 +191,7 @@ functionality is always maintained.
 | `gitOperationsService` | Exists | Emits head-change events when ADE performs git operations |
 | `packService` | Exists | Implements `update-packs` action |
 | `conflictService` | Exists | Implements `predict-conflicts` action |
-| `hostedAgentService` | Exists | Implements `sync-to-mirror` action |
+| `aiIntegrationService` | Exists | Routes AI tasks via AgentExecutor interface |
 | `testService` | Exists | Implements `run-tests` action |
 | `ptyService` | Exists | Provides `session-end` events via terminal session lifecycle |
 
@@ -265,7 +265,7 @@ Actions support a `condition` field. The following condition strings are evaluat
 
 | Condition | Evaluates to `true` when |
 |-----------|-------------------------|
-| `hosted-enabled` | Provider mode is `hosted` and the hosted agent service is connected |
+| `subscription-enabled` | At least one AI provider (Claude or Codex CLI) is detected and authenticated |
 | `byok-enabled` | Provider mode is `byok` and an API key is configured |
 | `provider-enabled` | Any AI provider (hosted or BYOK) is active |
 | `lane-present` | A lane ID is available in the trigger context |
@@ -395,7 +395,7 @@ interface AutomationRuleSummary extends AutomationRule {
 | AUTO-007 | Schedule trigger | Cron-based timer using `node-cron` | DONE |
 | AUTO-008 | Update-packs action | Wire to pack service | DONE |
 | AUTO-009 | Predict-conflicts action | Wire to conflict service (can use existing conflict service from Phase 5) | DONE |
-| AUTO-010 | Sync-to-mirror action | Wire to hosted agent service | DONE |
+| AUTO-010 | AI augmentation action | Wire to AI integration service via AgentExecutor | DONE |
 | AUTO-011 | Run-tests action | Execute test suite by ID | DONE |
 | AUTO-012 | Run-command action | Execute shell command via `child_process` (non-interactive) | DONE |
 | AUTO-013 | Action chaining | Sequential execution with failure handling | DONE |
@@ -438,7 +438,7 @@ interface AutomationRuleSummary extends AutomationRule {
 - AUTO-019 depends on AUTO-004 and AUTO-013.
 - AUTO-020 depends on AUTO-013.
 - AUTO-009 can use the existing `conflictService` implemented in Phase 5 (no additional dependency).
-- AUTO-010 depends on the hosted agent/mirror service from **Phase 6** (Cloud Infrastructure).
+- AUTO-010 depends on the AI integration service from **Phase 1** (Agent SDK Integration).
 - AUTO-021 through AUTO-027 (NL planner) depend on AUTO-004 for rule schema and AUTO-015 for UI integration.
 
 ---
