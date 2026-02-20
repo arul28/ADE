@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createMcpRequestHandler } from "./mcpServer";
 
@@ -6,6 +9,8 @@ type RuntimeFixture = ReturnType<typeof createRuntime>;
 function createRuntime() {
   const operationStart = vi.fn((args: any) => ({ operationId: `op-${args.kind}-${Date.now()}` }));
   const operationFinish = vi.fn();
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-test-"));
+  fs.mkdirSync(path.join(projectRoot, ".ade", "orchestrator"), { recursive: true });
 
   const laneRows = [
     {
@@ -15,7 +20,7 @@ function createRuntime() {
       parentLaneId: null,
       baseRef: "main",
       branchRef: "feature/lane-1",
-      worktreePath: "/tmp/project/.ade/worktrees/lane-1",
+      worktreePath: path.join(projectRoot, ".ade", "worktrees", "lane-1"),
       archivedAt: null,
       stackDepth: 0,
       status: { dirty: false, ahead: 1, behind: 0 },
@@ -28,7 +33,7 @@ function createRuntime() {
       parentLaneId: "lane-1",
       baseRef: "feature/lane-1",
       branchRef: "feature/lane-2",
-      worktreePath: "/tmp/project/.ade/worktrees/lane-2",
+      worktreePath: path.join(projectRoot, ".ade", "worktrees", "lane-2"),
       archivedAt: null,
       stackDepth: 1,
       status: { dirty: true, ahead: 0, behind: 2 },
@@ -37,10 +42,19 @@ function createRuntime() {
   ];
 
   const runtime = {
-    projectRoot: "/tmp/project",
+    projectRoot,
     projectId: "project-1",
-    project: { rootPath: "/tmp/project", displayName: "project", baseRef: "main" },
-    paths: {} as any,
+    project: { rootPath: projectRoot, displayName: "project", baseRef: "main" },
+    paths: {
+      adeDir: path.join(projectRoot, ".ade"),
+      logsDir: path.join(projectRoot, ".ade", "logs"),
+      processLogsDir: path.join(projectRoot, ".ade", "logs", "processes"),
+      testLogsDir: path.join(projectRoot, ".ade", "logs", "tests"),
+      transcriptsDir: path.join(projectRoot, ".ade", "transcripts"),
+      worktreesDir: path.join(projectRoot, ".ade", "worktrees"),
+      packsDir: path.join(projectRoot, ".ade", "packs"),
+      dbPath: path.join(projectRoot, ".ade", "ade.db")
+    },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     db: {
       get: vi.fn(() => ({ count: 0 })),
@@ -222,11 +236,56 @@ describe("mcpServer", () => {
         cols: 120,
         rows: 36,
         tracked: true,
-        toolType: "claude"
+        toolType: "claude-orchestrated"
       })
     );
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
+    expect(response.structuredContent.startupCommand).toContain("--permission-mode");
+    expect(response.structuredContent.permissionMode).toBe("edit");
+    expect(response.structuredContent.contextRef?.path).toBeNull();
+  });
+
+  it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "spawn_agent", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "plan",
+      runId: "run-123",
+      stepId: "step-abc",
+      attemptId: "attempt-xyz",
+      prompt: "Investigate failing CI and propose a fix plan before editing.",
+      context: {
+        profile: "orchestrator_deterministic_v1",
+        packs: [
+          { scope: "project", packKey: "project", level: "lite", approxTokens: 850, summary: "Project pack summary" },
+          { scope: "lane", packKey: "lane:lane-1", level: "standard", approxTokens: 1200, summary: "Lane summary" }
+        ],
+        docs: [{ path: "docs/PRD.md", sha256: "abc", bytes: 1024 }],
+        handoffDigest: { summarizedCount: 4, byType: { attempt_succeeded: 3, attempt_failed: 1 } }
+      }
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.permissionMode).toBe("plan");
+    expect(response.structuredContent.startupCommand).toContain("--sandbox");
+    expect(response.structuredContent.startupCommand).toContain("read-only");
+    const contextPath = response.structuredContent.contextRef?.path as string | null;
+    expect(contextPath).toBeTruthy();
+    expect(contextPath?.includes("/.ade/orchestrator/mcp-context/run-123/")).toBe(true);
+    if (!contextPath) {
+      throw new Error("Expected context manifest path");
+    }
+    expect(fs.existsSync(contextPath)).toBe(true);
+    const manifest = JSON.parse(fs.readFileSync(contextPath, "utf8"));
+    expect(manifest.schema).toBe("ade.mcp.spawnAgentContext.v1");
+    expect(manifest.mission.runId).toBe("run-123");
+    expect(Array.isArray(manifest.context.packs)).toBe(true);
+    expect(response.structuredContent.contextRef?.approxTokens).toBeGreaterThan(0);
   });
 
   it("routes run_tests for suite and ad-hoc command contracts", async () => {

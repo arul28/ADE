@@ -32,7 +32,8 @@ import type {
   MissionSummary,
   OrchestratorAttempt,
   OrchestratorExecutorKind,
-  OrchestratorRunGraph
+  OrchestratorRunGraph,
+  StartOrchestratorRunFromMissionArgs
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -61,6 +62,8 @@ type CreateDraft = {
   executorPolicy: MissionExecutorPolicy;
   allowPlanningQuestions: boolean;
   autoStart: boolean;
+  orchestratorProvider: "claude" | "codex" | "auto";
+  plannerMode: "ai" | "deterministic" | "auto";
 };
 
 type ArtifactDraft = {
@@ -78,6 +81,8 @@ type InterventionDraft = {
 
 const STATUS_COLUMNS: Array<{ status: MissionStatus; label: string; hint: string }> = [
   { status: "queued", label: "Queued", hint: "Ready to launch" },
+  { status: "planning", label: "Planning", hint: "Synthesizing execution plan" },
+  { status: "plan_review", label: "Plan Review", hint: "Awaiting plan approval" },
   { status: "in_progress", label: "Running", hint: "Actively executing" },
   { status: "intervention_required", label: "Action Needed", hint: "Awaiting decision" },
   { status: "completed", label: "Completed", hint: "Finished with outcomes" },
@@ -87,6 +92,8 @@ const STATUS_COLUMNS: Array<{ status: MissionStatus; label: string; hint: string
 
 const STATUS_ICONS: Record<MissionStatus, string> = {
   queued: "clock",
+  planning: "route",
+  plan_review: "waypoints",
   in_progress: "zap",
   intervention_required: "alert",
   completed: "check",
@@ -96,6 +103,8 @@ const STATUS_ICONS: Record<MissionStatus, string> = {
 
 const STATUS_ACCENT_COLORS: Record<MissionStatus, string> = {
   queued: "rgb(56, 189, 248)",
+  planning: "rgb(96, 165, 250)",
+  plan_review: "rgb(14, 165, 233)",
   in_progress: "rgb(139, 92, 246)",
   intervention_required: "rgb(251, 191, 36)",
   completed: "rgb(52, 211, 153)",
@@ -136,6 +145,8 @@ const EXECUTOR_POLICIES: Array<{ value: MissionExecutorPolicy; label: string; de
 
 function statusTone(status: MissionStatus): string {
   if (status === "queued") return "text-sky-300 border-sky-500/40 bg-sky-500/10";
+  if (status === "planning") return "text-blue-300 border-blue-500/40 bg-blue-500/10";
+  if (status === "plan_review") return "text-cyan-300 border-cyan-500/40 bg-cyan-500/10";
   if (status === "in_progress") return "text-violet-300 border-violet-500/40 bg-violet-500/10";
   if (status === "intervention_required") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
   if (status === "completed") return "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
@@ -145,6 +156,8 @@ function statusTone(status: MissionStatus): string {
 
 function statusBorderColor(status: MissionStatus): string {
   if (status === "queued") return "border-l-sky-400";
+  if (status === "planning") return "border-l-blue-400";
+  if (status === "plan_review") return "border-l-cyan-400";
   if (status === "in_progress") return "border-l-violet-400";
   if (status === "intervention_required") return "border-l-amber-400";
   if (status === "completed") return "border-l-emerald-400";
@@ -212,6 +225,8 @@ function relativeWhen(iso: string): string {
 function countByStatus(missions: MissionSummary[]) {
   const map: Record<MissionStatus, number> = {
     queued: 0,
+    planning: 0,
+    plan_review: 0,
     in_progress: 0,
     intervention_required: 0,
     completed: 0,
@@ -273,7 +288,9 @@ export function MissionsPage() {
     plannerEngine: "auto",
     executorPolicy: "both",
     allowPlanningQuestions: false,
-    autoStart: true
+    autoStart: true,
+    orchestratorProvider: "auto",
+    plannerMode: "auto"
   });
   const [artifactDraft, setArtifactDraft] = React.useState<ArtifactDraft>({
     artifactType: "pr",
@@ -580,6 +597,7 @@ export function MissionsPage() {
       missionId: string;
       laneId?: string | null;
       executorKind: OrchestratorExecutorKind;
+      approveExistingPlan?: boolean;
     }) => {
       const missionId = args.missionId.trim();
       if (!missionId.length) return;
@@ -600,13 +618,16 @@ export function MissionsPage() {
         // Non-fatal in launcher path.
       }
 
-      const started = await window.ade.orchestrator.startRunFromMission({
+      const startArgs = {
         missionId,
         runMode: "autopilot",
         autopilotOwnerId: "missions-autopilot",
         defaultExecutorKind,
         defaultRetryLimit: 1
-      });
+      } satisfies StartOrchestratorRunFromMissionArgs;
+      const started = args.approveExistingPlan
+        ? await window.ade.orchestrator.approveMissionPlan(startArgs)
+        : await window.ade.orchestrator.startRunFromMission(startArgs);
 
       return started;
     },
@@ -625,6 +646,15 @@ export function MissionsPage() {
     setLaunchAnimating(true);
     setCreateBusy(true);
     try {
+      const resolvedAutopilotExecutor: OrchestratorExecutorKind =
+        createDraft.orchestratorProvider === "claude"
+          ? "claude"
+          : createDraft.orchestratorProvider === "codex"
+            ? "codex"
+            : createDraft.executorPolicy === "claude"
+              ? "claude"
+              : "codex";
+
       const created = await window.ade.missions.create({
         title: createDraft.title.trim() || undefined,
         prompt,
@@ -637,7 +667,7 @@ export function MissionsPage() {
         allowPlanningQuestions: createDraft.allowPlanningQuestions,
         autostart: createDraft.autoStart,
         launchMode: "autopilot",
-        autopilotExecutor: createDraft.executorPolicy === "claude" ? "claude" : "codex"
+        autopilotExecutor: resolvedAutopilotExecutor
       });
 
       setCreateDraft((prev) => ({ ...prev, title: "", prompt: "", allowPlanningQuestions: false }));
@@ -795,14 +825,12 @@ export function MissionsPage() {
         runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
           ? (runAutopilotState.executor as OrchestratorExecutorKind)
           : "codex";
-      await window.ade.missions.update({
-        missionId: selectedMission.id,
-        status: "in_progress"
-      });
+      const approveExistingPlan = selectedMission.status === "plan_review";
       await startRunForMission({
         missionId: selectedMission.id,
         laneId: selectedMission.laneId,
-        executorKind: fallbackExecutor
+        executorKind: fallbackExecutor,
+        approveExistingPlan
       });
       await loadOrchestratorGraph(selectedMission.id);
       await loadMissionDetail(selectedMission.id);
@@ -1134,6 +1162,40 @@ export function MissionsPage() {
                               "ADE will route execution deterministically by policy."}
                           </div>
                           <label className="space-y-1">
+                            <div className="text-[11px] text-muted-fg">Orchestrator provider</div>
+                            <select
+                              value={createDraft.orchestratorProvider}
+                              onChange={(event) =>
+                                setCreateDraft((prev) => ({
+                                  ...prev,
+                                  orchestratorProvider: event.target.value as "claude" | "codex" | "auto"
+                                }))
+                              }
+                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
+                            >
+                              <option value="auto">Auto</option>
+                              <option value="claude">Claude (recommended)</option>
+                              <option value="codex">Codex</option>
+                            </select>
+                          </label>
+                          <label className="space-y-1">
+                            <div className="text-[11px] text-muted-fg">Planner mode</div>
+                            <select
+                              value={createDraft.plannerMode}
+                              onChange={(event) =>
+                                setCreateDraft((prev) => ({
+                                  ...prev,
+                                  plannerMode: event.target.value as "ai" | "deterministic" | "auto"
+                                }))
+                              }
+                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
+                            >
+                              <option value="auto">Auto</option>
+                              <option value="ai">AI Planning</option>
+                              <option value="deterministic">Deterministic</option>
+                            </select>
+                          </label>
+                          <label className="space-y-1">
                             <div className="text-[11px] text-muted-fg">Target machine id (optional)</div>
                             <input
                               value={createDraft.targetMachineId}
@@ -1397,6 +1459,10 @@ export function MissionsPage() {
                             <div className="mt-1 text-[11px] text-muted-fg">
                               {selectedMission.status === "intervention_required"
                                 ? `Needs input. ${openInterventions.length} input request${openInterventions.length === 1 ? "" : "s"} must be resolved.`
+                                : selectedMission.status === "plan_review"
+                                  ? "Mission plan is ready for review. Approve before execution begins."
+                                  : selectedMission.status === "planning"
+                                    ? "Mission planning is in progress. Step decomposition and routing are being prepared."
                                 : selectedMission.status === "in_progress"
                                   ? "Mission is in progress. Runtime execution details are in Orchestrator Runtime below."
                                   : selectedMission.status === "queued"
@@ -1726,7 +1792,11 @@ export function MissionsPage() {
                                 <div className="flex flex-wrap gap-2">
                                   <Button size="sm" variant="outline" disabled={runBusy || !canStartOrRerun} onClick={() => void startOrchestratorRun()}>
                                     {runBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                                    {runGraph ? "Rerun mission" : "Start run"}
+                                    {runGraph
+                                      ? "Rerun mission"
+                                      : selectedMission.status === "plan_review"
+                                        ? "Approve plan & start"
+                                        : "Start run"}
                                   </Button>
                                   <Button size="sm" variant="ghost" disabled={runBusy || !canCancelRun} onClick={() => void cancelRun()}>
                                     Cancel

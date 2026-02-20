@@ -232,7 +232,11 @@ import type {
   StartOrchestratorRunArgs,
   TickOrchestratorRunArgs,
   AiFeatureKey,
-  AiSettingsStatus
+  AiSettingsStatus,
+  GetOrchestratorWorkerStatesArgs,
+  OrchestratorWorkerState,
+  StartMissionRunWithAIArgs,
+  StartMissionRunWithAIResult
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -267,6 +271,7 @@ import type { createAutomationPlannerService } from "../automations/automationPl
 import type { createMissionService } from "../missions/missionService";
 import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
+import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { redactSecrets } from "../../utils/redaction";
 
 export type AppContext = {
@@ -301,6 +306,7 @@ export type AppContext = {
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
   missionService: ReturnType<typeof createMissionService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   packService: ReturnType<typeof createPackService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   processService: ReturnType<typeof createProcessService>;
@@ -352,6 +358,8 @@ function normalizePackType(value: string): PackType {
 function normalizeMissionStatus(value: string): MissionStatus {
   if (
     value === "queued" ||
+    value === "planning" ||
+    value === "plan_review" ||
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
@@ -1241,11 +1249,7 @@ export function registerIpc({
         ? "manual"
         : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? defaultExecutorForPolicy(executorPolicy));
       try {
-        ctx.missionService.update({
-          missionId: created.id,
-          status: "in_progress"
-        });
-        ctx.orchestratorService.startRunFromMission({
+        const launch = await ctx.aiOrchestratorService.startMissionRun({
           missionId: created.id,
           runMode,
           autopilotOwnerId: "missions-autopilot",
@@ -1261,6 +1265,11 @@ export function registerIpc({
             plannerReasonCode: planning.run.reasonCode
           }
         });
+        if (launch.blockedByPlanReview) {
+          ctx.logger.info("missions.autostart_plan_review_blocked", {
+            missionId: created.id
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.logger.warn("missions.autostart_failed", {
@@ -1411,7 +1420,37 @@ export function registerIpc({
     IPC.orchestratorStartRunFromMission,
     async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
-      return ctx.orchestratorService.startRunFromMission(arg);
+      const started = await ctx.aiOrchestratorService.startMissionRun({
+        missionId: arg.missionId,
+        runMode: arg.runMode,
+        autopilotOwnerId: arg.autopilotOwnerId,
+        defaultExecutorKind: arg.defaultExecutorKind,
+        defaultRetryLimit: arg.defaultRetryLimit,
+        metadata: arg.metadata ?? null
+      });
+      if (started.blockedByPlanReview || !started.started) {
+        throw new Error("Mission run is blocked pending plan review approval.");
+      }
+      return started.started;
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorApproveMissionPlan,
+    async (_event, arg: StartOrchestratorRunFromMissionArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
+      const ctx = getCtx();
+      const started = await ctx.aiOrchestratorService.approveMissionPlan({
+        missionId: arg.missionId,
+        runMode: arg.runMode,
+        autopilotOwnerId: arg.autopilotOwnerId,
+        defaultExecutorKind: arg.defaultExecutorKind,
+        defaultRetryLimit: arg.defaultRetryLimit,
+        metadata: arg.metadata ?? null
+      });
+      if (started.blockedByPlanReview || !started.started) {
+        throw new Error("Mission plan approval did not produce a runnable mission execution.");
+      }
+      return started.started;
     }
   );
 
@@ -1470,6 +1509,22 @@ export function registerIpc({
     async (_event, arg: GetOrchestratorGateReportArgs = {}): Promise<OrchestratorGateReport> => {
       const ctx = getCtx();
       return ctx.orchestratorService.getLatestGateReport(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetWorkerStates,
+    async (_event, arg: GetOrchestratorWorkerStatesArgs): Promise<OrchestratorWorkerState[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getWorkerStates(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorStartMissionRun,
+    async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.startMissionRun(arg);
     }
   );
 

@@ -901,6 +901,8 @@ export type TerminalToolType =
   | "shell"
   | "claude"
   | "codex"
+  | "claude-orchestrated"
+  | "codex-orchestrated"
   | "codex-chat"
   | "claude-chat"
   | "cursor"
@@ -1597,6 +1599,35 @@ export type AiConflictResolutionConfig = {
   auto_apply_threshold?: number;
 };
 
+export type AiOrchestratorConfig = {
+  requirePlanReview?: boolean;
+  require_plan_review?: boolean;
+  maxParallelWorkers?: number;
+  max_parallel_workers?: number;
+  defaultMergePolicy?: "sequential" | "batch-at-end" | "per-step";
+  default_merge_policy?: "sequential" | "batch-at-end" | "per-step";
+  defaultConflictHandoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
+  default_conflict_handoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
+  workerHeartbeatIntervalMs?: number;
+  worker_heartbeat_interval_ms?: number;
+  workerHeartbeatTimeoutMs?: number;
+  worker_heartbeat_timeout_ms?: number;
+  workerIdleTimeoutMs?: number;
+  worker_idle_timeout_ms?: number;
+  stepTimeoutDefaultMs?: number;
+  step_timeout_default_ms?: number;
+  maxRetriesPerStep?: number;
+  max_retries_per_step?: number;
+  contextPressureThreshold?: number;
+  context_pressure_threshold?: number;
+  progressiveLoading?: boolean;
+  progressive_loading?: boolean;
+  maxTotalBudgetUsd?: number;
+  max_total_budget_usd?: number;
+  maxPerStepBudgetUsd?: number;
+  max_per_step_budget_usd?: number;
+};
+
 export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "last_used";
   default_provider?: "codex" | "claude" | "last_used";
@@ -1622,6 +1653,7 @@ export type AiConfig = {
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
   conflict_resolution?: AiConflictResolutionConfig;
+  orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
 };
 
@@ -2337,6 +2369,8 @@ export type AutomationsEventPayload = {
 
 export type MissionStatus =
   | "queued"
+  | "planning"
+  | "plan_review"
   | "in_progress"
   | "intervention_required"
   | "completed"
@@ -2747,6 +2781,12 @@ export type OrchestratorContextSnapshotCursor = {
   docs: OrchestratorDocsRef[];
   packDeltaDigest?: PackDeltaDigestV1 | null;
   missionHandoffIds?: string[];
+  missionHandoffDigest?: {
+    summarizedCount: number;
+    byType: Record<string, number>;
+    oldestCreatedAt: string | null;
+    newestCreatedAt: string | null;
+  } | null;
   contextSources?: string[];
   docsMode?: "digest_ref" | "full_body";
   docsBudgetBytes?: number;
@@ -3491,3 +3531,52 @@ export type ExportHistoryResult =
       rowCount: number;
       format: "csv" | "json";
     };
+
+// ─────────────────────────────────────────────────────
+// Phase 3: AI Orchestrator — Worker Lifecycle & Budget
+// ─────────────────────────────────────────────────────
+
+export type OrchestratorWorkerStatus =
+  | "spawned"
+  | "initializing"
+  | "working"
+  | "idle"
+  | "completed"
+  | "failed"
+  | "disposed";
+
+export type OrchestratorWorkerState = {
+  attemptId: string;
+  stepId: string;
+  runId: string;
+  sessionId: string | null;
+  executorKind: OrchestratorExecutorKind;
+  state: OrchestratorWorkerStatus;
+  lastHeartbeatAt: string;
+  spawnedAt: string;
+  completedAt: string | null;
+  outcomeTags: string[];
+};
+
+export type GetOrchestratorWorkerStatesArgs = {
+  runId: string;
+};
+
+export type OrchestratorPlannerProvider = "claude" | "codex" | "deterministic";
+
+export type StartMissionRunWithAIArgs = {
+  missionId: string;
+  runMode?: "autopilot" | "manual";
+  autopilotOwnerId?: string;
+  defaultExecutorKind?: OrchestratorExecutorKind;
+  defaultRetryLimit?: number;
+  metadata?: Record<string, unknown> | null;
+  forcePlanReviewBypass?: boolean;
+  plannerProvider?: OrchestratorPlannerProvider;
+};
+
+export type StartMissionRunWithAIResult = {
+  blockedByPlanReview: boolean;
+  started: { run: OrchestratorRun; steps: OrchestratorStep[] } | null;
+  mission: MissionDetail | null;
+};

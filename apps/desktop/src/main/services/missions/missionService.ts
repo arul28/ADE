@@ -36,12 +36,14 @@ import type { MissionPlanStepDraft } from "./missionPlanningService";
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
 
 const MISSION_TRANSITIONS: Record<MissionStatus, Set<MissionStatus>> = {
-  queued: new Set(["queued", "in_progress", "canceled"]),
-  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled"]),
-  intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled"]),
+  queued: new Set(["queued", "planning", "in_progress", "canceled"]),
+  planning: new Set(["planning", "plan_review", "in_progress", "intervention_required", "failed", "canceled", "queued"]),
+  plan_review: new Set(["plan_review", "in_progress", "queued", "failed", "canceled", "intervention_required"]),
+  in_progress: new Set(["in_progress", "intervention_required", "completed", "failed", "canceled", "plan_review"]),
+  intervention_required: new Set(["intervention_required", "in_progress", "failed", "canceled", "plan_review"]),
   completed: new Set(["completed", "queued"]),
-  failed: new Set(["failed", "queued", "in_progress", "canceled"]),
-  canceled: new Set(["canceled", "queued", "in_progress"])
+  failed: new Set(["failed", "queued", "planning", "in_progress", "canceled"]),
+  canceled: new Set(["canceled", "queued", "planning", "in_progress"])
 };
 
 const STEP_TRANSITIONS: Record<MissionStepStatus, Set<MissionStepStatus>> = {
@@ -159,6 +161,8 @@ function safeParseRecord(raw: string | null): Record<string, unknown> | null {
 function normalizeMissionStatus(value: string): MissionStatus {
   if (
     value === "queued" ||
+    value === "planning" ||
+    value === "plan_review" ||
     value === "in_progress" ||
     value === "intervention_required" ||
     value === "completed" ||
@@ -574,7 +578,7 @@ export function createMissionService({
     let startedAt = row.started_at;
     let completedAt = row.completed_at;
 
-    if (next === "in_progress") {
+    if (next === "planning" || next === "plan_review" || next === "in_progress") {
       if (!startedAt) startedAt = updatedAt;
       completedAt = null;
     } else if (next === "queued") {
@@ -762,7 +766,7 @@ export function createMissionService({
       }
 
       if (args.status === "active") {
-        where.push("m.status in ('queued', 'in_progress', 'intervention_required')");
+        where.push("m.status in ('queued', 'planning', 'plan_review', 'in_progress', 'intervention_required')");
       } else if (args.status) {
         where.push("m.status = ?");
         params.push(args.status);
@@ -777,10 +781,12 @@ export function createMissionService({
            case m.status
              when 'intervention_required' then 0
              when 'in_progress' then 1
-             when 'queued' then 2
-             when 'failed' then 3
-             when 'completed' then 4
-             else 5
+             when 'plan_review' then 2
+             when 'planning' then 3
+             when 'queued' then 4
+             when 'failed' then 5
+             when 'completed' then 6
+             else 7
            end,
            m.updated_at desc,
            m.created_at desc
@@ -1649,7 +1655,9 @@ export function createMissionService({
     addIntervention(args: AddMissionInterventionArgs): MissionIntervention {
       const missionId = args.missionId.trim();
       if (!missionId.length) throw new Error("missionId is required.");
-      if (!getMissionRow(missionId)) throw new Error(`Mission not found: ${missionId}`);
+      const missionRow = getMissionRow(missionId);
+      if (!missionRow) throw new Error(`Mission not found: ${missionId}`);
+      const missionStatus = normalizeMissionStatus(missionRow.status);
 
       const intervention = insertIntervention({
         missionId,
@@ -1672,11 +1680,17 @@ export function createMissionService({
         }
       });
 
-      upsertMissionStatus({
-        missionId,
-        nextStatus: "intervention_required",
-        summary: "Mission moved to intervention required."
-      });
+      const keepPlanReview =
+        missionStatus === "plan_review" &&
+        intervention.status === "open" &&
+        intervention.interventionType === "approval_required";
+      if (!keepPlanReview) {
+        upsertMissionStatus({
+          missionId,
+          nextStatus: "intervention_required",
+          summary: "Mission moved to intervention required."
+        });
+      }
 
       db.run(
         "update missions set updated_at = ? where id = ? and project_id = ?",

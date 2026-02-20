@@ -92,4 +92,48 @@ describe("projectConfigService legacy AI mode migration", () => {
     expect(persistedProviders?.mode).toBeUndefined();
     expect((persistedProviders?.contextTools as Record<string, unknown> | undefined)).toBeDefined();
   });
+
+  it("parses and normalizes ai.orchestrator settings from local config", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-orchestrator-"));
+    tempDirs.push(root);
+
+    const adeDir = path.join(root, ".ade");
+    fs.mkdirSync(adeDir, { recursive: true });
+
+    const localPath = path.join(adeDir, "local.yaml");
+    fs.writeFileSync(
+      localPath,
+      YAML.stringify({
+        version: 1,
+        processes: [],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+        ai: {
+          orchestrator: {
+            require_plan_review: true,
+            max_parallel_workers: 9,
+            context_pressure_threshold: 0.82,
+            progressive_loading: false
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger()
+    });
+
+    const orchestrator = service.get().effective.ai?.orchestrator;
+    expect(orchestrator?.requirePlanReview).toBe(true);
+    expect(orchestrator?.maxParallelWorkers).toBe(9);
+    expect(orchestrator?.contextPressureThreshold).toBe(0.82);
+    expect(orchestrator?.progressiveLoading).toBe(false);
+  });
 });

@@ -26,8 +26,8 @@ function prefersTool(raw: string, preferredTool: TerminalToolType | null | undef
 }
 
 export function defaultResumeCommandForTool(toolType: TerminalToolType | null | undefined): string | null {
-  if (toolType === "claude") return "claude resume";
-  if (toolType === "codex") return "codex resume";
+  if (toolType === "claude" || toolType === "claude-orchestrated") return "claude resume";
+  if (toolType === "codex" || toolType === "codex-orchestrated") return "codex resume";
   return null;
 }
 

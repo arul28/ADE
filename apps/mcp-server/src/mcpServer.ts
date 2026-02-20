@@ -1,3 +1,6 @@
+import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { ContextExportLevel, MissionInterventionStatus } from "../../desktop/src/shared/types";
 import type { AdeMcpRuntime } from "./bootstrap";
@@ -50,7 +53,57 @@ const TOOL_SPECS: ToolSpec[] = [
         provider: { type: "string", enum: ["codex", "claude"], default: "codex" },
         prompt: { type: "string" },
         model: { type: "string" },
-        title: { type: "string" }
+        title: { type: "string" },
+        runId: { type: "string" },
+        stepId: { type: "string" },
+        attemptId: { type: "string" },
+        permissionMode: { type: "string", enum: ["plan", "edit", "full-auto"], default: "edit" },
+        toolWhitelist: { type: "array", items: { type: "string" }, maxItems: 24 },
+        maxPromptChars: { type: "number", minimum: 256, maximum: 12000 },
+        contextFilePath: { type: "string" },
+        context: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            profile: { type: "string" },
+            packs: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  scope: { type: "string" },
+                  packKey: { type: "string" },
+                  level: { type: "string" },
+                  approxTokens: { type: "number" },
+                  summary: { type: "string" }
+                }
+              }
+            },
+            docs: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  path: { type: "string" },
+                  sha256: { type: "string" },
+                  bytes: { type: "number" }
+                }
+              }
+            },
+            handoffDigest: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                summarizedCount: { type: "number" },
+                byType: { type: "object" },
+                oldestCreatedAt: { type: "string" },
+                newestCreatedAt: { type: "string" }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -297,6 +350,122 @@ function shellEscapeArg(value: string): string {
   if (!value.length) return "''";
   if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
   return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function clipText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 18))}\n...<truncated>`;
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+type SpawnPermissionMode = "plan" | "edit" | "full-auto";
+
+function parseSpawnPermissionMode(value: unknown): SpawnPermissionMode {
+  const normalized = asTrimmedString(value).toLowerCase();
+  if (normalized === "plan" || normalized === "full-auto") return normalized;
+  return "edit";
+}
+
+function normalizeToolWhitelist(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((entry) => asTrimmedString(entry)).filter(Boolean))].slice(0, 24);
+}
+
+function resolveSpawnContextFile(args: {
+  runtime: AdeMcpRuntime;
+  laneId: string;
+  provider: "codex" | "claude";
+  permissionMode: SpawnPermissionMode;
+  runId: string | null;
+  stepId: string | null;
+  attemptId: string | null;
+  userPrompt: string | null;
+  context: Record<string, unknown>;
+  contextFilePathRaw: string | null;
+}): { contextFilePath: string | null; contextDigest: string | null; contextBytes: number | null; approxTokens: number } {
+  const contextFilePathRaw = args.contextFilePathRaw?.trim() ?? "";
+  const packList = Array.isArray(args.context.packs) ? args.context.packs : [];
+  const docsList = Array.isArray(args.context.docs) ? args.context.docs : [];
+  const hasContextPayload = packList.length > 0 || docsList.length > 0 || Object.keys(args.context).length > 0;
+  const approxTokens = packList.reduce((sum, item) => {
+    const record = safeObject(item);
+    const raw = Number(record.approxTokens ?? 0);
+    return sum + (Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0);
+  }, 0);
+
+  if (!contextFilePathRaw && !hasContextPayload) {
+    return { contextFilePath: null, contextDigest: null, contextBytes: null, approxTokens };
+  }
+
+  if (contextFilePathRaw.length) {
+    const abs = path.resolve(args.runtime.projectRoot, contextFilePathRaw);
+    if (!fs.existsSync(abs)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `contextFilePath does not exist: ${contextFilePathRaw}`);
+    }
+    const text = fs.readFileSync(abs, "utf8");
+    return {
+      contextFilePath: abs,
+      contextDigest: sha256Text(text),
+      contextBytes: Buffer.byteLength(text, "utf8"),
+      approxTokens
+    };
+  }
+
+  const baseDir = path.join(args.runtime.projectRoot, ".ade", "orchestrator", "mcp-context");
+  const runSegment = args.runId ?? "standalone";
+  const dir = path.join(baseDir, runSegment);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const filename = `${Date.now()}-${randomUUID()}.json`;
+  const contextFilePath = path.join(dir, filename);
+  const payload = {
+    schema: "ade.mcp.spawnAgentContext.v1",
+    generatedAt: nowIso(),
+    mission: {
+      runId: args.runId,
+      stepId: args.stepId,
+      attemptId: args.attemptId
+    },
+    worker: {
+      laneId: args.laneId,
+      provider: args.provider,
+      permissionMode: args.permissionMode
+    },
+    promptPreview: args.userPrompt ? clipText(args.userPrompt, 2000) : null,
+    context: {
+      profile: asOptionalTrimmedString(args.context.profile),
+      packs: packList.slice(0, 24).map((item) => {
+        const record = safeObject(item);
+        return {
+          scope: asOptionalTrimmedString(record.scope),
+          packKey: asOptionalTrimmedString(record.packKey),
+          level: asOptionalTrimmedString(record.level),
+          approxTokens: Number.isFinite(Number(record.approxTokens)) ? Number(record.approxTokens) : null,
+          summary: clipText(asTrimmedString(record.summary), 800)
+        };
+      }),
+      docs: docsList.slice(0, 40).map((item) => {
+        const record = safeObject(item);
+        return {
+          path: asOptionalTrimmedString(record.path),
+          sha256: asOptionalTrimmedString(record.sha256),
+          bytes: Number.isFinite(Number(record.bytes)) ? Number(record.bytes) : null
+        };
+      }),
+      handoffDigest: safeObject(args.context.handoffDigest)
+    }
+  };
+  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+  fs.writeFileSync(contextFilePath, serialized, "utf8");
+  return {
+    contextFilePath,
+    contextDigest: sha256Text(serialized),
+    contextBytes: Buffer.byteLength(serialized, "utf8"),
+    approxTokens
+  };
 }
 
 function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> {
@@ -982,15 +1151,64 @@ async function runTool(args: {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
+    const permissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
+    const maxPromptChars = Math.max(256, Math.min(12000, Math.floor(asNumber(toolArgs.maxPromptChars, 2800))));
     const prompt = asOptionalTrimmedString(toolArgs.prompt);
-    const title = asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider})`;
+    const runId = asOptionalTrimmedString(toolArgs.runId);
+    const stepId = asOptionalTrimmedString(toolArgs.stepId);
+    const attemptId = asOptionalTrimmedString(toolArgs.attemptId);
+    const toolWhitelist = normalizeToolWhitelist(toolArgs.toolWhitelist);
+    const title = asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`;
+    const context = safeObject(toolArgs.context);
 
-    const commandParts = [provider];
+    const contextRef = resolveSpawnContextFile({
+      runtime,
+      laneId,
+      provider,
+      permissionMode,
+      runId,
+      stepId,
+      attemptId,
+      userPrompt: prompt,
+      context,
+      contextFilePathRaw: asOptionalTrimmedString(toolArgs.contextFilePath)
+    });
+
+    const promptSegments: string[] = [];
+    if (runId || stepId || attemptId) {
+      promptSegments.push(
+        `Mission context: run=${runId ?? "n/a"} step=${stepId ?? "n/a"} attempt=${attemptId ?? "n/a"}.`
+      );
+    }
+    if (contextRef.contextFilePath) {
+      promptSegments.push(`Read worker context from: ${contextRef.contextFilePath}`);
+    }
+    if (toolWhitelist.length > 0) {
+      promptSegments.push(`Allowed tools: ${toolWhitelist.join(", ")}`);
+    }
+    if (prompt) {
+      promptSegments.push(clipText(prompt, maxPromptChars));
+    }
+    const finalPrompt = promptSegments.join("\n").trim();
+
+    const commandParts: string[] = [provider];
     if (model) {
       commandParts.push("--model", shellEscapeArg(model));
     }
-    if (prompt) {
-      commandParts.push(shellEscapeArg(prompt));
+    if (provider === "codex") {
+      const codexSandbox =
+        permissionMode === "plan" ? "read-only" : permissionMode === "full-auto" ? "danger-full-access" : "workspace-write";
+      commandParts.push("--sandbox", codexSandbox);
+      if (permissionMode === "full-auto") {
+        commandParts.push("--full-auto");
+      }
+    } else {
+      const claudePermission =
+        permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : "acceptEdits";
+      commandParts.push("--permission-mode", claudePermission);
+    }
+    if (finalPrompt) {
+      commandParts.push(shellEscapeArg(finalPrompt));
     }
 
     const startupCommand = commandParts.join(" ");
@@ -1001,7 +1219,7 @@ async function runTool(args: {
       rows: DEFAULT_PTY_ROWS,
       title,
       tracked: true,
-      toolType: provider,
+      toolType: `${provider}-orchestrated`,
       startupCommand
     });
 
@@ -1009,9 +1227,16 @@ async function runTool(args: {
       provider,
       laneId,
       title,
+      permissionMode,
       startupCommand,
       ptyId: created.ptyId,
-      sessionId: created.sessionId
+      sessionId: created.sessionId,
+      contextRef: {
+        path: contextRef.contextFilePath,
+        digest: contextRef.contextDigest,
+        bytes: contextRef.contextBytes,
+        approxTokens: contextRef.approxTokens
+      }
     };
   }
 

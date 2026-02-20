@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
-import type { AppInfo } from "../../../shared/types";
+import type { AppInfo, ProjectConfigSnapshot } from "../../../shared/types";
 import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
+import { Button } from "../ui/Button";
 
 const THEME_META: Record<
   ThemeId,
@@ -118,9 +119,42 @@ function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selecte
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readBool(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {
+  if (typeof primary === "boolean") return primary;
+  if (typeof fallback === "boolean") return fallback;
+  return defaultValue;
+}
+
+function readNumber(primary: unknown, fallback: unknown, defaultValue: number): number {
+  const first = Number(primary);
+  if (Number.isFinite(first)) return first;
+  const second = Number(fallback);
+  if (Number.isFinite(second)) return second;
+  return defaultValue;
+}
+
 export function GeneralSection() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [configSnapshot, setConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
+  const [orchestratorDraft, setOrchestratorDraft] = useState({
+    requirePlanReview: false,
+    maxParallelWorkers: "4",
+    maxRetriesPerStep: "2",
+    contextPressureThreshold: "0.8",
+    progressiveLoading: true,
+    defaultMergePolicy: "sequential" as "sequential" | "batch-at-end" | "per-step",
+    defaultConflictHandoff: "ask-user" as "auto-resolve" | "ask-user" | "orchestrator-decides",
+    maxTotalBudgetUsd: "0",
+    maxPerStepBudgetUsd: "0"
+  });
+  const [orchestratorBusy, setOrchestratorBusy] = useState(false);
+  const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
+  const [orchestratorNotice, setOrchestratorNotice] = useState<string | null>(null);
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -140,6 +174,101 @@ export function GeneralSection() {
     };
   }, []);
 
+  const refreshOrchestratorDraft = React.useCallback(async () => {
+    const snapshot = await window.ade.projectConfig.get();
+    const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+    const localOrchestrator = isRecord(localAi.orchestrator) ? localAi.orchestrator : {};
+    const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
+    const effectiveOrchestrator = isRecord(effectiveAi.orchestrator) ? effectiveAi.orchestrator : {};
+    setConfigSnapshot(snapshot);
+    const readString = (primary: unknown, fallback: unknown, defaultValue: string): string => {
+      if (typeof primary === "string" && primary.length > 0) return primary;
+      if (typeof fallback === "string" && fallback.length > 0) return fallback;
+      return defaultValue;
+    };
+    setOrchestratorDraft({
+      requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
+      maxParallelWorkers: String(
+        Math.max(1, Math.floor(readNumber(localOrchestrator.maxParallelWorkers, effectiveOrchestrator.maxParallelWorkers, 4)))
+      ),
+      maxRetriesPerStep: String(
+        Math.max(0, Math.floor(readNumber(localOrchestrator.maxRetriesPerStep, effectiveOrchestrator.maxRetriesPerStep, 2)))
+      ),
+      contextPressureThreshold: String(
+        Math.max(0.1, Math.min(0.99, readNumber(localOrchestrator.contextPressureThreshold, effectiveOrchestrator.contextPressureThreshold, 0.8)))
+      ),
+      progressiveLoading: readBool(localOrchestrator.progressiveLoading, effectiveOrchestrator.progressiveLoading, true),
+      defaultMergePolicy: readString(localOrchestrator.defaultMergePolicy, effectiveOrchestrator.defaultMergePolicy, "sequential") as "sequential" | "batch-at-end" | "per-step",
+      defaultConflictHandoff: readString(localOrchestrator.defaultConflictHandoff, effectiveOrchestrator.defaultConflictHandoff, "ask-user") as "auto-resolve" | "ask-user" | "orchestrator-decides",
+      maxTotalBudgetUsd: String(Math.max(0, readNumber(localOrchestrator.maxTotalBudgetUsd, effectiveOrchestrator.maxTotalBudgetUsd, 0))),
+      maxPerStepBudgetUsd: String(Math.max(0, readNumber(localOrchestrator.maxPerStepBudgetUsd, effectiveOrchestrator.maxPerStepBudgetUsd, 0)))
+    });
+  }, []);
+
+  useEffect(() => {
+    void refreshOrchestratorDraft().catch((error) => {
+      setOrchestratorError(error instanceof Error ? error.message : String(error));
+    });
+  }, [refreshOrchestratorDraft]);
+
+  const saveOrchestratorSettings = async () => {
+    setOrchestratorError(null);
+    setOrchestratorNotice(null);
+    const maxParallelWorkers = Number(orchestratorDraft.maxParallelWorkers);
+    const maxRetriesPerStep = Number(orchestratorDraft.maxRetriesPerStep);
+    const contextPressureThreshold = Number(orchestratorDraft.contextPressureThreshold);
+    if (!Number.isFinite(maxParallelWorkers) || maxParallelWorkers < 1 || maxParallelWorkers > 16) {
+      setOrchestratorError("Max parallel workers must be between 1 and 16.");
+      return;
+    }
+    if (!Number.isFinite(maxRetriesPerStep) || maxRetriesPerStep < 0 || maxRetriesPerStep > 8) {
+      setOrchestratorError("Max retries per step must be between 0 and 8.");
+      return;
+    }
+    if (!Number.isFinite(contextPressureThreshold) || contextPressureThreshold < 0.1 || contextPressureThreshold > 0.99) {
+      setOrchestratorError("Context pressure threshold must be between 0.1 and 0.99.");
+      return;
+    }
+
+    setOrchestratorBusy(true);
+    try {
+      const snapshot = configSnapshot ?? (await window.ade.projectConfig.get());
+      const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+      const localOrchestrator = isRecord(localAi.orchestrator) ? localAi.orchestrator : {};
+      const maxTotalBudgetUsd = Number(orchestratorDraft.maxTotalBudgetUsd);
+      const maxPerStepBudgetUsd = Number(orchestratorDraft.maxPerStepBudgetUsd);
+      const nextOrchestrator = {
+        ...localOrchestrator,
+        requirePlanReview: orchestratorDraft.requirePlanReview,
+        maxParallelWorkers: Math.floor(maxParallelWorkers),
+        maxRetriesPerStep: Math.floor(maxRetriesPerStep),
+        contextPressureThreshold,
+        progressiveLoading: orchestratorDraft.progressiveLoading,
+        defaultMergePolicy: orchestratorDraft.defaultMergePolicy,
+        defaultConflictHandoff: orchestratorDraft.defaultConflictHandoff,
+        maxTotalBudgetUsd: Number.isFinite(maxTotalBudgetUsd) && maxTotalBudgetUsd >= 0 ? maxTotalBudgetUsd : 0,
+        maxPerStepBudgetUsd: Number.isFinite(maxPerStepBudgetUsd) && maxPerStepBudgetUsd >= 0 ? maxPerStepBudgetUsd : 0
+      };
+      await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          ai: {
+            ...(snapshot.local.ai ?? {}),
+            ...localAi,
+            orchestrator: nextOrchestrator
+          }
+        }
+      });
+      await refreshOrchestratorDraft();
+      setOrchestratorNotice("Orchestrator settings saved to .ade/local.yaml.");
+    } catch (error) {
+      setOrchestratorError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOrchestratorBusy(false);
+    }
+  };
+
   if (loadError) {
     return <EmptyState title="General" description={`Failed to load: ${loadError}`} />;
   }
@@ -150,6 +279,12 @@ export function GeneralSection() {
 
   return (
     <div className="space-y-6">
+      {orchestratorNotice ? (
+        <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{orchestratorNotice}</div>
+      ) : null}
+      {orchestratorError ? (
+        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">{orchestratorError}</div>
+      ) : null}
       <div>
         <div className="text-sm font-semibold">Theme</div>
         <div className="mt-2 flex flex-wrap gap-1">
@@ -179,6 +314,158 @@ export function GeneralSection() {
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
           <div className="text-xs text-muted-fg">Provider Mode</div>
           <div className="mt-2 text-sm">{providerMode}</div>
+        </div>
+
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">AI Orchestrator</div>
+          <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={orchestratorDraft.requirePlanReview}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    requirePlanReview: event.target.checked
+                  }))
+                }
+              />
+              Require plan review before execution
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={orchestratorDraft.progressiveLoading}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    progressiveLoading: event.target.checked
+                  }))
+                }
+              />
+              Progressive context loading
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Max parallel workers</div>
+              <input
+                type="number"
+                min={1}
+                max={16}
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                value={orchestratorDraft.maxParallelWorkers}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    maxParallelWorkers: event.target.value
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Max retries per step</div>
+              <input
+                type="number"
+                min={0}
+                max={8}
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                value={orchestratorDraft.maxRetriesPerStep}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    maxRetriesPerStep: event.target.value
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm md:col-span-2">
+              <div className="text-xs text-muted-fg">Context pressure threshold</div>
+              <input
+                type="number"
+                min={0.1}
+                max={0.99}
+                step={0.01}
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm md:w-56"
+                value={orchestratorDraft.contextPressureThreshold}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    contextPressureThreshold: event.target.value
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Default merge policy</div>
+              <select
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                value={orchestratorDraft.defaultMergePolicy}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    defaultMergePolicy: event.target.value as "sequential" | "batch-at-end" | "per-step"
+                  }))
+                }
+              >
+                <option value="sequential">Sequential</option>
+                <option value="batch-at-end">Batch at end</option>
+                <option value="per-step">Per step</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Default conflict handoff</div>
+              <select
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                value={orchestratorDraft.defaultConflictHandoff}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    defaultConflictHandoff: event.target.value as "auto-resolve" | "ask-user" | "orchestrator-decides"
+                  }))
+                }
+              >
+                <option value="auto-resolve">Auto-resolve</option>
+                <option value="ask-user">Ask user</option>
+                <option value="orchestrator-decides">Orchestrator decides</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Max total budget (USD, 0 = unlimited)</div>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                value={orchestratorDraft.maxTotalBudgetUsd}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    maxTotalBudgetUsd: event.target.value
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Max per-step budget (USD, 0 = unlimited)</div>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                value={orchestratorDraft.maxPerStepBudgetUsd}
+                onChange={(event) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    maxPerStepBudgetUsd: event.target.value
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <div className="mt-3">
+            <Button size="sm" onClick={() => void saveOrchestratorSettings()} disabled={orchestratorBusy}>
+              {orchestratorBusy ? "Saving..." : "Save orchestrator settings"}
+            </Button>
+          </div>
         </div>
 
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">

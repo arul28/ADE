@@ -166,6 +166,31 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
+  it("supports planning and plan_review lifecycle states in active mission listings", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const created = service.create({
+      prompt: "Design orchestration plan and await approval before execution.",
+      laneId
+    });
+
+    const planning = service.update({ missionId: created.id, status: "planning" });
+    expect(planning.status).toBe("planning");
+    const activePlanning = service.list({ status: "active" });
+    expect(activePlanning.some((entry) => entry.id === created.id && entry.status === "planning")).toBe(true);
+
+    const review = service.update({ missionId: created.id, status: "plan_review" });
+    expect(review.status).toBe("plan_review");
+    const activeReview = service.list({ status: "active" });
+    expect(activeReview.some((entry) => entry.id === created.id && entry.status === "plan_review")).toBe(true);
+
+    const running = service.update({ missionId: created.id, status: "in_progress" });
+    expect(running.status).toBe("in_progress");
+
+    dispose();
+  });
+
   it("rejects invalid mission and step transitions", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });

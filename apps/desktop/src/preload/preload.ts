@@ -243,7 +243,11 @@ import type {
   TestEvent,
   TestRunSummary,
   TestSuiteDefinition,
-  WriteTextAtomicArgs
+  WriteTextAtomicArgs,
+  GetOrchestratorWorkerStatesArgs,
+  OrchestratorWorkerState,
+  StartMissionRunWithAIArgs,
+  StartMissionRunWithAIResult
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -356,6 +360,9 @@ contextBridge.exposeInMainWorld("ade", {
     startRunFromMission: async (
       args: StartOrchestratorRunFromMissionArgs
     ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => ipcRenderer.invoke(IPC.orchestratorStartRunFromMission, args),
+    approveMissionPlan: async (
+      args: StartOrchestratorRunFromMissionArgs
+    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => ipcRenderer.invoke(IPC.orchestratorApproveMissionPlan, args),
     startAttempt: async (args: StartOrchestratorAttemptArgs): Promise<OrchestratorAttempt> =>
       ipcRenderer.invoke(IPC.orchestratorStartAttempt, args),
     completeAttempt: async (args: CompleteOrchestratorAttemptArgs): Promise<OrchestratorAttempt> =>
@@ -372,6 +379,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorListTimeline, args),
     getGateReport: async (args: GetOrchestratorGateReportArgs = {}): Promise<OrchestratorGateReport> =>
       ipcRenderer.invoke(IPC.orchestratorGetGateReport, args),
+    getWorkerStates: async (args: GetOrchestratorWorkerStatesArgs): Promise<OrchestratorWorkerState[]> =>
+      ipcRenderer.invoke(IPC.orchestratorGetWorkerStates, args),
+    startMissionRun: async (args: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> =>
+      ipcRenderer.invoke(IPC.orchestratorStartMissionRun, args),
     onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => cb(payload);
       ipcRenderer.on(IPC.orchestratorEvent, listener);

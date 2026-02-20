@@ -185,6 +185,7 @@ export const IPC = {
   orchestratorGetRunGraph: "ade.orchestrator.getRunGraph",
   orchestratorStartRun: "ade.orchestrator.startRun",
   orchestratorStartRunFromMission: "ade.orchestrator.startRunFromMission",
+  orchestratorApproveMissionPlan: "ade.orchestrator.approveMissionPlan",
   orchestratorStartAttempt: "ade.orchestrator.startAttempt",
   orchestratorCompleteAttempt: "ade.orchestrator.completeAttempt",
   orchestratorTickRun: "ade.orchestrator.tickRun",
@@ -254,7 +255,9 @@ export const IPC = {
   projectConfigValidate: "ade.projectConfig.validate",
   projectConfigSave: "ade.projectConfig.save",
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
-  projectConfigConfirmTrust: "ade.projectConfig.confirmTrust"
+  projectConfigConfirmTrust: "ade.projectConfig.confirmTrust",
+  orchestratorGetWorkerStates: "ade.orchestrator.getWorkerStates",
+  orchestratorStartMissionRun: "ade.orchestrator.startMissionRun"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

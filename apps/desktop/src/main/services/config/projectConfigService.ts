@@ -465,6 +465,63 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (Object.keys(conflict).length) out.conflictResolution = conflict;
   }
 
+  const orchestratorRaw = isRecord(value.orchestrator) ? value.orchestrator : null;
+  if (orchestratorRaw) {
+    const orchestrator: NonNullable<AiConfig["orchestrator"]> = {};
+    const requirePlanReview = asBool(orchestratorRaw.requirePlanReview) ?? asBool(orchestratorRaw.require_plan_review);
+    if (requirePlanReview != null) orchestrator.requirePlanReview = requirePlanReview;
+
+    const maxParallelWorkers = asNumber(orchestratorRaw.maxParallelWorkers) ?? asNumber(orchestratorRaw.max_parallel_workers);
+    if (maxParallelWorkers != null) orchestrator.maxParallelWorkers = Math.max(1, Math.floor(maxParallelWorkers));
+
+    const defaultMergePolicy = (asString(orchestratorRaw.defaultMergePolicy) ?? asString(orchestratorRaw.default_merge_policy))?.trim();
+    if (defaultMergePolicy === "sequential" || defaultMergePolicy === "batch-at-end" || defaultMergePolicy === "per-step") {
+      orchestrator.defaultMergePolicy = defaultMergePolicy;
+    }
+
+    const defaultConflictHandoff =
+      (asString(orchestratorRaw.defaultConflictHandoff) ?? asString(orchestratorRaw.default_conflict_handoff))?.trim();
+    if (
+      defaultConflictHandoff === "auto-resolve" ||
+      defaultConflictHandoff === "ask-user" ||
+      defaultConflictHandoff === "orchestrator-decides"
+    ) {
+      orchestrator.defaultConflictHandoff = defaultConflictHandoff;
+    }
+
+    const workerHeartbeatIntervalMs =
+      asNumber(orchestratorRaw.workerHeartbeatIntervalMs) ?? asNumber(orchestratorRaw.worker_heartbeat_interval_ms);
+    if (workerHeartbeatIntervalMs != null) orchestrator.workerHeartbeatIntervalMs = Math.max(1_000, Math.floor(workerHeartbeatIntervalMs));
+
+    const workerHeartbeatTimeoutMs =
+      asNumber(orchestratorRaw.workerHeartbeatTimeoutMs) ?? asNumber(orchestratorRaw.worker_heartbeat_timeout_ms);
+    if (workerHeartbeatTimeoutMs != null) orchestrator.workerHeartbeatTimeoutMs = Math.max(1_000, Math.floor(workerHeartbeatTimeoutMs));
+
+    const workerIdleTimeoutMs = asNumber(orchestratorRaw.workerIdleTimeoutMs) ?? asNumber(orchestratorRaw.worker_idle_timeout_ms);
+    if (workerIdleTimeoutMs != null) orchestrator.workerIdleTimeoutMs = Math.max(1_000, Math.floor(workerIdleTimeoutMs));
+
+    const stepTimeoutDefaultMs = asNumber(orchestratorRaw.stepTimeoutDefaultMs) ?? asNumber(orchestratorRaw.step_timeout_default_ms);
+    if (stepTimeoutDefaultMs != null) orchestrator.stepTimeoutDefaultMs = Math.max(1_000, Math.floor(stepTimeoutDefaultMs));
+
+    const maxRetriesPerStep = asNumber(orchestratorRaw.maxRetriesPerStep) ?? asNumber(orchestratorRaw.max_retries_per_step);
+    if (maxRetriesPerStep != null) orchestrator.maxRetriesPerStep = Math.max(0, Math.floor(maxRetriesPerStep));
+
+    const contextPressureThreshold =
+      asNumber(orchestratorRaw.contextPressureThreshold) ?? asNumber(orchestratorRaw.context_pressure_threshold);
+    if (contextPressureThreshold != null) orchestrator.contextPressureThreshold = Math.max(0.1, Math.min(0.99, contextPressureThreshold));
+
+    const progressiveLoading = asBool(orchestratorRaw.progressiveLoading) ?? asBool(orchestratorRaw.progressive_loading);
+    if (progressiveLoading != null) orchestrator.progressiveLoading = progressiveLoading;
+
+    const maxTotalBudgetUsd = asNumber(orchestratorRaw.maxTotalBudgetUsd) ?? asNumber(orchestratorRaw.max_total_budget_usd);
+    if (maxTotalBudgetUsd != null && maxTotalBudgetUsd > 0) orchestrator.maxTotalBudgetUsd = maxTotalBudgetUsd;
+
+    const maxPerStepBudgetUsd = asNumber(orchestratorRaw.maxPerStepBudgetUsd) ?? asNumber(orchestratorRaw.max_per_step_budget_usd);
+    if (maxPerStepBudgetUsd != null && maxPerStepBudgetUsd > 0) orchestrator.maxPerStepBudgetUsd = maxPerStepBudgetUsd;
+
+    if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
+  }
+
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -490,6 +547,10 @@ function mergeAiConfig(sharedAi?: AiConfig, localAi?: AiConfig): AiConfig | unde
     ...(sharedAi?.conflictResolution ?? {}),
     ...(localAi?.conflictResolution ?? {})
   };
+  const orchestrator = {
+    ...(sharedAi?.orchestrator ?? {}),
+    ...(localAi?.orchestrator ?? {})
+  };
   const out: AiConfig = {
     mode: localAi?.mode ?? sharedAi?.mode,
     defaultProvider: localAi?.defaultProvider ?? sharedAi?.defaultProvider,
@@ -497,7 +558,8 @@ function mergeAiConfig(sharedAi?: AiConfig, localAi?: AiConfig): AiConfig | unde
     ...(Object.keys(features).length ? { features } : {}),
     ...(Object.keys(budgets).length ? { budgets } : {}),
     ...(Object.keys(permissions).length ? { permissions } : {}),
-    ...(Object.keys(conflictResolution).length ? { conflictResolution } : {})
+    ...(Object.keys(conflictResolution).length ? { conflictResolution } : {}),
+    ...(Object.keys(orchestrator).length ? { orchestrator } : {})
   };
   return Object.keys(out).length ? out : undefined;
 }

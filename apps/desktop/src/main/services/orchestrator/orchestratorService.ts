@@ -40,6 +40,7 @@ import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createConflictService } from "../conflicts/conflictService";
+import type { createProjectConfigService } from "../config/projectConfigService";
 
 type RunRow = {
   id: string;
@@ -180,6 +181,22 @@ type CreateSnapshotResult = {
   fullDocs: Array<{ path: string; content: string; truncated: boolean }>;
 };
 
+type ResolvedOrchestratorRuntimeConfig = {
+  requirePlanReview: boolean;
+  maxParallelWorkers: number;
+  defaultMergePolicy: "sequential" | "batch-at-end" | "per-step";
+  defaultConflictHandoff: "auto-resolve" | "ask-user" | "orchestrator-decides";
+  workerHeartbeatIntervalMs: number;
+  workerHeartbeatTimeoutMs: number;
+  workerIdleTimeoutMs: number;
+  stepTimeoutDefaultMs: number;
+  maxRetriesPerStep: number;
+  contextPressureThreshold: number;
+  progressiveLoading: boolean;
+  maxTotalBudgetUsd: number | null;
+  maxPerStepBudgetUsd: number | null;
+};
+
 export type OrchestratorEvent = {
   type:
     | "orchestrator-run-updated"
@@ -230,7 +247,6 @@ export type OrchestratorExecutorAdapter = {
 };
 
 const DEFAULT_CONTEXT_PROFILE_ID: OrchestratorContextProfileId = "orchestrator_deterministic_v1";
-const DEFAULT_CLAIM_TTL_MS = 45_000;
 
 const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, OrchestratorContextPolicyProfile> = {
   orchestrator_deterministic_v1: {
@@ -276,6 +292,22 @@ const GATE_THRESHOLDS = {
   } as Record<string, number>
 } as const;
 
+const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
+  requirePlanReview: false,
+  maxParallelWorkers: 4,
+  defaultMergePolicy: "sequential",
+  defaultConflictHandoff: "auto-resolve",
+  workerHeartbeatIntervalMs: 30_000,
+  workerHeartbeatTimeoutMs: 90_000,
+  workerIdleTimeoutMs: 300_000,
+  stepTimeoutDefaultMs: 300_000,
+  maxRetriesPerStep: 2,
+  contextPressureThreshold: 0.8,
+  progressiveLoading: true,
+  maxTotalBudgetUsd: null,
+  maxPerStepBudgetUsd: null
+};
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -302,6 +334,33 @@ function parseArray(raw: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function asBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function asIntInRange(value: unknown, fallback: number, min: number, max: number): number {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+function asNumberInRange(value: unknown, fallback: number, min: number, max: number): number {
+  const raw = Number(value);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(min, Math.min(max, raw));
+}
+
+function asPositiveNumberOrNull(value: unknown): number | null {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return raw;
 }
 
 function normalizeRunStatus(value: string): OrchestratorRunStatus {
@@ -571,6 +630,15 @@ function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+function clipText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 14))}\n...<truncated>`;
+}
+
+function shellEscapeArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function readDocPaths(projectRoot: string): string[] {
   const out: string[] = [];
   const canonical = path.join(projectRoot, "docs", "PRD.md");
@@ -656,13 +724,15 @@ type AutopilotConfig = {
   enabled: boolean;
   executorKind: OrchestratorExecutorKind;
   ownerId: string;
+  parallelismCap: number;
 };
 
 function parseAutopilotConfig(metadata: Record<string, unknown> | null | undefined): AutopilotConfig {
   const fallback: AutopilotConfig = {
     enabled: false,
     executorKind: "manual",
-    ownerId: "orchestrator-autopilot"
+    ownerId: "orchestrator-autopilot",
+    parallelismCap: DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers
   };
   if (!metadata) return fallback;
   const raw = metadata.autopilot;
@@ -671,10 +741,17 @@ function parseAutopilotConfig(metadata: Record<string, unknown> | null | undefin
   const executorKind = normalizeExecutorKind(String(record.executorKind ?? "manual"));
   const enabled = record.enabled === true && executorKind !== "manual";
   const ownerId = String(record.ownerId ?? "").trim() || "orchestrator-autopilot";
+  const parallelismCap = asIntInRange(
+    record.parallelismCap,
+    DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers,
+    1,
+    32
+  );
   return {
     enabled,
     executorKind,
-    ownerId
+    ownerId,
+    parallelismCap
   };
 }
 
@@ -797,6 +874,7 @@ export function createOrchestratorService({
   packService,
   conflictService,
   ptyService,
+  projectConfigService,
   onEvent
 }: {
   db: AdeDb;
@@ -805,10 +883,73 @@ export function createOrchestratorService({
   packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
   ptyService?: ReturnType<typeof createPtyService>;
+  projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
   const autopilotRunLocks = new Set<string>();
+  const getRuntimeConfig = (): ResolvedOrchestratorRuntimeConfig => {
+    const snapshot = projectConfigService?.get();
+    const ai = asRecord(snapshot?.effective?.ai);
+    const orchestrator = asRecord(ai?.orchestrator);
+    if (!orchestrator) return DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG;
+    const out: ResolvedOrchestratorRuntimeConfig = { ...DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG };
+    out.requirePlanReview = asBool(orchestrator.requirePlanReview, asBool(orchestrator.require_plan_review, out.requirePlanReview));
+    out.maxParallelWorkers = asIntInRange(
+      orchestrator.maxParallelWorkers ?? orchestrator.max_parallel_workers,
+      out.maxParallelWorkers,
+      1,
+      16
+    );
+    const mergePolicy = String(orchestrator.defaultMergePolicy ?? orchestrator.default_merge_policy ?? "").trim();
+    if (mergePolicy === "sequential" || mergePolicy === "batch-at-end" || mergePolicy === "per-step") {
+      out.defaultMergePolicy = mergePolicy;
+    }
+    const conflictHandoff = String(orchestrator.defaultConflictHandoff ?? orchestrator.default_conflict_handoff ?? "").trim();
+    if (conflictHandoff === "auto-resolve" || conflictHandoff === "ask-user" || conflictHandoff === "orchestrator-decides") {
+      out.defaultConflictHandoff = conflictHandoff;
+    }
+    out.workerHeartbeatIntervalMs = asIntInRange(
+      orchestrator.workerHeartbeatIntervalMs ?? orchestrator.worker_heartbeat_interval_ms,
+      out.workerHeartbeatIntervalMs,
+      1_000,
+      600_000
+    );
+    out.workerHeartbeatTimeoutMs = asIntInRange(
+      orchestrator.workerHeartbeatTimeoutMs ?? orchestrator.worker_heartbeat_timeout_ms,
+      out.workerHeartbeatTimeoutMs,
+      1_000,
+      900_000
+    );
+    out.workerIdleTimeoutMs = asIntInRange(
+      orchestrator.workerIdleTimeoutMs ?? orchestrator.worker_idle_timeout_ms,
+      out.workerIdleTimeoutMs,
+      1_000,
+      3_600_000
+    );
+    out.stepTimeoutDefaultMs = asIntInRange(
+      orchestrator.stepTimeoutDefaultMs ?? orchestrator.step_timeout_default_ms,
+      out.stepTimeoutDefaultMs,
+      1_000,
+      3_600_000
+    );
+    out.maxRetriesPerStep = asIntInRange(
+      orchestrator.maxRetriesPerStep ?? orchestrator.max_retries_per_step,
+      out.maxRetriesPerStep,
+      0,
+      8
+    );
+    out.contextPressureThreshold = asNumberInRange(
+      orchestrator.contextPressureThreshold ?? orchestrator.context_pressure_threshold,
+      out.contextPressureThreshold,
+      0.1,
+      0.99
+    );
+    out.progressiveLoading = asBool(orchestrator.progressiveLoading, asBool(orchestrator.progressive_loading, out.progressiveLoading));
+    out.maxTotalBudgetUsd = asPositiveNumberOrNull(orchestrator.maxTotalBudgetUsd ?? orchestrator.max_total_budget_usd);
+    out.maxPerStepBudgetUsd = asPositiveNumberOrNull(orchestrator.maxPerStepBudgetUsd ?? orchestrator.max_per_step_budget_usd);
+    return out;
+  };
 
   const emit = (event: Omit<OrchestratorEvent, "at">) => {
     onEvent?.({
@@ -1493,6 +1634,7 @@ export function createOrchestratorService({
     attemptId: string;
     contextProfile: OrchestratorContextPolicyProfile;
   }): Promise<CreateSnapshotResult> => {
+    const runtimeConfig = getRuntimeConfig();
     const existingCursor = (() => {
       if (!args.run.metadata) return null;
       const raw = args.run.metadata.runtimeCursor;
@@ -1640,23 +1782,39 @@ export function createOrchestratorService({
         if (row.mission_step_id) missionStepIds.add(row.mission_step_id);
       }
     }
-    const missionHandoffIds = (() => {
+    const missionHandoffLimit = runtimeConfig.progressiveLoading ? 12 : 30;
+    const missionHandoffs = (() => {
       const ids = [...missionStepIds];
-      if (!ids.length) return [] as string[];
+      if (!ids.length) return [] as Array<{ id: string; handoff_type: string; created_at: string }>;
       const placeholders = ids.map(() => "?").join(", ");
-      const rows = db.all<{ id: string }>(
+      return db.all<{ id: string; handoff_type: string; created_at: string }>(
         `
-          select id
+          select id, handoff_type, created_at
           from mission_step_handoffs
           where project_id = ?
             and mission_id = ?
             and mission_step_id in (${placeholders})
           order by created_at desc
-          limit 30
+          limit 60
         `,
         [projectId, args.run.missionId, ...ids]
       );
-      return rows.map((row) => row.id);
+    })();
+    const missionHandoffIds = missionHandoffs.slice(0, missionHandoffLimit).map((row) => row.id);
+    const missionHandoffDigest = (() => {
+      if (missionHandoffs.length <= missionHandoffLimit) return null;
+      const summarized = missionHandoffs.slice(missionHandoffLimit);
+      const byType = summarized.reduce<Record<string, number>>((acc, row) => {
+        const key = String(row.handoff_type ?? "unknown").trim() || "unknown";
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {});
+      return {
+        summarizedCount: summarized.length,
+        byType,
+        oldestCreatedAt: summarized[summarized.length - 1]?.created_at ?? null,
+        newestCreatedAt: summarized[0]?.created_at ?? null
+      };
     })();
 
     const laneHead = lanePackKey ? packService.getHeadVersion({ packKey: lanePackKey }) : null;
@@ -1672,11 +1830,13 @@ export function createOrchestratorService({
       docs: docsRefs,
       packDeltaDigest,
       missionHandoffIds,
+      missionHandoffDigest,
       contextSources: [
         `pack:project:${projectExport.level}`,
         ...(lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
         ...(packDeltaDigest ? ["delta_digest"] : []),
         ...(missionHandoffIds.length ? ["mission_handoffs"] : []),
+        ...(missionHandoffDigest ? ["mission_handoff_digest"] : []),
         `docs:${args.contextProfile.docsMode}`
       ],
       docsMode: args.contextProfile.docsMode === "full_docs" ? "full_body" : "digest_ref",
@@ -1684,6 +1844,27 @@ export function createOrchestratorService({
       docsConsumedBytes,
       docsTruncatedCount
     };
+
+    const contextPressure =
+      (cursor.docsConsumedBytes ?? 0)
+        / Math.max(1, cursor.docsBudgetBytes ?? args.contextProfile.maxDocBytes ?? 120_000);
+    if (contextPressure >= runtimeConfig.contextPressureThreshold) {
+      appendTimelineEvent({
+        runId: args.run.id,
+        stepId: args.step.id,
+        attemptId: args.attemptId,
+        eventType: "context_pressure_warning",
+        reason: "context_threshold_reached",
+        detail: {
+          pressure: contextPressure,
+          threshold: runtimeConfig.contextPressureThreshold,
+          docsConsumedBytes: cursor.docsConsumedBytes ?? 0,
+          docsBudgetBytes: cursor.docsBudgetBytes ?? 0,
+          handoffIds: missionHandoffIds.length,
+          summarizedHandoffs: missionHandoffDigest?.summarizedCount ?? 0
+        }
+      });
+    }
 
     const snapshotId = randomUUID();
     const createdAt = nowIso();
@@ -1978,19 +2159,91 @@ export function createOrchestratorService({
         }
         const title = `[orchestrator:${kind}] ${args.step.title}`;
         try {
+          const contextDir = path.join(projectRoot, ".ade", "orchestrator", "contexts", args.run.id);
+          fs.mkdirSync(contextDir, { recursive: true });
+          const contextFilePath = path.join(contextDir, `${args.attempt.id}.json`);
+          const contextManifest = {
+            schema: "ade.orchestratorWorkerContext.v1",
+            mission: {
+              missionId: args.run.missionId,
+              runId: args.run.id,
+              stepId: args.step.id,
+              attemptId: args.attempt.id,
+              stepKey: args.step.stepKey,
+              title: args.step.title,
+              joinPolicy: args.step.joinPolicy,
+              dependencyStepIds: args.step.dependencyStepIds
+            },
+            contextProfile: args.contextProfile.id,
+            packs: {
+              lane: args.laneExport
+                ? {
+                    packKey: args.laneExport.packKey,
+                    level: args.laneExport.level,
+                    approxTokens: args.laneExport.approxTokens,
+                    contentPreview: clipText(args.laneExport.content, 3_000)
+                  }
+                : null,
+              project: {
+                packKey: args.projectExport.packKey,
+                level: args.projectExport.level,
+                approxTokens: args.projectExport.approxTokens,
+                contentPreview: clipText(args.projectExport.content, 2_000)
+              }
+            },
+            docs: args.docsRefs.slice(0, 24),
+            fullDocsPreview: args.fullDocs.slice(0, 3).map((entry) => ({
+              path: entry.path,
+              truncated: entry.truncated,
+              contentPreview: clipText(entry.content, 1_200)
+            })),
+            generatedAt: nowIso()
+          };
+          fs.writeFileSync(contextFilePath, `${JSON.stringify(contextManifest, null, 2)}\n`, "utf8");
+
+          const requiresPlanApproval =
+            args.step.metadata?.requiresPlanApproval === true || args.step.metadata?.coordinationPattern === "plan_then_implement";
+          const promptParts = [
+            `You are an ADE mission worker for step "${args.step.title}".`,
+            requiresPlanApproval
+              ? "Work in planning mode only. Do not mutate files. Return a concise implementation plan and risk notes."
+              : "Implement the step with focused, minimal edits and run the relevant validation commands.",
+            `Load full context from: ${contextFilePath}`,
+            "Keep output concise and structured for orchestrator ingestion."
+          ];
+          const prompt = promptParts.join("\n");
+
+          const commandParts: string[] = [kind];
+          const model = typeof args.step.metadata?.model === "string" ? args.step.metadata.model.trim() : "";
+          if (model) {
+            commandParts.push("--model", shellEscapeArg(model));
+          }
+          if (kind === "codex") {
+            commandParts.push("--sandbox", requiresPlanApproval ? "read-only" : "workspace-write");
+          } else {
+            commandParts.push("--permission-mode", requiresPlanApproval ? "plan" : "acceptEdits");
+          }
+          commandParts.push(shellEscapeArg(prompt));
+          const startupCommand = commandParts.join(" ");
+
           const session = await args.createTrackedSession({
             laneId: args.step.laneId,
             cols: 120,
             rows: 36,
             title,
-            toolType: kind
+            toolType: `${kind}-orchestrated`,
+            startupCommand
           });
           return {
             status: "accepted",
             sessionId: session.sessionId,
             metadata: {
               adapterKind: kind,
-              adapterState: "scaffold_session_started",
+              adapterState: "worker_spawned",
+              contextFilePath,
+              contextDigest: sha256(JSON.stringify(contextManifest)),
+              planMode: requiresPlanApproval,
+              startupCommandPreview: startupCommand.slice(0, 320),
               localFirst: true
             }
           };
@@ -2254,9 +2507,9 @@ export function createOrchestratorService({
     }): { run: OrchestratorRun; steps: OrchestratorStep[] } {
       const missionId = String(args.missionId ?? "").trim();
       if (!missionId) throw new Error("missionId is required.");
-      const mission = db.get<{ id: string; prompt: string | null }>(
+      const mission = db.get<{ id: string; prompt: string | null; metadata_json: string | null }>(
         `
-          select id, prompt
+          select id, prompt, metadata_json
           from missions
           where id = ?
             and project_id = ?
@@ -2265,6 +2518,7 @@ export function createOrchestratorService({
         [missionId, projectId]
       );
       if (!mission?.id) throw new Error(`Mission not found: ${missionId}`);
+      const runtimeConfig = getRuntimeConfig();
       const missionSteps = db.all<{
         id: string;
         step_index: number;
@@ -2287,6 +2541,17 @@ export function createOrchestratorService({
       const fallbackExecutor = requestedRunMode === "manual" ? "manual" : requestedExecutor === "manual" ? "codex" : requestedExecutor;
       const autopilotEnabled = requestedRunMode === "autopilot" && fallbackExecutor !== "manual";
       const autopilotOwnerId = String(args.autopilotOwnerId ?? "").trim() || "orchestrator-autopilot";
+      const missionMetadata = parseRecord(mission.metadata_json) ?? {};
+      const plannerSummary = asRecord(asRecord(missionMetadata.plannerPlan)?.missionSummary);
+      const plannerParallelismRaw = Number(
+        args.metadata?.plannerParallelismCap ?? plannerSummary?.parallelismCap ?? Number.NaN
+      );
+      const plannerParallelismCap =
+        Number.isFinite(plannerParallelismRaw) && plannerParallelismRaw > 0 ? Math.floor(plannerParallelismRaw) : null;
+      const autopilotParallelismCap = Math.max(
+        1,
+        Math.min(runtimeConfig.maxParallelWorkers, plannerParallelismCap ?? runtimeConfig.maxParallelWorkers)
+      );
 
       const descriptors = missionSteps.map((row, index) => {
         const metadata = parseRecord(row.metadata_json) ?? {};
@@ -2330,20 +2595,38 @@ export function createOrchestratorService({
         const explicitExecutor =
           typeof metadata.executorKind === "string" ? normalizeExecutorKind(metadata.executorKind) : fallbackExecutor;
         const retryLimitRaw = Number(metadata.retryLimit);
+        const configuredRetryLimit = Number(args.defaultRetryLimit ?? runtimeConfig.maxRetriesPerStep);
         const retryLimit = Number.isFinite(retryLimitRaw)
           ? Math.max(0, Math.floor(retryLimitRaw))
-          : Math.max(0, Math.floor(args.defaultRetryLimit ?? 1));
+          : Math.max(0, Math.floor(configuredRetryLimit));
         const joinPolicy =
           typeof metadata.joinPolicy === "string" ? normalizeJoinPolicy(String(metadata.joinPolicy)) : "all_success";
         const quorumRaw = Number(metadata.quorumCount);
         const quorumCount = Number.isFinite(quorumRaw) && quorumRaw > 0 ? Math.floor(quorumRaw) : undefined;
+        const dependencyStepKeys = resolveDependencyKeys(descriptor);
+        const inferredPattern =
+          joinPolicy === "any_success"
+            ? "speculative_parallel"
+            : dependencyStepKeys.length > 1
+              ? "fan_in_merge"
+              : String(metadata.stepType ?? row.kind ?? "").trim() === "analysis"
+                ? "plan_then_implement"
+                : String(metadata.stepType ?? row.kind ?? "").trim() === "review"
+                  ? "review_and_revise"
+                  : dependencyStepKeys.length === 0 && requestedRunMode === "autopilot"
+                    ? "parallel_fan_out"
+                    : "sequential_chain";
+        const requiresPlanApproval =
+          metadata.requiresPlanApproval === true
+            || inferredPattern === "plan_then_implement"
+            || String(metadata.stepType ?? row.kind ?? "").trim() === "analysis";
         return {
           missionStepId: row.id,
           stepKey: descriptor.stepKey,
           title: row.title,
           stepIndex: descriptor.stepIndex,
           laneId: row.lane_id,
-          dependencyStepKeys: resolveDependencyKeys(descriptor),
+          dependencyStepKeys,
           joinPolicy,
           quorumCount,
           retryLimit,
@@ -2351,7 +2634,9 @@ export function createOrchestratorService({
           policy: parseStepPolicyFromMetadata(metadata),
           metadata: {
             ...metadata,
-            stepType: metadata.stepType ?? row.kind ?? "manual"
+            stepType: metadata.stepType ?? row.kind ?? "manual",
+            requiresPlanApproval,
+            coordinationPattern: metadata.coordinationPattern ?? inferredPattern
           }
         };
       });
@@ -2362,11 +2647,13 @@ export function createOrchestratorService({
           title: "Execute mission objective",
           stepIndex: 0,
           laneId: null,
-          retryLimit: Math.max(0, Math.floor(args.defaultRetryLimit ?? 1)),
+          retryLimit: Math.max(0, Math.floor(args.defaultRetryLimit ?? runtimeConfig.maxRetriesPerStep)),
           executorKind: fallbackExecutor,
           metadata: {
             stepType: "manual",
-            missionPrompt: mission.prompt ?? ""
+            missionPrompt: mission.prompt ?? "",
+            requiresPlanApproval: false,
+            coordinationPattern: "sequential_chain"
           }
         });
       }
@@ -2374,6 +2661,15 @@ export function createOrchestratorService({
       const plannerMetadata = descriptors
         .map((descriptor) => descriptor.metadata?.planner)
         .find((planner) => planner && typeof planner === "object" && !Array.isArray(planner)) as Record<string, unknown> | undefined;
+
+      const coordinationPatterns = normalized.reduce<Record<string, number>>((acc, stepInput) => {
+        const key =
+          stepInput.metadata && typeof stepInput.metadata.coordinationPattern === "string"
+            ? stepInput.metadata.coordinationPattern
+            : "sequential_chain";
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {});
 
       const started = this.startRun({
         missionId,
@@ -2387,12 +2683,22 @@ export function createOrchestratorService({
             source: "mission_steps",
             stepCount: normalized.length,
             strategy: typeof plannerMetadata?.strategy === "string" ? plannerMetadata.strategy : null,
-            version: typeof plannerMetadata?.version === "string" ? plannerMetadata.version : null
+            version: typeof plannerMetadata?.version === "string" ? plannerMetadata.version : null,
+            parallelismCap: autopilotParallelismCap
+          },
+          coordination: {
+            patterns: coordinationPatterns
+          },
+          orchestratorConfig: {
+            maxParallelWorkers: runtimeConfig.maxParallelWorkers,
+            contextPressureThreshold: runtimeConfig.contextPressureThreshold,
+            progressiveLoading: runtimeConfig.progressiveLoading
           },
           autopilot: {
             enabled: autopilotEnabled,
             executorKind: autopilotEnabled ? fallbackExecutor : "manual",
-            ownerId: autopilotOwnerId
+            ownerId: autopilotOwnerId,
+            parallelismCap: autopilotParallelismCap
           }
         },
         steps: normalized
@@ -2424,12 +2730,18 @@ export function createOrchestratorService({
 
         const autopilot = parseAutopilotConfig(run.metadata);
         if (!autopilot.enabled) return 0;
+        const parallelismCap = Math.max(1, autopilot.parallelismCap);
 
         let startedAttempts = 0;
         let loops = 0;
         while (loops < 12) {
           loops += 1;
           this.tick({ runId });
+          let runningAttemptCount = listAttemptRows(runId)
+            .map(toAttempt)
+            .filter((attempt) => attempt.status === "running").length;
+          if (runningAttemptCount >= parallelismCap) break;
+
           const runSteps = listStepRows(runId).map(toStep);
           const depthById = buildStepDepthMap(runSteps);
           const hashByStepId = new Map<string, string>();
@@ -2444,6 +2756,7 @@ export function createOrchestratorService({
 
           let startedInLoop = 0;
           for (const step of readySteps) {
+            if (runningAttemptCount >= parallelismCap) break;
             const fresh = getStepRow(step.id);
             if (!fresh) continue;
             if (toStep(fresh).status !== "ready") continue;
@@ -2456,6 +2769,7 @@ export function createOrchestratorService({
               });
               startedAttempts += 1;
               startedInLoop += 1;
+              runningAttemptCount += 1;
             } catch (error) {
               appendTimelineEvent({
                 runId,
@@ -2478,7 +2792,8 @@ export function createOrchestratorService({
             reason: args.reason ?? "autopilot_advance",
             detail: {
               startedAttempts,
-              executorKind: autopilot.executorKind
+              executorKind: autopilot.executorKind,
+              parallelismCap
             }
           });
         }
@@ -3057,6 +3372,8 @@ export function createOrchestratorService({
       if (!run) throw new Error(`Run not found: ${args.runId}`);
       const runStatus = normalizeRunStatus(run.status);
       if (TERMINAL_RUN_STATUSES.has(runStatus)) return toRun(run);
+      // Paused runs (e.g. budget exceeded) should not auto-resume via tick
+      if (runStatus === "paused") return toRun(run);
 
       expireClaims();
       refreshStepReadiness(args.runId);
@@ -3095,6 +3412,7 @@ export function createOrchestratorService({
 
     heartbeatClaims(args: { attemptId: string; ownerId: string }): number {
       const now = nowIso();
+      const runtimeConfig = getRuntimeConfig();
       const activeClaims = db.all<ClaimRow>(
         `
           select
@@ -3122,8 +3440,9 @@ export function createOrchestratorService({
       );
       for (const claim of activeClaims) {
         const policy = parseRecord(claim.policy_json) ?? {};
-        const ttlMsRaw = Number(policy.ttlMs ?? DEFAULT_CLAIM_TTL_MS);
-        const ttlMs = Number.isFinite(ttlMsRaw) && ttlMsRaw > 0 ? ttlMsRaw : DEFAULT_CLAIM_TTL_MS;
+        const ttlMsRaw = Number(policy.ttlMs ?? runtimeConfig.workerHeartbeatTimeoutMs);
+        const ttlMs =
+          Number.isFinite(ttlMsRaw) && ttlMsRaw > 0 ? ttlMsRaw : runtimeConfig.workerHeartbeatTimeoutMs;
         db.run(
           `
             update orchestrator_claims
@@ -3160,6 +3479,7 @@ export function createOrchestratorService({
       ownerId: string;
       executorKind?: OrchestratorExecutorKind;
     }): Promise<OrchestratorAttempt> {
+      const runtimeConfig = getRuntimeConfig();
       const runRow = getRunRow(args.runId);
       if (!runRow) throw new Error(`Run not found: ${args.runId}`);
       const stepRow = getStepRow(args.stepId);
@@ -3190,6 +3510,7 @@ export function createOrchestratorService({
       // Claims are acquired before attempt state transitions so collisions are deterministic.
       const acquiredClaims: OrchestratorClaim[] = [];
       for (const scope of stepPolicy.claimScopes ?? []) {
+        const ttlMs = scope.ttlMs ?? runtimeConfig.workerHeartbeatTimeoutMs;
         const claim = acquireClaim({
           runId: run.id,
           stepId: step.id,
@@ -3197,8 +3518,8 @@ export function createOrchestratorService({
           ownerId: args.ownerId.trim() || "orchestrator",
           scopeKind: scope.scopeKind,
           scopeValue: scope.scopeValue,
-          ttlMs: scope.ttlMs ?? DEFAULT_CLAIM_TTL_MS,
-          policy: { ttlMs: scope.ttlMs ?? DEFAULT_CLAIM_TTL_MS }
+          ttlMs,
+          policy: { ttlMs }
         });
         if (!claim) {
           releaseClaimsForAttempt({ attemptId, state: "released" });
@@ -3235,7 +3556,7 @@ export function createOrchestratorService({
               executorKind,
               contextPolicy.id,
               `Claim collision for ${scope.scopeKind}:${scope.scopeValue}`,
-              JSON.stringify({ ownerId: args.ownerId, claimScope: scope }),
+              JSON.stringify({ ownerId: args.ownerId, claimScope: scope, workerState: "disposed" }),
               createdAt,
               createdAt,
               createdAt
@@ -3295,6 +3616,27 @@ export function createOrchestratorService({
         contextProfile: contextPolicy
       });
 
+      // Budget guard: check total budget before dispatching
+      const budgetConsumed = Number(run.metadata?.budgetConsumedUsd ?? 0);
+      if (runtimeConfig.maxTotalBudgetUsd != null && budgetConsumed >= runtimeConfig.maxTotalBudgetUsd) {
+        releaseClaimsForAttempt({ attemptId, state: "released" });
+        updateRunStatus(run.id, "paused", {
+          last_error: `Total budget exceeded: $${budgetConsumed.toFixed(2)} >= $${runtimeConfig.maxTotalBudgetUsd.toFixed(2)}`
+        });
+        appendTimelineEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId,
+          eventType: "budget_exceeded",
+          reason: "total_budget_limit",
+          detail: {
+            budgetConsumedUsd: budgetConsumed,
+            maxTotalBudgetUsd: runtimeConfig.maxTotalBudgetUsd
+          }
+        });
+        throw new Error(`Total budget exceeded: $${budgetConsumed.toFixed(2)} >= $${runtimeConfig.maxTotalBudgetUsd.toFixed(2)}`);
+      }
+
       db.run(
         `
           insert into orchestrator_attempts(
@@ -3331,7 +3673,9 @@ export function createOrchestratorService({
           JSON.stringify({
             ownerId: args.ownerId,
             docsMode: contextPolicy.docsMode,
-            docsCount: snapshot.docsRefs.length
+            docsCount: snapshot.docsRefs.length,
+            workerState: "initializing",
+            workerStartedAt: createdAt
           }),
           createdAt,
           createdAt
@@ -3387,7 +3731,8 @@ export function createOrchestratorService({
         detail: {
           executorKind,
           contextProfile: contextPolicy.id,
-          contextSnapshotId: snapshot.snapshotId
+          contextSnapshotId: snapshot.snapshotId,
+          workerState: "initializing"
         }
       });
 
@@ -3468,7 +3813,9 @@ export function createOrchestratorService({
                 JSON.stringify({
                   ...(attempt.metadata ?? {}),
                   ...(result.metadata ?? {}),
-                  transcriptPath: sessionRow?.transcript_path ?? null
+                  transcriptPath: sessionRow?.transcript_path ?? null,
+                  workerState: "working",
+                  workerSessionAttachedAt: nowIso()
                 }),
                 attempt.id,
                 projectId
@@ -3484,7 +3831,8 @@ export function createOrchestratorService({
               detail: {
                 executorKind,
                 sessionId,
-                transcriptPath: sessionRow?.transcript_path ?? null
+                transcriptPath: sessionRow?.transcript_path ?? null,
+                workerState: "working"
               }
             });
           }
@@ -3579,6 +3927,7 @@ export function createOrchestratorService({
           trackedSession: true
         }
       );
+      const workerState = status === "succeeded" ? "idle" : "disposed";
 
       db.run(
         `
@@ -3602,7 +3951,9 @@ export function createOrchestratorService({
           JSON.stringify(envelope),
           JSON.stringify({
             ...(parseRecord(attemptRow.metadata_json) ?? {}),
-            ...(args.metadata ?? {})
+            ...(args.metadata ?? {}),
+            workerState,
+            workerCompletedAt: completedAt
           }),
           completedAt,
           completedAt,
@@ -3756,7 +4107,79 @@ export function createOrchestratorService({
         }
       });
 
+      // Budget accumulation: if attempt metadata includes budgetConsumedUsd, accumulate into run
+      const attemptBudget = Number(args.metadata?.budgetConsumedUsd ?? 0);
+      if (attemptBudget > 0) {
+        const currentRunRow = getRunRow(run.id);
+        const currentRunMeta = currentRunRow ? (parseRecord(currentRunRow.metadata_json) ?? {}) : (run.metadata ?? {});
+        const currentTotal = Number(currentRunMeta.budgetConsumedUsd ?? 0);
+        const newTotal = currentTotal + attemptBudget;
+        const updatedMeta = { ...currentRunMeta, budgetConsumedUsd: newTotal };
+        db.run(
+          `
+            update orchestrator_runs
+            set metadata_json = ?,
+                updated_at = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [JSON.stringify(updatedMeta), nowIso(), run.id, projectId]
+        );
+        appendTimelineEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId: args.attemptId,
+          eventType: "budget_updated",
+          reason: "attempt_budget_accumulated",
+          detail: {
+            attemptBudgetUsd: attemptBudget,
+            totalBudgetUsd: newTotal
+          }
+        });
+        // Check if total exceeds limit; if so, pause the run
+        const runtimeConfig = getRuntimeConfig();
+        if (runtimeConfig.maxTotalBudgetUsd != null && newTotal >= runtimeConfig.maxTotalBudgetUsd) {
+          updateRunStatus(run.id, "paused", {
+            last_error: `Total budget exceeded: $${newTotal.toFixed(2)} >= $${runtimeConfig.maxTotalBudgetUsd.toFixed(2)}`,
+            metadata_json: JSON.stringify(updatedMeta)
+          });
+          appendTimelineEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: args.attemptId,
+            eventType: "budget_exceeded",
+            reason: "total_budget_limit",
+            detail: {
+              budgetConsumedUsd: newTotal,
+              maxTotalBudgetUsd: runtimeConfig.maxTotalBudgetUsd
+            }
+          });
+        }
+      }
+
       const updatedRun = this.tick({ runId: run.id });
+      if (updatedRun.status === "succeeded" || updatedRun.status === "failed" || updatedRun.status === "canceled") {
+        const latestAttempt = getAttemptRow(args.attemptId);
+        const latestMetadata =
+          (latestAttempt ? toAttempt(latestAttempt).metadata : null) ?? parseRecord(attemptRow.metadata_json) ?? {};
+        db.run(
+          `
+            update orchestrator_attempts
+            set metadata_json = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [
+            JSON.stringify({
+              ...latestMetadata,
+              workerState: "disposed",
+              workerDisposedAt: nowIso()
+            }),
+            args.attemptId,
+            projectId
+          ]
+        );
+      }
       if (updatedRun.status === "failed") {
         db.run(
           `
@@ -3972,6 +4395,227 @@ export function createOrchestratorService({
           reason: args.reason ?? null
         }
       });
+    },
+
+    addSteps(args: {
+      runId: string;
+      steps: StartOrchestratorRunStepInput[];
+    }): OrchestratorStep[] {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot add steps to a terminal run (status: ${run.status}).`);
+      }
+      if (!args.steps.length) return [];
+
+      // Get existing steps to compute next step_index and resolve dependency keys
+      const existingStepRows = listStepRows(runId);
+      const existingSteps = existingStepRows.map(toStep);
+      const existingKeyToId = new Map<string, string>();
+      for (const step of existingSteps) {
+        existingKeyToId.set(step.stepKey, step.id);
+      }
+      const maxExistingIndex = existingSteps.reduce((max, step) => Math.max(max, step.stepIndex), -1);
+
+      const createdAt = nowIso();
+      const newKeyToId = new Map<string, string>();
+      const sorted = [...args.steps].sort(
+        (a, b) => a.stepIndex - b.stepIndex || a.stepKey.localeCompare(b.stepKey)
+      );
+      const stepEntries = sorted.map((input, index) => {
+        const id = randomUUID();
+        const stepKey = input.stepKey.trim();
+        if (!stepKey) throw new Error("stepKey is required for every orchestrator step.");
+        if (existingKeyToId.has(stepKey) || newKeyToId.has(stepKey)) {
+          throw new Error(`Duplicate stepKey: ${stepKey}`);
+        }
+        newKeyToId.set(stepKey, id);
+        return {
+          id,
+          input,
+          stepIndex: Number.isFinite(input.stepIndex) ? input.stepIndex : maxExistingIndex + 1 + index
+        };
+      });
+
+      // Insert step rows
+      for (const { id, input, stepIndex } of stepEntries) {
+        const policy: Record<string, unknown> = {
+          includeNarrative: input.policy?.includeNarrative === true,
+          includeFullDocs: input.policy?.includeFullDocs === true,
+          ...(typeof input.policy?.docsMaxBytes === "number" ? { docsMaxBytes: Math.floor(input.policy.docsMaxBytes) } : {}),
+          claimScopes: Array.isArray(input.policy?.claimScopes)
+            ? input.policy?.claimScopes?.map((scope) => ({
+                scopeKind: scope.scopeKind,
+                scopeValue: scope.scopeValue,
+                ...(typeof scope.ttlMs === "number" ? { ttlMs: Math.floor(scope.ttlMs) } : {})
+              }))
+            : []
+        };
+        const metadataJson = JSON.stringify({
+          ...(input.metadata ?? {}),
+          ...(input.executorKind ? { executorKind: input.executorKind } : {}),
+          policy
+        });
+        db.run(
+          `
+            insert into orchestrator_steps(
+              id,
+              run_id,
+              project_id,
+              mission_step_id,
+              step_key,
+              step_index,
+              title,
+              lane_id,
+              status,
+              join_policy,
+              quorum_count,
+              dependency_step_ids_json,
+              retry_limit,
+              retry_count,
+              last_attempt_id,
+              policy_json,
+              metadata_json,
+              created_at,
+              updated_at,
+              started_at,
+              completed_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '[]', ?, 0, null, ?, ?, ?, ?, null, null)
+          `,
+          [
+            id,
+            runId,
+            projectId,
+            input.missionStepId ?? null,
+            input.stepKey.trim(),
+            stepIndex,
+            input.title.trim() || input.stepKey.trim(),
+            input.laneId ?? null,
+            input.joinPolicy ?? "all_success",
+            input.quorumCount ?? null,
+            Math.max(0, Math.floor(input.retryLimit ?? 0)),
+            JSON.stringify(policy),
+            metadataJson,
+            createdAt,
+            createdAt
+          ]
+        );
+        appendTimelineEvent({
+          runId,
+          stepId: id,
+          eventType: "step_registered",
+          reason: "add_steps",
+          detail: {
+            stepKey: input.stepKey.trim(),
+            stepIndex,
+            joinPolicy: input.joinPolicy ?? "all_success",
+            retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0))
+          }
+        });
+      }
+
+      // Resolve dependency IDs from keys (can reference both existing and new steps)
+      const combinedKeyToId = new Map([...existingKeyToId, ...newKeyToId]);
+      for (const { id, input } of stepEntries) {
+        const depKeys = input.dependencyStepKeys ?? [];
+        const depIds = depKeys
+          .map((key) => combinedKeyToId.get(key.trim()) ?? null)
+          .filter((value): value is string => Boolean(value));
+        db.run(
+          `
+            update orchestrator_steps
+            set dependency_step_ids_json = ?,
+                updated_at = ?
+            where id = ?
+              and run_id = ?
+              and project_id = ?
+          `,
+          [JSON.stringify(depIds), createdAt, id, runId, projectId]
+        );
+        appendTimelineEvent({
+          runId,
+          stepId: id,
+          eventType: "step_dependencies_resolved",
+          reason: "add_steps",
+          detail: { dependencyStepIds: depIds }
+        });
+      }
+
+      // Re-evaluate readiness and emit
+      refreshStepReadiness(runId);
+      emit({ type: "orchestrator-run-updated", runId, reason: "steps_added" });
+
+      return stepEntries.map(({ id }) => {
+        const row = getStepRow(id);
+        if (!row) throw new Error(`Step not found after insertion: ${id}`);
+        return toStep(row);
+      });
+    },
+
+    skipStep(args: {
+      runId: string;
+      stepId: string;
+      reason?: string;
+    }): OrchestratorStep {
+      const runId = String(args.runId ?? "").trim();
+      const stepId = String(args.stepId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!stepId) throw new Error("stepId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Cannot skip step in a terminal run (status: ${run.status}).`);
+      }
+
+      const stepRow = getStepRow(stepId);
+      if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
+      const step = toStep(stepRow);
+      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+        throw new Error(`Step is already terminal (status: ${step.status}).`);
+      }
+
+      const now = nowIso();
+      const reason = args.reason?.trim() || "Manually skipped.";
+      db.run(
+        `
+          update orchestrator_steps
+          set status = 'skipped',
+              updated_at = ?,
+              completed_at = ?
+          where id = ?
+            and run_id = ?
+            and project_id = ?
+        `,
+        [now, now, stepId, runId, projectId]
+      );
+
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "step_skipped",
+        reason: "skip_step",
+        detail: { reason }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "skipped" });
+
+      // Re-evaluate downstream steps that may now be unblocked
+      refreshStepReadiness(runId);
+
+      // Re-derive run status
+      const nextRunStatus = deriveRunStatusFromSteps(runId);
+      const currentRunStatus = normalizeRunStatus(runRow.status);
+      if (nextRunStatus !== currentRunStatus) {
+        updateRunStatus(runId, nextRunStatus);
+      }
+
+      const updatedRow = getStepRow(stepId);
+      if (!updatedRow) throw new Error(`Step not found after skip: ${stepId}`);
+      return toStep(updatedRow);
     }
   };
 }

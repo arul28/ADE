@@ -34,6 +34,7 @@ function buildExport(packKey: string, packType: PackType, level: "lite" | "stand
 async function createFixture(args: {
   conflictService?: any;
   packService?: Record<string, unknown>;
+  projectConfigService?: Record<string, unknown> | null;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -200,7 +201,8 @@ async function createFixture(args: {
       ...(args.packService ?? {})
     } as any,
     conflictService: args.conflictService,
-    ptyService
+    ptyService,
+    projectConfigService: (args.projectConfigService ?? null) as any
   });
 
   return {
@@ -493,7 +495,19 @@ describe("orchestratorService", () => {
   });
 
   it("maps mission planner metadata into deterministic run graph and autopilot metadata", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                maxParallelWorkers: 2
+              }
+            }
+          }
+        })
+      }
+    });
     try {
       const now = "2026-02-19T00:00:00.000Z";
       fixture.db.run(
@@ -540,7 +554,10 @@ describe("orchestratorService", () => {
       const started = fixture.service.startRunFromMission({
         missionId: fixture.missionId,
         runMode: "autopilot",
-        defaultExecutorKind: "codex"
+        defaultExecutorKind: "codex",
+        metadata: {
+          plannerParallelismCap: 6
+        }
       });
 
       const run = fixture.service.listRuns({ missionId: fixture.missionId })[0];
@@ -548,6 +565,9 @@ describe("orchestratorService", () => {
       const autopilot = run?.metadata?.autopilot as Record<string, unknown> | undefined;
       expect(autopilot?.enabled).toBe(true);
       expect(autopilot?.executorKind).toBe("codex");
+      expect(autopilot?.parallelismCap).toBe(2);
+      const planner = run?.metadata?.planner as Record<string, unknown> | undefined;
+      expect(planner?.parallelismCap).toBe(2);
 
       const steps = fixture.service.listSteps(started.run.id);
       const join = steps.find((step) => step.missionStepId === "mstep-3");
@@ -771,6 +791,86 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("summarizes older mission handoffs in context snapshots to limit context bloat", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-20T00:00:00.000Z";
+      fixture.db.run(
+        `
+          insert into mission_steps(
+            id,
+            mission_id,
+            project_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values ('mstep-handoff', ?, ?, 0, 'Implement', null, 'implementation', ?, 'pending', '{"stepType":"implementation"}', ?, ?, null, null)
+        `,
+        [fixture.missionId, fixture.projectId, fixture.laneId, now, now]
+      );
+
+      for (let index = 0; index < 20; index += 1) {
+        fixture.db.run(
+          `
+            insert into mission_step_handoffs(
+              id,
+              project_id,
+              mission_id,
+              mission_step_id,
+              run_id,
+              step_id,
+              attempt_id,
+              handoff_type,
+              producer,
+              payload_json,
+              created_at
+            ) values (?, ?, ?, ?, null, null, null, ?, 'orchestrator', ?, ?)
+          `,
+          [
+            `handoff-${index}`,
+            fixture.projectId,
+            fixture.missionId,
+            "mstep-handoff",
+            index % 2 === 0 ? "attempt_succeeded" : "attempt_failed",
+            JSON.stringify({ index }),
+            new Date(Date.parse(now) + index * 1_000).toISOString()
+          ]
+        );
+      }
+
+      const started = fixture.service.startRunFromMission({
+        missionId: fixture.missionId,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner-handoff",
+        executorKind: "manual"
+      });
+      const snapshot = fixture.service
+        .listContextSnapshots({ runId: started.run.id })
+        .find((entry) => entry.id === attempt.contextSnapshotId);
+      expect(snapshot?.cursor.missionHandoffIds?.length).toBe(12);
+      expect(snapshot?.cursor.missionHandoffDigest?.summarizedCount).toBe(8);
+      expect(snapshot?.cursor.missionHandoffDigest?.byType?.attempt_failed).toBeGreaterThan(0);
+      expect(snapshot?.cursor.missionHandoffDigest?.byType?.attempt_succeeded).toBeGreaterThan(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("bootstraps lane pack refresh when context snapshot sees empty lane pack", async () => {
     let laneExportCalls = 0;
     let laneRefreshCalls = 0;
@@ -886,6 +986,235 @@ describe("orchestratorService", () => {
       expect(integrationAttempt.errorClass).toBe("policy");
       const timeline = fixture.service.listTimeline({ runId: integrationRun.run.id, limit: 50 });
       expect(timeline.some((entry) => entry.eventType === "integration_chain_stage")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("enforces total budget limit in startAttempt", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                maxTotalBudgetUsd: 5.0
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: { budgetConsumedUsd: 6.0 },
+        steps: [{ stepKey: "expensive", title: "Expensive", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      await expect(
+        fixture.service.startAttempt({
+          runId: started.run.id,
+          stepId: step.id,
+          ownerId: "owner"
+        })
+      ).rejects.toThrow(/budget exceeded/i);
+
+      const runs = fixture.service.listRuns({ missionId: fixture.missionId });
+      const run = runs.find((r) => r.id === started.run.id);
+      expect(run?.status).toBe("paused");
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline.some((e) => e.eventType === "budget_exceeded")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("accumulates budget from attempt metadata in completeAttempt and pauses when exceeded", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                maxTotalBudgetUsd: 10.0
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      // 3 steps: a → b → c. After a and b complete, budget exceeds. c remains pending so run doesn't finalize.
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          { stepKey: "step-a", title: "Step A", stepIndex: 0 },
+          { stepKey: "step-b", title: "Step B", stepIndex: 1, dependencyStepKeys: ["step-a"] },
+          { stepKey: "step-c", title: "Step C", stepIndex: 2, dependencyStepKeys: ["step-b"] }
+        ]
+      });
+      const stepA = fixture.service.listSteps(started.run.id).find((s) => s.stepKey === "step-a");
+      if (!stepA) throw new Error("Missing step-a");
+
+      const attemptA = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: stepA.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attemptA.id,
+        status: "succeeded",
+        metadata: { budgetConsumedUsd: 7.0 }
+      });
+
+      // Budget should be accumulated
+      const timeline1 = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline1.some((e) => e.eventType === "budget_updated")).toBe(true);
+
+      const stepB = fixture.service.listSteps(started.run.id).find((s) => s.stepKey === "step-b");
+      if (!stepB) throw new Error("Missing step-b");
+      const attemptB = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: stepB.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attemptB.id,
+        status: "succeeded",
+        metadata: { budgetConsumedUsd: 5.0 }
+      });
+
+      // Total is now 12.0, exceeding 10.0 limit. Step C is still pending so run pauses.
+      const runs = fixture.service.listRuns({ missionId: fixture.missionId });
+      const run = runs.find((r) => r.id === started.run.id);
+      expect(run?.status).toBe("paused");
+
+      const timeline2 = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline2.some((e) => e.eventType === "budget_exceeded")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("adds steps to a running run with dependency resolution", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          { stepKey: "existing-a", title: "Existing A", stepIndex: 0 },
+          { stepKey: "existing-b", title: "Existing B", stepIndex: 1, dependencyStepKeys: ["existing-a"] }
+        ]
+      });
+
+      const newSteps = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          { stepKey: "new-c", title: "New C", stepIndex: 2, dependencyStepKeys: ["existing-b"] },
+          { stepKey: "new-d", title: "New D", stepIndex: 3, dependencyStepKeys: ["new-c"] }
+        ]
+      });
+
+      expect(newSteps).toHaveLength(2);
+      expect(newSteps[0]?.stepKey).toBe("new-c");
+      expect(newSteps[1]?.stepKey).toBe("new-d");
+
+      // new-c should depend on existing-b
+      const existingB = fixture.service.listSteps(started.run.id).find((s) => s.stepKey === "existing-b");
+      expect(newSteps[0]?.dependencyStepIds).toContain(existingB?.id);
+
+      // new-d should depend on new-c
+      expect(newSteps[1]?.dependencyStepIds).toContain(newSteps[0]?.id);
+
+      // Timeline should show step_registered events
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      const registeredEvents = timeline.filter((e) => e.eventType === "step_registered" && e.reason === "add_steps");
+      expect(registeredEvents.length).toBe(2);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("rejects duplicate step keys in addSteps", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "original", title: "Original", stepIndex: 0 }]
+      });
+
+      expect(() =>
+        fixture.service.addSteps({
+          runId: started.run.id,
+          steps: [{ stepKey: "original", title: "Duplicate", stepIndex: 1 }]
+        })
+      ).toThrow(/duplicate/i);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("skips a step and unblocks downstream dependencies", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          { stepKey: "skip-me", title: "Skip Me", stepIndex: 0 },
+          { stepKey: "downstream", title: "Downstream", stepIndex: 1, dependencyStepKeys: ["skip-me"] }
+        ]
+      });
+      const [skipStep, downstream] = fixture.service.listSteps(started.run.id);
+      if (!skipStep || !downstream) throw new Error("Missing steps");
+
+      // downstream should not be ready yet
+      expect(downstream.status).toBe("pending");
+
+      const skipped = fixture.service.skipStep({
+        runId: started.run.id,
+        stepId: skipStep.id,
+        reason: "Not needed"
+      });
+      expect(skipped.status).toBe("skipped");
+
+      // downstream should now be ready since its dependency was skipped
+      const updatedDownstream = fixture.service.listSteps(started.run.id).find((s) => s.id === downstream.id);
+      expect(updatedDownstream?.status).toBe("ready");
+
+      // Timeline should show skip event
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline.some((e) => e.eventType === "step_skipped")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("rejects skip on terminal step", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "done", title: "Done", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({ attemptId: attempt.id, status: "succeeded" });
+
+      expect(() =>
+        fixture.service.skipStep({
+          runId: started.run.id,
+          stepId: step.id
+        })
+      ).toThrow(/terminal/i);
     } finally {
       fixture.dispose();
     }

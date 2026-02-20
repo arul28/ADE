@@ -39,6 +39,9 @@ import { createRestackSuggestionService } from "./services/lanes/restackSuggesti
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
+import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
+import { createClaudeOrchestratorAdapter } from "./services/orchestrator/claudeOrchestratorAdapter";
+import { createCodexOrchestratorAdapter } from "./services/orchestrator/codexOrchestratorAdapter";
 import type { Logger } from "./services/logging/logger";
 
 if (process.env.VITE_DEV_SERVER_URL) {
@@ -469,6 +472,7 @@ app.whenReady().then(async () => {
       onEvent: (event) => broadcast(IPC.missionsEvent, event)
     });
 
+    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const orchestratorService = createOrchestratorService({
       db,
       projectId,
@@ -476,9 +480,25 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       ptyService,
-      onEvent: (event) => broadcast(IPC.orchestratorEvent, event)
+      projectConfigService,
+      onEvent: (event) => {
+        aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
+        broadcast(IPC.orchestratorEvent, event);
+      }
     });
     orchestratorServiceRef = orchestratorService;
+    const aiOrchestratorService = createAiOrchestratorService({
+      db,
+      logger,
+      missionService,
+      orchestratorService,
+      projectConfigService,
+      aiIntegrationService,
+      projectRoot
+    });
+    aiOrchestratorServiceRef = aiOrchestratorService;
+    orchestratorService.registerExecutorAdapter(createClaudeOrchestratorAdapter());
+    orchestratorService.registerExecutorAdapter(createCodexOrchestratorAdapter());
 
     const automationPlannerService = createAutomationPlannerService({
       logger,
@@ -603,6 +623,7 @@ app.whenReady().then(async () => {
       automationPlannerService,
       missionService,
       orchestratorService,
+      aiOrchestratorService,
       ciService,
       agentChatService,
       packService,

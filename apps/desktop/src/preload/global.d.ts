@@ -226,7 +226,11 @@ import type {
   TestSuiteDefinition,
   UpdateLaneAppearanceArgs,
   UndoConflictProposalArgs,
-  WriteTextAtomicArgs
+  WriteTextAtomicArgs,
+  GetOrchestratorWorkerStatesArgs,
+  OrchestratorWorkerState,
+  StartMissionRunWithAIArgs,
+  StartMissionRunWithAIResult
 } from "../shared/types";
 
 export {};
@@ -312,6 +316,9 @@ declare global {
         startRunFromMission: (
           args: StartOrchestratorRunFromMissionArgs
         ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
+        approveMissionPlan: (
+          args: StartOrchestratorRunFromMissionArgs
+        ) => Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }>;
         startAttempt: (args: StartOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
         completeAttempt: (args: CompleteOrchestratorAttemptArgs) => Promise<OrchestratorAttempt>;
         tickRun: (args: TickOrchestratorRunArgs) => Promise<OrchestratorRun>;
@@ -320,6 +327,8 @@ declare global {
         heartbeatClaims: (args: HeartbeatOrchestratorClaimsArgs) => Promise<number>;
         listTimeline: (args: ListOrchestratorTimelineArgs) => Promise<OrchestratorTimelineEvent[]>;
         getGateReport: (args?: GetOrchestratorGateReportArgs) => Promise<OrchestratorGateReport>;
+        getWorkerStates: (args: GetOrchestratorWorkerStatesArgs) => Promise<OrchestratorWorkerState[]>;
+        startMissionRun: (args: StartMissionRunWithAIArgs) => Promise<StartMissionRunWithAIResult>;
         onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
       };
       lanes: {
