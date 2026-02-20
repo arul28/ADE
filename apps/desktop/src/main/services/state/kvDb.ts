@@ -551,33 +551,6 @@ function migrate(db: Database) {
     ["project_id", "status"]
   );
 
-  db.run(`
-    create table if not exists ai_usage_log (
-      id text primary key,
-      timestamp text not null,
-      feature text not null,
-      provider text not null,
-      model text,
-      input_tokens integer,
-      output_tokens integer,
-      duration_ms integer not null,
-      success integer not null default 0,
-      session_id text
-    )
-  `);
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_ai_usage_feature_timestamp on ai_usage_log(feature, timestamp)",
-    "ai_usage_log",
-    ["feature", "timestamp"]
-  );
-  createIndexIfColumnsExist(
-    db,
-    "create index if not exists idx_ai_usage_timestamp on ai_usage_log(timestamp)",
-    "ai_usage_log",
-    ["timestamp"]
-  );
-
   // Phase 7 GitHub PR tracking (lane -> PR mapping).
   db.run(`
     create table if not exists pull_requests (

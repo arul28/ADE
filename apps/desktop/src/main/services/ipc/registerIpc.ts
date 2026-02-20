@@ -102,18 +102,6 @@ import type {
   HostedSignInArgs,
   HostedSignInResult,
   HostedStatus,
-  AgentChatApproveArgs,
-  AgentChatCreateArgs,
-  AgentChatDisposeArgs,
-  AgentChatInterruptArgs,
-  AgentChatListArgs,
-  AgentChatModelInfo,
-  AgentChatModelsArgs,
-  AgentChatResumeArgs,
-  AgentChatSendArgs,
-  AgentChatSession,
-  AgentChatSessionSummary,
-  AgentChatSteerArgs,
   AgentTool,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -257,13 +245,11 @@ import type { createPackService } from "../packs/packService";
 import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createHostedAgentService } from "../hosted/hostedAgentService";
 import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createByokLlmService } from "../byok/byokLlmService";
-import type { createAgentChatService } from "../chat/agentChatService";
 import { readGlobalState, writeGlobalState } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createTerminalProfilesService } from "../terminalProfiles/terminalProfilesService";
@@ -299,10 +285,8 @@ export type AppContext = {
   operationService: ReturnType<typeof createOperationService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   conflictService: ReturnType<typeof createConflictService>;
-  aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   hostedAgentService: ReturnType<typeof createHostedAgentService>;
   byokLlmService: ReturnType<typeof createByokLlmService>;
-  agentChatService: ReturnType<typeof createAgentChatService>;
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
@@ -1628,52 +1612,6 @@ export function registerIpc({
   ipcMain.handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {
     const ctx = getCtx();
     return ctx.packService.getSessionDelta(arg.sessionId);
-  });
-
-  ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
-    const ctx = getCtx();
-    const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-    return ctx.agentChatService.listSessions(laneId || undefined);
-  });
-
-  ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
-    return await ctx.agentChatService.createSession(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.agentChatService.sendMessage(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.agentChatService.steer(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: AgentChatInterruptArgs): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.agentChatService.interrupt(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatResume, async (_event, arg: AgentChatResumeArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
-    return await ctx.agentChatService.resumeSession(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.agentChatService.approveToolUse(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
-    const ctx = getCtx();
-    return await ctx.agentChatService.getAvailableModels(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.agentChatService.dispose(arg);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

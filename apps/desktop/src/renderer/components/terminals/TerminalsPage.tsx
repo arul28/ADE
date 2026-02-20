@@ -8,7 +8,6 @@ import { Chip } from "../ui/Chip";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { TerminalView, getTerminalRuntimeHealth } from "./TerminalView";
 import { sanitizeTerminalInlineText, sessionIndicatorState } from "../../lib/terminalAttention";
-import { AgentChatPane } from "../chat/AgentChatPane";
 
 /* ---- Default tiling layout ---- */
 
@@ -39,10 +38,6 @@ function inferToolFromResumeCommand(command: string): "claude" | "codex" | null 
   return null;
 }
 
-function isChatToolType(toolType: string | null | undefined): boolean {
-  return toolType === "codex-chat" || toolType === "claude-chat";
-}
-
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
   if (state === "waiting-input") return "waiting input";
   return state;
@@ -64,11 +59,10 @@ export function TerminalsPage() {
   const [filterStatus, setFilterStatus] = useState<TerminalSessionStatus | "all">("all");
   const [q, setQ] = useState("");
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
-  const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     setLoading(true);
     try {
       const rows = await window.ade.sessions.list({ limit: 500 });
@@ -76,7 +70,7 @@ export function TerminalsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
 
   useEffect(() => {
     refresh().catch(() => {});
@@ -120,19 +114,6 @@ export function TerminalsPage() {
   }, [sessions]);
 
   useEffect(() => {
-    const unsubscribe = window.ade.agentChat.onEvent((payload) => {
-      const event = payload.event;
-      if (event.type === "done") {
-        refresh().catch(() => {});
-      }
-      if (event.type === "status" && event.turnStatus !== "started") {
-        refresh().catch(() => {});
-      }
-    });
-    return unsubscribe;
-  }, [refresh]);
-
-  useEffect(() => {
     // Default to selected lane filter (toggleable by user selecting "all").
     if (selectedLaneId && filterLaneId === "all") {
       // Leave as "all" until user opts in.
@@ -165,7 +146,6 @@ export function TerminalsPage() {
     () => (selectedSessionId ? sessions.find((s) => s.id === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
-  const selectedIsChat = useMemo(() => isChatToolType(selectedSession?.toolType), [selectedSession]);
   const selectedHealth = selectedSession ? getTerminalRuntimeHealth(selectedSession.id) : null;
 
   // Auto-select the first running session if nothing is selected
@@ -222,21 +202,6 @@ export function TerminalsPage() {
 
   const resumeSession = useCallback(
     async (session: TerminalSessionSummary) => {
-      if (isChatToolType(session.toolType)) {
-        if (resumingSessionId) return;
-        setResumingSessionId(session.id);
-        try {
-          await window.ade.agentChat.resume({ sessionId: session.id });
-          selectLane(session.laneId);
-          focusSession(session.id);
-          setSelectedSessionId(session.id);
-          await refresh();
-        } finally {
-          setResumingSessionId(null);
-        }
-        return;
-      }
-
       const command = (session.resumeCommand ?? "").trim();
       if (!command || resumingSessionId) return;
       setResumingSessionId(session.id);
@@ -264,18 +229,8 @@ export function TerminalsPage() {
         setResumingSessionId(null);
       }
     },
-    [focusSession, navigate, refresh, resumingSessionId, selectLane]
+    [focusSession, navigate, resumingSessionId, selectLane]
   );
-
-  const closeChatSession = useCallback(async (sessionId: string) => {
-    setClosingChatSessionId(sessionId);
-    try {
-      await window.ade.agentChat.dispose({ sessionId });
-      await refresh();
-    } finally {
-      setClosingChatSessionId((current) => (current === sessionId ? null : current));
-    }
-  }, [refresh]);
 
   const sessionDot = useCallback((session: TerminalSessionSummary): { className: string; spinning: boolean; title: string } => {
     const indicator = sessionIndicatorState({
@@ -449,17 +404,13 @@ export function TerminalsPage() {
         icon: Monitor,
         bodyClassName: "overflow-hidden",
         meta: selectedSession
-          ? selectedIsChat
-            ? "chat"
-            : selectedSession.status === "running"
-              ? "live"
-              : selectedSession.status
+          ? selectedSession.status === "running"
+            ? "live"
+            : selectedSession.status
           : undefined,
         children: (
           <div className="h-full w-full">
-            {selectedSession && selectedIsChat ? (
-              <AgentChatPane laneId={selectedSession.laneId} lockSessionId={selectedSession.id} />
-            ) : runningSessions.length > 0 ? (
+            {runningSessions.length > 0 ? (
               <div className="relative h-full w-full">
                 {runningSessions.map((session) =>
                   session.ptyId ? (
@@ -637,18 +588,6 @@ export function TerminalsPage() {
                       {closingPtyIds.has(selectedSession.ptyId) ? "Closing..." : "Close"}
                     </Button>
                   ) : null}
-                  {selectedSession.status === "running" && selectedIsChat ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={closingChatSessionId === selectedSession.id}
-                      onClick={() => closeChatSession(selectedSession.id).catch(() => {})}
-                      title="End chat session"
-                    >
-                      <Square className="h-3.5 w-3.5" />
-                      {closingChatSessionId === selectedSession.id ? "Closing..." : "End chat"}
-                    </Button>
-                  ) : null}
                   {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
                     <>
                       <Button
@@ -723,16 +662,13 @@ export function TerminalsPage() {
       lanes,
       selectedSessionId,
       selectedSession,
-      selectedIsChat,
       selectedHealth,
       closingPtyIds,
-      closingChatSessionId,
       sessionDot,
       selectLane,
       focusSession,
       navigate,
       closeSession,
-      closeChatSession,
       resumeSession,
       resumingSessionId
     ]

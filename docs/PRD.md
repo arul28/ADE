@@ -217,14 +217,13 @@ For detailed architecture, see [Architecture Documentation](#9-architecture-docu
 | Icons | Lucide |
 | State Management | Zustand (renderer) |
 | Database | SQLite via sql.js (main process) |
-| Terminal | xterm.js (renderer), node-pty (main process), agent chat (Codex App Server + Claude multi-turn) |
+| Terminal | xterm.js (renderer), node-pty (main process) |
 | Editor/Diff | Monaco Editor (lazy-loaded) |
 | Graph/Canvas | React Flow |
 | Routing | React Router |
 | Layout | react-resizable-panels |
 | AI Execution | AgentExecutor interface (ADE-owned abstraction) |
 | AI Providers | `ai-sdk-provider-claude-code` (Claude), `@openai/codex-sdk` (Codex) |
-| Agent Chat | `AgentChatService` interface — `CodexChatBackend` (Codex App Server JSON-RPC 2.0), `ClaudeChatBackend` (community provider multi-turn `streamText()`) |
 | AI Tool Protocol | MCP Server (`apps/mcp-server`), JSON-RPC 2.0, stdio transport |
 | GitHub Integration | `gh` CLI (local), personal access tokens |
 
@@ -270,7 +269,7 @@ See: [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md)
 
 ### 7.4 Terminals
 
-The Terminals tab is a global session list optimized for high session volume. It displays all terminal sessions (PTY and agent chat) across lanes with filters (lane, status, tool type, has errors), pin support, and jump-to-lane navigation. Each row shows the lane name, session title/goal, status (running/exited/failure), last output preview, start time, and duration. A secondary grid view (V1) renders multiple sessions simultaneously with lightweight preview frames for unfocused sessions to avoid rendering too many live xterm instances. Agent chat sessions (backed by Codex App Server and Claude multi-turn) appear as first-class sessions alongside PTY sessions with unified session tracking, delta computation, and pack integration. When AI is available, sessions also receive AI-enhanced summaries providing intent detection, outcome assessment, and suggested next steps — displayed alongside the deterministic summary in session cards.
+The Terminals tab is a global session list optimized for high session volume. It displays all terminal sessions across lanes with filters (lane, status, tool type, has errors), pin support, and jump-to-lane navigation. Each row shows the lane name, session title/goal, status (running/exited/failure), last output preview, start time, and duration. A secondary grid view (V1) renders multiple sessions simultaneously with lightweight preview frames for unfocused sessions to avoid rendering too many live xterm instances. When AI is available, sessions also receive AI-enhanced summaries providing intent detection, outcome assessment, and suggested next steps — displayed alongside the deterministic summary in session cards.
 
 See: [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md)
 
@@ -335,7 +334,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 1 | Lanes | [features/LANES.md](features/LANES.md) | The primary cockpit for parallel work. Covers lane types (primary, worktree, attached), 3-pane layout, diff views, in-app git operations, stacked lane workflows, lane profiles, and overlay policies. |
 | 2 | Run (Command Center) | [features/PROJECT_HOME.md](features/PROJECT_HOME.md) | Project command center with play/pause icon. Covers managed process lifecycle, stack buttons, test suites, lane-scoped command execution, AI-suggested run prompts, CI/CD workflow sync, agent CLI tools registry (Claude Code, Codex, Cursor, Aider, Continue), and project configuration editing. |
 | 3 | Files and Editor | [features/FILES_AND_EDITOR.md](features/FILES_AND_EDITOR.md) | IDE-style file workbench. Covers workspace scope selection, file explorer tree, Monaco editor with diff modes, quick edit, conflict marker editing, and atomic save operations. |
-| 4 | Terminals and Sessions | [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md) | PTY-based embedded terminals and agent chat sessions. Covers lane-scoped sessions, transcript capture, session metadata tracking, checkpoint creation on session end, agent command shortcuts, the session end contract, and agent chat integration (Codex App Server + Claude multi-turn). |
+| 4 | Terminals and Sessions | [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md) | PTY-based embedded terminals. Covers lane-scoped sessions, transcript capture, session metadata tracking, checkpoint creation on session end, agent command shortcuts, and the session end contract. |
 | 5 | Conflicts | [features/CONFLICTS.md](features/CONFLICTS.md) | Conflict prediction and resolution radar. Covers per-lane conflict prediction, pairwise lane-lane risk matrix, merge simulation, near-real-time updates from staged/dirty changes, and AI-powered proposal workflows via the agent SDKs. |
 | 6 | Pull Requests | [features/PULL_REQUESTS.md](features/PULL_REQUESTS.md) | GitHub PR integration via local `gh` CLI and PATs. Covers PR creation and linking per lane, checks/review status display, description drafting from packs, stacked PR chain visualization, and the land stack guided merge flow. |
 | 7 | History | [features/HISTORY.md](features/HISTORY.md) | ADE operations timeline. Covers chronological event stream, feature history aggregation, event detail with jump links, context replay from checkpoints, undo capabilities, and graph visualization (V1). |
@@ -417,8 +416,6 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 
 - `ClaudeExecutor` (via `ai-sdk-provider-claude-code`): A community Vercel AI SDK provider that wraps `@anthropic-ai/claude-agent-sdk` to spawn the `claude` CLI as a subprocess. Inherits the user's Claude Pro/Max subscription authentication. This is a subscription auth workaround while Anthropic's policy on third-party tool usage is in flux. Supports streaming, session persistence, tool interception via `canUseTool`, and message injection for context pack delivery.
 - `CodexExecutor` (via `@openai/codex-sdk`): The official OpenAI SDK, used directly to spawn the `codex` CLI as a subprocess. Inherits the user's ChatGPT Plus subscription authentication. Subscription auth is natively supported.
-
-- **Agent Chat Service**: Native interactive chat interface using the Codex App Server protocol (JSON-RPC 2.0) and Claude community provider (multi-turn `streamText()`). Provider-agnostic `AgentChatService` interface with `CodexChatBackend` and `ClaudeChatBackend`. Chat sessions integrate as first-class sessions with delta tracking, pack integration, and approval flows.
 
 **MCP Server** (`apps/mcp-server`): A local JSON-RPC 2.0 server over stdio transport that exposes ADE's infrastructure as tools callable by the AI orchestrator. Tool surface includes:
 

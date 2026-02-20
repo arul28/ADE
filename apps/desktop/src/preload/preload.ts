@@ -113,19 +113,6 @@ import type {
   HostedSignInResult,
   HostedStatus,
   AgentTool,
-  AgentChatApproveArgs,
-  AgentChatCreateArgs,
-  AgentChatDisposeArgs,
-  AgentChatEventEnvelope,
-  AgentChatInterruptArgs,
-  AgentChatListArgs,
-  AgentChatModelInfo,
-  AgentChatModelsArgs,
-  AgentChatResumeArgs,
-  AgentChatSendArgs,
-  AgentChatSession,
-  AgentChatSessionSummary,
-  AgentChatSteerArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
@@ -429,31 +416,6 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
       ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId })
-  },
-  agentChat: {
-    list: async (args: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> =>
-      ipcRenderer.invoke(IPC.agentChatList, args),
-    create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.agentChatCreate, args),
-    send: async (args: AgentChatSendArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatSend, args),
-    steer: async (args: AgentChatSteerArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatSteer, args),
-    interrupt: async (args: AgentChatInterruptArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatInterrupt, args),
-    resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.agentChatResume, args),
-    approve: async (args: AgentChatApproveArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatApprove, args),
-    models: async (args: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> =>
-      ipcRenderer.invoke(IPC.agentChatModels, args),
-    dispose: async (args: AgentChatDisposeArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.agentChatDispose, args),
-    onEvent: (cb: (ev: AgentChatEventEnvelope) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: AgentChatEventEnvelope) => cb(payload);
-      ipcRenderer.on(IPC.agentChatEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.agentChatEvent, listener);
-    }
   },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => ipcRenderer.invoke(IPC.ptyCreate, args),

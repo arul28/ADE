@@ -274,84 +274,6 @@ function parsePorcelainPaths(stdout: string): string[] {
   return [...out];
 }
 
-function parseChatTranscriptDelta(rawTranscript: string): {
-  touchedFiles: string[];
-  failureLines: string[];
-} {
-  const touched = new Set<string>();
-  const failureLines: string[] = [];
-  const seenFailure = new Set<string>();
-
-  const pushFailure = (value: string | null | undefined) => {
-    const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
-    if (!normalized.length) return;
-    const clipped = normalized.length > 320 ? normalized.slice(0, 320) : normalized;
-    if (seenFailure.has(clipped)) return;
-    seenFailure.add(clipped);
-    failureLines.push(clipped);
-  };
-
-  for (const rawLine of rawTranscript.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line.length) continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-    const event = (parsed as { event?: unknown }).event;
-    if (!event || typeof event !== "object" || Array.isArray(event)) continue;
-    const eventRecord = event as Record<string, unknown>;
-    const type = typeof eventRecord.type === "string" ? eventRecord.type : "";
-
-    if (type === "file_change") {
-      const pathValue = String(eventRecord.path ?? "").trim();
-      if (pathValue.length && !pathValue.startsWith("(")) touched.add(pathValue);
-      continue;
-    }
-
-    if (type === "command") {
-      const command = String(eventRecord.command ?? "").trim();
-      const output = String(eventRecord.output ?? "");
-      const status = String(eventRecord.status ?? "").trim();
-      const exitCode = typeof eventRecord.exitCode === "number" ? eventRecord.exitCode : null;
-
-      if (status === "failed" || (exitCode != null && exitCode !== 0)) {
-        pushFailure(command.length ? `Command failed: ${command}` : "Command failed.");
-      }
-
-      for (const outputLine of output.split(/\r?\n/)) {
-        const normalized = outputLine.replace(/\s+/g, " ").trim();
-        if (!normalized.length) continue;
-        if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(normalized)) continue;
-        pushFailure(normalized);
-      }
-      continue;
-    }
-
-    if (type === "error") {
-      pushFailure(String(eventRecord.message ?? "Chat error."));
-      continue;
-    }
-
-    if (type === "status") {
-      const turnStatus = String(eventRecord.turnStatus ?? "").trim();
-      if (turnStatus === "failed") {
-        pushFailure(String(eventRecord.message ?? "Turn failed."));
-      }
-    }
-  }
-
-  return {
-    touchedFiles: uniqueSorted(touched),
-    failureLines: failureLines.slice(-16)
-  };
-}
-
 function extractSection(existing: string, start: string, end: string, fallback: string): string {
   const startIdx = existing.indexOf(start);
   const endIdx = existing.indexOf(end);
@@ -3616,42 +3538,22 @@ Before writing, explore to understand:
         }
       }
 
-      const isChatTranscript = session.transcript_path.endsWith(".chat.jsonl");
-      const transcript = sessionService.readTranscriptTail(
-        session.transcript_path,
-        220_000,
-        isChatTranscript ? { raw: true, alignToLineBoundary: true } : undefined
-      );
+      const transcript = sessionService.readTranscriptTail(session.transcript_path, 220_000);
       const failureLines = (() => {
         const out: string[] = [];
         const seen = new Set<string>();
-        const push = (value: string | null | undefined) => {
-          const normalized = stripAnsi(String(value ?? "")).replace(/\s+/g, " ").trim();
-          if (!normalized.length) return;
-          if (seen.has(normalized)) return;
-          seen.add(normalized);
-          out.push(normalized);
-        };
-
         for (const rawLine of transcript.split("\n")) {
           const line = stripAnsi(rawLine).trim();
           if (!line) continue;
           if (!/\b(error|failed|exception|fatal|traceback)\b/i.test(line)) continue;
-          push(line);
+          // Collapse duplicates and near-duplicates (e.g. repeated prompts).
+          const key = line.replace(/\s+/g, " ");
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(key);
         }
-
-        if (isChatTranscript) {
-          const chatDelta = parseChatTranscriptDelta(transcript);
-          for (const touchedPath of chatDelta.touchedFiles) {
-            touched.add(touchedPath);
-          }
-          for (const line of chatDelta.failureLines) {
-            push(line);
-          }
-        }
-
-        return out.slice(-8);
-      })();
+      return out.slice(-8);
+    })();
 
       const touchedFiles = [...touched].sort();
       const computedAt = new Date().toISOString();
