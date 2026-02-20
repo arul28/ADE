@@ -20,6 +20,7 @@ import { runGit } from "./services/git/git";
 import { createPackService } from "./services/packs/packService";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
+import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
@@ -251,16 +252,16 @@ app.whenReady().then(async () => {
       logger
     });
 
+    const aiIntegrationService = createAiIntegrationService({
+      db,
+      logger,
+      projectConfigService
+    });
+
     const ciService = createCiService({
       db,
       logger,
       projectRoot,
-      projectConfigService
-    });
-
-    const aiIntegrationService = createAiIntegrationService({
-      db,
-      logger,
       projectConfigService
     });
 
@@ -358,6 +359,7 @@ app.whenReady().then(async () => {
       packService,
       aiIntegrationService,
       projectConfigService,
+      conflictService,
       openExternal: async (url) => {
         await shell.openExternal(url);
       }
@@ -378,6 +380,19 @@ app.whenReady().then(async () => {
     });
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
+    const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
+      jobEngine?.onSessionEnded({ laneId, sessionId });
+      automationService?.onSessionEnded({ laneId, sessionId });
+      if (orchestratorServiceRef) {
+        void orchestratorServiceRef
+          .onTrackedSessionEnded({
+            laneId,
+            sessionId,
+            exitCode
+          })
+          .catch(() => {});
+      }
+    };
 
     const ptyService = createPtyService({
       projectRoot,
@@ -388,20 +403,21 @@ app.whenReady().then(async () => {
       logger,
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
-      onSessionEnded: ({ laneId, sessionId, exitCode }) => {
-        jobEngine.onSessionEnded({ laneId, sessionId });
-        automationService?.onSessionEnded({ laneId, sessionId });
-        if (orchestratorServiceRef) {
-          void orchestratorServiceRef
-            .onTrackedSessionEnded({
-              laneId,
-              sessionId,
-              exitCode
-            })
-            .catch(() => {});
-        }
-      },
+      onSessionEnded: onTrackedSessionEnded,
       loadPty
+    });
+
+    const agentChatService = createAgentChatService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      transcriptsDir: adePaths.transcriptsDir,
+      laneService,
+      sessionService,
+      projectConfigService,
+      logger,
+      appVersion: app.getVersion(),
+      onEvent: (event) => broadcast(IPC.agentChatEvent, event),
+      onSessionEnded: onTrackedSessionEnded
     });
 
     const gitService = createGitOperationsService({
@@ -588,6 +604,7 @@ app.whenReady().then(async () => {
       missionService,
       orchestratorService,
       ciService,
+      agentChatService,
       packService,
       projectConfigService,
       processService,
@@ -633,6 +650,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctxRef.ptyService.disposeAll();
+    } catch {
+      // ignore
+    }
+    try {
+      void ctxRef.agentChatService.disposeAll();
     } catch {
       // ignore
     }

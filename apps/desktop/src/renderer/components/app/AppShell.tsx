@@ -398,8 +398,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 if (!laneId) return;
                 setAiRetrying(true);
                 void window.ade.packs
-                  .generateNarrative(laneId)
-                  .catch((err) => {
+                  .refreshLanePack(laneId)
+                  .catch((err: unknown) => {
                     const msg = err instanceof Error ? err.message : String(err);
                     setAiFailure((prev) => (prev ? { ...prev, error: msg } : prev));
                   })

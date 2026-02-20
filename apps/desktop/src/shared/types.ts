@@ -664,9 +664,207 @@ export type ContextOpenDocArgs = {
   path?: string;
 };
 
+export type AgentChatProvider = "codex" | "claude";
+
+export type AgentChatSessionStatus = "active" | "idle" | "ended";
+
+export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
+
+export type AgentChatFileRef = {
+  path: string;
+  type: "file" | "image";
+};
+
+export type AgentChatPlanStep = {
+  text: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+};
+
+export type AgentChatEvent =
+  | {
+      type: "user_message";
+      text: string;
+      attachments?: AgentChatFileRef[];
+      turnId?: string;
+    }
+  | {
+      type: "text";
+      text: string;
+      turnId?: string;
+      itemId?: string;
+    }
+  | {
+      type: "tool_call";
+      tool: string;
+      args: unknown;
+      itemId: string;
+      turnId?: string;
+    }
+  | {
+      type: "tool_result";
+      tool: string;
+      result: unknown;
+      itemId: string;
+      turnId?: string;
+      status?: "running" | "completed" | "failed";
+    }
+  | {
+      type: "file_change";
+      path: string;
+      diff: string;
+      kind: "create" | "modify" | "delete";
+      itemId: string;
+      turnId?: string;
+      status?: "running" | "completed" | "failed";
+    }
+  | {
+      type: "command";
+      command: string;
+      cwd: string;
+      output: string;
+      itemId: string;
+      turnId?: string;
+      exitCode?: number | null;
+      durationMs?: number | null;
+      status: "running" | "completed" | "failed";
+    }
+  | {
+      type: "plan";
+      steps: AgentChatPlanStep[];
+      turnId?: string;
+      explanation?: string | null;
+    }
+  | {
+      type: "reasoning";
+      text: string;
+      turnId?: string;
+      itemId?: string;
+      summaryIndex?: number;
+    }
+  | {
+      type: "approval_request";
+      itemId: string;
+      kind: "command" | "file_change" | "tool_call";
+      description: string;
+      turnId?: string;
+      detail?: unknown;
+    }
+  | {
+      type: "status";
+      turnStatus: "started" | "completed" | "interrupted" | "failed";
+      turnId?: string;
+      message?: string;
+    }
+  | {
+      type: "error";
+      message: string;
+      turnId?: string;
+      itemId?: string;
+      errorInfo?: string;
+    }
+  | {
+      type: "done";
+      turnId: string;
+      status: "completed" | "interrupted" | "failed";
+      usage?: {
+        inputTokens?: number | null;
+        outputTokens?: number | null;
+      };
+    };
+
+export type AgentChatEventEnvelope = {
+  sessionId: string;
+  timestamp: string;
+  event: AgentChatEvent;
+};
+
+export type AgentChatSession = {
+  id: string;
+  laneId: string;
+  provider: AgentChatProvider;
+  model: string;
+  status: AgentChatSessionStatus;
+  threadId?: string;
+  createdAt: string;
+  lastActivityAt: string;
+};
+
+export type AgentChatSessionSummary = {
+  sessionId: string;
+  laneId: string;
+  provider: AgentChatProvider;
+  model: string;
+  status: AgentChatSessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  lastActivityAt: string;
+  lastOutputPreview: string | null;
+  summary: string | null;
+  threadId?: string;
+};
+
+export type AgentChatModelInfo = {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+  reasoningEfforts?: Array<{ effort: string; description: string }>;
+};
+
+export type AgentChatCreateArgs = {
+  laneId: string;
+  provider: AgentChatProvider;
+  model: string;
+};
+
+export type AgentChatListArgs = {
+  laneId?: string;
+};
+
+export type AgentChatSendArgs = {
+  sessionId: string;
+  text: string;
+  attachments?: AgentChatFileRef[];
+};
+
+export type AgentChatSteerArgs = {
+  sessionId: string;
+  text: string;
+};
+
+export type AgentChatInterruptArgs = {
+  sessionId: string;
+};
+
+export type AgentChatResumeArgs = {
+  sessionId: string;
+};
+
+export type AgentChatApproveArgs = {
+  sessionId: string;
+  itemId: string;
+  decision: AgentChatApprovalDecision;
+};
+
+export type AgentChatModelsArgs = {
+  provider: AgentChatProvider;
+};
+
+export type AgentChatDisposeArgs = {
+  sessionId: string;
+};
+
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed";
 
-export type TerminalToolType = "shell" | "claude" | "codex" | "cursor" | "aider" | "continue" | "other";
+export type TerminalToolType =
+  | "shell"
+  | "claude"
+  | "codex"
+  | "codex-chat"
+  | "claude-chat"
+  | "cursor"
+  | "aider"
+  | "continue"
+  | "other";
 
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
 
@@ -1310,7 +1508,6 @@ export type AiSettingsStatus = {
   };
   features: AiFeatureUsageRow[];
 };
-
 export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
 export type AiBudgetLimit = {
@@ -1358,6 +1555,20 @@ export type AiConflictResolutionConfig = {
   auto_apply_threshold?: number;
 };
 
+export type AiChatConfig = {
+  defaultProvider?: "codex" | "claude" | "last_used";
+  default_provider?: "codex" | "claude" | "last_used";
+  defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
+  default_approval_policy?: "auto" | "approve_mutations" | "approve_all";
+  sendOnEnter?: boolean;
+  send_on_enter?: boolean;
+  codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  codex_sandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
+  claude_permission_mode?: "plan" | "acceptEdits" | "bypassPermissions";
+  sessionBudgetUsd?: number;
+  session_budget_usd?: number;
+};
 export type AiConfig = {
   mode?: ProviderMode;
   defaultProvider?: AiTaskProvider;
@@ -1369,6 +1580,7 @@ export type AiConfig = {
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
   conflict_resolution?: AiConflictResolutionConfig;
+  chat?: AiChatConfig;
 };
 
 export type ProjectConfigFile = {

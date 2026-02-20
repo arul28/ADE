@@ -84,6 +84,10 @@ function toolTypeFromProfileId(profileId: string): TerminalToolType | null {
   return "other";
 }
 
+function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
+  return toolType === "codex-chat" || toolType === "claude-chat";
+}
+
 function isDefaultProfile(profile: TerminalLaunchProfile): boolean {
   return (DEFAULT_PROFILE_IDS as readonly string[]).includes(profile.id);
 }
@@ -146,8 +150,9 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
   const refresh = useCallback(async () => {
     if (!laneId) return;
     const rows = await window.ade.sessions.list({ laneId, limit: 80 });
-    setSessions(rows);
-    laneSessionIdsRef.current = new Set(rows.map((row) => row.id));
+    const nonChatRows = rows.filter((row) => !isChatToolType(row.toolType));
+    setSessions(nonChatRows);
+    laneSessionIdsRef.current = new Set(nonChatRows.map((row) => row.id));
     if (rows.length > 0) {
       const runningOnly = rows.filter((s) => s.status === "running" && Boolean(s.ptyId));
       const visible = viewMode === "tabs" && runningOnly.length ? runningOnly : rows;
