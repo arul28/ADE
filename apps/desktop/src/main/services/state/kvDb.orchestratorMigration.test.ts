@@ -29,6 +29,7 @@ describe("kvDb orchestrator migration", () => {
       "orchestrator_steps",
       "orchestrator_attempts",
       "orchestrator_attempt_runtime",
+      "orchestrator_runtime_events",
       "orchestrator_claims",
       "orchestrator_context_snapshots",
       "mission_step_handoffs",
@@ -106,6 +107,22 @@ describe("kvDb orchestrator migration", () => {
         "last_event_heartbeat_at_ms",
         "last_waiting_notified_at_ms",
         "updated_at"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_runtime_events")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "session_id",
+        "event_type",
+        "event_key",
+        "occurred_at",
+        "payload_json",
+        "created_at"
       ])
     );
 
@@ -192,6 +209,10 @@ describe("kvDb orchestrator migration", () => {
       "idx_orchestrator_attempts_project_created",
       "idx_orchestrator_attempt_runtime_session",
       "idx_orchestrator_attempt_runtime_updated",
+      "idx_orchestrator_runtime_events_run_occurred",
+      "idx_orchestrator_runtime_events_attempt_occurred",
+      "idx_orchestrator_runtime_events_session_occurred",
+      "idx_orchestrator_runtime_events_project_key",
       "idx_orchestrator_claims_run_state",
       "idx_orchestrator_claims_scope_state",
       "idx_orchestrator_claims_expires",

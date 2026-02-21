@@ -2807,6 +2807,43 @@ export type OrchestratorContextSnapshotCursor = {
   docsBudgetBytes?: number;
   docsConsumedBytes?: number;
   docsTruncatedCount?: number;
+  controlPackV2?: {
+    budgetBytes: number;
+    consumedBytes: number;
+    truncated: boolean;
+    frontier: {
+      pending: number;
+      ready: number;
+      running: number;
+      blocked: number;
+      terminal: number;
+    };
+    openQuestions: number;
+    activeClaims: number;
+    activeClaimConflicts: number;
+    gateState: "pass" | "warn" | "fail" | "unknown";
+    recentDecisions: string[];
+    laneStatusMap: Array<{ laneId: string | null; stepKey: string; status: OrchestratorStepStatus }>;
+  };
+  executionPackV2?: {
+    budgetBytes: number;
+    consumedBytes: number;
+    truncated: boolean;
+    stepKey: string;
+    stepTitle: string;
+    dependencies: Array<{ stepId: string; status: OrchestratorStepStatus }>;
+    handoffIds: string[];
+    handoffDigest: OrchestratorContextSnapshotCursor["missionHandoffDigest"];
+  };
+  deepPackV2?: {
+    budgetBytes: number;
+    consumedBytes: number;
+    truncated: boolean;
+    docsMode: "digest_ref" | "full_body";
+    docsCount: number;
+    fullDocsIncluded: number;
+    docsRefsOnly: number;
+  };
 };
 
 export type OrchestratorRun = {
@@ -2930,6 +2967,32 @@ export type OrchestratorTimelineEvent = {
   createdAt: string;
 };
 
+export type OrchestratorRuntimeEventType =
+  | "progress"
+  | "heartbeat"
+  | "question"
+  | "blocked"
+  | "done"
+  | "retry_scheduled"
+  | "retry_exhausted"
+  | "claim_conflict"
+  | "session_ended"
+  | "intervention_opened"
+  | "intervention_resolved";
+
+export type OrchestratorRuntimeBusEvent = {
+  id: string;
+  runId: string;
+  stepId: string | null;
+  attemptId: string | null;
+  sessionId: string | null;
+  eventType: OrchestratorRuntimeEventType;
+  eventKey: string;
+  occurredAt: string;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+};
+
 export type OrchestratorRuntimeEvent = {
   type:
     | "orchestrator-run-updated"
@@ -2952,6 +3015,7 @@ export type OrchestratorRunGraph = {
   contextSnapshots: OrchestratorContextSnapshot[];
   handoffs: MissionStepHandoff[];
   timeline: OrchestratorTimelineEvent[];
+  runtimeEvents?: OrchestratorRuntimeBusEvent[];
 };
 
 export type OrchestratorGateStatus = "pass" | "warn" | "fail";

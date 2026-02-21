@@ -1972,6 +1972,52 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("applies steering directives onto active run steps for worker prompt guidance", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Apply targeted steering to active orchestrator steps.",
+        laneId: fixture.laneId
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          { stepKey: "alpha", title: "Alpha", stepIndex: 0 },
+          { stepKey: "beta", title: "Beta", stepIndex: 1, dependencyStepKeys: ["alpha"] }
+        ]
+      });
+
+      const result = fixture.aiOrchestratorService.steerMission({
+        missionId: mission.id,
+        directive: "Prioritize integration tests before non-critical refactors.",
+        priority: "instruction",
+        targetStepKey: "beta"
+      });
+      expect(result.acknowledged).toBe(true);
+
+      const graph = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const alpha = graph.steps.find((entry) => entry.stepKey === "alpha");
+      const beta = graph.steps.find((entry) => entry.stepKey === "beta");
+      const betaDirectives = Array.isArray(beta?.metadata?.steeringDirectives)
+        ? beta?.metadata?.steeringDirectives as Array<Record<string, unknown>>
+        : [];
+      const alphaDirectives = Array.isArray(alpha?.metadata?.steeringDirectives)
+        ? alpha?.metadata?.steeringDirectives as Array<Record<string, unknown>>
+        : [];
+      expect(
+        betaDirectives.some(
+          (entry) =>
+            String(entry.directive ?? "").includes("Prioritize integration tests")
+              && String(entry.priority ?? "") === "instruction"
+              && String(entry.targetStepKey ?? "") === "beta"
+        )
+      ).toBe(true);
+      expect(alphaDirectives).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("persists chat and steering directives and hydrates them after service recreation", async () => {
     const fixture = await createFixture();
     try {

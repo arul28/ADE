@@ -712,9 +712,14 @@ function toClaimScopes(step: PlannerStepPlan): Array<{ scopeKind: OrchestratorCl
   // Planner lane hints are semantic domains (backend/frontend/integration), not concrete ADE lanes.
   // We only emit deterministic lock scopes when explicit file/env scopes are present.
   for (const pattern of step.claimPolicy.filePatterns ?? []) {
+    const normalizedPattern = String(pattern ?? "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\.\/+/, "");
+    if (!normalizedPattern.length) continue;
     scopes.push({
       scopeKind: "file",
-      scopeValue: `pattern:${pattern}`,
+      scopeValue: `glob:${normalizedPattern}`,
       ttlMs: step.timeoutMs ?? 60_000
     });
   }

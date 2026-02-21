@@ -8,6 +8,12 @@ function shellEscapeArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function compactText(value: string, maxChars = 220): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
 export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
   return {
     kind: "codex",
@@ -40,12 +46,64 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
           systemParts.push(`Step instructions:\n${instructions}`);
         }
 
+        const steeringDirectives = Array.isArray(step.metadata?.steeringDirectives)
+          ? (step.metadata.steeringDirectives as unknown[])
+              .map((entry) => {
+                if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+                const record = entry as Record<string, unknown>;
+                const directive = typeof record.directive === "string" ? compactText(record.directive, 240) : "";
+                if (!directive.length) return null;
+                const priorityRaw = typeof record.priority === "string" ? record.priority.trim() : "";
+                const priority = priorityRaw === "instruction" || priorityRaw === "override" ? priorityRaw : "suggestion";
+                const targetStepKey = typeof record.targetStepKey === "string" ? record.targetStepKey.trim() : "";
+                return {
+                  directive,
+                  priority,
+                  targetStepKey
+                };
+              })
+              .filter((entry): entry is { directive: string; priority: "suggestion" | "instruction" | "override"; targetStepKey: string } => Boolean(entry))
+          : [];
+        if (steeringDirectives.length > 0) {
+          const recentSteering = steeringDirectives.slice(-6);
+          systemParts.push(
+            [
+              "Active operator steering directives (highest priority first):",
+              ...recentSteering.map(
+                (entry) =>
+                  `- [${entry.priority}] ${entry.directive}${entry.targetStepKey ? ` (target: ${entry.targetStepKey})` : ""}`
+              ),
+              "Apply these directives unless a higher-priority safety/policy constraint blocks them."
+            ].join("\n")
+          );
+        }
+
         // File ownership fence
-        const filePatterns = Array.isArray(step.metadata?.filePatterns)
+        const filePatternsFromMetadata = Array.isArray(step.metadata?.filePatterns)
           ? (step.metadata.filePatterns as unknown[])
               .map((p) => String(p ?? "").trim())
               .filter(Boolean)
           : [];
+        const filePatternsFromClaimScopes = (() => {
+          const policy = step.metadata?.policy;
+          if (!policy || typeof policy !== "object" || Array.isArray(policy)) return [] as string[];
+          const claimScopes = Array.isArray((policy as Record<string, unknown>).claimScopes)
+            ? ((policy as Record<string, unknown>).claimScopes as unknown[])
+            : [];
+          return claimScopes
+            .map((entry) => {
+              if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "";
+              const scope = entry as Record<string, unknown>;
+              const scopeKind = String(scope.scopeKind ?? "").trim();
+              if (scopeKind !== "file") return "";
+              let scopeValue = String(scope.scopeValue ?? "").trim();
+              if (scopeValue.startsWith("pattern:")) scopeValue = scopeValue.slice("pattern:".length);
+              if (scopeValue.startsWith("glob:")) scopeValue = scopeValue.slice("glob:".length);
+              return scopeValue.trim();
+            })
+            .filter(Boolean);
+        })();
+        const filePatterns = [...new Set([...filePatternsFromMetadata, ...filePatternsFromClaimScopes])];
         if (filePatterns.length) {
           systemParts.push(
             `You are responsible for these files: ${filePatterns.join(", ")}. Do not modify files outside this scope.`
@@ -158,6 +216,7 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
             approvalPolicy,
             sandboxMode,
             filePatterns: filePatterns.length ? filePatterns : undefined,
+            steeringDirectiveCount: steeringDirectives.length,
             promptLength: prompt.length,
             configPathApplied: false,
             startupCommandPreview: startupCommand.slice(0, 320)

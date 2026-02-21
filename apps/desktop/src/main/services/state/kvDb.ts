@@ -1124,6 +1124,47 @@ function migrate(db: Database) {
   );
 
   db.run(`
+    create table if not exists orchestrator_runtime_events (
+      id text primary key,
+      project_id text not null,
+      run_id text not null,
+      step_id text,
+      attempt_id text,
+      session_id text,
+      event_type text not null,
+      event_key text not null,
+      occurred_at text not null,
+      payload_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runtime_events_run_occurred on orchestrator_runtime_events(run_id, occurred_at)",
+    "orchestrator_runtime_events",
+    ["run_id", "occurred_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runtime_events_attempt_occurred on orchestrator_runtime_events(attempt_id, occurred_at)",
+    "orchestrator_runtime_events",
+    ["attempt_id", "occurred_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_runtime_events_session_occurred on orchestrator_runtime_events(session_id, occurred_at)",
+    "orchestrator_runtime_events",
+    ["session_id", "occurred_at"]
+  );
+  db.run(
+    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)"
+  );
+
+  db.run(`
     create table if not exists orchestrator_claims (
       id text primary key,
       project_id text not null,

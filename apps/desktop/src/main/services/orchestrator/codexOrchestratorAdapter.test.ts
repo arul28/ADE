@@ -176,6 +176,33 @@ describe("codexOrchestratorAdapter", () => {
     expect(command).toContain("Do not modify files outside this scope");
   });
 
+  it("injects steering directives into worker prompt", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: {
+          ...buildMockArgs().step.metadata,
+          steeringDirectives: [
+            {
+              directive: "Prioritize integration tests before polishing docs.",
+              priority: "instruction",
+              targetStepKey: "fix-auth"
+            }
+          ]
+        }
+      }
+    });
+    const result = await adapter.start(args);
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.steeringDirectiveCount).toBe(1);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("Active operator steering directives");
+    expect(command).toContain("Prioritize integration tests before polishing docs.");
+  });
+
   it("fails when step has no laneId", async () => {
     const adapter = createCodexOrchestratorAdapter();
     const args = buildMockArgs({

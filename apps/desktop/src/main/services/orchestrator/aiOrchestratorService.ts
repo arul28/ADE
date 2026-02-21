@@ -77,6 +77,7 @@ const MAX_LATEST_CHAT_MESSAGE_CHARS = 1_500;
 const SESSION_SIGNAL_RETENTION_MS = 20 * 60_000;
 const MAX_STEERING_CONTEXT_DIRECTIVES = 8;
 const MAX_STEERING_CONTEXT_CHARS = 1_600;
+const MAX_STEERING_DIRECTIVES_PER_STEP = 24;
 const ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS = 2_000;
 const MAX_RUNTIME_SIGNAL_PREVIEW_CHARS = 320;
 
@@ -673,6 +674,41 @@ export function createAiOrchestratorService(args: {
     return msg;
   };
 
+  const recordRuntimeEvent = (args: {
+    runId: string;
+    stepId?: string | null;
+    attemptId?: string | null;
+    sessionId?: string | null;
+    eventType:
+      | "progress"
+      | "heartbeat"
+      | "question"
+      | "blocked"
+      | "done"
+      | "retry_scheduled"
+      | "retry_exhausted"
+      | "claim_conflict"
+      | "session_ended"
+      | "intervention_opened"
+      | "intervention_resolved";
+    eventKey?: string | null;
+    occurredAt?: string | null;
+    payload?: Record<string, unknown> | null;
+  }) => {
+    try {
+      orchestratorService.appendRuntimeEvent(args);
+    } catch (error) {
+      logger.debug("ai_orchestrator.runtime_event_append_failed", {
+        runId: args.runId,
+        stepId: args.stepId ?? null,
+        attemptId: args.attemptId ?? null,
+        sessionId: args.sessionId ?? null,
+        eventType: args.eventType,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
   const resolveActiveDepthConfig = (missionId: string): MissionDepthConfig => {
     // Check mission metadata for depth tier
     const row = db.get<{ metadata_json: string | null }>(
@@ -708,6 +744,73 @@ export function createAiOrchestratorService(args: {
       ""
     ].join("\n");
     return clipTextForContext(rendered, MAX_STEERING_CONTEXT_CHARS);
+  };
+
+  const projectSteeringDirectiveToActiveSteps = (directive: UserSteeringDirective): number => {
+    const activeRuns = orchestratorService
+      .listRuns({ missionId: directive.missionId, limit: 200 })
+      .filter((run) => run.status === "queued" || run.status === "running" || run.status === "paused");
+    if (!activeRuns.length) return 0;
+
+    const appliedAt = nowIso();
+    const targetStepKey = directive.targetStepKey?.trim() ?? "";
+    let updated = 0;
+    for (const run of activeRuns) {
+      let graph: OrchestratorRunGraph | null = null;
+      try {
+        graph = orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
+      } catch (error) {
+        logger.debug("ai_orchestrator.steer_projection_graph_failed", {
+          missionId: directive.missionId,
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        continue;
+      }
+      if (!graph) continue;
+
+      for (const step of graph.steps) {
+        if (step.status !== "pending" && step.status !== "ready" && step.status !== "running" && step.status !== "blocked") continue;
+        if (targetStepKey.length > 0 && step.stepKey !== targetStepKey) continue;
+        const nextMetadata = isRecord(step.metadata) ? { ...step.metadata } : {};
+        const existing = Array.isArray(nextMetadata.steeringDirectives) ? nextMetadata.steeringDirectives as unknown[] : [];
+        const normalizedExisting = existing
+          .map((entry) => (isRecord(entry) ? entry : null))
+          .filter((entry): entry is Record<string, unknown> => !!entry)
+          .map((entry) => {
+            const text = typeof entry.directive === "string" ? entry.directive.trim() : "";
+            if (!text.length) return null;
+            const priority = entry.priority === "instruction" || entry.priority === "override" ? entry.priority : "suggestion";
+            return {
+              directive: text,
+              priority,
+              targetStepKey: typeof entry.targetStepKey === "string" ? entry.targetStepKey : null,
+              appliedAt: typeof entry.appliedAt === "string" ? entry.appliedAt : null
+            };
+          })
+          .filter((entry): entry is { directive: string; priority: "suggestion" | "instruction" | "override"; targetStepKey: string | null; appliedAt: string | null } => !!entry);
+        normalizedExisting.push({
+          directive: directive.directive,
+          priority: directive.priority,
+          targetStepKey: directive.targetStepKey ?? null,
+          appliedAt
+        });
+        nextMetadata.steeringDirectives = normalizedExisting.slice(-MAX_STEERING_DIRECTIVES_PER_STEP);
+        db.run(
+          `
+            update orchestrator_steps
+            set metadata_json = ?,
+                updated_at = ?
+            where id = ?
+              and run_id = ?
+              and project_id = ?
+          `,
+          [JSON.stringify(nextMetadata), appliedAt, step.id, run.id, run.projectId]
+        );
+        updated += 1;
+      }
+    }
+    return updated;
   };
 
   const getWorkerStates = (args: { runId: string }): OrchestratorWorkerState[] => {
@@ -951,6 +1054,75 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const hydrateRuntimeSignalsFromEventBus = () => {
+    let events: ReturnType<typeof orchestratorService.listRuntimeEvents>;
+    try {
+      events = orchestratorService.listRuntimeEvents({
+        eventTypes: ["progress", "heartbeat", "question", "session_ended"],
+        limit: 5_000
+      });
+    } catch {
+      return;
+    }
+    if (!events.length) return;
+
+    const isSyntheticSweepHeartbeat = (event: (typeof events)[number]): boolean => {
+      if (event.eventType !== "heartbeat") return false;
+      const payload = isRecord(event.payload) ? event.payload : null;
+      return payload?.source === "health_sweep";
+    };
+
+    const latestBySession = new Map<string, (typeof events)[number]>();
+    for (const event of events) {
+      const sessionId = typeof event.sessionId === "string" ? event.sessionId.trim() : "";
+      if (!sessionId.length || latestBySession.has(sessionId)) continue;
+      if (isSyntheticSweepHeartbeat(event)) continue;
+      latestBySession.set(sessionId, event);
+    }
+
+    for (const event of latestBySession.values()) {
+      const sessionId = event.sessionId?.trim() ?? "";
+      if (!sessionId.length) continue;
+      const runtimeState: TerminalRuntimeState =
+        event.eventType === "session_ended"
+          ? "exited"
+          : event.eventType === "question"
+            ? "waiting-input"
+            : "running";
+      const payload = isRecord(event.payload) ? event.payload : null;
+      const preview =
+        payload && typeof payload.preview === "string" && payload.preview.trim().length > 0
+          ? payload.preview.trim()
+          : null;
+      const existing = sessionRuntimeSignals.get(sessionId);
+      const existingMs = existing ? Date.parse(existing.at) : Number.NaN;
+      const eventMs = Date.parse(event.occurredAt);
+      if (Number.isFinite(existingMs) && Number.isFinite(eventMs) && existingMs > eventMs) continue;
+      sessionRuntimeSignals.set(sessionId, {
+        laneId: "",
+        sessionId,
+        runtimeState,
+        lastOutputPreview: preview,
+        at: event.occurredAt
+      });
+    }
+
+    for (const event of events) {
+      const attemptId = typeof event.attemptId === "string" ? event.attemptId.trim() : "";
+      if (!attemptId.length) continue;
+      const tracker = ensureAttemptRuntimeTracker(attemptId);
+      const eventMs = Date.parse(event.occurredAt);
+      if (!Number.isFinite(eventMs)) continue;
+      if (event.eventType === "heartbeat") {
+        tracker.lastEventHeartbeatAtMs = Math.max(tracker.lastEventHeartbeatAtMs, Math.floor(eventMs));
+      }
+      if (event.eventType === "question") {
+        tracker.lastWaitingInterventionAtMs = Math.max(tracker.lastWaitingInterventionAtMs, Math.floor(eventMs));
+      }
+      tracker.lastPersistedAtMs = Math.max(tracker.lastPersistedAtMs, Math.floor(eventMs));
+    }
+  };
+
   const updateAttemptStagnationTracker = (attemptId: string, preview: string | null): { digest: string | null; stagnantMs: number } => {
     const tracker = ensureAttemptRuntimeTracker(attemptId);
     const now = Date.now();
@@ -1037,6 +1209,20 @@ export function createAiOrchestratorService(args: {
         runId: args.runId,
         sessionId: args.sessionId,
         reason: args.reason
+      }
+    });
+    recordRuntimeEvent({
+      runId: args.runId,
+      stepId: args.stepId,
+      attemptId: args.attemptId,
+      sessionId: args.sessionId,
+      eventType: "intervention_opened",
+      eventKey: `intervention_opened:${intervention.id}`,
+      payload: {
+        interventionId: intervention.id,
+        interventionType: intervention.interventionType,
+        reason: args.reason,
+        preview
       }
     });
     emitOrchestratorMessage(
@@ -1243,6 +1429,19 @@ export function createAiOrchestratorService(args: {
             attemptId: attempt.attemptId,
             ownerId
           });
+          recordRuntimeEvent({
+            runId: attempt.runId,
+            stepId: attempt.stepId,
+            attemptId: attempt.attemptId,
+            sessionId,
+            eventType: "heartbeat",
+            eventKey: `heartbeat:${attempt.attemptId}:${Math.floor(nowMs / WORKER_EVENT_HEARTBEAT_INTERVAL_MS)}`,
+            occurredAt: signal.at,
+            payload: {
+              runtimeState: signal.runtimeState,
+              ownerId
+            }
+          });
         } catch (error) {
           logger.debug("ai_orchestrator.runtime_signal_heartbeat_failed", {
             attemptId: attempt.attemptId,
@@ -1282,6 +1481,19 @@ export function createAiOrchestratorService(args: {
       });
 
       if (waitingForInput) {
+        recordRuntimeEvent({
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.attemptId,
+          sessionId,
+          eventType: "question",
+          eventKey: `question:${attempt.attemptId}:${digestSignalText(signal.lastOutputPreview) ?? "none"}:${Math.floor(Date.parse(signal.at) / 1000)}`,
+          occurredAt: signal.at,
+          payload: {
+            preview: signal.lastOutputPreview,
+            runtimeState: signal.runtimeState
+          }
+        });
         if (Date.now() - tracker.lastWaitingNotifiedAtMs >= 30_000) {
           tracker.lastWaitingNotifiedAtMs = Date.now();
           emitOrchestratorMessage(
@@ -1302,6 +1514,20 @@ export function createAiOrchestratorService(args: {
           preview: signal.lastOutputPreview,
           reason: "runtime_signal"
         });
+      } else if (signal.lastOutputPreview && signal.lastOutputPreview.trim().length > 0) {
+        recordRuntimeEvent({
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.attemptId,
+          sessionId,
+          eventType: "progress",
+          eventKey: `progress:${attempt.attemptId}:${digestSignalText(signal.lastOutputPreview) ?? "none"}:${Math.floor(Date.parse(signal.at) / 1000)}`,
+          occurredAt: signal.at,
+          payload: {
+            preview: signal.lastOutputPreview,
+            runtimeState: signal.runtimeState
+          }
+        });
       }
       persistAttemptRuntimeState({
         attemptId: attempt.attemptId,
@@ -1316,6 +1542,22 @@ export function createAiOrchestratorService(args: {
     if (!isTerminalSignal) return;
     const sessionState = getTrackedSessionState(sessionId);
     if (!sessionState || sessionState.status === "running") return;
+    for (const attempt of attempts) {
+      recordRuntimeEvent({
+        runId: attempt.runId,
+        stepId: attempt.stepId,
+        attemptId: attempt.attemptId,
+        sessionId,
+        eventType: "session_ended",
+        eventKey: `session_ended_signal:${attempt.attemptId}:${sessionId}:${signal.runtimeState}:${signal.at}`,
+        occurredAt: signal.at,
+        payload: {
+          runtimeState: signal.runtimeState,
+          sessionStatus: sessionState.status,
+          exitCode: sessionState.exitCode
+        }
+      });
+    }
     let reconciled = 0;
     try {
       reconciled = await orchestratorService.onTrackedSessionEnded({
@@ -1366,6 +1608,27 @@ export function createAiOrchestratorService(args: {
     return latest;
   };
 
+  const getRecentAttemptEventActivityAt = (attemptId: string): number => {
+    try {
+      const events = orchestratorService.listRuntimeEvents({
+        attemptId,
+        eventTypes: ["progress", "heartbeat", "question"],
+        limit: 20
+      });
+      for (const event of events) {
+        if (event.eventType === "heartbeat") {
+          const payload = isRecord(event.payload) ? event.payload : null;
+          if (payload?.source === "health_sweep") continue;
+        }
+        const atMs = Date.parse(event.occurredAt);
+        if (Number.isFinite(atMs)) return atMs;
+      }
+      return Number.NaN;
+    } catch {
+      return Number.NaN;
+    }
+  };
+
   const runHealthSweep = async (reason: string): Promise<{ sweeps: number; staleRecovered: number }> => {
     pruneSessionRuntimeSignals();
     const runs = orchestratorService
@@ -1375,7 +1638,16 @@ export function createAiOrchestratorService(args: {
     let staleRecovered = 0;
 
     for (const run of runs) {
-      if (activeHealthSweepRuns.has(run.id)) continue;
+      if (activeHealthSweepRuns.has(run.id)) {
+        // Interval/startup sweeps are opportunistic; manual/chat/status sweeps should wait briefly
+        // so explicit health checks don't get dropped due to an in-flight background sweep.
+        if (reason === "interval" || reason === "startup") continue;
+        const deadline = Date.now() + 3_000;
+        while (activeHealthSweepRuns.has(run.id) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        if (activeHealthSweepRuns.has(run.id)) continue;
+      }
       activeHealthSweepRuns.add(run.id);
       try {
         sweeps += 1;
@@ -1432,6 +1704,18 @@ export function createAiOrchestratorService(args: {
               attemptId: attempt.id,
               ownerId
             });
+            recordRuntimeEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              sessionId: sessionId.length > 0 ? sessionId : null,
+              eventType: "heartbeat",
+              eventKey: `sweep_heartbeat:${attempt.id}:${Math.floor(Date.now() / WORKER_EVENT_HEARTBEAT_INTERVAL_MS)}`,
+              payload: {
+                source: "health_sweep",
+                ownerId
+              }
+            });
           } catch (error) {
             logger.debug("ai_orchestrator.health_sweep_heartbeat_failed", {
               runId: run.id,
@@ -1458,6 +1742,18 @@ export function createAiOrchestratorService(args: {
           });
 
           if (waitingForInput && sessionId.length > 0) {
+            recordRuntimeEvent({
+              runId: run.id,
+              stepId: step.id,
+              attemptId: attempt.id,
+              sessionId,
+              eventType: "question",
+              eventKey: `sweep_question:${attempt.id}:${digestSignalText(effectivePreview) ?? "none"}:${Math.floor(Date.now() / 10_000)}`,
+              payload: {
+                source: "health_sweep",
+                preview: effectivePreview
+              }
+            });
             const tracker = ensureAttemptRuntimeTracker(attempt.id);
             const now = Date.now();
             if (now - tracker.lastWaitingNotifiedAtMs >= 30_000) {
@@ -1512,7 +1808,14 @@ export function createAiOrchestratorService(args: {
           if (elapsedMs <= timeoutMs + STALE_ATTEMPT_GRACE_MS) continue;
 
           if (sessionId.length > 0) {
-            const activityAtMs = getRecentSessionActivityAt(sessionState);
+            const eventActivityAtMs = getRecentAttemptEventActivityAt(attempt.id);
+            const sessionActivityAtMs = getRecentSessionActivityAt(sessionState);
+            const activityAtMs =
+              Number.isFinite(eventActivityAtMs) && Number.isFinite(sessionActivityAtMs)
+                ? Math.max(eventActivityAtMs, sessionActivityAtMs)
+                : Number.isFinite(eventActivityAtMs)
+                  ? eventActivityAtMs
+                  : sessionActivityAtMs;
             const activeOutputWindowMs = Math.max(90_000, Math.min(15 * 60_000, Math.floor(timeoutMs * 0.5)));
             if (Number.isFinite(activityAtMs) && Date.now() - activityAtMs <= activeOutputWindowMs) {
               if (!shouldTreatAsStagnating(attempt.id, stagnationSnapshot.stagnantMs, timeoutMs)) {
@@ -1725,6 +2028,19 @@ export function createAiOrchestratorService(args: {
               title: `Step "${stepTitleForMessage(step)}" failed after ${step.retryCount} retries`,
               body: `Step ${step.stepKey} (${stepTitleForMessage(step)}) exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
               requestedAction: "Review and decide whether to retry, skip, or add a workaround."
+            });
+            recordRuntimeEvent({
+              runId: attempt.runId,
+              stepId: step.id,
+              attemptId: attempt.id,
+              sessionId: attempt.executorSessionId,
+              eventType: "intervention_opened",
+              eventKey: `intervention_opened:${intervention.id}`,
+              payload: {
+                interventionId: intervention.id,
+                interventionType: intervention.interventionType,
+                reason: "retry_exhausted"
+              }
             });
 
             if (aiIntegrationService) {
@@ -2525,6 +2841,19 @@ export function createAiOrchestratorService(args: {
               status: "resolved",
               note: `AI auto-resolved (confidence: ${confidence.toFixed(2)}): ${reasoning}`
             });
+            if (activeRun) {
+              recordRuntimeEvent({
+                runId: activeRun.id,
+                eventType: "intervention_resolved",
+                eventKey: `intervention_resolved:${intervention.id}:ai_auto`,
+                payload: {
+                  interventionId: intervention.id,
+                  reason: "ai_auto_resolve",
+                  confidence,
+                  suggestedAction
+                }
+              });
+            }
           } catch {
             // Intervention may already be resolved or not found
           }
@@ -3008,6 +3337,8 @@ export function createAiOrchestratorService(args: {
     if (!missionId.length) throw new Error("missionId is required.");
     const mission = missionService.get(missionId);
     if (!mission) throw new Error(`Mission not found: ${missionId}`);
+    const runs = orchestratorService.listRuns({ missionId });
+    const activeRun = runs.find((entry) => entry.status === "running" || entry.status === "paused" || entry.status === "queued") ?? null;
 
     for (const intervention of mission.interventions) {
       if (
@@ -3022,6 +3353,17 @@ export function createAiOrchestratorService(args: {
             status: "resolved",
             note: "Approved for execution."
           });
+          if (activeRun) {
+            recordRuntimeEvent({
+              runId: activeRun.id,
+              eventType: "intervention_resolved",
+              eventKey: `intervention_resolved:${intervention.id}:plan_approval`,
+              payload: {
+                interventionId: intervention.id,
+                reason: "plan_approved"
+              }
+            });
+          }
         } catch {
           // ignore
         }
@@ -3079,10 +3421,62 @@ export function createAiOrchestratorService(args: {
       directivePreview: directive.directive.slice(0, 100)
     });
 
+    const projectedStepCount = projectSteeringDirectiveToActiveSteps(directive);
+
+    const resolvedInterventions: string[] = [];
+    const refreshedMission = missionService.get(missionId);
+    const openManualInput = refreshedMission?.interventions.filter((entry) => entry.status === "open" && entry.interventionType === "manual_input") ?? [];
+    for (const intervention of openManualInput) {
+      try {
+        missionService.resolveIntervention({
+          missionId,
+          interventionId: intervention.id,
+          status: "resolved",
+          note: `Resolved by steering directive (${directive.priority}).`
+        });
+        resolvedInterventions.push(intervention.id);
+        const meta = isRecord(intervention.metadata) ? intervention.metadata : null;
+        const runId = typeof meta?.runId === "string" ? meta.runId : "";
+        if (runId.length > 0) {
+          recordRuntimeEvent({
+            runId,
+            stepId: typeof meta?.stepId === "string" ? meta.stepId : null,
+            attemptId: typeof meta?.attemptId === "string" ? meta.attemptId : null,
+            sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
+            eventType: "intervention_resolved",
+            eventKey: `intervention_resolved:${intervention.id}:${directive.priority}`,
+            payload: {
+              interventionId: intervention.id,
+              reason: "steering_directive",
+              priority: directive.priority,
+              directive: clipTextForContext(directive.directive, 220)
+            }
+          });
+        }
+      } catch (error) {
+        logger.debug("ai_orchestrator.steer_resolve_intervention_failed", {
+          missionId,
+          interventionId: intervention.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    if (resolvedInterventions.length > 0) {
+      emitOrchestratorMessage(
+        missionId,
+        `Applied steering and resolved ${resolvedInterventions.length} waiting-input intervention${resolvedInterventions.length === 1 ? "" : "s"}.`,
+        directive.targetStepKey ?? null,
+        {
+          interventionIds: resolvedInterventions,
+          projectedStepCount
+        }
+      );
+    }
+
     return {
       acknowledged: true,
       appliedAt: nowIso(),
-      response: `Directive accepted (${directive.priority}). Will be applied at the next AI decision point.`
+      response: `Directive accepted (${directive.priority}). Applied to ${projectedStepCount} active step${projectedStepCount === 1 ? "" : "s"} and will guide upcoming worker runs.`
     };
   };
 
@@ -3192,6 +3586,7 @@ export function createAiOrchestratorService(args: {
   };
 
   hydratePersistedAttemptRuntimeState();
+  hydrateRuntimeSignalsFromEventBus();
   startHealthSweepLoop();
 
   return {

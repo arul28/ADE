@@ -28,6 +28,8 @@ import type {
   OrchestratorRunStatus,
   OrchestratorStep,
   OrchestratorStepStatus,
+  OrchestratorRuntimeBusEvent,
+  OrchestratorRuntimeEventType,
   OrchestratorTimelineEvent,
   PackDeltaDigestV1,
   PackExport,
@@ -155,6 +157,19 @@ type TimelineRow = {
   created_at: string;
 };
 
+type RuntimeEventRow = {
+  id: string;
+  run_id: string;
+  step_id: string | null;
+  attempt_id: string | null;
+  session_id: string | null;
+  event_type: string;
+  event_key: string;
+  occurred_at: string;
+  payload_json: string | null;
+  created_at: string;
+};
+
 type GateReportRow = {
   id: string;
   generated_at: string;
@@ -195,6 +210,7 @@ type ResolvedOrchestratorRuntimeConfig = {
   progressiveLoading: boolean;
   maxTotalTokenBudget: number | null;
   maxPerStepTokenBudget: number | null;
+  fileReservationGuardMode: "off" | "warn" | "block";
 };
 
 export type OrchestratorEvent = {
@@ -321,11 +337,20 @@ const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
   contextPressureThreshold: 0.8,
   progressiveLoading: true,
   maxTotalTokenBudget: null,
-  maxPerStepTokenBudget: null
+  maxPerStepTokenBudget: null,
+  fileReservationGuardMode: "warn"
 };
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function normalizeIsoTimestamp(value: unknown, fallbackIso: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw.length) return fallbackIso;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return fallbackIso;
+  return new Date(ms).toISOString();
 }
 
 function parseRecord(raw: string | null): Record<string, unknown> | null {
@@ -457,6 +482,25 @@ function normalizeClaimScope(value: string): OrchestratorClaimScope {
 function normalizeClaimState(value: string): OrchestratorClaimState {
   if (value === "active" || value === "released" || value === "expired") return value;
   return "active";
+}
+
+function normalizeRuntimeEventType(value: string): OrchestratorRuntimeEventType {
+  if (
+    value === "progress" ||
+    value === "heartbeat" ||
+    value === "question" ||
+    value === "blocked" ||
+    value === "done" ||
+    value === "retry_scheduled" ||
+    value === "retry_exhausted" ||
+    value === "claim_conflict" ||
+    value === "session_ended" ||
+    value === "intervention_opened" ||
+    value === "intervention_resolved"
+  ) {
+    return value;
+  }
+  return "progress";
 }
 
 function normalizeProfileId(value: string | null | undefined): OrchestratorContextProfileId {
@@ -724,6 +768,21 @@ function toTimelineEvent(row: TimelineRow): OrchestratorTimelineEvent {
   };
 }
 
+function toRuntimeEvent(row: RuntimeEventRow): OrchestratorRuntimeBusEvent {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepId: row.step_id,
+    attemptId: row.attempt_id,
+    sessionId: row.session_id,
+    eventType: normalizeRuntimeEventType(row.event_type),
+    eventKey: row.event_key,
+    occurredAt: row.occurred_at,
+    payload: parseRecord(row.payload_json),
+    createdAt: row.created_at
+  };
+}
+
 function toGateReport(row: GateReportRow): OrchestratorGateReport | null {
   try {
     const parsed = JSON.parse(row.report_json) as OrchestratorGateReport;
@@ -764,6 +823,94 @@ function clipText(value: string, maxChars: number): string {
 
 function shellEscapeArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function normalizeRepoRelativePath(projectRoot: string, rawPath: string): string | null {
+  let value = String(rawPath ?? "").trim();
+  if (!value.length) return null;
+  if (path.isAbsolute(value)) {
+    value = path.relative(projectRoot, value);
+  }
+  value = value.replace(/\\/g, "/");
+  value = path.posix.normalize(value);
+  while (value.startsWith("./")) value = value.slice(2);
+  if (!value.length || value === ".") return null;
+  if (value.startsWith("../")) return null;
+  return value;
+}
+
+function extractFileClaimPattern(scopeValue: string): string {
+  let value = String(scopeValue ?? "").trim();
+  if (value.startsWith("pattern:")) value = value.slice("pattern:".length);
+  if (value.startsWith("glob:")) value = value.slice("glob:".length);
+  return value.trim();
+}
+
+function normalizeFileClaimScopeValue(projectRoot: string, scopeValue: string): string | null {
+  let pattern = extractFileClaimPattern(scopeValue);
+  if (!pattern.length) return null;
+  pattern = pattern.replace(/\\/g, "/");
+  if (pattern.startsWith("/")) {
+    pattern = pattern.slice(1);
+  }
+  if (pattern.endsWith("/")) {
+    pattern = `${pattern}**`;
+  }
+  const normalized = normalizeRepoRelativePath(projectRoot, pattern);
+  if (!normalized) return null;
+  return `glob:${normalized}`;
+}
+
+function staticGlobPrefix(globPattern: string): string {
+  const wildcardIndex = globPattern.search(/[*?[\]]/);
+  if (wildcardIndex < 0) return globPattern;
+  return globPattern.slice(0, wildcardIndex);
+}
+
+function globToRegExp(globPattern: string): RegExp {
+  const escaped = globPattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "__ADE_GLOB_STAR__")
+    .replace(/\?/g, "__ADE_GLOB_Q__")
+    .replace(/__ADE_GLOB_STAR____ADE_GLOB_STAR__/g, ".*")
+    .replace(/__ADE_GLOB_STAR__/g, "[^/]*")
+    .replace(/__ADE_GLOB_Q__/g, "[^/]");
+  return new RegExp(`^${escaped}$`);
+}
+
+function doesFileClaimMatchPath(scopeValue: string, repoPath: string): boolean {
+  const pattern = extractFileClaimPattern(scopeValue);
+  if (!pattern.length) return false;
+  try {
+    return globToRegExp(pattern).test(repoPath);
+  } catch {
+    return false;
+  }
+}
+
+function doFileClaimsOverlap(leftScopeValue: string, rightScopeValue: string): boolean {
+  const left = extractFileClaimPattern(leftScopeValue);
+  const right = extractFileClaimPattern(rightScopeValue);
+  if (!left.length || !right.length) return false;
+  if (left === right) return true;
+
+  const leftWildcard = /[*?[\]]/.test(left);
+  const rightWildcard = /[*?[\]]/.test(right);
+  if (!leftWildcard && !rightWildcard) return left === right;
+  if (!leftWildcard) return doesFileClaimMatchPath(rightScopeValue, left);
+  if (!rightWildcard) return doesFileClaimMatchPath(leftScopeValue, right);
+
+  const leftPrefix = staticGlobPrefix(left);
+  const rightPrefix = staticGlobPrefix(right);
+  if (leftPrefix.length > 0 && rightPrefix.length > 0) {
+    if (leftPrefix.startsWith(rightPrefix) || rightPrefix.startsWith(leftPrefix)) return true;
+    const leftRoot = leftPrefix.split("/")[0] ?? "";
+    const rightRoot = rightPrefix.split("/")[0] ?? "";
+    if (leftRoot.length > 0 && leftRoot === rightRoot) return true;
+    return false;
+  }
+
+  return true;
 }
 
 function readDocPaths(projectRoot: string): string[] {
@@ -1075,6 +1222,14 @@ export function createOrchestratorService({
     out.progressiveLoading = asBool(orchestrator.progressiveLoading, asBool(orchestrator.progressive_loading, out.progressiveLoading));
     out.maxTotalTokenBudget = asPositiveNumberOrNull(orchestrator.maxTotalTokenBudget ?? orchestrator.max_total_token_budget);
     out.maxPerStepTokenBudget = asPositiveNumberOrNull(orchestrator.maxPerStepTokenBudget ?? orchestrator.max_per_step_token_budget);
+    const reservationGuardMode = String(
+      orchestrator.fileReservationGuardMode
+      ?? orchestrator.file_reservation_guard_mode
+      ?? out.fileReservationGuardMode
+    ).trim();
+    if (reservationGuardMode === "off" || reservationGuardMode === "warn" || reservationGuardMode === "block") {
+      out.fileReservationGuardMode = reservationGuardMode;
+    }
     return out;
   };
 
@@ -1137,6 +1292,77 @@ export function createOrchestratorService({
     };
   };
 
+  const persistRuntimeEvent = (args: {
+    runId: string;
+    stepId?: string | null;
+    attemptId?: string | null;
+    sessionId?: string | null;
+    eventType: OrchestratorRuntimeEventType;
+    eventKey?: string | null;
+    occurredAt?: string | null;
+    payload?: Record<string, unknown> | null;
+  }): OrchestratorRuntimeBusEvent => {
+    const createdAt = nowIso();
+    const occurredAt = normalizeIsoTimestamp(args.occurredAt, createdAt);
+    const baseKey = `${args.runId}:${args.stepId ?? "none"}:${args.attemptId ?? "none"}:${args.sessionId ?? "none"}:${args.eventType}:${occurredAt}`;
+    const eventKey = String(args.eventKey ?? baseKey).trim() || baseKey;
+    const eventId = randomUUID();
+    db.run(
+      `
+        insert or ignore into orchestrator_runtime_events(
+          id,
+          project_id,
+          run_id,
+          step_id,
+          attempt_id,
+          session_id,
+          event_type,
+          event_key,
+          occurred_at,
+          payload_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        eventId,
+        projectId,
+        args.runId,
+        args.stepId ?? null,
+        args.attemptId ?? null,
+        args.sessionId ?? null,
+        args.eventType,
+        eventKey,
+        occurredAt,
+        args.payload ? JSON.stringify(args.payload) : null,
+        createdAt
+      ]
+    );
+    const row = db.get<RuntimeEventRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          session_id,
+          event_type,
+          event_key,
+          occurred_at,
+          payload_json,
+          created_at
+        from orchestrator_runtime_events
+        where project_id = ?
+          and event_key = ?
+        limit 1
+      `,
+      [projectId, eventKey]
+    );
+    if (!row) {
+      throw new Error(`Failed to persist runtime event: ${args.eventType}`);
+    }
+    return toRuntimeEvent(row);
+  };
+
   const listTimelineRows = (args: { runId: string; limit?: number }): TimelineRow[] => {
     const limitRaw = Number(args.limit ?? 200);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(MAX_TIMELINE_LIMIT, Math.floor(limitRaw))) : 200;
@@ -1159,6 +1385,62 @@ export function createOrchestratorService({
         limit ?
       `,
       [projectId, args.runId, limit]
+    );
+  };
+
+  const listRuntimeEventRows = (args: {
+    runId?: string;
+    attemptId?: string;
+    sessionId?: string;
+    eventTypes?: OrchestratorRuntimeEventType[];
+    since?: string | null;
+    limit?: number;
+  }): RuntimeEventRow[] => {
+    const where: string[] = ["project_id = ?"];
+    const params: SqlValue[] = [projectId];
+    if (args.runId) {
+      where.push("run_id = ?");
+      params.push(args.runId);
+    }
+    if (args.attemptId) {
+      where.push("attempt_id = ?");
+      params.push(args.attemptId);
+    }
+    if (args.sessionId) {
+      where.push("session_id = ?");
+      params.push(args.sessionId);
+    }
+    if (args.eventTypes && args.eventTypes.length > 0) {
+      const normalizedTypes = [...new Set(args.eventTypes.map((entry) => normalizeRuntimeEventType(String(entry))))];
+      const placeholders = normalizedTypes.map(() => "?").join(", ");
+      where.push(`event_type in (${placeholders})`);
+      params.push(...normalizedTypes);
+    }
+    if (args.since && String(args.since).trim().length > 0) {
+      where.push("occurred_at >= ?");
+      params.push(normalizeIsoTimestamp(args.since, nowIso()));
+    }
+    const limitRaw = Number(args.limit ?? 200);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5_000, Math.floor(limitRaw))) : 200;
+    return db.all<RuntimeEventRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          session_id,
+          event_type,
+          event_key,
+          occurred_at,
+          payload_json,
+          created_at
+        from orchestrator_runtime_events
+        where ${where.join(" and ")}
+        order by occurred_at desc, created_at desc
+        limit ?
+      `,
+      [...params, limit]
     );
   };
 
@@ -1468,6 +1750,17 @@ export function createOrchestratorService({
     policy: Record<string, unknown>;
   }): OrchestratorClaim | null => {
     expireClaims();
+    const normalizedScopeValue = normalizeClaimScopeValue({
+      scopeKind: args.scopeKind,
+      scopeValue: args.scopeValue
+    });
+    if (!normalizedScopeValue) return null;
+    const conflict = findActiveClaimConflict({
+      scopeKind: args.scopeKind,
+      scopeValue: normalizedScopeValue,
+      ignoreAttemptId: args.attemptId
+    });
+    if (conflict) return null;
     const id = randomUUID();
     const acquiredAt = nowIso();
     const expiresAt = new Date(Date.now() + Math.max(1_000, Math.floor(args.ttlMs))).toISOString();
@@ -1497,13 +1790,13 @@ export function createOrchestratorService({
           projectId,
           args.runId,
           args.stepId,
-          args.attemptId,
-          args.ownerId,
-          args.scopeKind,
-          args.scopeValue,
-          acquiredAt,
-          acquiredAt,
-          expiresAt,
+            args.attemptId,
+            args.ownerId,
+            args.scopeKind,
+            normalizedScopeValue,
+            acquiredAt,
+            acquiredAt,
+            expiresAt,
           JSON.stringify(args.policy),
           JSON.stringify({})
         ]
@@ -1632,6 +1925,190 @@ export function createOrchestratorService({
     return count;
   };
 
+  const normalizeClaimScopeValue = (args: {
+    scopeKind: OrchestratorClaimScope;
+    scopeValue: string;
+  }): string | null => {
+    const raw = String(args.scopeValue ?? "").trim();
+    if (!raw.length) return null;
+    if (args.scopeKind !== "file") return raw;
+    return normalizeFileClaimScopeValue(projectRoot, raw);
+  };
+
+  const findActiveClaimConflict = (args: {
+    scopeKind: OrchestratorClaimScope;
+    scopeValue: string;
+    ignoreAttemptId?: string | null;
+  }): { conflict: ClaimRow; reason: string } | null => {
+    const ignoreAttemptId = String(args.ignoreAttemptId ?? "").trim();
+    if (args.scopeKind === "file") {
+      const activeFileClaims = db.all<ClaimRow>(
+        `
+          select
+            id,
+            run_id,
+            step_id,
+            attempt_id,
+            owner_id,
+            scope_kind,
+            scope_value,
+            state,
+            acquired_at,
+            heartbeat_at,
+            expires_at,
+            released_at,
+            policy_json,
+            metadata_json
+          from orchestrator_claims
+          where project_id = ?
+            and state = 'active'
+            and scope_kind = 'file'
+        `,
+        [projectId]
+      );
+      for (const claim of activeFileClaims) {
+        if (ignoreAttemptId.length > 0 && claim.attempt_id === ignoreAttemptId) continue;
+        if (!doFileClaimsOverlap(args.scopeValue, claim.scope_value)) continue;
+        return {
+          conflict: claim,
+          reason: `overlapping_file_scope:${args.scopeValue}<->${claim.scope_value}`
+        };
+      }
+      return null;
+    }
+
+    const row = db.get<ClaimRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          owner_id,
+          scope_kind,
+          scope_value,
+          state,
+          acquired_at,
+          heartbeat_at,
+          expires_at,
+          released_at,
+          policy_json,
+          metadata_json
+        from orchestrator_claims
+        where project_id = ?
+          and state = 'active'
+          and scope_kind = ?
+          and scope_value = ?
+          ${ignoreAttemptId.length > 0 ? "and coalesce(attempt_id, '') != ?" : ""}
+        limit 1
+      `,
+      ignoreAttemptId.length > 0
+        ? [projectId, args.scopeKind, args.scopeValue, ignoreAttemptId]
+        : [projectId, args.scopeKind, args.scopeValue]
+    );
+    if (!row) return null;
+    return {
+      conflict: row,
+      reason: "exact_scope_collision"
+    };
+  };
+
+  const collectTouchedRepoPaths = (args: {
+    result?: Partial<OrchestratorAttemptResultEnvelope> | null;
+    metadata?: Record<string, unknown> | null;
+  }): { touchedPaths: string[]; rawPaths: string[] } => {
+    const rawPaths: string[] = [];
+    const touched = new Set<string>();
+    const pushPath = (value: unknown) => {
+      if (typeof value !== "string") return;
+      const raw = value.trim();
+      if (!raw.length) return;
+      rawPaths.push(raw);
+      const normalized = normalizeRepoRelativePath(projectRoot, raw);
+      if (!normalized) return;
+      touched.add(normalized);
+    };
+    const parsePathArray = (value: unknown) => {
+      if (!Array.isArray(value)) return;
+      for (const entry of value) {
+        if (typeof entry === "string") {
+          const renameSplit = entry.split(/\s*->\s*/);
+          if (renameSplit.length === 2) {
+            pushPath(renameSplit[0]);
+            pushPath(renameSplit[1]);
+          } else {
+            pushPath(entry);
+          }
+          continue;
+        }
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const record = entry as Record<string, unknown>;
+        pushPath(record.path);
+        pushPath(record.file);
+        pushPath(record.from);
+        pushPath(record.to);
+        pushPath(record.oldPath);
+        pushPath(record.newPath);
+      }
+    };
+
+    const outputs =
+      args.result?.outputs && typeof args.result.outputs === "object" && !Array.isArray(args.result.outputs)
+        ? (args.result.outputs as Record<string, unknown>)
+        : {};
+    parsePathArray(outputs.modifiedFiles ?? outputs.modified_files ?? outputs.filesModified ?? outputs.files_modified);
+    parsePathArray(outputs.changedFiles ?? outputs.changed_files);
+    parsePathArray(outputs.renamedFiles ?? outputs.renamed_files);
+    parsePathArray(args.metadata?.changedFiles ?? args.metadata?.changed_files);
+    parsePathArray(args.metadata?.modifiedFiles ?? args.metadata?.modified_files);
+    parsePathArray(args.metadata?.renamedFiles ?? args.metadata?.renamed_files);
+    return {
+      touchedPaths: [...touched].sort((a, b) => a.localeCompare(b)),
+      rawPaths
+    };
+  };
+
+  const evaluateFileReservationViolations = (args: {
+    step: OrchestratorStep;
+    result?: Partial<OrchestratorAttemptResultEnvelope> | null;
+    metadata?: Record<string, unknown> | null;
+  }): {
+    normalizedScopes: string[];
+    touchedPaths: string[];
+    violations: string[];
+    rawPaths: string[];
+  } => {
+    const stepPolicy = resolveStepPolicy(args.step);
+    const fileScopes = (stepPolicy.claimScopes ?? [])
+      .filter((scope) => scope.scopeKind === "file")
+      .map((scope) => normalizeClaimScopeValue({ scopeKind: "file", scopeValue: scope.scopeValue }))
+      .filter((scope): scope is string => Boolean(scope));
+    if (!fileScopes.length) {
+      return {
+        normalizedScopes: [],
+        touchedPaths: [],
+        violations: [],
+        rawPaths: []
+      };
+    }
+    const touched = collectTouchedRepoPaths({
+      result: args.result,
+      metadata: args.metadata
+    });
+    const violations = touched.touchedPaths.filter((repoPath) => {
+      for (const scope of fileScopes) {
+        if (doesFileClaimMatchPath(scope, repoPath)) return false;
+      }
+      return true;
+    });
+    return {
+      normalizedScopes: fileScopes,
+      touchedPaths: touched.touchedPaths,
+      violations,
+      rawPaths: touched.rawPaths
+    };
+  };
+
   const isPermanentlyBlockedStep = (step: OrchestratorStep): boolean => {
     if (step.status !== "blocked") return false;
     if (step.metadata?.blockedSticky === true) return true;
@@ -1702,19 +2179,17 @@ export function createOrchestratorService({
       if (next === "ready" && claimScoped && step.status === "blocked") {
         // Claim conflicts can clear when claims expire/release.
         const conflicts = (stepPolicy.claimScopes ?? []).some((scope) => {
-          const row = db.get<{ id: string }>(
-            `
-              select id
-              from orchestrator_claims
-              where project_id = ?
-                and state = 'active'
-                and scope_kind = ?
-                and scope_value = ?
-              limit 1
-            `,
-            [projectId, scope.scopeKind, scope.scopeValue]
+          const normalizedScopeValue = normalizeClaimScopeValue({
+            scopeKind: scope.scopeKind,
+            scopeValue: scope.scopeValue
+          });
+          if (!normalizedScopeValue) return true;
+          return Boolean(
+            findActiveClaimConflict({
+              scopeKind: scope.scopeKind,
+              scopeValue: normalizedScopeValue
+            })
           );
-          return Boolean(row?.id);
         });
         if (conflicts) next = "blocked";
       }
@@ -1967,6 +2442,183 @@ export function createOrchestratorService({
       };
     })();
 
+    const measureBytes = (value: unknown): number => {
+      try {
+        return Buffer.byteLength(JSON.stringify(value), "utf8");
+      } catch {
+        return 0;
+      }
+    };
+
+    const runSteps = listStepRows(args.run.id).map(toStep);
+    const frontier = {
+      pending: runSteps.filter((step) => step.status === "pending").length,
+      ready: runSteps.filter((step) => step.status === "ready").length,
+      running: runSteps.filter((step) => step.status === "running").length,
+      blocked: runSteps.filter((step) => step.status === "blocked").length,
+      terminal: runSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length
+    };
+    const openQuestions = Number(
+      db.get<{ count: number }>(
+        `
+          select count(*) as count
+          from mission_interventions
+          where project_id = ?
+            and mission_id = ?
+            and status = 'open'
+            and intervention_type = 'manual_input'
+        `,
+        [projectId, args.run.missionId]
+      )?.count ?? 0
+    );
+    const activeClaimsForRun = db.all<ClaimRow>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          attempt_id,
+          owner_id,
+          scope_kind,
+          scope_value,
+          state,
+          acquired_at,
+          heartbeat_at,
+          expires_at,
+          released_at,
+          policy_json,
+          metadata_json
+        from orchestrator_claims
+        where project_id = ?
+          and run_id = ?
+          and state = 'active'
+      `,
+      [projectId, args.run.id]
+    );
+    const activeFileClaims = activeClaimsForRun.filter((claim) => claim.scope_kind === "file");
+    let activeClaimConflicts = 0;
+    for (let i = 0; i < activeFileClaims.length; i += 1) {
+      for (let j = i + 1; j < activeFileClaims.length; j += 1) {
+        if (doFileClaimsOverlap(activeFileClaims[i]!.scope_value, activeFileClaims[j]!.scope_value)) {
+          activeClaimConflicts += 1;
+        }
+      }
+    }
+    const gateState = (() => {
+      const latest = db.get<{ report_json: string | null }>(
+        `
+          select report_json
+          from orchestrator_gate_reports
+          where project_id = ?
+          order by generated_at desc
+          limit 1
+        `,
+        [projectId]
+      );
+      const report = parseRecord(latest?.report_json ?? null);
+      const status = typeof report?.overallStatus === "string" ? report.overallStatus : "unknown";
+      if (status === "pass" || status === "warn" || status === "fail") return status;
+      return "unknown";
+    })();
+    const recentDecisions = db.all<{ event_type: string; reason: string }>(
+      `
+        select event_type, reason
+        from orchestrator_timeline_events
+        where project_id = ?
+          and run_id = ?
+          and event_type in ('attempt_retry_scheduled', 'attempt_completed', 'attempt_blocked', 'step_status_changed', 'run_status_changed', 'scheduler_tick')
+        order by created_at desc
+        limit 12
+      `,
+      [projectId, args.run.id]
+    ).map((row) => `${row.event_type}:${row.reason}`);
+
+    const laneStatusMap = runSteps
+      .sort((a, b) => a.stepIndex - b.stepIndex)
+      .map((step) => ({
+        laneId: step.laneId,
+        stepKey: step.stepKey,
+        status: step.status
+      }));
+
+    const CONTROL_PACK_V2_BUDGET_BYTES = 8_192;
+    const EXECUTION_PACK_V2_BUDGET_BYTES = 16_384;
+    const DEEP_PACK_V2_BUDGET_BYTES = 4_096;
+
+    let controlPackV2: NonNullable<OrchestratorContextSnapshotCursor["controlPackV2"]> = {
+      budgetBytes: CONTROL_PACK_V2_BUDGET_BYTES,
+      consumedBytes: 0,
+      truncated: false,
+      frontier,
+      openQuestions,
+      activeClaims: activeClaimsForRun.length,
+      activeClaimConflicts,
+      gateState,
+      recentDecisions,
+      laneStatusMap
+    };
+    controlPackV2.consumedBytes = measureBytes(controlPackV2);
+    if (controlPackV2.consumedBytes > CONTROL_PACK_V2_BUDGET_BYTES) {
+      controlPackV2 = {
+        ...controlPackV2,
+        truncated: true,
+        recentDecisions: controlPackV2.recentDecisions.slice(0, 8),
+        laneStatusMap: controlPackV2.laneStatusMap.slice(0, 16)
+      };
+      controlPackV2.consumedBytes = measureBytes(controlPackV2);
+    }
+    if (controlPackV2.consumedBytes > CONTROL_PACK_V2_BUDGET_BYTES) {
+      controlPackV2 = {
+        ...controlPackV2,
+        recentDecisions: controlPackV2.recentDecisions.slice(0, 4),
+        laneStatusMap: controlPackV2.laneStatusMap.slice(0, 8)
+      };
+      controlPackV2.consumedBytes = measureBytes(controlPackV2);
+    }
+
+    const executionDependencies = args.step.dependencyStepIds
+      .map((depId) => runSteps.find((step) => step.id === depId))
+      .filter((dep): dep is OrchestratorStep => Boolean(dep))
+      .map((dep) => ({ stepId: dep.id, status: dep.status }));
+    let executionPackV2: NonNullable<OrchestratorContextSnapshotCursor["executionPackV2"]> = {
+      budgetBytes: EXECUTION_PACK_V2_BUDGET_BYTES,
+      consumedBytes: 0,
+      truncated: false,
+      stepKey: args.step.stepKey,
+      stepTitle: args.step.title,
+      dependencies: executionDependencies,
+      handoffIds: missionHandoffIds,
+      handoffDigest: missionHandoffDigest
+    };
+    executionPackV2.consumedBytes = measureBytes(executionPackV2);
+    if (executionPackV2.consumedBytes > EXECUTION_PACK_V2_BUDGET_BYTES) {
+      executionPackV2 = {
+        ...executionPackV2,
+        truncated: true,
+        dependencies: executionPackV2.dependencies.slice(0, 12),
+        handoffIds: executionPackV2.handoffIds.slice(0, 10)
+      };
+      executionPackV2.consumedBytes = measureBytes(executionPackV2);
+    }
+
+    let deepPackV2: NonNullable<OrchestratorContextSnapshotCursor["deepPackV2"]> = {
+      budgetBytes: DEEP_PACK_V2_BUDGET_BYTES,
+      consumedBytes: 0,
+      truncated: false,
+      docsMode: args.contextProfile.docsMode === "full_docs" ? "full_body" : "digest_ref",
+      docsCount: docsRefs.length,
+      fullDocsIncluded: fullDocs.length,
+      docsRefsOnly: Math.max(0, docsRefs.length - fullDocs.length)
+    };
+    deepPackV2.consumedBytes = measureBytes(deepPackV2);
+    if (deepPackV2.consumedBytes > DEEP_PACK_V2_BUDGET_BYTES) {
+      deepPackV2 = {
+        ...deepPackV2,
+        truncated: true
+      };
+      deepPackV2.consumedBytes = measureBytes(deepPackV2);
+    }
+
     const laneHead = lanePackKey ? packService.getHeadVersion({ packKey: lanePackKey }) : null;
     const projectHead = packService.getHeadVersion({ packKey: "project" });
     const cursor: OrchestratorContextSnapshotCursor = {
@@ -1977,13 +2629,19 @@ export function createOrchestratorService({
       projectPackVersionId: projectHead.versionId,
       projectPackVersionNumber: projectHead.versionNumber,
       packDeltaSince: previousPackDeltaSince,
-      docs: docsRefs,
-      packDeltaDigest,
-      missionHandoffIds,
-      missionHandoffDigest,
-      contextSources: [
-        `pack:project:${projectExport.level}`,
-        ...(lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
+	      docs: docsRefs,
+	      packDeltaDigest,
+	      missionHandoffIds,
+	      missionHandoffDigest,
+	      controlPackV2,
+	      executionPackV2,
+	      deepPackV2,
+	      contextSources: [
+	        "control_pack_v2",
+	        "execution_pack_v2",
+	        "deep_pack_v2",
+	        `pack:project:${projectExport.level}`,
+	        ...(lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
         ...(packDeltaDigest ? ["delta_digest"] : []),
         ...(missionHandoffIds.length ? ["mission_handoffs"] : []),
         ...(missionHandoffDigest ? ["mission_handoff_digest"] : []),
@@ -2015,6 +2673,33 @@ export function createOrchestratorService({
         }
       });
     }
+    appendTimelineEvent({
+      runId: args.run.id,
+      stepId: args.step.id,
+      attemptId: args.attemptId,
+      eventType: "context_pack_v2_metrics",
+      reason:
+        controlPackV2.truncated || executionPackV2.truncated || deepPackV2.truncated
+          ? "pack_v2_truncated"
+          : "pack_v2_within_budget",
+      detail: {
+        control: {
+          consumedBytes: controlPackV2.consumedBytes,
+          budgetBytes: controlPackV2.budgetBytes,
+          truncated: controlPackV2.truncated
+        },
+        execution: {
+          consumedBytes: executionPackV2.consumedBytes,
+          budgetBytes: executionPackV2.budgetBytes,
+          truncated: executionPackV2.truncated
+        },
+        deep: {
+          consumedBytes: deepPackV2.consumedBytes,
+          budgetBytes: deepPackV2.budgetBytes,
+          truncated: deepPackV2.truncated
+        }
+      }
+    });
 
     const snapshotId = randomUUID();
     const createdAt = nowIso();
@@ -2633,6 +3318,30 @@ export function createOrchestratorService({
       return listTimelineRows(args).map(toTimelineEvent);
     },
 
+    appendRuntimeEvent(args: {
+      runId: string;
+      stepId?: string | null;
+      attemptId?: string | null;
+      sessionId?: string | null;
+      eventType: OrchestratorRuntimeEventType;
+      eventKey?: string | null;
+      occurredAt?: string | null;
+      payload?: Record<string, unknown> | null;
+    }): OrchestratorRuntimeBusEvent {
+      return persistRuntimeEvent(args);
+    },
+
+    listRuntimeEvents(args: {
+      runId?: string;
+      attemptId?: string;
+      sessionId?: string;
+      eventTypes?: OrchestratorRuntimeEventType[];
+      since?: string | null;
+      limit?: number;
+    } = {}): OrchestratorRuntimeBusEvent[] {
+      return listRuntimeEventRows(args).map(toRuntimeEvent);
+    },
+
     getRunGraph(args: { runId: string; timelineLimit?: number }): OrchestratorRunGraph {
       const runRow = getRunRow(args.runId);
       if (!runRow) throw new Error(`Run not found: ${args.runId}`);
@@ -2643,7 +3352,8 @@ export function createOrchestratorService({
         claims: this.listClaims({ runId: args.runId, limit: 1_000 }),
         contextSnapshots: this.listContextSnapshots({ runId: args.runId, limit: 1_000 }),
         handoffs: this.listHandoffs({ runId: args.runId, limit: 1_000 }),
-        timeline: this.listTimeline({ runId: args.runId, limit: args.timelineLimit ?? 300 })
+        timeline: this.listTimeline({ runId: args.runId, limit: args.timelineLimit ?? 300 }),
+        runtimeEvents: this.listRuntimeEvents({ runId: args.runId, limit: 1_000 })
       };
     },
 
@@ -2912,11 +3622,12 @@ export function createOrchestratorService({
           coordination: {
             patterns: coordinationPatterns
           },
-          orchestratorConfig: {
-            maxParallelWorkers: runtimeConfig.maxParallelWorkers,
-            contextPressureThreshold: runtimeConfig.contextPressureThreshold,
-            progressiveLoading: runtimeConfig.progressiveLoading
-          },
+	          orchestratorConfig: {
+	            maxParallelWorkers: runtimeConfig.maxParallelWorkers,
+	            contextPressureThreshold: runtimeConfig.contextPressureThreshold,
+	            progressiveLoading: runtimeConfig.progressiveLoading,
+	            fileReservationGuardMode: runtimeConfig.fileReservationGuardMode
+	          },
           autopilot: {
             enabled: autopilotEnabled,
             executorKind: autopilotEnabled ? fallbackExecutor : "manual",
@@ -3121,6 +3832,18 @@ export function createOrchestratorService({
       const touchedRunIds = new Set<string>();
       for (const attempt of runningAttempts) {
         touchedRunIds.add(attempt.run_id);
+        persistRuntimeEvent({
+          runId: attempt.run_id,
+          stepId: attempt.step_id,
+          attemptId: attempt.id,
+          sessionId,
+          eventType: "session_ended",
+          eventKey: `session_ended:${attempt.id}:${sessionId}:${sessionStatus}:${resolvedExitCode ?? "none"}`,
+          payload: {
+            sessionStatus,
+            exitCode: resolvedExitCode
+          }
+        });
         this.completeAttempt({
           attemptId: attempt.id,
           status: completion.status,
@@ -3802,18 +4525,15 @@ export function createOrchestratorService({
       // Claims are acquired before attempt state transitions so collisions are deterministic.
       const acquiredClaims: OrchestratorClaim[] = [];
       for (const scope of stepPolicy.claimScopes ?? []) {
-        const ttlMs = scope.ttlMs ?? runtimeConfig.workerHeartbeatTimeoutMs;
-        const claim = acquireClaim({
-          runId: run.id,
-          stepId: step.id,
-          attemptId,
-          ownerId: args.ownerId.trim() || "orchestrator",
+        const normalizedScopeValue = normalizeClaimScopeValue({
           scopeKind: scope.scopeKind,
-          scopeValue: scope.scopeValue,
-          ttlMs,
-          policy: { ttlMs }
+          scopeValue: scope.scopeValue
         });
-        if (!claim) {
+        const failClaimStart = (failure: {
+          errorMessage: string;
+          detail: Record<string, unknown>;
+          reason: string;
+        }): OrchestratorAttempt => {
           releaseClaimsForAttempt({ attemptId, state: "released" });
           db.run(
             `
@@ -3847,8 +4567,17 @@ export function createOrchestratorService({
               attemptNumber,
               executorKind,
               contextPolicy.id,
-              `Claim collision for ${scope.scopeKind}:${scope.scopeValue}`,
-              JSON.stringify({ ownerId: args.ownerId, claimScope: scope, workerState: "disposed" }),
+              failure.errorMessage,
+              JSON.stringify({
+                ownerId: args.ownerId,
+                claimScope: {
+                  scopeKind: scope.scopeKind,
+                  scopeValue: normalizedScopeValue ?? scope.scopeValue,
+                  ttlMs: scope.ttlMs
+                },
+                workerState: "disposed",
+                claimConflict: failure.detail
+              }),
               createdAt,
               createdAt,
               createdAt
@@ -3877,8 +4606,9 @@ export function createOrchestratorService({
             payload: {
               reason: "claim_conflict",
               scopeKind: scope.scopeKind,
-              scopeValue: scope.scopeValue,
-              contextProfile: contextPolicy.id
+              scopeValue: normalizedScopeValue ?? scope.scopeValue,
+              contextProfile: contextPolicy.id,
+              ...failure.detail
             }
           });
           emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId, reason: "claim_blocked" });
@@ -3887,16 +4617,92 @@ export function createOrchestratorService({
             stepId: step.id,
             attemptId,
             eventType: "attempt_blocked",
-            reason: "claim_conflict",
+            reason: failure.reason,
             detail: {
               scopeKind: scope.scopeKind,
-              scopeValue: scope.scopeValue
+              scopeValue: normalizedScopeValue ?? scope.scopeValue,
+              ...failure.detail
+            }
+          });
+          persistRuntimeEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId,
+            eventType: "claim_conflict",
+            eventKey: `claim_conflict:${attemptId}:${scope.scopeKind}:${normalizedScopeValue ?? scope.scopeValue}`,
+            occurredAt: createdAt,
+            payload: {
+              reason: failure.reason,
+              scopeKind: scope.scopeKind,
+              scopeValue: normalizedScopeValue ?? scope.scopeValue,
+              ...failure.detail
             }
           });
           this.tick({ runId: run.id });
           const blockedRow = getAttemptRow(attemptId);
           if (!blockedRow) throw new Error("Failed to create blocked attempt.");
           return toAttempt(blockedRow);
+        };
+
+        if (!normalizedScopeValue) {
+          return failClaimStart({
+            errorMessage: `Invalid file reservation scope: ${scope.scopeValue}`,
+            reason: "claim_scope_invalid",
+            detail: {
+              invalidScopeValue: scope.scopeValue
+            }
+          });
+        }
+        const existingConflict = findActiveClaimConflict({
+          scopeKind: scope.scopeKind,
+          scopeValue: normalizedScopeValue,
+          ignoreAttemptId: attemptId
+        });
+        if (existingConflict) {
+          return failClaimStart({
+            errorMessage: `Claim collision for ${scope.scopeKind}:${normalizedScopeValue}`,
+            reason: "claim_conflict",
+            detail: {
+              conflictingClaimId: existingConflict.conflict.id,
+              conflictingRunId: existingConflict.conflict.run_id,
+              conflictingStepId: existingConflict.conflict.step_id,
+              conflictingAttemptId: existingConflict.conflict.attempt_id,
+              conflictingScopeValue: existingConflict.conflict.scope_value,
+              conflictReason: existingConflict.reason
+            }
+          });
+        }
+        const ttlMs = scope.ttlMs ?? runtimeConfig.workerHeartbeatTimeoutMs;
+        const claim = acquireClaim({
+          runId: run.id,
+          stepId: step.id,
+          attemptId,
+          ownerId: args.ownerId.trim() || "orchestrator",
+          scopeKind: scope.scopeKind,
+          scopeValue: normalizedScopeValue,
+          ttlMs,
+          policy: { ttlMs }
+        });
+        if (!claim) {
+          const postConflict = findActiveClaimConflict({
+            scopeKind: scope.scopeKind,
+            scopeValue: normalizedScopeValue,
+            ignoreAttemptId: attemptId
+          });
+          return failClaimStart({
+            errorMessage: `Claim collision for ${scope.scopeKind}:${normalizedScopeValue}`,
+            reason: "claim_conflict",
+            detail: postConflict
+              ? {
+                  conflictingClaimId: postConflict.conflict.id,
+                  conflictingRunId: postConflict.conflict.run_id,
+                  conflictingStepId: postConflict.conflict.step_id,
+                  conflictingAttemptId: postConflict.conflict.attempt_id,
+                  conflictingScopeValue: postConflict.conflict.scope_value,
+                  conflictReason: postConflict.reason
+                }
+              : {}
+          });
         }
         acquiredClaims.push(claim);
       }
@@ -4207,51 +5013,78 @@ export function createOrchestratorService({
       if (!stepRow) throw new Error(`Step not found for attempt: ${args.attemptId}`);
       const runRow = getRunRow(attemptRow.run_id);
       if (!runRow) throw new Error(`Run not found for attempt: ${args.attemptId}`);
-      const step = toStep(stepRow);
-      const run = toRun(runRow);
+	      const step = toStep(stepRow);
+	      const run = toRun(runRow);
 
-      const completedAt = nowIso();
-      const status = args.status;
-      const errorClass =
-        status === "failed"
-          ? args.errorClass ?? "executor_failure"
-          : status === "blocked"
-            ? args.errorClass ?? "policy"
-            : status === "canceled"
-              ? "canceled"
-              : "none";
-      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
-      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
-      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
-      const computedBackoff =
-        shouldRetry
-          ? Math.max(
+	      const completedAt = nowIso();
+	      const runtimeConfig = getRuntimeConfig();
+	      let status = args.status;
+	      const fileReservationCheck =
+	        status === "succeeded"
+	          ? evaluateFileReservationViolations({
+	              step,
+	              result: args.result ?? null,
+	              metadata: args.metadata ?? null
+	            })
+	          : null;
+	      const fileReservationMessage = (() => {
+	        if (!fileReservationCheck || fileReservationCheck.violations.length === 0) return null;
+	        const preview = fileReservationCheck.violations.slice(0, 4).join(", ");
+	        const suffix = fileReservationCheck.violations.length > 4 ? ` (+${fileReservationCheck.violations.length - 4} more)` : "";
+	        return `File reservation violation: modified files outside claimed scope (${preview}${suffix}).`;
+	      })();
+	      const reservationGuardMode = runtimeConfig.fileReservationGuardMode;
+	      const reservationBlocks = status === "succeeded" && Boolean(fileReservationMessage) && reservationGuardMode === "block";
+	      const reservationWarns = status === "succeeded" && Boolean(fileReservationMessage) && reservationGuardMode === "warn";
+	      if (reservationBlocks) {
+	        status = "blocked";
+	      }
+	      const effectiveErrorMessage = reservationBlocks
+	        ? fileReservationMessage
+	        : args.errorMessage ?? null;
+	      const errorClass =
+	        status === "failed"
+	          ? args.errorClass ?? "executor_failure"
+	          : status === "blocked"
+	            ? args.errorClass ?? (reservationBlocks ? "policy" : "policy")
+	            : status === "canceled"
+	              ? "canceled"
+	              : "none";
+	      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
+	      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
+	      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
+	      const computedBackoff =
+	        shouldRetry
+	          ? Math.max(
               0,
               Math.floor(
                 args.retryBackoffMs
                   ?? Math.min(10 * 60_000, DEFAULT_RETRY_BACKOFF_MS * Math.pow(2, Math.max(0, step.retryCount)))
               )
-            )
-          : Math.max(0, Math.floor(args.retryBackoffMs ?? 0));
-      const defaultSummary =
-        status === "succeeded"
-          ? "Step completed."
-          : status === "failed"
-            ? args.errorMessage?.trim() || "Step attempt failed."
-            : status === "blocked"
-              ? args.errorMessage?.trim() || "Step attempt blocked."
-              : "Step attempt canceled.";
-      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
-        args.result ?? {
-          success: status === "succeeded",
+	            )
+	          : Math.max(0, Math.floor(args.retryBackoffMs ?? 0));
+	      const defaultSummary =
+	        status === "succeeded"
+	          ? "Step completed."
+	          : status === "failed"
+	            ? effectiveErrorMessage?.trim() || "Step attempt failed."
+	            : status === "blocked"
+	              ? effectiveErrorMessage?.trim() || "Step attempt blocked."
+	              : "Step attempt canceled.";
+	      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
+	        args.result ?? {
+	          success: status === "succeeded",
           summary: defaultSummary,
           outputs: null,
           warnings: status === "failed" || status === "blocked" ? [defaultSummary] : [],
           sessionId: attemptRow.executor_session_id,
-          trackedSession: true
-        }
-      );
-      const workerState = status === "succeeded" ? "idle" : "disposed";
+	          trackedSession: true
+	        }
+	      );
+	      if (reservationWarns && fileReservationMessage && !envelope.warnings.includes(fileReservationMessage)) {
+	        envelope.warnings.push(fileReservationMessage);
+	      }
+	      const workerState = status === "succeeded" ? "idle" : "disposed";
 
       db.run(
         `
@@ -4267,18 +5100,26 @@ export function createOrchestratorService({
           where id = ?
             and project_id = ?
         `,
-        [
-          status,
-          errorClass,
-          args.errorMessage ?? null,
-          computedBackoff,
-          JSON.stringify(envelope),
-          JSON.stringify({
-            ...(parseRecord(attemptRow.metadata_json) ?? {}),
-            ...(args.metadata ?? {}),
-            workerState,
-            workerCompletedAt: completedAt
-          }),
+	        [
+	          status,
+	          errorClass,
+	          effectiveErrorMessage,
+	          computedBackoff,
+	          JSON.stringify(envelope),
+	          JSON.stringify({
+	            ...(parseRecord(attemptRow.metadata_json) ?? {}),
+	            ...(args.metadata ?? {}),
+	            ...(fileReservationCheck
+	              ? {
+	                  fileReservationGuardMode: reservationGuardMode,
+	                  fileReservationScopes: fileReservationCheck.normalizedScopes,
+	                  fileReservationTouchedPaths: fileReservationCheck.touchedPaths,
+	                  fileReservationViolations: fileReservationCheck.violations
+	                }
+	              : {}),
+	            workerState,
+	            workerCompletedAt: completedAt
+	          }),
           completedAt,
           completedAt,
           args.attemptId,
@@ -4323,11 +5164,11 @@ export function createOrchestratorService({
         const blockedMetadata = {
           ...(step.metadata ?? {}),
           blockedAt: completedAt,
-          blockedByAttemptId: args.attemptId,
-          blockedErrorClass: errorClass,
-          blockedErrorMessage: args.errorMessage ?? defaultSummary,
-          blockedSticky: errorClass === "policy"
-        };
+	          blockedByAttemptId: args.attemptId,
+	          blockedErrorClass: errorClass,
+	          blockedErrorMessage: effectiveErrorMessage ?? defaultSummary,
+	          blockedSticky: errorClass === "policy"
+	        };
         db.run(
           `
             update orchestrator_steps
@@ -4369,10 +5210,10 @@ export function createOrchestratorService({
               projectId
             ]
           );
-          appendTimelineEvent({
-            runId: run.id,
-            stepId: step.id,
-            attemptId: args.attemptId,
+	      appendTimelineEvent({
+	        runId: run.id,
+	        stepId: step.id,
+	        attemptId: args.attemptId,
             eventType: "attempt_retry_scheduled",
             reason: "retryable_failure",
             detail: {
@@ -4380,6 +5221,22 @@ export function createOrchestratorService({
               nextRetryAt,
               retryCount: step.retryCount + 1,
               retryLimit: step.retryLimit
+            }
+          });
+          persistRuntimeEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: args.attemptId,
+            sessionId: attemptRow.executor_session_id,
+            eventType: "retry_scheduled",
+            eventKey: `retry_scheduled:${args.attemptId}:${step.retryCount + 1}:${nextRetryAt}`,
+            occurredAt: completedAt,
+            payload: {
+              retryBackoffMs: computedBackoff,
+              nextRetryAt,
+              retryCount: step.retryCount + 1,
+              retryLimit: step.retryLimit,
+              errorClass
             }
           });
         } else {
@@ -4394,9 +5251,24 @@ export function createOrchestratorService({
                 and run_id = ?
                 and project_id = ?
             `,
-          [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
+	          [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
         );
-        }
+          persistRuntimeEvent({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: args.attemptId,
+            sessionId: attemptRow.executor_session_id,
+            eventType: "retry_exhausted",
+            eventKey: `retry_exhausted:${args.attemptId}:${step.retryCount}:${step.retryLimit}`,
+            occurredAt: completedAt,
+            payload: {
+	              retryCount: step.retryCount,
+	              retryLimit: step.retryLimit,
+	              errorClass,
+	              errorMessage: effectiveErrorMessage ?? defaultSummary
+	            }
+	          });
+	        }
       }
 
       insertHandoff({
@@ -4416,12 +5288,12 @@ export function createOrchestratorService({
         producer: "orchestrator",
         payload: {
           contextProfile: normalizeProfileId(attemptRow.context_profile),
-          status,
-          errorClass,
-          errorMessage: args.errorMessage ?? null,
-          retryBackoffMs: computedBackoff,
-          result: envelope
-        }
+	          status,
+	          errorClass,
+	          errorMessage: effectiveErrorMessage,
+	          retryBackoffMs: computedBackoff,
+	          result: envelope
+	        }
       });
 
       emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId: args.attemptId, reason: "completed" });
@@ -4436,9 +5308,53 @@ export function createOrchestratorService({
           status,
           errorClass,
           retryBackoffMs: computedBackoff,
-          shouldRetry
-        }
-      });
+	          shouldRetry
+	        }
+	      });
+	      if (fileReservationMessage && fileReservationCheck) {
+	        appendTimelineEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: args.attemptId,
+	          eventType: "file_reservation_guard",
+	          reason: reservationBlocks ? "block" : reservationWarns ? "warn" : "off",
+	          detail: {
+	            guardMode: reservationGuardMode,
+	            normalizedScopes: fileReservationCheck.normalizedScopes,
+	            touchedPaths: fileReservationCheck.touchedPaths,
+	            violations: fileReservationCheck.violations,
+	            rawPaths: fileReservationCheck.rawPaths
+	          }
+	        });
+	      }
+	      if (status === "succeeded") {
+	        persistRuntimeEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId: args.attemptId,
+          sessionId: attemptRow.executor_session_id,
+          eventType: "done",
+          eventKey: `done:${args.attemptId}:${completedAt}`,
+          occurredAt: completedAt,
+          payload: {
+            summary: envelope.summary
+          }
+        });
+      } else if (status === "blocked") {
+        persistRuntimeEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId: args.attemptId,
+          sessionId: attemptRow.executor_session_id,
+          eventType: "blocked",
+          eventKey: `blocked:${args.attemptId}:${errorClass}:${completedAt}`,
+          occurredAt: completedAt,
+	          payload: {
+	            errorClass,
+	            errorMessage: effectiveErrorMessage ?? defaultSummary
+	          }
+	        });
+	      }
 
       // Budget accumulation: if attempt metadata includes tokensConsumed, accumulate into run
       const attemptTokens = Number(args.metadata?.tokensConsumed ?? 0);
@@ -4513,18 +5429,18 @@ export function createOrchestratorService({
           ]
         );
       }
-      if (updatedRun.status === "failed") {
-        db.run(
-          `
-            update orchestrator_runs
-            set last_error = ?,
-                updated_at = ?
-            where id = ?
-              and project_id = ?
-          `,
-          [args.errorMessage ?? defaultSummary, nowIso(), run.id, projectId]
-        );
-      }
+	      if (updatedRun.status === "failed") {
+	        db.run(
+	          `
+	            update orchestrator_runs
+	            set last_error = ?,
+	                updated_at = ?
+	            where id = ?
+	              and project_id = ?
+	          `,
+	          [effectiveErrorMessage ?? defaultSummary, nowIso(), run.id, projectId]
+	        );
+	      }
       const updatedAttemptRow = getAttemptRow(args.attemptId);
       if (!updatedAttemptRow) throw new Error("Attempt not found after completion update.");
       return toAttempt(updatedAttemptRow);

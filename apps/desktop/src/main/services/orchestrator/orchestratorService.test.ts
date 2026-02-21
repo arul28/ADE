@@ -295,6 +295,277 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("persists runtime bus events idempotently and replays them from run graph", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "runtime", title: "Runtime", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "runtime-owner"
+      });
+
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        attemptId: attempt.id,
+        eventType: "heartbeat",
+        eventKey: "dedupe-key",
+        payload: { source: "test" }
+      });
+      fixture.service.appendRuntimeEvent({
+        runId: started.run.id,
+        stepId: step.id,
+        attemptId: attempt.id,
+        eventType: "heartbeat",
+        eventKey: "dedupe-key",
+        payload: { source: "test-duplicate" }
+      });
+
+      const events = fixture.service.listRuntimeEvents({
+        runId: started.run.id,
+        eventTypes: ["heartbeat"],
+        limit: 10
+      });
+      const deduped = events.filter((event) => event.eventKey === "dedupe-key");
+      expect(deduped).toHaveLength(1);
+      expect(deduped[0]?.payload?.source).toBe("test");
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      expect((graph.runtimeEvents ?? []).some((event) => event.eventKey === "dedupe-key")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("blocks overlapping file reservation patterns under parallel load", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "file-a",
+            title: "File A",
+            stepIndex: 0,
+            policy: {
+              claimScopes: [{ scopeKind: "file", scopeValue: "glob:src/**", ttlMs: 60_000 }]
+            }
+          },
+          {
+            stepKey: "file-b",
+            title: "File B",
+            stepIndex: 1,
+            policy: {
+              claimScopes: [{ scopeKind: "file", scopeValue: "glob:src/app/**", ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const [first, second] = fixture.service.listSteps(started.run.id);
+      if (!first || !second) throw new Error("Missing steps");
+
+      const firstAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: first.id,
+        ownerId: "owner-a"
+      });
+      expect(firstAttempt.status).toBe("running");
+
+      const secondAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: second.id,
+        ownerId: "owner-b"
+      });
+      expect(secondAttempt.status).toBe("blocked");
+      expect(secondAttempt.errorClass).toBe("claim_conflict");
+      expect(secondAttempt.errorMessage ?? "").toContain("Claim collision");
+
+      const metadata = secondAttempt.metadata ?? {};
+      expect(metadata.claimConflict).toBeTruthy();
+      expect(String((metadata.claimConflict as Record<string, unknown>).conflictReason ?? "")).toContain("overlapping_file_scope");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("warns on file reservation violations at completion boundary in warn mode", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                fileReservationGuardMode: "warn"
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "guard-warn",
+            title: "Guard Warn",
+            stepIndex: 0,
+            policy: {
+              claimScopes: [{ scopeKind: "file", scopeValue: "glob:src/**", ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner-warn"
+      });
+      expect(attempt.status).toBe("running");
+
+      const completed = fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        metadata: {
+          changedFiles: ["src/app/main.ts", "README.md"]
+        }
+      });
+      expect(completed.status).toBe("succeeded");
+      expect(
+        (completed.resultEnvelope?.warnings ?? []).some((entry) => entry.includes("File reservation violation"))
+      ).toBe(true);
+      expect(Array.isArray(completed.metadata?.fileReservationViolations)).toBe(true);
+      expect((completed.metadata?.fileReservationViolations as string[])).toContain("README.md");
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      const guard = timeline.find((entry) => entry.eventType === "file_reservation_guard");
+      expect(guard?.reason).toBe("warn");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("blocks completion on file reservation violations in block mode", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                fileReservationGuardMode: "block"
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "guard-block",
+            title: "Guard Block",
+            stepIndex: 0,
+            policy: {
+              claimScopes: [{ scopeKind: "file", scopeValue: "glob:src/**", ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner-block"
+      });
+      const completed = fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        metadata: {
+          changedFiles: ["README.md"]
+        }
+      });
+      expect(completed.status).toBe("blocked");
+      expect(completed.errorClass).toBe("policy");
+      expect(completed.errorMessage ?? "").toContain("File reservation violation");
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const refreshedStep = graph.steps.find((entry) => entry.id === step.id);
+      expect(refreshedStep?.status).toBe("blocked");
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      const guard = timeline.find((entry) => entry.eventType === "file_reservation_guard");
+      expect(guard?.reason).toBe("block");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("treats rename/move paths as touched files for reservation enforcement", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                fileReservationGuardMode: "warn"
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "rename-edge",
+            title: "Rename Edge",
+            stepIndex: 0,
+            policy: {
+              claimScopes: [{ scopeKind: "file", scopeValue: "glob:src/**", ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner-rename"
+      });
+      const completed = fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        metadata: {
+          renamedFiles: [{ from: "src/legacy.ts", to: "docs/legacy.ts" }]
+        }
+      });
+      expect(completed.status).toBe("succeeded");
+      expect((completed.metadata?.fileReservationTouchedPaths as string[])).toContain("src/legacy.ts");
+      expect((completed.metadata?.fileReservationTouchedPaths as string[])).toContain("docs/legacy.ts");
+      expect((completed.metadata?.fileReservationViolations as string[])).toContain("docs/legacy.ts");
+      expect((completed.metadata?.fileReservationViolations as string[])).not.toContain("src/legacy.ts");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("recovers running attempts into deterministic resume path", async () => {
     const fixture = await createFixture();
     try {
