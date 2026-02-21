@@ -222,4 +222,126 @@ describe("claudeOrchestratorAdapter", () => {
     const command = createSession.mock.calls[0][0].startupCommand as string;
     expect(command).toContain("Build a feature");
   });
+
+  it("reads permission mode from config when step metadata does not specify it", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        claude: { permissionMode: "plan" }
+      }
+    });
+    const result = await adapter.start(args);
+
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.permissionMode).toBe("plan");
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--permission-mode");
+    expect(command).toContain("plan");
+  });
+
+  it("step metadata wins over config for permission mode", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: {
+          instructions: "Do something",
+          permissionMode: "bypassPermissions"
+        }
+      },
+      permissionConfig: {
+        claude: { permissionMode: "plan" }
+      }
+    });
+    const result = await adapter.start(args);
+
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.permissionMode).toBe("bypassPermissions");
+  });
+
+  it("adds --dangerously-skip-permissions when config says so", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        claude: { dangerouslySkipPermissions: true }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--dangerously-skip-permissions");
+    expect(command).not.toContain("--permission-mode");
+  });
+
+  it("does not add --dangerously-skip-permissions when config is false", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        claude: { dangerouslySkipPermissions: false, permissionMode: "plan" }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).not.toContain("--dangerously-skip-permissions");
+    expect(command).toContain("--permission-mode");
+    expect(command).toContain("plan");
+  });
+
+  it("adds --allowedTools flags when config specifies them", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        claude: { allowedTools: ["Read", "Write", "Bash"] }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--allowedTools");
+    expect(command).toContain("Read");
+    expect(command).toContain("Write");
+    expect(command).toContain("Bash");
+  });
+
+  it("falls back to hardcoded defaults when no config or step metadata", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      }
+    });
+    const result = await adapter.start(args);
+
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.permissionMode).toBe("acceptEdits");
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--permission-mode");
+    expect(command).toContain("acceptEdits");
+    expect(command).not.toContain("--dangerously-skip-permissions");
+  });
 });

@@ -1,16 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type {
   MissionDetail,
+  MissionDepthTier,
+  MissionDepthConfig,
   MissionPlannerEngine,
   MissionStepStatus,
   MissionStatus,
+  ModelCapabilityProfile,
   OrchestratorExecutorKind,
   OrchestratorRunGraph,
   OrchestratorRuntimeEvent,
   OrchestratorStepStatus,
   OrchestratorWorkerState,
   OrchestratorWorkerStatus,
-  OrchestratorPlannerProvider
+  OrchestratorPlannerProvider,
+  SteerMissionArgs,
+  SteerMissionResult,
+  GetMissionDepthConfigArgs,
+  GetModelCapabilitiesResult,
+  UserSteeringDirective,
+  OrchestratorChatMessage,
+  SendOrchestratorChatArgs,
+  GetOrchestratorChatArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -39,9 +50,22 @@ type MissionRunStartResult = {
 
 type ResolvedOrchestratorConfig = {
   requirePlanReview: boolean;
+  defaultDepthTier: MissionDepthTier;
+  defaultPlannerProvider: "claude" | "codex" | null;
 };
 
 const PLAN_REVIEW_INTERVENTION_TITLE = "Mission plan approval required";
+const STEERING_DIRECTIVES_METADATA_KEY = "steeringDirectives";
+const ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
+const ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
+const MAX_PERSISTED_STEERING_DIRECTIVES = 200;
+const MAX_PERSISTED_CHAT_MESSAGES = 200;
+
+type OrchestratorChatSessionState = {
+  provider: "claude" | "codex";
+  sessionId: string;
+  updatedAt: string;
+};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -55,13 +79,74 @@ function asBool(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function parseSteeringDirective(value: unknown, missionId: string): UserSteeringDirective | null {
+  if (!isRecord(value)) return null;
+  const directive = typeof value.directive === "string" ? value.directive.trim() : "";
+  if (!directive.length) return null;
+  const priority = value.priority === "instruction" || value.priority === "override" ? value.priority : "suggestion";
+  return {
+    missionId,
+    directive,
+    priority,
+    targetStepKey: typeof value.targetStepKey === "string" ? value.targetStepKey : null
+  };
+}
+
+function parseChatMessage(value: unknown, missionId: string): OrchestratorChatMessage | null {
+  if (!isRecord(value)) return null;
+  const role = value.role === "user" || value.role === "orchestrator" || value.role === "worker"
+    ? value.role
+    : null;
+  const content = typeof value.content === "string" ? value.content.trim() : "";
+  const timestamp = typeof value.timestamp === "string" ? value.timestamp : nowIso();
+  if (!role || !content.length) return null;
+  return {
+    id: typeof value.id === "string" && value.id.trim().length ? value.id : randomUUID(),
+    missionId,
+    role,
+    content,
+    timestamp,
+    stepKey: typeof value.stepKey === "string" ? value.stepKey : null,
+    metadata: isRecord(value.metadata) ? value.metadata : null
+  };
+}
+
+function parseChatSessionState(value: unknown): OrchestratorChatSessionState | null {
+  if (!isRecord(value)) return null;
+  const provider = value.provider === "claude" || value.provider === "codex" ? value.provider : null;
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  if (!provider || !sessionId.length) return null;
+  return {
+    provider,
+    sessionId,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : nowIso()
+  };
+}
+
 function readConfig(projectConfigService: ReturnType<typeof createProjectConfigService> | null | undefined): ResolvedOrchestratorConfig {
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
   const orchestrator = isRecord(ai) && isRecord(ai.orchestrator) ? (ai.orchestrator as Record<string, unknown>) : {};
   const requirePlanReview = asBool(orchestrator.requirePlanReview, asBool(orchestrator.require_plan_review, false));
+  const defaultDepthTierRaw = (asString(orchestrator.defaultDepthTier) ?? asString(orchestrator.default_depth_tier) ?? "").trim();
+  const defaultDepthTier: MissionDepthTier =
+    defaultDepthTierRaw === "light" || defaultDepthTierRaw === "standard" || defaultDepthTierRaw === "deep"
+      ? defaultDepthTierRaw
+      : "standard";
+  const defaultPlannerProviderRaw =
+    (asString(orchestrator.defaultPlannerProvider) ?? asString(orchestrator.default_planner_provider) ?? "").trim();
+  const defaultPlannerProvider: "claude" | "codex" | null =
+    defaultPlannerProviderRaw === "claude" || defaultPlannerProviderRaw === "codex"
+      ? defaultPlannerProviderRaw
+      : null;
   return {
-    requirePlanReview
+    requirePlanReview,
+    defaultDepthTier,
+    defaultPlannerProvider
   };
 }
 
@@ -93,6 +178,252 @@ function buildOutcomeSummary(graph: OrchestratorRunGraph): string {
   return `Run ${graph.run.id.slice(0, 8)} finished: ${succeeded}/${total} steps succeeded, ${failed} failed, ${blocked} blocked across ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
 }
 
+// ─────────────────────────────────────────────────────
+// Depth-to-Config Resolution
+// ─────────────────────────────────────────────────────
+
+export function resolveMissionDepthConfig(tier: MissionDepthTier): MissionDepthConfig {
+  switch (tier) {
+    case "light":
+      return {
+        tier: "light",
+        planning: {
+          useAiPlanner: false,
+          maxPlanningTimeMs: 5_000,
+          requirePlanReview: false
+        },
+        execution: {
+          maxParallelWorkers: 1,
+          defaultRetryLimit: 1,
+          stepTimeoutMs: 120_000,
+          maxTotalTokenBudget: 50_000,
+          maxPerStepTokenBudget: 25_000
+        },
+        evaluation: {
+          evaluateEveryStep: false,
+          autoAdjustPlan: false,
+          autoResolveInterventions: false,
+          interventionConfidenceThreshold: 1.0
+        },
+        context: {
+          contextProfile: "orchestrator_deterministic_v1",
+          includeNarrative: false,
+          docsMode: "digest_refs"
+        }
+      };
+    case "deep":
+      return {
+        tier: "deep",
+        planning: {
+          useAiPlanner: true,
+          plannerModel: "claude-opus-4-6",
+          maxPlanningTimeMs: 120_000,
+          requirePlanReview: false
+        },
+        execution: {
+          maxParallelWorkers: 6,
+          defaultRetryLimit: 3,
+          stepTimeoutMs: 600_000,
+          maxTotalTokenBudget: 2_500_000,
+          maxPerStepTokenBudget: 500_000
+        },
+        evaluation: {
+          evaluateEveryStep: true,
+          evaluationModel: "claude-sonnet-4-6",
+          autoAdjustPlan: true,
+          autoResolveInterventions: true,
+          interventionConfidenceThreshold: 0.7
+        },
+        context: {
+          contextProfile: "orchestrator_narrative_opt_in_v1",
+          includeNarrative: true,
+          docsMode: "full_docs"
+        }
+      };
+    case "standard":
+    default:
+      return {
+        tier: "standard",
+        planning: {
+          useAiPlanner: true,
+          plannerModel: "claude-sonnet-4-6",
+          maxPlanningTimeMs: 60_000,
+          requirePlanReview: false
+        },
+        execution: {
+          maxParallelWorkers: 3,
+          defaultRetryLimit: 2,
+          stepTimeoutMs: 300_000,
+          maxTotalTokenBudget: 500_000,
+          maxPerStepTokenBudget: 150_000
+        },
+        evaluation: {
+          evaluateEveryStep: false,
+          evaluationModel: "claude-sonnet-4-6",
+          autoAdjustPlan: true,
+          autoResolveInterventions: true,
+          interventionConfidenceThreshold: 0.85
+        },
+        context: {
+          contextProfile: "orchestrator_deterministic_v1",
+          includeNarrative: false,
+          docsMode: "digest_refs"
+        }
+      };
+  }
+}
+
+// ─────────────────────────────────────────────────────
+// Model Capability Profiles
+// ─────────────────────────────────────────────────────
+
+export function getModelCapabilities(): GetModelCapabilitiesResult {
+  const profiles: ModelCapabilityProfile[] = [
+    // ── Claude models ──
+    {
+      provider: "claude",
+      modelId: "claude-opus-4-6",
+      displayName: "Claude Opus 4.6",
+      strengths: ["complex reasoning", "architectural planning", "nuanced review", "deep analysis"],
+      weaknesses: ["high cost tier", "not recommended for bulk implementation"],
+      costTier: "very_high",
+      bestFor: ["planning", "review"],
+      parallelCapable: false,
+      reasoningTiers: ["low", "medium", "high", "max"]
+    },
+    {
+      provider: "claude",
+      modelId: "claude-sonnet-4-6",
+      displayName: "Claude Sonnet 4.6",
+      strengths: ["fast balanced quality", "code review", "planning", "narrative generation"],
+      weaknesses: ["very large scope implementation", "long-running autonomous tasks"],
+      costTier: "medium",
+      bestFor: ["review", "planning", "narrative"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium", "high"]
+    },
+    {
+      provider: "claude",
+      modelId: "claude-haiku-4-5",
+      displayName: "Claude Haiku 4.5",
+      strengths: ["fastest Claude variant", "narrative generation", "summaries", "quick classification"],
+      weaknesses: ["limited on complex multi-step reasoning", "not suited for large implementations"],
+      costTier: "low",
+      bestFor: ["narrative"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium", "high"]
+    },
+    // ── Codex models ──
+    {
+      provider: "codex",
+      modelId: "gpt-5.3-codex",
+      displayName: "GPT-5.3 Codex",
+      strengths: ["latest and most capable coding model", "excellent implementation", "testing", "code review"],
+      weaknesses: ["narrative prose", "complex architectural reasoning"],
+      costTier: "medium",
+      bestFor: ["implementation", "review"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium", "high", "extra_high"]
+    },
+    {
+      provider: "codex",
+      modelId: "gpt-5.3-codex-spark",
+      displayName: "GPT-5.3 Codex Spark",
+      strengths: ["real-time coding (>1000 tok/s)", "quick edits", "rapid iteration"],
+      weaknesses: ["limited reasoning depth", "not suited for complex multi-file refactors"],
+      costTier: "low",
+      bestFor: ["implementation"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium"]
+    },
+    {
+      provider: "codex",
+      modelId: "gpt-5.2-codex",
+      displayName: "GPT-5.2 Codex",
+      strengths: ["strong implementation", "reliable for standard coding tasks", "test writing"],
+      weaknesses: ["previous generation", "less capable than 5.3 on complex tasks"],
+      costTier: "medium",
+      bestFor: ["implementation"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium", "high", "extra_high"]
+    },
+    {
+      provider: "codex",
+      modelId: "gpt-5.1-codex-max",
+      displayName: "GPT-5.1 Codex Max",
+      strengths: ["extended context variant", "large files and repos", "multi-file understanding"],
+      weaknesses: ["older generation", "higher latency than newer models"],
+      costTier: "medium",
+      bestFor: ["implementation"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium", "high"]
+    },
+    {
+      provider: "codex",
+      modelId: "codex-mini-latest",
+      displayName: "Codex Mini",
+      strengths: ["small fast model", "simple tasks", "quick fixes"],
+      weaknesses: ["limited capability on complex tasks", "smaller context window"],
+      costTier: "low",
+      bestFor: ["implementation"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium"]
+    },
+    {
+      provider: "codex",
+      modelId: "o4-mini",
+      displayName: "o4-mini",
+      strengths: ["fast reasoning model", "analysis", "planning with speed"],
+      weaknesses: ["less capable than full o3 on deep analysis"],
+      costTier: "low",
+      bestFor: ["planning", "review"],
+      parallelCapable: true,
+      reasoningTiers: ["low", "medium", "high"]
+    },
+    {
+      provider: "codex",
+      modelId: "o3",
+      displayName: "o3",
+      strengths: ["advanced reasoning", "complex analysis", "architecture", "deep debugging"],
+      weaknesses: ["higher cost", "slower than mini variants"],
+      costTier: "high",
+      bestFor: ["planning", "review"],
+      parallelCapable: false,
+      reasoningTiers: ["low", "medium", "high", "extra_high"]
+    }
+  ];
+  return { profiles };
+}
+
+// ─────────────────────────────────────────────────────
+// PM Personality prompt fragments
+// ─────────────────────────────────────────────────────
+
+const PM_SYSTEM_PREAMBLE = [
+  "You are a senior Project Manager orchestrating a development team.",
+  "You delegate work to AI agents — you do not implement code yourself.",
+  "Your job is to plan, evaluate, adjust, and steer mission execution.",
+  "",
+  "Model capability context:",
+  "- Claude Opus 4.6: Very high cost. Best for complex architectural planning and nuanced review. Do NOT use for bulk implementation.",
+  "- Claude Sonnet 4.6: Medium cost. Fast, great for code review, planning, narrative, and evaluation.",
+  "- Claude Haiku 4.5: Low cost, fastest Claude. Good for narrative, summaries, and quick classification.",
+  "- GPT-5.3 Codex: Medium cost, latest and most capable coding model. Excellent for implementation and testing. Parallel capable.",
+  "- GPT-5.3 Codex Spark: Low cost, real-time coding (>1000 tok/s). Great for quick edits and rapid iteration.",
+  "- GPT-5.2 Codex: Medium cost, previous gen but still strong for implementation. Parallel capable.",
+  "- GPT-5.1 Codex Max: Extended context variant for large files/repos.",
+  "- Codex Mini: Low cost, small fast model for simple tasks and quick fixes.",
+  "- o4-mini: Low cost, fast reasoning model for analysis and planning with speed.",
+  "- o3: High cost, advanced reasoning for complex analysis and architecture.",
+  "",
+  "Smart task grouping guidelines:",
+  "- Combine related subtasks into a single agent's scope when the model is powerful enough.",
+  "- Don't split frontend+middleware+backend into 3 agents if one powerful agent (GPT-5.3 Codex) can handle it.",
+  "- Don't over-split work for capable agents. Fewer, well-scoped tasks beat many tiny ones.",
+  "- Reserve task splitting for genuinely independent workstreams or when mixing Claude (review) and Codex (implementation).",
+  ""
+].join("\n");
+
 function extractRunFailureMessage(graph: OrchestratorRunGraph): string | null {
   const latestFailure = [...graph.attempts]
     .filter((attempt) => attempt.status === "failed")
@@ -113,6 +444,167 @@ export function createAiOrchestratorService(args: {
   const { db, logger, missionService, orchestratorService, projectConfigService, aiIntegrationService, projectRoot } = args;
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
+  const activeSteeringDirectives = new Map<string, UserSteeringDirective[]>();
+  const runDepthConfigs = new Map<string, MissionDepthConfig>();
+  const chatMessages = new Map<string, OrchestratorChatMessage[]>();
+  const activeChatSessions = new Map<string, OrchestratorChatSessionState>();
+  const chatTurnQueues = new Map<string, Promise<void>>();
+
+  const getMissionMetadata = (missionId: string): Record<string, unknown> => {
+    const row = db.get<{ metadata_json: string | null }>(
+      `select metadata_json from missions where id = ? limit 1`,
+      [missionId]
+    );
+    if (!row?.metadata_json) return {};
+    try {
+      return JSON.parse(row.metadata_json) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+
+  const updateMissionMetadata = (missionId: string, mutate: (metadata: Record<string, unknown>) => void) => {
+    const metadata = getMissionMetadata(missionId);
+    mutate(metadata);
+    db.run(
+      `update missions set metadata_json = ?, updated_at = ? where id = ?`,
+      [JSON.stringify(metadata), nowIso(), missionId]
+    );
+  };
+
+  const loadSteeringDirectivesFromMetadata = (missionId: string): UserSteeringDirective[] => {
+    if (activeSteeringDirectives.has(missionId)) {
+      return activeSteeringDirectives.get(missionId) ?? [];
+    }
+    const metadata = getMissionMetadata(missionId);
+    const stored = Array.isArray(metadata[STEERING_DIRECTIVES_METADATA_KEY])
+      ? metadata[STEERING_DIRECTIVES_METADATA_KEY] as unknown[]
+      : [];
+    const parsed = stored
+      .map((entry) => parseSteeringDirective(entry, missionId))
+      .filter((entry): entry is UserSteeringDirective => !!entry)
+      .slice(-MAX_PERSISTED_STEERING_DIRECTIVES);
+    if (parsed.length > 0) {
+      activeSteeringDirectives.set(missionId, parsed);
+    }
+    return parsed;
+  };
+
+  const loadChatMessagesFromMetadata = (missionId: string): OrchestratorChatMessage[] => {
+    if (chatMessages.has(missionId)) {
+      return chatMessages.get(missionId) ?? [];
+    }
+    const metadata = getMissionMetadata(missionId);
+    const stored = Array.isArray(metadata[ORCHESTRATOR_CHAT_METADATA_KEY])
+      ? metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[]
+      : [];
+    const parsed = stored
+      .map((entry) => parseChatMessage(entry, missionId))
+      .filter((entry): entry is OrchestratorChatMessage => !!entry)
+      .slice(-MAX_PERSISTED_CHAT_MESSAGES);
+    if (parsed.length > 0) {
+      chatMessages.set(missionId, parsed);
+    }
+    return parsed;
+  };
+
+  const loadChatSessionStateFromMetadata = (missionId: string): OrchestratorChatSessionState | null => {
+    if (activeChatSessions.has(missionId)) {
+      return activeChatSessions.get(missionId) ?? null;
+    }
+    const metadata = getMissionMetadata(missionId);
+    const parsed = parseChatSessionState(metadata[ORCHESTRATOR_CHAT_SESSION_METADATA_KEY]);
+    if (parsed) {
+      activeChatSessions.set(missionId, parsed);
+      return parsed;
+    }
+    return null;
+  };
+
+  const persistChatSessionState = (missionId: string, state: OrchestratorChatSessionState) => {
+    activeChatSessions.set(missionId, state);
+    try {
+      updateMissionMetadata(missionId, (metadata) => {
+        metadata[ORCHESTRATOR_CHAT_SESSION_METADATA_KEY] = state;
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.chat_session_persist_failed", {
+        missionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const appendChatMessage = (message: OrchestratorChatMessage) => {
+    const existing = chatMessages.has(message.missionId)
+      ? chatMessages.get(message.missionId) ?? []
+      : loadChatMessagesFromMetadata(message.missionId);
+    const next = [...existing, message].slice(-MAX_PERSISTED_CHAT_MESSAGES);
+    chatMessages.set(message.missionId, next);
+    try {
+      updateMissionMetadata(message.missionId, (metadata) => {
+        metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = next;
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.chat_persist_failed", {
+        missionId: message.missionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const emitOrchestratorMessage = (
+    missionId: string,
+    content: string,
+    stepKey?: string | null,
+    metadata?: Record<string, unknown> | null
+  ): OrchestratorChatMessage => {
+    const msg: OrchestratorChatMessage = {
+      id: randomUUID(),
+      missionId,
+      role: "orchestrator",
+      content,
+      timestamp: new Date().toISOString(),
+      stepKey: stepKey ?? null,
+      metadata: metadata ?? null
+    };
+    appendChatMessage(msg);
+    return msg;
+  };
+
+  const resolveActiveDepthConfig = (missionId: string): MissionDepthConfig => {
+    // Check mission metadata for depth tier
+    const row = db.get<{ metadata_json: string | null }>(
+      `select metadata_json from missions where id = ? limit 1`,
+      [missionId]
+    );
+    if (row?.metadata_json) {
+      try {
+        const meta = JSON.parse(row.metadata_json) as Record<string, unknown>;
+        if (typeof meta.missionDepth === "string") {
+          const tier = meta.missionDepth as MissionDepthTier;
+          if (tier === "light" || tier === "standard" || tier === "deep") {
+            return resolveMissionDepthConfig(tier);
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    const config = readConfig(projectConfigService);
+    return resolveMissionDepthConfig(config.defaultDepthTier);
+  };
+
+  const getSteeringContext = (missionId: string): string => {
+    const directives = activeSteeringDirectives.get(missionId) ?? loadSteeringDirectivesFromMetadata(missionId);
+    if (!directives?.length) return "";
+    return [
+      "",
+      "Active user steering directives (apply these to your decisions):",
+      ...directives.map((d, i) =>
+        `  ${i + 1}. [${d.priority}] ${d.directive}${d.targetStepKey ? ` (target: ${d.targetStepKey})` : ""}`
+      ),
+      ""
+    ].join("\n");
+  };
 
   const getWorkerStates = (args: { runId: string }): OrchestratorWorkerState[] => {
     const result: OrchestratorWorkerState[] = [];
@@ -188,7 +680,13 @@ export function createAiOrchestratorService(args: {
       const attempt = graph.attempts.find((a) => a.id === event.attemptId);
       if (!attempt) return;
 
+      const stepForAttempt = graph.steps.find((s) => s.id === attempt.stepId);
+      const stepTitle = stepForAttempt?.title ?? stepForAttempt?.stepKey ?? attempt.stepId.slice(0, 8);
+      const stepKey = stepForAttempt?.stepKey ?? null;
+
       if (attempt.status === "running") {
+        const existing = workerStates.get(attempt.id);
+        const shouldAnnounceStart = !existing || existing.state !== "working";
         upsertWorkerState(attempt.id, {
           stepId: attempt.stepId,
           runId: attempt.runId,
@@ -196,6 +694,13 @@ export function createAiOrchestratorService(args: {
           executorKind: attempt.executorKind,
           state: "working"
         });
+        if (shouldAnnounceStart) {
+          emitOrchestratorMessage(
+            graph.run.missionId,
+            `Worker started on step "${stepTitle}" using ${attempt.executorKind}.`,
+            stepKey
+          );
+        }
       } else if (attempt.status === "succeeded") {
         const outcomeTags = extractOutcomeTags(attempt);
         upsertWorkerState(attempt.id, {
@@ -207,6 +712,59 @@ export function createAiOrchestratorService(args: {
           outcomeTags,
           completedAt: attempt.completedAt ?? nowIso()
         });
+        emitOrchestratorMessage(
+          graph.run.missionId,
+          `Step "${stepTitle}" completed successfully.`,
+          stepKey
+        );
+
+        // Evaluation loop: evaluate step if depth config requires it
+        const step = graph.steps.find((s) => s.id === attempt.stepId);
+        if (step && aiIntegrationService) {
+          const depthConfig = runDepthConfigs.get(attempt.runId) ?? resolveActiveDepthConfig(graph.run.missionId);
+          const isFinalStep = graph.steps.every(
+            (s) => s.id === step.id || s.status === "succeeded" || s.status === "failed" || s.status === "skipped"
+          );
+          const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+          const completionCriteria = typeof stepMeta.completionCriteria === "string" ? stepMeta.completionCriteria : "";
+          const hasCriteria = completionCriteria.length > 0 && completionCriteria !== "step_done";
+
+          if (hasCriteria && (depthConfig.evaluation.evaluateEveryStep || isFinalStep)) {
+            evaluateWorkerPlan({
+              attemptId: attempt.id,
+              workerPlan: {
+                stepKey: step.stepKey,
+                status: step.status,
+                outcomeTags,
+                completionCriteria,
+                resultSummary: attempt.resultEnvelope?.summary ?? null
+              },
+              provider: attempt.executorKind === "codex" ? "codex" : "claude"
+            }).then((evalResult) => {
+              emitOrchestratorMessage(
+                graph.run.missionId,
+                evalResult.approved
+                  ? `Step "${step.stepKey}" passed evaluation. ${evalResult.feedback}`
+                  : `Step "${step.stepKey}" failed evaluation: ${evalResult.feedback}.`,
+                step.stepKey
+              );
+              if (!evalResult.approved) {
+                logger.info("ai_orchestrator.step_evaluation_rejected", {
+                  runId: attempt.runId,
+                  stepId: step.id,
+                  feedback: evalResult.feedback
+                });
+              }
+            }).catch((error) => {
+              logger.debug("ai_orchestrator.step_evaluation_failed", {
+                runId: attempt.runId,
+                stepId: step.id,
+                error: error instanceof Error ? error.message : String(error)
+              });
+            });
+          }
+        }
+
         adjustPlanFromResults({
           runId: attempt.runId,
           completedStepId: attempt.stepId,
@@ -224,20 +782,47 @@ export function createAiOrchestratorService(args: {
           completedAt: attempt.completedAt ?? nowIso()
         });
 
-        // Check for retry exhaustion → trigger AI intervention
+        // Check for retry exhaustion → create real intervention then trigger AI
         const step = graph.steps.find((s) => s.id === attempt.stepId);
-        if (step && step.retryCount >= step.retryLimit && aiIntegrationService) {
-          handleInterventionWithAI({
-            missionId: graph.run.missionId,
-            interventionId: `retry_exhausted:${step.id}`,
-            provider: attempt.executorKind === "codex" ? "codex" : "claude"
-          }).catch((error) => {
-            logger.debug("ai_orchestrator.auto_intervention_failed", {
+        const retriesLeft = step ? step.retryLimit - step.retryCount : 0;
+        emitOrchestratorMessage(
+          graph.run.missionId,
+          `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${retriesLeft > 0 ? `Retrying (${retriesLeft} retries left).` : "No retries remaining."}`,
+          stepKey
+        );
+        if (step && step.retryCount >= step.retryLimit) {
+          try {
+            const intervention = missionService.addIntervention({
+              missionId: graph.run.missionId,
+              interventionType: "failed_step",
+              title: `Step "${step.stepKey}" failed after ${step.retryCount} retries`,
+              body: `Step ${step.stepKey} exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
+              requestedAction: "Review and decide whether to retry, skip, or add a workaround."
+            });
+
+            if (aiIntegrationService) {
+              const depthConfig = runDepthConfigs.get(attempt.runId) ?? resolveActiveDepthConfig(graph.run.missionId);
+              if (depthConfig.evaluation.autoResolveInterventions) {
+                handleInterventionWithAI({
+                  missionId: graph.run.missionId,
+                  interventionId: intervention.id,
+                  provider: attempt.executorKind === "codex" ? "codex" : "claude"
+                }).catch((error) => {
+                  logger.debug("ai_orchestrator.auto_intervention_failed", {
+                    runId: event.runId,
+                    stepId: step.id,
+                    error: error instanceof Error ? error.message : String(error)
+                  });
+                });
+              }
+            }
+          } catch (interventionError) {
+            logger.debug("ai_orchestrator.create_intervention_failed", {
               runId: event.runId,
               stepId: step.id,
-              error: error instanceof Error ? error.message : String(error)
+              error: interventionError instanceof Error ? interventionError.message : String(interventionError)
             });
-          });
+          }
         }
       }
     } catch (error) {
@@ -249,6 +834,195 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const summarizeRunForChat = (missionId: string): string => {
+    const runs = orchestratorService.listRuns({ missionId });
+    if (!runs.length) return "No run has started yet.";
+    const byCreatedDesc = [...runs].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    const activeRun = byCreatedDesc.find((entry) => entry.status === "running" || entry.status === "queued" || entry.status === "paused");
+    const targetRun = activeRun ?? byCreatedDesc[0];
+    if (!targetRun) return "No run has started yet.";
+    try {
+      const graph = orchestratorService.getRunGraph({ runId: targetRun.id, timelineLimit: 0 });
+      const total = graph.steps.length;
+      const running = graph.steps.filter((step) => step.status === "running").length;
+      const done = graph.steps.filter((step) =>
+        step.status === "succeeded" || step.status === "failed" || step.status === "skipped" || step.status === "canceled"
+      ).length;
+      const failed = graph.steps.filter((step) => step.status === "failed").length;
+      const blocked = graph.steps.filter((step) => step.status === "blocked").length;
+      return `Run ${targetRun.id.slice(0, 8)} is ${targetRun.status}. Progress ${done}/${total}. Running ${running}. Failed ${failed}. Blocked ${blocked}.`;
+    } catch {
+      return `Latest run ${targetRun.id.slice(0, 8)} is ${targetRun.status}.`;
+    }
+  };
+
+  const formatRecentChatContext = (messages: OrchestratorChatMessage[], limit = 12): string => {
+    const recent = messages.slice(-limit);
+    if (!recent.length) return "";
+    const lines = recent.map((entry) => {
+      const role = entry.role === "user" ? "User" : entry.role === "worker" ? "Worker" : "Orchestrator";
+      return `- ${role}: ${entry.content}`;
+    });
+    return ["Recent mission chat:", ...lines, ""].join("\n");
+  };
+
+  const buildRecentChatContext = (missionId: string, limit = 12): string => {
+    const messages = chatMessages.get(missionId) ?? loadChatMessagesFromMetadata(missionId);
+    return formatRecentChatContext(messages, limit);
+  };
+
+  const resolveChatProvider = (missionId: string): "claude" | "codex" | null => {
+    const existingSession = activeChatSessions.get(missionId) ?? loadChatSessionStateFromMetadata(missionId);
+    if (existingSession) {
+      return existingSession.provider;
+    }
+
+    const runs = orchestratorService.listRuns({ missionId });
+    const activeRun = runs.find((entry) => entry.status === "running" || entry.status === "queued" || entry.status === "paused");
+    if (activeRun) {
+      try {
+        const graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
+        const runningAttempt = graph.attempts
+          .filter((attempt) => attempt.status === "running")
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+        if (runningAttempt?.executorKind === "claude" || runningAttempt?.executorKind === "codex") {
+          return runningAttempt.executorKind;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const config = readConfig(projectConfigService);
+    if (config.defaultPlannerProvider === "claude" || config.defaultPlannerProvider === "codex") {
+      return config.defaultPlannerProvider;
+    }
+    const availability = aiIntegrationService?.getAvailability?.();
+    if (availability?.claude) return "claude";
+    if (availability?.codex) return "codex";
+    return null;
+  };
+
+  const respondToChatWithAI = async (
+    chatArgs: SendOrchestratorChatArgs,
+    precomputedRecentChatContext?: string
+  ): Promise<void> => {
+    if (!aiIntegrationService || !projectRoot) return;
+    const mission = missionService.get(chatArgs.missionId);
+    if (!mission) return;
+    const existingSession = activeChatSessions.get(chatArgs.missionId) ?? loadChatSessionStateFromMetadata(chatArgs.missionId);
+    const provider = existingSession?.provider ?? resolveChatProvider(chatArgs.missionId);
+    if (!provider) return;
+
+    const steeringContext = getSteeringContext(chatArgs.missionId);
+    const recentChatContext = precomputedRecentChatContext ?? buildRecentChatContext(chatArgs.missionId);
+
+    const prompt = [
+      PM_SYSTEM_PREAMBLE,
+      "Your current role: LIVE MISSION ORCHESTRATOR CHAT.",
+      "This is a persistent mission thread. Use prior thread context instead of asking for repeated restatement.",
+      "Respond directly to the user. Keep it concise and practical.",
+      "If they ask for status, summarize run progress, active workers, and blockers.",
+      "If they give instructions, explain how and when those instructions apply.",
+      "Do not claim completed work that has not happened.",
+      "",
+      `Mission: ${mission.title}`,
+      `Mission prompt: ${mission.prompt.slice(0, 1_000)}`,
+      `Run summary: ${summarizeRunForChat(chatArgs.missionId)}`,
+      recentChatContext,
+      steeringContext,
+      `Latest user message: ${chatArgs.content}`,
+      "",
+      "Reply as the orchestrator in plain text (max 6 short sentences)."
+    ].join("\n");
+
+    const callArgs = {
+      feature: "orchestrator" as const,
+      taskType: "review" as const,
+      prompt,
+      cwd: projectRoot,
+      provider,
+      reasoningEffort: "medium",
+      permissionMode: "read-only" as const,
+      oneShot: true,
+      timeoutMs: 30_000
+    };
+
+    let result: Awaited<ReturnType<NonNullable<typeof aiIntegrationService>["executeTask"]>>;
+    try {
+      result = await aiIntegrationService.executeTask({
+        ...callArgs,
+        ...(existingSession?.provider === provider ? { sessionId: existingSession.sessionId } : {})
+      });
+    } catch (error) {
+      if (existingSession?.provider === provider) {
+        logger.info("ai_orchestrator.chat_session_resume_failed", {
+          missionId: chatArgs.missionId,
+          provider,
+          sessionId: existingSession.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+          recovery: "start_fresh_session"
+        });
+        result = await aiIntegrationService.executeTask(callArgs);
+      } else {
+        throw error;
+      }
+    }
+
+    if (typeof result.sessionId === "string" && result.sessionId.trim().length > 0) {
+      persistChatSessionState(chatArgs.missionId, {
+        provider,
+        sessionId: result.sessionId.trim(),
+        updatedAt: nowIso()
+      });
+    }
+
+    const response = String(result.text ?? "").trim();
+    if (response.length > 0) {
+      emitOrchestratorMessage(chatArgs.missionId, response);
+    }
+  };
+
+  const enqueueChatResponse = (chatArgs: SendOrchestratorChatArgs, recentChatContext: string): void => {
+    const missionId = chatArgs.missionId;
+    const previous = chatTurnQueues.get(missionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        await respondToChatWithAI(chatArgs, recentChatContext);
+      })
+      .catch((error) => {
+        logger.debug("ai_orchestrator.chat_response_failed", {
+          missionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        emitOrchestratorMessage(
+          missionId,
+          "I captured your directive, but live response generation failed. I will still apply it to planning and evaluation."
+        );
+      })
+      .finally(() => {
+        if (chatTurnQueues.get(missionId) === next) {
+          chatTurnQueues.delete(missionId);
+        }
+      });
+    chatTurnQueues.set(missionId, next);
+  };
+
+  /**
+   * Plan a mission using AI.
+   *
+   * Delegation model: the leader process (this service) assembles the prompt
+   * and parses the structured result, but all planning *reasoning* is
+   * delegated to an external CLI process via `aiIntegrationService.executeTask()`
+   * (which spawns a Claude or Codex CLI subprocess). The leader never performs
+   * the AI inference itself — it only orchestrates prompt assembly and result
+   * integration into the mission's step list.
+   *
+   * For the "light" depth tier the AI planner is skipped entirely — the
+   * caller checks `depthConfig.planning.useAiPlanner` and returns early
+   * before invoking this function (see `startMissionRun`).
+   */
   const planWithAI = async (args: {
     missionId: string;
     provider: "claude" | "codex";
@@ -366,6 +1140,11 @@ export function createAiOrchestratorService(args: {
         [JSON.stringify(updatedMetadata), now, args.missionId]
       );
 
+      emitOrchestratorMessage(
+        args.missionId,
+        `Planning complete. Created ${plannedSteps.length} steps: ${plannedSteps.map((s) => s.title).join(", ")}. ${planning.run.degraded ? "Note: AI planning was unavailable, used deterministic fallback." : ""}`
+      );
+
       logger.info("ai_orchestrator.plan_with_ai_completed", {
         missionId: args.missionId,
         provider: args.provider,
@@ -394,13 +1173,14 @@ export function createAiOrchestratorService(args: {
 
     try {
       const prompt = [
-        "You are an ADE orchestrator evaluator.",
-        "Evaluate whether the following worker output meets quality criteria.",
+        PM_SYSTEM_PREAMBLE,
+        "Your current role: EVALUATOR. Assess whether the worker's output meets quality criteria.",
         "",
         "Worker output summary:",
         JSON.stringify(args.workerPlan, null, 2),
         "",
-        "Evaluate the output quality, scope compliance, and alignment with mission goals.",
+        "Evaluate: output quality, scope compliance, alignment with mission goals, and completeness.",
+        "Be pragmatic — minor warnings are acceptable if the core deliverable is met.",
         "Return a JSON object with your evaluation."
       ].join("\n");
 
@@ -416,12 +1196,22 @@ export function createAiOrchestratorService(args: {
         required: ["approved", "feedback", "suggestedAction"]
       };
 
+      // Resolve reasoning effort based on the depth tier of the active run
+      const depthTier = (() => {
+        for (const [, config] of runDepthConfigs) {
+          return config.tier;
+        }
+        return "standard" as MissionDepthTier;
+      })();
+      const evaluationReasoningEffort = depthTier === "deep" ? "high" : "medium";
+
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
         prompt,
         cwd: projectRoot,
         provider: args.provider,
+        reasoningEffort: evaluationReasoningEffort,
         jsonSchema: evaluationSchema,
         permissionMode: "read-only",
         oneShot: true,
@@ -458,16 +1248,18 @@ export function createAiOrchestratorService(args: {
     const remaining = graph.steps.filter((s) => s.status === "pending" || s.status === "ready" || s.status === "blocked");
     const targetStep = graph.steps.find((s) => s.id === adjustArgs.completedStepId);
 
+    const steeringContext = getSteeringContext(graph.run.missionId);
     const prompt = [
-      "You are an ADE orchestrator plan adjuster.",
-      "Based on the completed step results, determine if the remaining plan needs adjustments.",
+      PM_SYSTEM_PREAMBLE,
+      "Your current role: PLAN ADJUSTER. Based on completed step results, determine if the remaining plan needs adjustments.",
       "",
       `Run ID: ${adjustArgs.runId}`,
       `Completed steps: ${completed.length}/${graph.steps.length}`,
       `Remaining steps: ${remaining.map((s) => `${s.stepKey} (${s.status})`).join(", ") || "none"}`,
       `Last completed step: ${targetStep?.stepKey ?? adjustArgs.completedStepId} — status: ${targetStep?.status ?? "unknown"}`,
-      "",
+      steeringContext,
       "Available actions: add_step (add a new corrective step), skip_step (skip a remaining step), no_change.",
+      "Only add corrective steps when genuinely needed — avoid over-engineering the plan.",
       "Return a JSON object with your adjustments."
     ].join("\n");
 
@@ -501,11 +1293,16 @@ export function createAiOrchestratorService(args: {
       required: ["reasoning", "adjustments"]
     };
 
+    // Resolve reasoning effort based on the depth tier of the run
+    const adjustDepthConfig = runDepthConfigs.get(adjustArgs.runId);
+    const adjustReasoningEffort = adjustDepthConfig?.tier === "deep" ? "high" : "medium";
+
     const result = await aiIntegrationService.executeTask({
       feature: "orchestrator",
       taskType: "planning",
       prompt,
       cwd: projectRoot,
+      reasoningEffort: adjustReasoningEffort,
       jsonSchema: adjustmentSchema,
       permissionMode: "read-only",
       oneShot: true,
@@ -618,6 +1415,12 @@ export function createAiOrchestratorService(args: {
           (step.status === "succeeded" && args.outcomeTags.includes("has_warnings"))
         );
 
+      emitOrchestratorMessage(
+        graph.run.missionId,
+        `Analyzing results from step "${step.stepKey}". ${shouldTriggerAiAdjustment ? "Triggering AI plan adjustment." : "No plan adjustments needed."}`,
+        step.stepKey
+      );
+
       if (shouldTriggerAiAdjustment) {
         adjustPlanWithAI({
           runId: args.runId,
@@ -674,9 +1477,13 @@ export function createAiOrchestratorService(args: {
         runContext = `Run ${activeRun.id.slice(0, 8)}: ${done} done, ${failed} failed, ${remaining} remaining of ${graph.steps.length} total steps.`;
       }
 
+      const depthConfig = resolveActiveDepthConfig(args.missionId);
+      const confidenceThreshold = depthConfig.evaluation.interventionConfidenceThreshold;
+      const steeringContext = getSteeringContext(args.missionId);
       const prompt = [
-        "You are an ADE orchestrator intervention resolver.",
-        "An intervention has been raised during mission execution. Determine if it can be auto-resolved.",
+        PM_SYSTEM_PREAMBLE,
+        "Your current role: INTERVENTION RESOLVER. An intervention has been raised during mission execution.",
+        "Determine if it can be auto-resolved or if it needs human attention.",
         "",
         `Mission: ${mission.title}`,
         `Mission prompt: ${mission.prompt.slice(0, 500)}`,
@@ -684,9 +1491,9 @@ export function createAiOrchestratorService(args: {
         `Intervention: ${interventionDesc}`,
         "",
         `Run context: ${runContext}`,
-        "",
+        steeringContext,
         "Available actions: retry (retry the failed step), skip (skip the step), add_workaround (add a workaround step), escalate (require user input).",
-        "Only suggest auto-resolution if you are highly confident (>=0.8).",
+        `Only suggest auto-resolution if you are highly confident (>=${confidenceThreshold}).`,
         "Return a JSON object with your assessment."
       ].join("\n");
 
@@ -709,12 +1516,14 @@ export function createAiOrchestratorService(args: {
         required: ["autoResolvable", "confidence", "suggestedAction", "reasoning"]
       };
 
+      // Interventions are important decisions — always use high reasoning effort
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
         prompt,
         cwd: projectRoot,
         provider: args.provider,
+        reasoningEffort: "high",
         jsonSchema: interventionSchema,
         permissionMode: "read-only",
         oneShot: true,
@@ -739,7 +1548,7 @@ export function createAiOrchestratorService(args: {
         suggestedAction
       });
 
-      if (autoResolvable && confidence >= 0.8 && suggestedAction !== "escalate") {
+      if (autoResolvable && confidence >= confidenceThreshold && suggestedAction !== "escalate") {
         // Auto-resolve: attach AI reasoning and resolve the intervention
         if (intervention) {
           try {
@@ -753,10 +1562,18 @@ export function createAiOrchestratorService(args: {
             // Intervention may already be resolved or not found
           }
         }
+        emitOrchestratorMessage(
+          args.missionId,
+          `Intervention auto-resolved: ${reasoning}`
+        );
         return { autoResolved: true, suggestion: reasoning };
       }
 
       // Low confidence or escalate action: attach suggestion but keep intervention open
+      emitOrchestratorMessage(
+        args.missionId,
+        `Intervention requires your input: ${intervention?.title ?? args.interventionId}. ${reasoning || ""}`
+      );
       return { autoResolved: false, suggestion: reasoning || null };
     } catch (error) {
       logger.warn("ai_orchestrator.handle_intervention_failed", {
@@ -917,15 +1734,35 @@ export function createAiOrchestratorService(args: {
     const mission = missionService.get(missionId);
     if (!mission) throw new Error(`Mission not found: ${missionId}`);
 
+    // Resolve depth config from mission metadata or args
+    const depthConfig = resolveActiveDepthConfig(missionId);
+    const config = readConfig(projectConfigService);
+
     // If an AI planner provider is specified, invoke AI planning first
-    const provider = args.plannerProvider;
-    if (provider === "claude" || provider === "codex") {
+    // For "light" tier, skip AI planning entirely (deterministic only)
+    const provider: "claude" | "codex" | null = (() => {
+      if (args.plannerProvider === "claude" || args.plannerProvider === "codex") return args.plannerProvider;
+      if (args.plannerProvider === "deterministic") return null;
+      if (config.defaultPlannerProvider) return config.defaultPlannerProvider;
+      const availability = aiIntegrationService?.getAvailability?.();
+      if (availability?.claude) return "claude";
+      if (availability?.codex) return "codex";
+      return null;
+    })();
+    const attemptedAiPlanner = depthConfig.planning.useAiPlanner && (provider === "claude" || provider === "codex");
+    if (attemptedAiPlanner) {
       await planWithAI({ missionId, provider });
+    } else if (!depthConfig.planning.useAiPlanner && (provider === "claude" || provider === "codex")) {
+      logger.info("ai_orchestrator.ai_planning_skipped_by_depth", {
+        missionId,
+        tier: depthConfig.tier,
+        reason: "light tier uses deterministic planning only"
+      });
     }
 
-    const config = readConfig(projectConfigService);
     const bypassPlanReview = args.forcePlanReviewBypass === true;
-    if (config.requirePlanReview && !bypassPlanReview) {
+    const requireReview = config.requirePlanReview || depthConfig.planning.requirePlanReview;
+    if (requireReview && !bypassPlanReview) {
       if (mission.status !== "plan_review") {
         transitionMissionStatus(missionId, "planning");
         transitionMissionStatus(missionId, "plan_review");
@@ -940,17 +1777,35 @@ export function createAiOrchestratorService(args: {
 
     transitionMissionStatus(missionId, "planning");
     const plannerParallelismCap = resolveMissionParallelismCap(missionId);
+    const parallelismCap = plannerParallelismCap ?? depthConfig.execution.maxParallelWorkers;
     const started = orchestratorService.startRunFromMission({
       missionId,
       runMode: args.runMode,
       autopilotOwnerId: args.autopilotOwnerId,
       defaultExecutorKind: args.defaultExecutorKind,
-      defaultRetryLimit: args.defaultRetryLimit,
+      defaultRetryLimit: args.defaultRetryLimit ?? depthConfig.execution.defaultRetryLimit,
       metadata: {
         ...(args.metadata ?? {}),
-        plannerParallelismCap
+        plannerParallelismCap: parallelismCap,
+        depthTier: depthConfig.tier,
+        depthConfig: {
+          maxParallelWorkers: depthConfig.execution.maxParallelWorkers,
+          evaluateEveryStep: depthConfig.evaluation.evaluateEveryStep,
+          autoAdjustPlan: depthConfig.evaluation.autoAdjustPlan,
+          autoResolveInterventions: depthConfig.evaluation.autoResolveInterventions,
+          interventionConfidenceThreshold: depthConfig.evaluation.interventionConfidenceThreshold
+        }
       }
     });
+
+    // Cache depth config for this run
+    runDepthConfigs.set(started.run.id, depthConfig);
+
+    emitOrchestratorMessage(
+      missionId,
+      `Starting mission with ${started.steps.length} steps. Depth tier: ${depthConfig.tier}. ${attemptedAiPlanner ? `Using AI planner (${provider ?? "auto"}).` : "Using deterministic planner."}`
+    );
+
     transitionMissionStatus(missionId, "in_progress");
     syncMissionFromRun(started.run.id, "mission_run_started");
 
@@ -992,6 +1847,100 @@ export function createAiOrchestratorService(args: {
     });
   };
 
+  const steerMission = (steerArgs: SteerMissionArgs): SteerMissionResult => {
+    const missionId = steerArgs.missionId?.trim();
+    if (!missionId) throw new Error("missionId is required.");
+
+    const mission = missionService.get(missionId);
+    if (!mission) throw new Error(`Mission not found: ${missionId}`);
+
+    const directive: UserSteeringDirective = {
+      missionId,
+      directive: steerArgs.directive,
+      priority: steerArgs.priority ?? "suggestion",
+      targetStepKey: steerArgs.targetStepKey ?? null
+    };
+
+    // Store in memory for active use by AI decision points
+    const existing = activeSteeringDirectives.get(missionId) ?? loadSteeringDirectivesFromMetadata(missionId);
+    existing.push(directive);
+    activeSteeringDirectives.set(missionId, existing.slice(-MAX_PERSISTED_STEERING_DIRECTIVES));
+
+    // Persist to mission metadata
+    try {
+      updateMissionMetadata(missionId, (meta) => {
+        const storedDirectives = Array.isArray(meta[STEERING_DIRECTIVES_METADATA_KEY])
+          ? meta[STEERING_DIRECTIVES_METADATA_KEY] as unknown[]
+          : [];
+        storedDirectives.push({
+          ...directive,
+          appliedAt: nowIso()
+        });
+        meta[STEERING_DIRECTIVES_METADATA_KEY] = storedDirectives.slice(-MAX_PERSISTED_STEERING_DIRECTIVES);
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.steer_persist_failed", {
+        missionId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    logger.info("ai_orchestrator.mission_steered", {
+      missionId,
+      priority: directive.priority,
+      targetStepKey: directive.targetStepKey ?? "all",
+      directivePreview: directive.directive.slice(0, 100)
+    });
+
+    return {
+      acknowledged: true,
+      appliedAt: nowIso(),
+      response: `Directive accepted (${directive.priority}). Will be applied at the next AI decision point.`
+    };
+  };
+
+  const getDepthConfig = (depthArgs: GetMissionDepthConfigArgs): MissionDepthConfig => {
+    return resolveMissionDepthConfig(depthArgs.tier);
+  };
+
+  const sendChat = (chatArgs: SendOrchestratorChatArgs): OrchestratorChatMessage => {
+    const msg: OrchestratorChatMessage = {
+      id: randomUUID(),
+      missionId: chatArgs.missionId,
+      role: "user",
+      content: chatArgs.content,
+      timestamp: new Date().toISOString(),
+      stepKey: null,
+      metadata: null
+    };
+    appendChatMessage(msg);
+    const recentChatContext = formatRecentChatContext(chatMessages.get(chatArgs.missionId) ?? [msg]);
+
+    // Also store as a steering directive (preserves existing behavior)
+    try {
+      steerMission({
+        missionId: chatArgs.missionId,
+        directive: chatArgs.content,
+        priority: "instruction"
+      });
+    } catch { /* ignore if mission not found */ }
+
+    if (aiIntegrationService && projectRoot) {
+      enqueueChatResponse(chatArgs, recentChatContext);
+    } else {
+      emitOrchestratorMessage(
+        chatArgs.missionId,
+        "Directive received. I will apply it at the next planning/evaluation decision point."
+      );
+    }
+
+    return msg;
+  };
+
+  const getChat = (chatArgs: GetOrchestratorChatArgs): OrchestratorChatMessage[] => {
+    return chatMessages.get(chatArgs.missionId) ?? loadChatMessagesFromMetadata(chatArgs.missionId);
+  };
+
   return {
     startMissionRun,
 
@@ -1009,6 +1958,12 @@ export function createAiOrchestratorService(args: {
     planWithAI,
     evaluateWorkerPlan,
     adjustPlanFromResults,
-    handleInterventionWithAI
+    handleInterventionWithAI,
+    steerMission,
+    getDepthConfig,
+    getModelCapabilities: () => getModelCapabilities(),
+    resolveMissionDepthConfig: (tier: MissionDepthTier) => resolveMissionDepthConfig(tier),
+    sendChat,
+    getChat
   };
 }

@@ -87,22 +87,40 @@ export function createClaudeOrchestratorAdapter(): OrchestratorExecutorAdapter {
           typeof step.metadata?.model === "string" && step.metadata.model.trim().length
             ? step.metadata.model.trim()
             : "sonnet";
+
+        // Fallback chain: step metadata -> project config -> default
         const permissionMode =
           typeof step.metadata?.permissionMode === "string" && step.metadata.permissionMode.trim().length
             ? step.metadata.permissionMode.trim()
-            : "acceptEdits";
+            : args.permissionConfig?.claude?.permissionMode ?? "acceptEdits";
+
+        const dangerouslySkip = args.permissionConfig?.claude?.dangerouslySkipPermissions === true;
+
+        const allowedTools = args.permissionConfig?.claude?.allowedTools ?? [];
 
         // 4. Construct startup command
         const commandParts: string[] = [
           "claude",
           "--model",
-          shellEscapeArg(model),
-          "--permission-mode",
-          shellEscapeArg(permissionMode),
-          "-p",
-          shellEscapeArg(prompt)
+          shellEscapeArg(model)
         ];
-        const startupCommand = commandParts.join(" ");
+
+        if (dangerouslySkip) {
+          commandParts.push("--dangerously-skip-permissions");
+        } else {
+          commandParts.push("--permission-mode", shellEscapeArg(permissionMode));
+        }
+
+        for (const tool of allowedTools) {
+          if (tool.trim().length) {
+            commandParts.push("--allowedTools", shellEscapeArg(tool.trim()));
+          }
+        }
+
+        commandParts.push("-p", shellEscapeArg(prompt));
+        // Use exec so the shell exits when the command exits, allowing the
+        // orchestrator to detect completion or crash immediately.
+        const startupCommand = `exec ${commandParts.join(" ")}`;
 
         // 5. Create tracked session
         const session = await args.createTrackedSession({

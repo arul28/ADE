@@ -257,7 +257,12 @@ export const IPC = {
   projectConfigDiffAgainstDisk: "ade.projectConfig.diffAgainstDisk",
   projectConfigConfirmTrust: "ade.projectConfig.confirmTrust",
   orchestratorGetWorkerStates: "ade.orchestrator.getWorkerStates",
-  orchestratorStartMissionRun: "ade.orchestrator.startMissionRun"
+  orchestratorStartMissionRun: "ade.orchestrator.startMissionRun",
+  orchestratorSteerMission: "ade.orchestrator.steerMission",
+  orchestratorGetDepthConfig: "ade.orchestrator.getDepthConfig",
+  orchestratorGetModelCapabilities: "ade.orchestrator.getModelCapabilities",
+  orchestratorSendChat: "ade.orchestrator.sendChat",
+  orchestratorGetChat: "ade.orchestrator.getChat"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

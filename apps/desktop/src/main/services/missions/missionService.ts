@@ -17,6 +17,7 @@ import type {
   MissionIntervention,
   MissionInterventionStatus,
   MissionInterventionType,
+  MissionDepthTier,
   MissionPriority,
   MissionsEventPayload,
   MissionStatus,
@@ -963,6 +964,11 @@ export function createMissionService({
       const autopilotExecutor = args.autopilotExecutor ?? "codex";
       const executorPolicy = normalizeMissionExecutorPolicy(args.executorPolicy);
       const allowPlanningQuestions = args.allowPlanningQuestions === true;
+      const missionDepthRaw = typeof args.missionDepth === "string" ? args.missionDepth.trim() : "";
+      const missionDepth: MissionDepthTier | null =
+        missionDepthRaw === "light" || missionDepthRaw === "standard" || missionDepthRaw === "deep"
+          ? missionDepthRaw
+          : null;
 
       const legacyPlan = buildDeterministicMissionPlan({
         prompt,
@@ -991,6 +997,7 @@ export function createMissionService({
           executorPolicy,
           allowPlanningQuestions
         },
+        ...(missionDepth ? { missionDepth } : {}),
         planner: plannerRun
           ? {
               id: plannerRun.id,

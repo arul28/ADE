@@ -86,22 +86,44 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
         const model =
           typeof step.metadata?.model === "string" && step.metadata.model.trim().length
             ? step.metadata.model.trim()
-            : "o4-mini";
+            : "gpt-5.3-codex";
+
+        // Fallback chain: step metadata -> project config -> default
         const approvalMode =
           typeof step.metadata?.approvalMode === "string" && step.metadata.approvalMode.trim().length
             ? step.metadata.approvalMode.trim()
-            : "full-auto";
+            : args.permissionConfig?.codex?.approvalMode ?? "full-auto";
+
+        const configPath = args.permissionConfig?.codex?.configPath;
+        const writablePaths = args.permissionConfig?.codex?.writablePaths ?? [];
 
         // 4. Construct startup command
+        // Codex CLI uses standalone flags for approval mode (--full-auto, --suggest, --auto-edit)
+        const approvalFlag =
+          approvalMode === "suggest" ? "--suggest"
+            : approvalMode === "auto-edit" ? "--auto-edit"
+              : "--full-auto";
         const commandParts: string[] = [
           "codex",
           "--model",
           shellEscapeArg(model),
-          "--approval-mode",
-          shellEscapeArg(approvalMode),
-          shellEscapeArg(prompt)
+          approvalFlag
         ];
-        const startupCommand = commandParts.join(" ");
+
+        if (typeof configPath === "string" && configPath.trim().length) {
+          commandParts.push("--config", shellEscapeArg(configPath.trim()));
+        }
+
+        for (const wp of writablePaths) {
+          if (wp.trim().length) {
+            commandParts.push("--writable-root", shellEscapeArg(wp.trim()));
+          }
+        }
+
+        commandParts.push(shellEscapeArg(prompt));
+        // Use exec so the shell exits when the command exits, allowing the
+        // orchestrator to detect completion or crash immediately.
+        const startupCommand = `exec ${commandParts.join(" ")}`;
 
         // 5. Create tracked session
         const session = await args.createTrackedSession({

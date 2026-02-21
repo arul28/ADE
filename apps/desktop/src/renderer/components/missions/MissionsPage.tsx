@@ -1,212 +1,205 @@
-import React from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
-  AlertTriangle,
-  CheckCircle2,
   Clock3,
-  Diamond,
-  GitPullRequest,
-  Hexagon,
-  Link2,
   Loader2,
-  Pentagon,
+  Play,
   Plus,
   RefreshCw,
   Rocket,
-  Route,
-  Star,
+  Search,
+  Send,
+  Square,
   Terminal,
-  TriangleAlert,
-  Waypoints
+  X,
+  Activity,
+  GitBranch,
+  LayoutGrid,
+  Network,
+  CheckCircle2,
+  Zap,
+  MessageSquare,
+  Bot,
+  Shield,
+  CircleDot,
+  Settings
 } from "lucide-react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
-  MissionArtifactType,
+  MissionDepthTier,
   MissionDetail,
-  MissionExecutorPolicy,
-  MissionIntervention,
-  MissionPlannerEngine,
   MissionPriority,
   MissionStatus,
   MissionStepStatus,
   MissionSummary,
   OrchestratorAttempt,
+  OrchestratorChatMessage,
   OrchestratorExecutorKind,
   OrchestratorRunGraph,
-  StartOrchestratorRunFromMissionArgs
+  OrchestratorStep,
+  ProjectConfigSnapshot,
+  StartOrchestratorRunFromMissionArgs,
+  SteerMissionResult
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import {
-  staggerContainer,
-  staggerContainerSlow,
-  staggerItem,
-  slideInRight,
-  fadeScale,
-  springSnappy,
-  springGentle,
-  easeOut150
-} from "../../lib/motion";
 import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
-import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
+import { OrchestratorDAG } from "./OrchestratorDAG";
+import { WorkerTranscriptPane } from "./WorkerTranscriptPane";
 
-type CreateDraft = {
-  title: string;
-  prompt: string;
-  laneId: string;
-  priority: MissionPriority;
-  executionMode: "local" | "relay";
-  targetMachineId: string;
-  plannerEngine: MissionPlannerEngine;
-  executorPolicy: MissionExecutorPolicy;
-  allowPlanningQuestions: boolean;
-  autoStart: boolean;
-  orchestratorProvider: "claude" | "codex" | "auto";
-  plannerMode: "ai" | "deterministic" | "auto";
+/* ════════════════════ STATUS HELPERS ════════════════════ */
+
+const STATUS_BADGE_CLASSES: Record<MissionStatus, string> = {
+  queued: "bg-gray-500/20 text-gray-300 border-gray-500/30",
+  planning: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+  plan_review: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+  in_progress: "bg-green-500/20 text-green-300 border-green-500/30",
+  intervention_required: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  completed: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+  failed: "bg-red-500/20 text-red-300 border-red-500/30",
+  canceled: "bg-gray-500/20 text-gray-400 border-gray-500/30"
 };
 
-type ArtifactDraft = {
-  artifactType: MissionArtifactType;
-  title: string;
-  uri: string;
-  description: string;
+const STATUS_DOT_COLORS: Record<MissionStatus, string> = {
+  queued: "bg-gray-400",
+  planning: "bg-blue-400",
+  plan_review: "bg-cyan-400",
+  in_progress: "bg-green-400",
+  intervention_required: "bg-amber-400",
+  completed: "bg-emerald-400",
+  failed: "bg-red-400",
+  canceled: "bg-gray-500"
 };
 
-type InterventionDraft = {
-  interventionType: MissionIntervention["interventionType"];
-  title: string;
-  body: string;
+const STATUS_LABELS: Record<MissionStatus, string> = {
+  queued: "Queued",
+  planning: "Planning",
+  plan_review: "Review",
+  in_progress: "Running",
+  intervention_required: "Action",
+  completed: "Done",
+  failed: "Failed",
+  canceled: "Canceled"
 };
 
-const STATUS_COLUMNS: Array<{ status: MissionStatus; label: string; hint: string }> = [
-  { status: "queued", label: "Queued", hint: "Ready to launch" },
-  { status: "planning", label: "Planning", hint: "Synthesizing execution plan" },
-  { status: "plan_review", label: "Plan Review", hint: "Awaiting plan approval" },
-  { status: "in_progress", label: "Running", hint: "Actively executing" },
-  { status: "intervention_required", label: "Action Needed", hint: "Awaiting decision" },
-  { status: "completed", label: "Completed", hint: "Finished with outcomes" },
-  { status: "failed", label: "Failed", hint: "Needs recovery" },
-  { status: "canceled", label: "Canceled", hint: "Stopped intentionally" }
+const DEPTH_TIER_COLORS: Record<MissionDepthTier, string> = {
+  light: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+  standard: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+  deep: "bg-orange-500/20 text-orange-300 border-orange-500/30"
+};
+
+const DEPTH_DESCRIPTIONS: Record<MissionDepthTier, { label: string; desc: string; budget: string }> = {
+  light: { label: "Light", desc: "Quick task, minimal AI planning, single agent", budget: "~$0.50" },
+  standard: { label: "Standard", desc: "Balanced, AI planning, up to 3 agents, evaluation", budget: "~$5" },
+  deep: { label: "Deep", desc: "Comprehensive, extensive AI planning, up to 6 agents, continuous evaluation", budget: "~$25" }
+};
+
+const PRIORITY_CLASSES: Record<MissionPriority, string> = {
+  urgent: "bg-red-500/20 text-red-300 border-red-500/30",
+  high: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  normal: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+  low: "bg-gray-500/20 text-gray-400 border-gray-500/30"
+};
+
+const STEP_STATUS_COLUMNS: Array<{ status: MissionStepStatus; label: string }> = [
+  { status: "pending", label: "Pending" },
+  { status: "running", label: "Running" },
+  { status: "succeeded", label: "Succeeded" },
+  { status: "failed", label: "Failed" },
+  { status: "skipped", label: "Skipped" }
 ];
 
-const STATUS_ICONS: Record<MissionStatus, string> = {
-  queued: "clock",
-  planning: "route",
-  plan_review: "waypoints",
-  in_progress: "zap",
-  intervention_required: "alert",
-  completed: "check",
-  failed: "x",
-  canceled: "slash"
+const STEP_STATUS_COLORS: Record<string, string> = {
+  pending: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+  running: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+  succeeded: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+  failed: "bg-red-500/20 text-red-300 border-red-500/30",
+  skipped: "bg-gray-500/20 text-gray-400 border-gray-500/30",
+  blocked: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  canceled: "bg-gray-500/20 text-gray-400 border-gray-500/30"
 };
 
-const STATUS_ACCENT_COLORS: Record<MissionStatus, string> = {
-  queued: "rgb(56, 189, 248)",
-  planning: "rgb(96, 165, 250)",
-  plan_review: "rgb(14, 165, 233)",
-  in_progress: "rgb(139, 92, 246)",
-  intervention_required: "rgb(251, 191, 36)",
-  completed: "rgb(52, 211, 153)",
-  failed: "rgb(248, 113, 113)",
-  canceled: "rgb(148, 163, 184)"
+const EXECUTOR_BADGE_CLASSES: Record<string, string> = {
+  claude: "bg-violet-500/20 text-violet-300",
+  codex: "bg-emerald-500/20 text-emerald-300",
+  shell: "bg-amber-500/20 text-amber-300",
+  manual: "bg-blue-500/20 text-blue-300"
 };
 
-/* Floating geometric shapes config — limited to 4 for perf */
-const FLOATING_SHAPES = [
-  { Icon: Diamond, size: "h-3 w-3", x: "left-[8%]", y: "top-[18%]", delay: "0s", opacity: "opacity-[0.12]" },
-  { Icon: Star, size: "h-2.5 w-2.5", x: "left-[45%]", y: "top-[12%]", delay: "2s", opacity: "opacity-[0.1]" },
-  { Icon: Pentagon, size: "h-3.5 w-3.5", x: "left-[78%]", y: "top-[25%]", delay: "1.5s", opacity: "opacity-[0.11]" },
-  { Icon: Hexagon, size: "h-4 w-4", x: "left-[22%]", y: "top-[65%]", delay: "1s", opacity: "opacity-[0.08]" }
-];
+type WorkspaceTab = "board" | "dag" | "activity" | "transcript" | "chat";
+type PlannerProvider = "auto" | "claude" | "codex";
 
-const PLANNER_ENGINES: Array<{ value: MissionPlannerEngine; label: string }> = [
-  { value: "auto", label: "Auto (recommended)" },
-  { value: "claude_cli", label: "Claude" },
-  { value: "codex_cli", label: "Codex" }
-];
-const EXECUTOR_POLICIES: Array<{ value: MissionExecutorPolicy; label: string; description: string }> = [
-  {
-    value: "both",
-    label: "Both (recommended)",
-    description: "Codex for code-heavy steps; Claude for planning/review/docs."
-  },
-  {
-    value: "codex",
-    label: "Codex only",
-    description: "Route all mission execution steps to Codex."
-  },
-  {
-    value: "claude",
-    label: "Claude only",
-    description: "Route all mission execution steps to Claude."
-  }
-];
+type MissionSettingsDraft = {
+  defaultDepthTier: MissionDepthTier;
+  defaultPlannerProvider: PlannerProvider;
+  requirePlanReview: boolean;
+  claudePermissionMode: string;
+  claudeDangerouslySkip: boolean;
+  codexSandboxPermissions: string;
+  codexApprovalMode: string;
+  codexConfigPath: string;
+};
 
-function statusTone(status: MissionStatus): string {
-  if (status === "queued") return "text-sky-300 border-sky-500/40 bg-sky-500/10";
-  if (status === "planning") return "text-blue-300 border-blue-500/40 bg-blue-500/10";
-  if (status === "plan_review") return "text-cyan-300 border-cyan-500/40 bg-cyan-500/10";
-  if (status === "in_progress") return "text-violet-300 border-violet-500/40 bg-violet-500/10";
-  if (status === "intervention_required") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
-  if (status === "completed") return "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
-  if (status === "failed") return "text-red-300 border-red-500/40 bg-red-500/10";
-  return "text-muted-fg border-border bg-card/30";
+const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
+  defaultDepthTier: "standard",
+  defaultPlannerProvider: "auto",
+  requirePlanReview: false,
+  claudePermissionMode: "acceptEdits",
+  claudeDangerouslySkip: false,
+  codexSandboxPermissions: "workspace-write",
+  codexApprovalMode: "full-auto",
+  codexConfigPath: ""
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function statusBorderColor(status: MissionStatus): string {
-  if (status === "queued") return "border-l-sky-400";
-  if (status === "planning") return "border-l-blue-400";
-  if (status === "plan_review") return "border-l-cyan-400";
-  if (status === "in_progress") return "border-l-violet-400";
-  if (status === "intervention_required") return "border-l-amber-400";
-  if (status === "completed") return "border-l-emerald-400";
-  if (status === "failed") return "border-l-red-400";
-  return "border-l-muted-fg/40";
+function readBool(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {
+  if (typeof primary === "boolean") return primary;
+  if (typeof fallback === "boolean") return fallback;
+  return defaultValue;
 }
 
-function priorityTone(priority: MissionPriority): string {
-  if (priority === "urgent") return "text-red-300 border-red-500/40 bg-red-500/10";
-  if (priority === "high") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
-  if (priority === "normal") return "text-sky-300 border-sky-500/40 bg-sky-500/10";
-  return "text-muted-fg border-border bg-card/30";
+function readString(primary: unknown, fallback: unknown, defaultValue: string): string {
+  if (typeof primary === "string" && primary.length > 0) return primary;
+  if (typeof fallback === "string" && fallback.length > 0) return fallback;
+  return defaultValue;
 }
 
-function stepTone(status: MissionStepStatus): string {
-  if (status === "succeeded") return "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
-  if (status === "failed") return "text-red-300 border-red-500/40 bg-red-500/10";
-  if (status === "running") return "text-violet-300 border-violet-500/40 bg-violet-500/10";
-  if (status === "blocked") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
-  if (status === "skipped" || status === "canceled") return "text-muted-fg border-border bg-card/30";
-  return "text-sky-300 border-sky-500/40 bg-sky-500/10";
+function toDepthTier(value: string, fallback: MissionDepthTier = "standard"): MissionDepthTier {
+  return value === "light" || value === "standard" || value === "deep" ? value : fallback;
 }
 
-function stepDotColor(status: MissionStepStatus): string {
-  if (status === "succeeded") return "bg-emerald-400";
-  if (status === "failed") return "bg-red-400";
-  if (status === "running") return "bg-violet-400";
-  if (status === "blocked") return "bg-amber-400";
-  if (status === "skipped" || status === "canceled") return "bg-muted-fg/40";
-  return "bg-sky-400";
+function toPlannerProvider(value: string): PlannerProvider {
+  return value === "claude" || value === "codex" || value === "auto" ? value : "auto";
 }
 
-function interventionTone(status: MissionIntervention["status"]): string {
-  if (status === "open") return "text-amber-300 border-amber-500/40 bg-amber-500/10";
-  if (status === "resolved") return "text-emerald-300 border-emerald-500/40 bg-emerald-500/10";
-  return "text-muted-fg border-border bg-card/30";
+function toClaudePermissionMode(value: string): "plan" | "acceptEdits" | "bypassPermissions" {
+  return value === "plan" || value === "acceptEdits" || value === "bypassPermissions" ? value : "acceptEdits";
 }
 
-function formatWhen(iso: string | null): string {
-  if (!iso) return "-";
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return iso;
-  return new Date(ts).toLocaleString();
+function toCodexSandboxPermissions(value: string): "read-only" | "workspace-write" | "danger-full-access" {
+  return value === "read-only" || value === "workspace-write" || value === "danger-full-access" ? value : "workspace-write";
 }
 
-function shortId(value: string | null | undefined, width = 8): string {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed.length) return "-";
-  return trimmed.slice(0, width);
+function toCodexApprovalMode(value: string): "suggest" | "auto-edit" | "full-auto" {
+  if (value === "suggest" || value === "auto-edit" || value === "full-auto") return value;
+  if (value === "untrusted") return "suggest";
+  if (value === "on-request" || value === "on-failure") return "auto-edit";
+  if (value === "never") return "full-auto";
+  return "full-auto";
+}
+
+function formatElapsed(startedAt: string | null): string {
+  if (!startedAt) return "--";
+  const delta = Math.max(0, Date.now() - Date.parse(startedAt));
+  const secs = Math.floor(delta / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h ${mins % 60}m`;
 }
 
 function relativeWhen(iso: string): string {
@@ -218,256 +211,789 @@ function relativeWhen(iso: string): string {
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
-function countByStatus(missions: MissionSummary[]) {
-  const map: Record<MissionStatus, number> = {
-    queued: 0,
-    planning: 0,
-    plan_review: 0,
-    in_progress: 0,
-    intervention_required: 0,
-    completed: 0,
-    failed: 0,
-    canceled: 0
-  };
-  for (const mission of missions) {
-    map[mission.status] = (map[mission.status] ?? 0) + 1;
+function compactText(value: string, maxChars = 140): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized.length) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars - 1)}...`;
+}
+
+function stepIntentSummary(step: OrchestratorStep): string {
+  const meta = isRecord(step.metadata) ? step.metadata : {};
+  const planStep = isRecord(meta.planStep) ? meta.planStep : {};
+  const candidates: string[] = [];
+  if (typeof planStep.description === "string" && planStep.description.trim().length) {
+    candidates.push(planStep.description);
   }
-  return map;
+  if (typeof meta.instructions === "string" && meta.instructions.trim().length) {
+    candidates.push(meta.instructions);
+  }
+  if (typeof meta.doneCriteria === "string" && meta.doneCriteria.trim().length) {
+    candidates.push(`Completion target: ${meta.doneCriteria}`);
+  }
+  if (typeof meta.stepType === "string" && meta.stepType.trim().length) {
+    candidates.push(`Task type: ${meta.stepType}`);
+  }
+  const first = candidates.find((entry) => entry.trim().length > 0);
+  return compactText(first ?? "No additional detail yet.");
 }
 
-export function MissionsPage() {
-  const navigate = useNavigate();
-  const lanes = useAppStore((s) => s.lanes);
-  const refreshLanes = useAppStore((s) => s.refreshLanes);
+/** Turn a raw orchestrator timeline event into a human-readable sentence. */
+function narrativeForEvent(ev: { eventType: string; reason: string; stepId?: string | null }): string {
+  const r = ev.reason.toLowerCase();
+  const stepLabel = ev.stepId ? `'${ev.stepId.slice(0, 8)}'` : "";
 
-  const [missions, setMissions] = React.useState<MissionSummary[]>([]);
-  const [selectedMissionId, setSelectedMissionId] = React.useState<string | null>(null);
-  const [selectedMission, setSelectedMission] = React.useState<MissionDetail | null>(null);
-  const [runGraph, setRunGraph] = React.useState<OrchestratorRunGraph | null>(null);
+  // ── Run-level events ──
+  if (ev.eventType === "run_status_changed" || ev.eventType === "run_created" ||
+      ev.eventType === "run_resumed" || ev.eventType === "run_canceled") {
+    if (r.includes("started") || ev.eventType === "run_created") return "Mission execution started";
+    if (r.includes("completed") || r.includes("succeeded")) return "All steps completed successfully";
+    if (r.includes("failed")) return `Mission failed \u2014 ${ev.reason}`;
+    if (r.includes("paused")) return "Execution paused \u2014 awaiting intervention";
+    if (r.includes("resumed") || ev.eventType === "run_resumed") return "Execution resumed";
+    if (r.includes("canceled") || ev.eventType === "run_canceled") return "Run canceled by user";
+    return `Mission status updated: ${ev.reason}`;
+  }
 
-  const [loading, setLoading] = React.useState(true);
-  const [refreshing, setRefreshing] = React.useState(false);
-  const [detailBusy, setDetailBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  // ── Step-level events ──
+  if (ev.eventType === "step_status_changed" || ev.eventType === "step_registered" ||
+      ev.eventType === "step_dependencies_resolved" || ev.eventType === "step_skipped") {
+    if (ev.eventType === "step_registered") return `Step ${stepLabel} registered in the plan`;
+    if (ev.eventType === "step_dependencies_resolved") return `Dependencies resolved for step ${stepLabel}`;
+    if (ev.eventType === "step_skipped" || r.includes("skipped")) return `Leader decided to skip step ${stepLabel}`;
+    if (r.includes("ready")) return `Step ${stepLabel} is ready for execution`;
+    if (r.includes("running") || r.includes("started")) return `Worker picked up step ${stepLabel}`;
+    if (r.includes("succeeded")) return `Step ${stepLabel} completed successfully`;
+    if (r.includes("failed")) return `Step ${stepLabel} failed: ${ev.reason}`;
+    return `Step update: ${ev.reason}`;
+  }
 
-  const [createBusy, setCreateBusy] = React.useState(false);
-  const [missionActionBusy, setMissionActionBusy] = React.useState(false);
-  const [artifactBusy, setArtifactBusy] = React.useState(false);
-  const [interventionBusy, setInterventionBusy] = React.useState(false);
-  const [outcomeBusy, setOutcomeBusy] = React.useState(false);
-  const [runBusy, setRunBusy] = React.useState(false);
+  // ── Attempt-level events ──
+  if (ev.eventType === "attempt_started" || ev.eventType === "attempt_completed" ||
+      ev.eventType === "attempt_blocked" || ev.eventType === "attempt_retry_scheduled" ||
+      ev.eventType === "attempt_recovered_after_restart") {
+    if (ev.eventType === "attempt_started" || r.includes("started") || r.includes("running")) return "Agent started working on attempt";
+    if (r.includes("succeeded")) return "Agent finished work \u2014 output ready for evaluation";
+    if (r.includes("failed")) return `Agent encountered an error: ${ev.reason}`;
+    if (ev.eventType === "attempt_blocked") return "Attempt blocked \u2014 waiting for dependencies";
+    if (ev.eventType === "attempt_retry_scheduled") return "Retry scheduled for failed attempt";
+    if (ev.eventType === "attempt_recovered_after_restart") return "Attempt recovered after process restart";
+    return `Worker activity: ${ev.reason}`;
+  }
 
-  const [showForm, setShowForm] = React.useState(false);
-  const [launchAnimating, setLaunchAnimating] = React.useState(false);
+  // ── Claim events ──
+  if (ev.eventType === "claim_acquired" || ev.eventType === "claim_released" ||
+      ev.eventType === "claim_expired" || ev.eventType === "claim_heartbeat") {
+    if (r.includes("acquired") || ev.eventType === "claim_acquired") return "Agent claimed resources for execution";
+    if (r.includes("released") || ev.eventType === "claim_released") return "Agent released resources";
+    if (ev.eventType === "claim_expired") return "Resource claim expired";
+    if (ev.eventType === "claim_heartbeat") return "Worker heartbeat received";
+    return `Resource update: ${ev.reason}`;
+  }
 
-  /* Collapsible detail sections */
-  const [expandedSections, setExpandedSections] = React.useState<Record<string, boolean>>({
-    info: true,
-    outcome: false,
-    steps: true,
-    orchestrator: true,
-    interventions: true,
-    artifacts: true,
-    timeline: true
-  });
+  // ── Autopilot events ──
+  if (ev.eventType === "autopilot_advance") return `Autopilot advanced: ${ev.reason}`;
+  if (ev.eventType === "autopilot_attempt_start_failed") return `Autopilot failed to start attempt: ${ev.reason}`;
 
-  const toggleSection = (key: string) =>
-    setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  // ── Context events ──
+  if (ev.eventType === "context_snapshot_created") return "Context snapshot saved for future reference";
+  if (ev.eventType === "context_pressure_warning") return "Context window pressure detected \u2014 may need to compact";
+  if (ev.eventType === "context_pack_bootstrap") return "Context pack bootstrapped for worker";
+  if (ev.eventType === "integration_chain_started") return "Integration merge chain started";
 
-  const [createDraft, setCreateDraft] = React.useState<CreateDraft>({
+  // ── Fallback ──
+  return ev.reason || "Event recorded";
+}
+
+/** Pick a lucide icon component for a timeline event type. */
+function iconForEventType(eventType: string): React.ComponentType<{ className?: string }> {
+  if (eventType.startsWith("run_") || eventType === "run_status_changed") return Rocket;
+  if (eventType.startsWith("step_") || eventType === "step_status_changed") return CircleDot;
+  if (eventType.startsWith("attempt_")) return Bot;
+  if (eventType.startsWith("claim_")) return Shield;
+  if (eventType.startsWith("autopilot")) return Zap;
+  if (eventType.startsWith("context_")) return GitBranch;
+  if (eventType === "user_directive") return MessageSquare;
+  return Activity;
+}
+
+/** CSS color class for a timeline event type icon. */
+function iconColorForEventType(eventType: string, reason: string): string {
+  const r = reason.toLowerCase();
+  if (r.includes("failed") || r.includes("error")) return "text-red-400";
+  if (r.includes("succeeded") || r.includes("completed") || r.includes("success")) return "text-emerald-400";
+  if (r.includes("paused") || r.includes("blocked")) return "text-amber-400";
+  if (eventType.startsWith("run_")) return "text-green-400";
+  if (eventType.startsWith("step_")) return "text-blue-400";
+  if (eventType.startsWith("attempt_")) return "text-violet-400";
+  if (eventType.startsWith("claim_")) return "text-amber-400";
+  if (eventType.startsWith("autopilot")) return "text-violet-400";
+  if (eventType === "user_directive") return "text-cyan-400";
+  return "text-muted-fg";
+}
+
+type SteeringEntry = { directive: string; appliedAt: string };
+
+/** Build narrative lines from timeline + locally tracked directives. */
+function narrativeSummary(
+  events: Array<{ eventType: string; reason: string; stepId?: string | null }>,
+  directives: SteeringEntry[] = []
+): string[] {
+  const lines: string[] = [];
+
+  // Merge directives into the event stream as synthetic entries for narration
+  for (const d of directives) {
+    lines.push(`User directive: ${d.directive}`);
+  }
+
+  for (const ev of events.slice(0, 12)) {
+    lines.push(narrativeForEvent(ev));
+  }
+  return lines;
+}
+
+/* ════════════════════ MISSION CHAT ════════════════════ */
+
+function MissionChat({ missionId }: { missionId: string }) {
+  const [messages, setMessages] = useState<OrchestratorChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Poll for messages every 2 seconds
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const msgs = await window.ade.orchestrator.getChat({ missionId });
+        if (active) setMessages(msgs);
+      } catch { /* ignore */ }
+    };
+    void poll();
+    const interval = setInterval(() => void poll(), 2000);
+    return () => { active = false; clearInterval(interval); };
+  }, [missionId]);
+
+  // Auto-scroll
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages.length]);
+
+  const handleSend = async () => {
+    if (!input.trim() || sending) return;
+    setSending(true);
+    try {
+      await window.ade.orchestrator.sendChat({ missionId, content: input.trim() });
+      setInput("");
+      // Immediate refresh
+      const msgs = await window.ade.orchestrator.getChat({ missionId });
+      setMessages(msgs);
+    } catch { /* ignore */ }
+    setSending(false);
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Message list */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
+        {messages.length === 0 && (
+          <div className="text-center text-neutral-500 text-sm py-8">
+            No messages yet. The orchestrator will report its decisions here as the mission progresses.
+          </div>
+        )}
+        {messages.map((msg) => (
+          <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+              msg.role === "user"
+                ? "bg-violet-600 text-white"
+                : msg.role === "worker"
+                  ? "bg-neutral-700 text-neutral-200 border border-neutral-600"
+                  : "bg-neutral-800 text-neutral-200 border border-neutral-700"
+            }`}>
+              {msg.role !== "user" && (
+                <div className="text-xs text-neutral-400 mb-1 flex items-center gap-1">
+                  {msg.role === "orchestrator" ? <Bot size={12} /> : <Terminal size={12} />}
+                  {msg.role === "orchestrator" ? "Orchestrator" : "Worker"}
+                  {msg.stepKey && <span className="text-neutral-500">{"\u2022"} {msg.stepKey}</span>}
+                </div>
+              )}
+              <div className="whitespace-pre-wrap">{msg.content}</div>
+              <div className="text-xs text-neutral-500 mt-1 text-right">
+                {new Date(msg.timestamp).toLocaleTimeString()}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Input bar */}
+      <div className="border-t border-neutral-700 p-3 flex items-center gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSend(); } }}
+          placeholder="Message the orchestrator..."
+          className="flex-1 bg-neutral-800 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 outline-none focus:border-violet-500"
+        />
+        <button
+          onClick={() => void handleSend()}
+          disabled={!input.trim() || sending}
+          className="p-2 rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Send size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════ CREATE MISSION DIALOG ════════════════════ */
+
+type CreateDraft = {
+  title: string;
+  prompt: string;
+  laneId: string;
+  priority: MissionPriority;
+  depthTier: MissionDepthTier;
+};
+
+function CreateMissionDialog({
+  open,
+  onClose,
+  onLaunch,
+  busy,
+  lanes,
+  defaultDepthTier
+}: {
+  open: boolean;
+  onClose: () => void;
+  onLaunch: (draft: CreateDraft) => void;
+  busy: boolean;
+  lanes: Array<{ id: string; name: string }>;
+  defaultDepthTier: MissionDepthTier;
+}) {
+  const [draft, setDraft] = useState<CreateDraft>({
     title: "",
     prompt: "",
     laneId: "",
     priority: "normal",
-    executionMode: "local",
-    targetMachineId: "",
-    plannerEngine: "auto",
-    executorPolicy: "both",
-    allowPlanningQuestions: false,
-    autoStart: true,
-    orchestratorProvider: "auto",
-    plannerMode: "auto"
+    depthTier: defaultDepthTier
   });
-  const [artifactDraft, setArtifactDraft] = React.useState<ArtifactDraft>({
-    artifactType: "pr",
-    title: "",
-    uri: "",
-    description: ""
-  });
-  const [interventionDraft, setInterventionDraft] = React.useState<InterventionDraft>({
-    interventionType: "manual_input",
-    title: "",
-    body: ""
-  });
-  const [outcomeDraft, setOutcomeDraft] = React.useState("");
 
-  const selectedMissionSummary = React.useMemo(
-    () => (selectedMissionId ? missions.find((mission) => mission.id === selectedMissionId) ?? null : null),
-    [missions, selectedMissionId]
-  );
-
-  const statusCount = React.useMemo(() => countByStatus(missions), [missions]);
-  const attemptsByStep = React.useMemo(() => {
-    const map = new Map<string, OrchestratorAttempt[]>();
-    if (!runGraph) return map;
-    for (const attempt of runGraph.attempts) {
-      const bucket = map.get(attempt.stepId) ?? [];
-      bucket.push(attempt);
-      map.set(attempt.stepId, bucket);
-    }
-    for (const bucket of map.values()) {
-      bucket.sort((a, b) => b.attemptNumber - a.attemptNumber);
-    }
-    return map;
-  }, [runGraph]);
-
-  const runningAttemptCount = React.useMemo(
-    () => runGraph?.attempts.filter((attempt) => attempt.status === "running").length ?? 0,
-    [runGraph]
-  );
-
-  const sessionAttempts = React.useMemo(
-    () =>
-      (runGraph?.attempts ?? [])
-        .filter((attempt) => attempt.executorSessionId)
-        .map((attempt) => ({
-          attemptId: attempt.id,
-          stepId: attempt.stepId,
-          stepTitle: runGraph?.steps.find((step) => step.id === attempt.stepId)?.title ?? "Step",
-          sessionId: attempt.executorSessionId!,
-          executorKind: attempt.executorKind,
-          status: attempt.status
-        })),
-    [runGraph]
-  );
-
-  const liveSessionAttempts = React.useMemo(
-    () => sessionAttempts.filter((entry) => entry.status === "running"),
-    [sessionAttempts]
-  );
-
-  const [liveSessionTailById, setLiveSessionTailById] = React.useState<Record<string, string>>({});
-
-  const openInterventions = React.useMemo(
-    () => selectedMission?.interventions.filter((entry) => entry.status === "open") ?? [],
-    [selectedMission]
-  );
-
-  const runtimeLaneIds = React.useMemo(
-    () =>
-      Array.from(
-        new Set((runGraph?.steps ?? []).map((step) => step.laneId).filter((laneId): laneId is string => Boolean(laneId)))
-      ),
-    [runGraph]
-  );
-
-  const runtimeLaneStrip = React.useMemo(() => {
-    if (!runGraph) return [];
-    const laneByStepId = new Map<string, string | null>();
-    for (const step of runGraph.steps) {
-      laneByStepId.set(step.id, step.laneId);
-    }
-    return runtimeLaneIds.map((laneId) => {
-      const stepCount = runGraph.steps.filter((step) => step.laneId === laneId).length;
-      const runningCount = runGraph.attempts.filter((attempt) => {
-        const attemptLaneId = laneByStepId.get(attempt.stepId);
-        return attemptLaneId === laneId && attempt.status === "running";
-      }).length;
-      return {
-        laneId,
-        laneName: lanes.find((lane) => lane.id === laneId)?.name ?? laneId,
-        stepCount,
-        runningCount
-      };
+  useEffect(() => {
+    if (!open) return;
+    setDraft({
+      title: "",
+      prompt: "",
+      laneId: "",
+      priority: "normal",
+      depthTier: defaultDepthTier
     });
-  }, [runGraph, runtimeLaneIds, lanes]);
+  }, [open, defaultDepthTier]);
 
-  const plannerSummary = React.useMemo(() => {
-    if (!selectedMission?.steps.length) return null;
-    for (const step of selectedMission.steps) {
-      const planner =
-        step.metadata && typeof step.metadata.planner === "object" && !Array.isArray(step.metadata.planner)
-          ? (step.metadata.planner as Record<string, unknown>)
-          : null;
-      if (!planner) continue;
-      return {
-        strategy: typeof planner.strategy === "string" ? planner.strategy : "deterministic_split",
-        version: typeof planner.version === "string" ? planner.version : "ade.missionPlanner.v1"
-      };
-    }
-    return {
-      strategy: "deterministic_split",
-      version: "ade.missionPlanner.v1"
-    };
-  }, [selectedMission]);
+  const handleLaunch = useCallback(() => {
+    if (!draft.prompt.trim()) return;
+    onLaunch(draft);
+  }, [draft, onLaunch]);
 
-  const plannerRunSummary = React.useMemo(() => {
-    const events = selectedMission?.events ?? [];
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const entry = events[index];
-      if (!entry || entry.eventType !== "mission_plan_generated") continue;
-      const payload = entry.payload && typeof entry.payload === "object" && !Array.isArray(entry.payload) ? entry.payload : {};
-      const record = payload as Record<string, unknown>;
-      return {
-        requestedEngine: typeof record.requestedEngine === "string" ? record.requestedEngine : "auto",
-        resolvedEngine: typeof record.resolvedEngine === "string" ? record.resolvedEngine : "deterministic_fallback",
-        degraded: record.degraded === true,
-        reasonCode: typeof record.reasonCode === "string" ? record.reasonCode : null,
-        planHash: typeof record.planHash === "string" ? record.planHash : null,
-        normalizedPlanHash: typeof record.normalizedPlanHash === "string" ? record.normalizedPlanHash : null
-      };
-    }
-    return null;
-  }, [selectedMission]);
+  if (!open) return null;
 
-  const runAutopilotState = React.useMemo(() => {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="w-full max-w-lg rounded-lg border border-border/40 bg-zinc-900 shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border/20 px-5 py-3">
+          <div className="flex items-center gap-2">
+            <Rocket className="h-4 w-4 text-accent" />
+            <h2 className="text-sm font-semibold text-fg">New Mission</h2>
+          </div>
+          <button onClick={onClose} className="text-muted-fg hover:text-fg transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-4">
+          {/* Prompt */}
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium text-muted-fg">Mission Prompt *</span>
+            <textarea
+              value={draft.prompt}
+              onChange={(e) => setDraft((p) => ({ ...p, prompt: e.target.value }))}
+              placeholder="Describe what you want to accomplish..."
+              rows={4}
+              className="w-full rounded-lg border border-border/30 bg-zinc-800 px-3 py-2 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20 resize-none"
+            />
+          </label>
+
+          {/* Title */}
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium text-muted-fg">Title (optional, auto-generated)</span>
+            <input
+              value={draft.title}
+              onChange={(e) => setDraft((p) => ({ ...p, title: e.target.value }))}
+              placeholder="e.g. Refactor auth middleware"
+              className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+            />
+          </label>
+
+          <div className="grid grid-cols-3 gap-3">
+            {/* Lane */}
+            <label className="block space-y-1">
+              <span className="text-[11px] font-medium text-muted-fg">Lane</span>
+              <select
+                value={draft.laneId}
+                onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
+                className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+              >
+                <option value="">Auto</option>
+                {lanes.map((l) => (
+                  <option key={l.id} value={l.id}>{l.name}</option>
+                ))}
+              </select>
+            </label>
+
+            {/* Priority */}
+            <label className="block space-y-1">
+              <span className="text-[11px] font-medium text-muted-fg">Priority</span>
+              <select
+                value={draft.priority}
+                onChange={(e) => setDraft((p) => ({ ...p, priority: e.target.value as MissionPriority }))}
+                className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+              >
+                <option value="low">Low</option>
+                <option value="normal">Normal</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </label>
+
+            {/* Depth Tier */}
+            <label className="block space-y-1">
+              <span className="text-[11px] font-medium text-muted-fg">Depth</span>
+              <select
+                value={draft.depthTier}
+                onChange={(e) => setDraft((p) => ({ ...p, depthTier: e.target.value as MissionDepthTier }))}
+                className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+              >
+                <option value="light">Light</option>
+                <option value="standard">Standard</option>
+                <option value="deep">Deep</option>
+              </select>
+            </label>
+          </div>
+
+          {/* Depth description */}
+          <div className="rounded-lg border border-border/20 bg-zinc-800/60 px-3 py-2">
+            <div className="flex items-center justify-between">
+              <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium border", DEPTH_TIER_COLORS[draft.depthTier])}>
+                {DEPTH_DESCRIPTIONS[draft.depthTier].label}
+              </span>
+              <span className="text-[10px] text-muted-fg">{DEPTH_DESCRIPTIONS[draft.depthTier].budget}</span>
+            </div>
+            <p className="mt-1 text-[10px] text-muted-fg/80">{DEPTH_DESCRIPTIONS[draft.depthTier].desc}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border/20 px-5 py-3">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleLaunch}
+            disabled={busy || !draft.prompt.trim()}
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+            Launch
+          </Button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+function MissionSettingsDialog({
+  open,
+  onClose,
+  draft,
+  onDraftChange,
+  onSave,
+  busy,
+  error,
+  notice
+}: {
+  open: boolean;
+  onClose: () => void;
+  draft: MissionSettingsDraft;
+  onDraftChange: (update: Partial<MissionSettingsDraft>) => void;
+  onSave: () => void;
+  busy: boolean;
+  error: string | null;
+  notice: string | null;
+}) {
+  if (!open) return null;
+
+  const inputClass = "h-8 w-full rounded border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="w-full max-w-2xl rounded-lg border border-border/40 bg-zinc-900 shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-border/20 px-5 py-3">
+          <div className="flex items-center gap-2">
+            <Settings className="h-4 w-4 text-accent" />
+            <h2 className="text-sm font-semibold text-fg">Mission Settings</h2>
+          </div>
+          <button onClick={onClose} className="text-muted-fg hover:text-fg transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4 px-5 py-4">
+          {notice ? <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">{notice}</div> : null}
+          {error ? <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div> : null}
+
+          <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-3">
+            <div className="text-xs font-semibold text-fg">Mission Defaults</div>
+            <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+              <label className="text-xs">
+                <div className="text-muted-fg">Default depth tier</div>
+                <select
+                  className={inputClass}
+                  value={draft.defaultDepthTier}
+                  onChange={(e) => onDraftChange({ defaultDepthTier: e.target.value as MissionDepthTier })}
+                >
+                  <option value="light">Light</option>
+                  <option value="standard">Standard</option>
+                  <option value="deep">Deep</option>
+                </select>
+              </label>
+              <label className="text-xs">
+                <div className="text-muted-fg">Default planner provider</div>
+                <select
+                  className={inputClass}
+                  value={draft.defaultPlannerProvider}
+                  onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
+                >
+                  <option value="auto">Auto</option>
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-xs pt-5">
+                <input
+                  type="checkbox"
+                  checked={draft.requirePlanReview}
+                  onChange={(e) => onDraftChange({ requirePlanReview: e.target.checked })}
+                />
+                Require plan review
+              </label>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-3">
+            <div className="text-xs font-semibold text-fg">Worker Permissions</div>
+            <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-fg">Claude Worker</div>
+                <label className="text-xs block">
+                  <div className="text-muted-fg">Permission mode</div>
+                  <select
+                    className={inputClass}
+                    value={draft.claudePermissionMode}
+                    disabled={draft.claudeDangerouslySkip}
+                    onChange={(e) => onDraftChange({ claudePermissionMode: e.target.value })}
+                  >
+                    <option value="plan">Plan (read-only)</option>
+                    <option value="acceptEdits">Accept edits</option>
+                    <option value="bypassPermissions">Bypass permissions</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={draft.claudeDangerouslySkip}
+                    onChange={(e) => onDraftChange({ claudeDangerouslySkip: e.target.checked })}
+                  />
+                  Dangerously skip permissions
+                </label>
+                <div className="text-[11px] text-muted-fg">
+                  Claude workers read `CLAUDE.md` and `.claude/settings.json` from the lane repository root.
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-fg">Codex Worker</div>
+                <label className="text-xs block">
+                  <div className="text-muted-fg">Sandbox mode</div>
+                  <select
+                    className={inputClass}
+                    value={draft.codexSandboxPermissions}
+                    onChange={(e) => onDraftChange({ codexSandboxPermissions: e.target.value })}
+                  >
+                    <option value="read-only">Read-only</option>
+                    <option value="workspace-write">Workspace write</option>
+                    <option value="danger-full-access">Full access (dangerous)</option>
+                  </select>
+                </label>
+                <label className="text-xs block">
+                  <div className="text-muted-fg">Approval mode</div>
+                  <select
+                    className={inputClass}
+                    value={draft.codexApprovalMode}
+                    onChange={(e) => onDraftChange({ codexApprovalMode: e.target.value })}
+                  >
+                    <option value="suggest">Suggest</option>
+                    <option value="auto-edit">Auto-edit</option>
+                    <option value="full-auto">Full auto</option>
+                  </select>
+                </label>
+                <label className="text-xs block">
+                  <div className="text-muted-fg">Config TOML path</div>
+                  <input
+                    type="text"
+                    className={inputClass}
+                    value={draft.codexConfigPath}
+                    onChange={(e) => onDraftChange({ codexConfigPath: e.target.value })}
+                    placeholder="e.g. /Users/you/.config/codex/config.toml"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border/20 px-5 py-3">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Close</Button>
+          <Button variant="primary" size="sm" onClick={onSave} disabled={busy}>
+            {busy ? "Saving..." : "Save settings"}
+          </Button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+/* ════════════════════ MAIN COMPONENT ════════════════════ */
+
+export default function MissionsPage() {
+  const lanes = useAppStore((s) => s.lanes);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
+
+  /* ── Core state ── */
+  const [missions, setMissions] = useState<MissionSummary[]>([]);
+  const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
+  const [selectedMission, setSelectedMission] = useState<MissionDetail | null>(null);
+  const [runGraph, setRunGraph] = useState<OrchestratorRunGraph | null>(null);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [runBusy, setRunBusy] = useState(false);
+  const [missionSettingsOpen, setMissionSettingsOpen] = useState(false);
+  const [missionSettingsBusy, setMissionSettingsBusy] = useState(false);
+  const [missionSettingsError, setMissionSettingsError] = useState<string | null>(null);
+  const [missionSettingsNotice, setMissionSettingsNotice] = useState<string | null>(null);
+  const [missionSettingsSnapshot, setMissionSettingsSnapshot] = useState<ProjectConfigSnapshot | null>(null);
+  const [missionSettingsDraft, setMissionSettingsDraft] = useState<MissionSettingsDraft>(DEFAULT_MISSION_SETTINGS_DRAFT);
+
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("board");
+  const [searchFilter, setSearchFilter] = useState("");
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+
+  /* ── Steering state ── */
+  const [steerInput, setSteerInput] = useState("");
+  const [steerBusy, setSteerBusy] = useState(false);
+  const [steerAck, setSteerAck] = useState<string | null>(null);
+  const [steeringLog, setSteeringLog] = useState<SteeringEntry[]>([]);
+
+  /* ── Elapsed time ticker ── */
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  /* ── Derived data ── */
+  const filteredMissions = useMemo(() => {
+    if (!searchFilter.trim()) return missions;
+    const q = searchFilter.toLowerCase();
+    return missions.filter(
+      (m) => m.title.toLowerCase().includes(q) || m.status.includes(q)
+    );
+  }, [missions, searchFilter]);
+
+  const runAutopilotState = useMemo(() => {
     const autopilot =
       runGraph?.run.metadata && typeof runGraph.run.metadata.autopilot === "object" && !Array.isArray(runGraph.run.metadata.autopilot)
         ? (runGraph.run.metadata.autopilot as Record<string, unknown>)
         : null;
-    const enabled = autopilot?.enabled === true;
-    const executor = typeof autopilot?.executorKind === "string" ? autopilot.executorKind : null;
     return {
-      enabled,
-      executor
+      enabled: autopilot?.enabled === true,
+      executor: typeof autopilot?.executorKind === "string" ? autopilot.executorKind : null
     };
   }, [runGraph]);
 
   const canStartOrRerun = !runGraph || runGraph.run.status === "succeeded" || runGraph.run.status === "failed" || runGraph.run.status === "canceled";
   const canCancelRun = Boolean(
-    runGraph &&
-      runGraph.run.status !== "succeeded" &&
-      runGraph.run.status !== "failed" &&
-      runGraph.run.status !== "canceled"
+    runGraph && runGraph.run.status !== "succeeded" && runGraph.run.status !== "failed" && runGraph.run.status !== "canceled"
   );
   const canResumeRun = runGraph?.run.status === "paused";
 
-  const refreshMissionList = React.useCallback(
-    async (opts: { preserveSelection?: boolean; silent?: boolean } = {}) => {
-      if (!opts.silent) {
-        setRefreshing(true);
+  const isActiveMission = selectedMission && (
+    selectedMission.status === "in_progress" ||
+    selectedMission.status === "planning" ||
+    selectedMission.status === "intervention_required"
+  );
+
+  const applyMissionSettingsSnapshot = useCallback((snapshot: ProjectConfigSnapshot) => {
+    const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+    const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
+
+    const localOrchestrator = isRecord(localAi.orchestrator) ? localAi.orchestrator : {};
+    const effectiveOrchestrator = isRecord(effectiveAi.orchestrator) ? effectiveAi.orchestrator : {};
+
+    const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
+    const effectivePermissions = isRecord(effectiveAi.permissions) ? effectiveAi.permissions : {};
+    const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
+    const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
+    const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
+    const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
+
+    setMissionSettingsSnapshot(snapshot);
+    setMissionSettingsDraft({
+      defaultDepthTier: toDepthTier(
+        readString(localOrchestrator.defaultDepthTier, effectiveOrchestrator.defaultDepthTier, "standard"),
+        "standard"
+      ),
+      defaultPlannerProvider: toPlannerProvider(
+        readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
+      ),
+      requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
+      claudePermissionMode: toClaudePermissionMode(
+        readString(localClaude.permissionMode, effectiveClaude.permissionMode, "acceptEdits")
+      ),
+      claudeDangerouslySkip: readBool(localClaude.dangerouslySkipPermissions, effectiveClaude.dangerouslySkipPermissions, false),
+      codexSandboxPermissions: toCodexSandboxPermissions(
+        readString(localCodex.sandboxPermissions, effectiveCodex.sandboxPermissions, "workspace-write")
+      ),
+      codexApprovalMode: toCodexApprovalMode(
+        readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto")
+      ),
+      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, "")
+    });
+  }, []);
+
+  const loadMissionSettings = useCallback(async () => {
+    setMissionSettingsError(null);
+    try {
+      const snapshot = await window.ade.projectConfig.get();
+      applyMissionSettingsSnapshot(snapshot);
+    } catch (err) {
+      setMissionSettingsError(err instanceof Error ? err.message : String(err));
+    }
+  }, [applyMissionSettingsSnapshot]);
+
+  const saveMissionSettings = useCallback(async () => {
+    setMissionSettingsBusy(true);
+    setMissionSettingsError(null);
+    setMissionSettingsNotice(null);
+    try {
+      const snapshot = missionSettingsSnapshot ?? (await window.ade.projectConfig.get());
+      const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
+      const localOrchestrator = isRecord(localAi.orchestrator) ? localAi.orchestrator : {};
+      const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
+      const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
+      const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
+
+      const normalizedDepthTier = toDepthTier(missionSettingsDraft.defaultDepthTier, "standard");
+      const normalizedPlannerProvider = toPlannerProvider(missionSettingsDraft.defaultPlannerProvider);
+      const normalizedClaudePermissionMode = toClaudePermissionMode(missionSettingsDraft.claudePermissionMode);
+      const normalizedCodexSandbox = toCodexSandboxPermissions(missionSettingsDraft.codexSandboxPermissions);
+      const normalizedCodexApproval = toCodexApprovalMode(missionSettingsDraft.codexApprovalMode);
+
+      const nextOrchestrator: Record<string, unknown> = {
+        ...localOrchestrator,
+        defaultDepthTier: normalizedDepthTier,
+        defaultPlannerProvider: normalizedPlannerProvider,
+        requirePlanReview: missionSettingsDraft.requirePlanReview
+      };
+
+      const nextClaude: Record<string, unknown> = {
+        ...localClaude,
+        permissionMode: normalizedClaudePermissionMode
+      };
+      if (missionSettingsDraft.claudeDangerouslySkip) {
+        nextClaude.dangerouslySkipPermissions = true;
+      } else {
+        delete nextClaude.dangerouslySkipPermissions;
       }
 
-      try {
-        if (!lanes.length) {
-          await refreshLanes().catch(() => {});
+      const nextCodex: Record<string, unknown> = {
+        ...localCodex,
+        sandboxPermissions: normalizedCodexSandbox,
+        approvalMode: normalizedCodexApproval
+      };
+      if (missionSettingsDraft.codexConfigPath.trim().length > 0) {
+        nextCodex.configPath = missionSettingsDraft.codexConfigPath.trim();
+      } else {
+        delete nextCodex.configPath;
+      }
+
+      const saved = await window.ade.projectConfig.save({
+        shared: snapshot.shared,
+        local: {
+          ...snapshot.local,
+          ai: {
+            ...localAi,
+            orchestrator: nextOrchestrator,
+            permissions: {
+              ...localPermissions,
+              claude: nextClaude,
+              codex: nextCodex
+            }
+          }
         }
+      });
+
+      applyMissionSettingsSnapshot(saved);
+      setMissionSettingsNotice("Mission settings saved to .ade/local.yaml.");
+    } catch (err) {
+      setMissionSettingsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMissionSettingsBusy(false);
+    }
+  }, [applyMissionSettingsSnapshot, missionSettingsDraft, missionSettingsSnapshot]);
+
+  /* ── Data fetching ── */
+  const refreshMissionList = useCallback(
+    async (opts: { preserveSelection?: boolean; silent?: boolean } = {}) => {
+      if (!opts.silent) setRefreshing(true);
+      try {
+        if (!lanes.length) await refreshLanes().catch(() => {});
         const list = await window.ade.missions.list({ limit: 300 });
         setMissions(list);
         setError(null);
-
         const preserve = opts.preserveSelection ?? true;
         if (!preserve) {
           setSelectedMissionId(list[0]?.id ?? null);
           return;
         }
-
         setSelectedMissionId((prev) => {
-          if (prev && list.some((mission) => mission.id === prev)) return prev;
+          if (prev && list.some((m) => m.id === prev)) return prev;
           return list[0]?.id ?? null;
         });
       } catch (err) {
@@ -480,34 +1006,25 @@ export function MissionsPage() {
     [lanes.length, refreshLanes]
   );
 
-  const loadMissionDetail = React.useCallback(async (missionId: string) => {
+  const loadMissionDetail = useCallback(async (missionId: string) => {
     const trimmed = missionId.trim();
-    if (!trimmed.length) return;
-    setDetailBusy(true);
+    if (!trimmed) return;
     try {
       const detail = await window.ade.missions.get(trimmed);
       setSelectedMission(detail);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDetailBusy(false);
     }
   }, []);
 
-  const loadOrchestratorGraph = React.useCallback(async (missionId: string) => {
+  const loadOrchestratorGraph = useCallback(async (missionId: string) => {
     const trimmed = missionId.trim();
-    if (!trimmed.length) {
-      setRunGraph(null);
-      return;
-    }
+    if (!trimmed) { setRunGraph(null); return; }
     try {
       const runs = await window.ade.orchestrator.listRuns({ missionId: trimmed, limit: 20 });
       const latestRun = runs[0];
-      if (!latestRun) {
-        setRunGraph(null);
-        return;
-      }
+      if (!latestRun) { setRunGraph(null); return; }
       const graph = await window.ade.orchestrator.getRunGraph({ runId: latestRun.id, timelineLimit: 120 });
       setRunGraph(graph);
     } catch (err) {
@@ -516,21 +1033,27 @@ export function MissionsPage() {
     }
   }, []);
 
-  React.useEffect(() => {
+  useEffect(() => {
     void refreshMissionList({ preserveSelection: true });
   }, [refreshMissionList]);
 
-  React.useEffect(() => {
+  useEffect(() => {
+    void loadMissionSettings();
+  }, [loadMissionSettings]);
+
+  useEffect(() => {
     if (!selectedMissionId) {
       setSelectedMission(null);
       setRunGraph(null);
+      setSteeringLog([]);
       return;
     }
+    setSteeringLog([]);
     void loadMissionDetail(selectedMissionId);
     void loadOrchestratorGraph(selectedMissionId);
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const unsub = window.ade.missions.onEvent((payload) => {
       void refreshMissionList({ preserveSelection: true, silent: true });
       if (payload.missionId && payload.missionId === selectedMissionId) {
@@ -541,7 +1064,7 @@ export function MissionsPage() {
     return () => unsub();
   }, [loadMissionDetail, loadOrchestratorGraph, refreshMissionList, selectedMissionId]);
 
-  React.useEffect(() => {
+  useEffect(() => {
     const unsub = window.ade.orchestrator.onEvent(() => {
       if (!selectedMissionId) return;
       void loadOrchestratorGraph(selectedMissionId);
@@ -549,50 +1072,8 @@ export function MissionsPage() {
     return () => unsub();
   }, [loadOrchestratorGraph, selectedMissionId]);
 
-  React.useEffect(() => {
-    setOutcomeDraft(selectedMission?.outcomeSummary ?? "");
-  }, [selectedMission?.id, selectedMission?.outcomeSummary]);
-
-  React.useEffect(() => {
-    if (liveSessionAttempts.length === 0) {
-      setLiveSessionTailById({});
-      return;
-    }
-
-    let cancelled = false;
-    const updateTails = async () => {
-      const entries = await Promise.all(
-        liveSessionAttempts.map(async (entry) => {
-          try {
-            const tail = await window.ade.sessions.readTranscriptTail({
-              sessionId: entry.sessionId,
-              maxBytes: 2400
-            });
-            return [entry.sessionId, tail] as const;
-          } catch {
-            return [entry.sessionId, ""] as const;
-          }
-        })
-      );
-      if (cancelled) return;
-      const next: Record<string, string> = {};
-      for (const [sessionId, tail] of entries) {
-        next[sessionId] = tail;
-      }
-      setLiveSessionTailById(next);
-    };
-
-    void updateTails();
-    const timer = window.setInterval(() => {
-      void updateTails();
-    }, 2500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [liveSessionAttempts]);
-
-  const startRunForMission = React.useCallback(
+  /* ── Actions ── */
+  const startRunForMission = useCallback(
     async (args: {
       missionId: string;
       laneId?: string | null;
@@ -600,224 +1081,57 @@ export function MissionsPage() {
       approveExistingPlan?: boolean;
     }) => {
       const missionId = args.missionId.trim();
-      if (!missionId.length) return;
-      const defaultExecutorKind: OrchestratorExecutorKind = args.executorKind;
-
+      if (!missionId) return;
       if (args.laneId) {
-        try {
-          await window.ade.packs.refreshLanePack(args.laneId);
-        } catch {
-          // Orchestrator also retries pack bootstrap server-side when lane pack is empty.
-        }
+        try { await window.ade.packs.refreshLanePack(args.laneId); } catch { /* non-fatal */ }
       }
-      try {
-        await window.ade.packs.refreshProjectPack({
-          laneId: args.laneId ?? undefined
-        });
-      } catch {
-        // Non-fatal in launcher path.
-      }
+      try { await window.ade.packs.refreshProjectPack({ laneId: args.laneId ?? undefined }); } catch { /* non-fatal */ }
 
       const startArgs = {
         missionId,
         runMode: "autopilot",
         autopilotOwnerId: "missions-autopilot",
-        defaultExecutorKind,
+        defaultExecutorKind: args.executorKind,
         defaultRetryLimit: 1
       } satisfies StartOrchestratorRunFromMissionArgs;
-      const started = args.approveExistingPlan
+      return args.approveExistingPlan
         ? await window.ade.orchestrator.approveMissionPlan(startArgs)
         : await window.ade.orchestrator.startRunFromMission(startArgs);
-
-      return started;
     },
     []
   );
 
-  const launchMission = async () => {
-    const prompt = createDraft.prompt.trim();
-    if (!prompt.length) {
-      setError("Mission prompt is required.");
-      return;
-    }
-    const fallbackLaneId = lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? "";
-    const resolvedLaneId = createDraft.laneId.trim() || fallbackLaneId;
-
-    setLaunchAnimating(true);
+  const handleLaunchMission = useCallback(async (draft: CreateDraft) => {
+    const prompt = draft.prompt.trim();
+    if (!prompt) { setError("Mission prompt is required."); return; }
+    const fallbackLaneId = lanes.find((l) => l.laneType === "primary")?.id ?? lanes[0]?.id ?? "";
+    const resolvedLaneId = draft.laneId.trim() || fallbackLaneId;
     setCreateBusy(true);
     try {
-      const resolvedAutopilotExecutor: OrchestratorExecutorKind =
-        createDraft.orchestratorProvider === "claude"
-          ? "claude"
-          : createDraft.orchestratorProvider === "codex"
-            ? "codex"
-            : createDraft.executorPolicy === "claude"
-              ? "claude"
-              : "codex";
-
       const created = await window.ade.missions.create({
-        title: createDraft.title.trim() || undefined,
+        title: draft.title.trim() || undefined,
         prompt,
         laneId: resolvedLaneId || undefined,
-        priority: createDraft.priority,
-        executionMode: createDraft.executionMode,
-        targetMachineId: createDraft.targetMachineId.trim() || undefined,
-        plannerEngine: createDraft.plannerEngine,
-        executorPolicy: createDraft.executorPolicy,
-        allowPlanningQuestions: createDraft.allowPlanningQuestions,
-        autostart: createDraft.autoStart,
+        priority: draft.priority,
+        missionDepth: draft.depthTier,
+        autostart: true,
         launchMode: "autopilot",
-        autopilotExecutor: resolvedAutopilotExecutor
+        autopilotExecutor: "codex"
       });
-
-      setCreateDraft((prev) => ({ ...prev, title: "", prompt: "", allowPlanningQuestions: false }));
       setSelectedMissionId(created.id);
       await refreshMissionList({ preserveSelection: true, silent: true });
       await loadMissionDetail(created.id);
       await loadOrchestratorGraph(created.id);
       setError(null);
-      setShowForm(false);
+      setCreateOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreateBusy(false);
-      setTimeout(() => setLaunchAnimating(false), 600);
     }
-  };
+  }, [lanes, refreshMissionList, loadMissionDetail, loadOrchestratorGraph]);
 
-  const updateMissionStatus = async (status: MissionStatus) => {
-    if (!selectedMission) return;
-    setMissionActionBusy(true);
-    try {
-      const updated = await window.ade.missions.update({
-        missionId: selectedMission.id,
-        status,
-        ...(status === "completed" ? { outcomeSummary: outcomeDraft.trim() || null } : {})
-      });
-      setSelectedMission(updated);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setMissionActionBusy(false);
-    }
-  };
-
-  const deleteMission = async () => {
-    if (!selectedMission) return;
-    const confirmed = window.confirm(`Delete mission "${selectedMission.title}" and all runtime history?`);
-    if (!confirmed) return;
-    setMissionActionBusy(true);
-    try {
-      await window.ade.missions.delete({ missionId: selectedMission.id });
-      setSelectedMissionId(null);
-      setSelectedMission(null);
-      setRunGraph(null);
-      await refreshMissionList({ preserveSelection: false, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setMissionActionBusy(false);
-    }
-  };
-
-  const saveOutcome = async () => {
-    if (!selectedMission) return;
-    setOutcomeBusy(true);
-    try {
-      const updated = await window.ade.missions.update({
-        missionId: selectedMission.id,
-        outcomeSummary: outcomeDraft.trim() || null
-      });
-      setSelectedMission(updated);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setOutcomeBusy(false);
-    }
-  };
-
-  const addArtifact = async () => {
-    if (!selectedMission) return;
-    if (!artifactDraft.title.trim()) {
-      setError("Artifact title is required.");
-      return;
-    }
-
-    setArtifactBusy(true);
-    try {
-      await window.ade.missions.addArtifact({
-        missionId: selectedMission.id,
-        artifactType: artifactDraft.artifactType,
-        title: artifactDraft.title.trim(),
-        uri: artifactDraft.uri.trim() || undefined,
-        description: artifactDraft.description.trim() || undefined,
-        laneId: selectedMission.laneId ?? undefined
-      });
-
-      setArtifactDraft((prev) => ({ ...prev, title: "", uri: "", description: "" }));
-      await loadMissionDetail(selectedMission.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setArtifactBusy(false);
-    }
-  };
-
-  const addIntervention = async () => {
-    if (!selectedMission) return;
-    if (!interventionDraft.title.trim() || !interventionDraft.body.trim()) {
-      setError("Intervention title and body are required.");
-      return;
-    }
-
-    setInterventionBusy(true);
-    try {
-      await window.ade.missions.addIntervention({
-        missionId: selectedMission.id,
-        interventionType: interventionDraft.interventionType,
-        title: interventionDraft.title.trim(),
-        body: interventionDraft.body.trim(),
-        laneId: selectedMission.laneId ?? undefined
-      });
-
-      setInterventionDraft((prev) => ({ ...prev, title: "", body: "" }));
-      await loadMissionDetail(selectedMission.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setInterventionBusy(false);
-    }
-  };
-
-  const resolveIntervention = async (interventionId: string, status: "resolved" | "dismissed") => {
-    if (!selectedMission) return;
-    setInterventionBusy(true);
-    try {
-      await window.ade.missions.resolveIntervention({
-        missionId: selectedMission.id,
-        interventionId,
-        status
-      });
-      await loadMissionDetail(selectedMission.id);
-      await refreshMissionList({ preserveSelection: true, silent: true });
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setInterventionBusy(false);
-    }
-  };
-
-  const startOrchestratorRun = async () => {
+  const handleStartRun = useCallback(async () => {
     if (!selectedMission) return;
     setRunBusy(true);
     try {
@@ -825,12 +1139,11 @@ export function MissionsPage() {
         runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
           ? (runAutopilotState.executor as OrchestratorExecutorKind)
           : "codex";
-      const approveExistingPlan = selectedMission.status === "plan_review";
       await startRunForMission({
         missionId: selectedMission.id,
         laneId: selectedMission.laneId,
         executorKind: fallbackExecutor,
-        approveExistingPlan
+        approveExistingPlan: selectedMission.status === "plan_review"
       });
       await loadOrchestratorGraph(selectedMission.id);
       await loadMissionDetail(selectedMission.id);
@@ -841,1341 +1154,817 @@ export function MissionsPage() {
     } finally {
       setRunBusy(false);
     }
-  };
+  }, [selectedMission, runAutopilotState.executor, startRunForMission, loadOrchestratorGraph, loadMissionDetail, refreshMissionList]);
 
-  const resumeRun = async () => {
-    if (!runGraph) return;
-    setRunBusy(true);
-    try {
-      await window.ade.orchestrator.resumeRun({ runId: runGraph.run.id });
-      if (selectedMission) {
-        await loadOrchestratorGraph(selectedMission.id);
-      }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunBusy(false);
-    }
-  };
-
-  const cancelRun = async () => {
+  const handleCancelRun = useCallback(async () => {
     if (!runGraph) return;
     setRunBusy(true);
     try {
       await window.ade.orchestrator.cancelRun({ runId: runGraph.run.id, reason: "Canceled from Missions UI." });
-      if (selectedMission) {
-        await loadOrchestratorGraph(selectedMission.id);
-      }
+      if (selectedMission) await loadOrchestratorGraph(selectedMission.id);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRunBusy(false);
     }
-  };
+  }, [runGraph, selectedMission, loadOrchestratorGraph]);
 
-  const openRunningTerminals = () => {
-    navigate("/terminals?status=running");
-  };
-
-  const openArtifact = async (uri: string | null) => {
-    const target = (uri ?? "").trim();
-    if (!target) return;
+  const handleResumeRun = useCallback(async () => {
+    if (!runGraph) return;
+    setRunBusy(true);
     try {
-      await window.ade.app.openExternal(target);
+      await window.ade.orchestrator.resumeRun({ runId: runGraph.run.id });
+      if (selectedMission) await loadOrchestratorGraph(selectedMission.id);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunBusy(false);
     }
-  };
+  }, [runGraph, selectedMission, loadOrchestratorGraph]);
 
-  const jumpToLane = (laneId: string | null) => {
-    if (!laneId) return;
-    navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
-  };
+  const handleSteer = useCallback(async () => {
+    if (!selectedMission || !steerInput.trim()) return;
+    const directiveText = steerInput.trim();
+    setSteerBusy(true);
+    setSteerAck(null);
+    try {
+      const result: SteerMissionResult = await window.ade.orchestrator.steerMission({
+        missionId: selectedMission.id,
+        directive: directiveText,
+        priority: "instruction"
+      });
+      setSteerAck(result.response ?? "Directive acknowledged.");
+      setSteeringLog((prev) => [...prev, { directive: directiveText, appliedAt: new Date().toISOString() }]);
+      setSteerInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSteerBusy(false);
+    }
+  }, [selectedMission, steerInput]);
 
+  /* ── Steps grouped by status for Kanban ── */
+  const stepsByStatus = useMemo(() => {
+    const steps = runGraph?.steps ?? [];
+    const map = new Map<MissionStepStatus, OrchestratorStep[]>();
+    for (const col of STEP_STATUS_COLUMNS) {
+      map.set(col.status, []);
+    }
+    for (const step of steps) {
+      const key = step.status as MissionStepStatus;
+      const bucket = map.get(key);
+      if (bucket) {
+        bucket.push(step);
+      } else {
+        // Map orchestrator statuses to step statuses
+        const fallback = map.get("pending");
+        fallback?.push(step);
+      }
+    }
+    return map;
+  }, [runGraph]);
+
+  const attemptsByStep = useMemo(() => {
+    const map = new Map<string, OrchestratorAttempt[]>();
+    if (!runGraph) return map;
+    for (const attempt of runGraph.attempts) {
+      const bucket = map.get(attempt.stepId) ?? [];
+      bucket.push(attempt);
+      map.set(attempt.stepId, bucket);
+    }
+    return map;
+  }, [runGraph]);
+
+  const selectedStep = useMemo(() => {
+    if (!runGraph?.steps?.length || !selectedStepId) return null;
+    return runGraph.steps.find((step) => step.id === selectedStepId) ?? null;
+  }, [runGraph, selectedStepId]);
+
+  const selectedStepAttempts = useMemo(() => {
+    if (!selectedStep) return [];
+    return attemptsByStep.get(selectedStep.id) ?? [];
+  }, [attemptsByStep, selectedStep]);
+
+  useEffect(() => {
+    const steps = runGraph?.steps ?? [];
+    if (!steps.length) {
+      if (selectedStepId !== null) setSelectedStepId(null);
+      return;
+    }
+    if (!selectedStepId || !steps.some((step) => step.id === selectedStepId)) {
+      const running = steps.find((step) => step.status === "running");
+      setSelectedStepId((running ?? steps[0]).id);
+    }
+  }, [runGraph, selectedStepId]);
+
+  /* ── Loading screen ── */
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-accent" />
+      </div>
+    );
+  }
+
+  /* ════════════════════ RENDER ════════════════════ */
   return (
     <LazyMotion features={domAnimation}>
-      <div className="min-h-0 h-full overflow-auto p-4">
-        <motion.div
-          className="mx-auto flex w-full max-w-[1600px] flex-col gap-4"
-          variants={staggerContainer}
-          initial="initial"
-          animate="animate"
-        >
-          {/* ════════════════════ HERO SECTION ════════════════════ */}
-          <motion.section
-            variants={staggerItem}
-            className="relative overflow-hidden rounded border border-border/30 bg-gradient-to-br from-[--color-surface-raised] via-[--color-surface] to-[--color-muted]/50 p-5 shadow-card"
-          >
-            {/* Nebula gradient blobs */}
-            <div
-              className="absolute -right-20 -top-20 h-52 w-52 rounded-full blur-3xl"
-              style={{
-                background: "radial-gradient(circle, var(--color-accent) 0%, transparent 70%)",
-                opacity: 0.12,
-                animation: "ade-gradient-shift 15s ease-in-out infinite",
-                backgroundSize: "200% 200%"
-              }}
-            />
-            <div
-              className="absolute -bottom-16 left-[20%] h-44 w-44 rounded-full blur-3xl"
-              style={{
-                background: "radial-gradient(circle, var(--color-secondary) 0%, transparent 70%)",
-                opacity: 0.1,
-                animation: "ade-gradient-shift 20s ease-in-out infinite",
-                animationDelay: "3s",
-                backgroundSize: "200% 200%"
-              }}
-            />
-
-            {/* Floating geometric shapes */}
-            {FLOATING_SHAPES.map((shape, i) => (
-              <div
-                key={i}
-                className={cn("absolute ade-float text-accent/60", shape.x, shape.y, shape.opacity)}
-                style={{ animationDelay: shape.delay }}
-              >
-                <shape.Icon className={shape.size} />
-              </div>
-            ))}
-
-            <div className="relative flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-3">
-                  <Rocket className="h-5 w-5 text-accent ade-float" />
-                  <h1
-                    className="text-2xl font-bold tracking-tight"
-                    style={{
-                      background: "linear-gradient(135deg, var(--color-accent), var(--color-fg), var(--color-accent))",
-                      backgroundSize: "200% 100%",
-                      WebkitBackgroundClip: "text",
-                      backgroundClip: "text",
-                      WebkitTextFillColor: "transparent",
-                      animation: "ade-gradient-shift 8s ease-in-out infinite"
-                    }}
-                  >
-                    MISSIONS
-                  </h1>
-                </div>
-                <div className="mt-1.5 text-xs text-muted-fg max-w-md">
-                  Launch plain-English tasks, track execution across lanes, and capture outcomes for PR handoff.
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => void refreshMissionList({ preserveSelection: true })}>
-                  {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                  Refresh
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => navigate("/prs")}>
-                  <GitPullRequest className="h-3.5 w-3.5" />
-                  Open PRs
-                </Button>
-              </div>
+      <div className="flex h-full min-h-0">
+        {/* ════════════ LEFT SIDEBAR ════════════ */}
+        <div className="flex w-[260px] shrink-0 flex-col border-r border-border/20 bg-zinc-900/60">
+          {/* Sidebar Header */}
+          <div className="flex items-center justify-between border-b border-border/20 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <Rocket className="h-4 w-4 text-accent" />
+              <span className="text-xs font-semibold text-fg">Missions</span>
             </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => void refreshMissionList({ preserveSelection: true })}
+                className="rounded p-1 text-muted-fg hover:text-fg hover:bg-muted/20 transition-colors"
+                title="Refresh"
+              >
+                {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                onClick={() => {
+                  setMissionSettingsOpen(true);
+                  setMissionSettingsNotice(null);
+                  setMissionSettingsError(null);
+                  void loadMissionSettings();
+                }}
+                className="rounded p-1 text-muted-fg hover:text-fg hover:bg-muted/20 transition-colors"
+                title="Mission Settings"
+              >
+                <Settings className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => setCreateOpen(true)}
+                className="rounded p-1 text-accent hover:bg-accent/10 transition-colors"
+                title="New Mission"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
 
-            {/* Status counter badges */}
-            <motion.div
-              className="relative mt-4 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-6"
-              variants={staggerContainer}
-              initial="initial"
-              animate="animate"
-            >
-              {STATUS_COLUMNS.map((column) => (
-                <motion.div
-                  key={column.status}
-                  variants={staggerItem}
-                  className="group rounded border border-border/25 bg-card/50 px-3 py-2.5 shadow-card transition-all hover:shadow-card-hover hover:border-border/40"
-                >
-                  <div className="text-[10px] uppercase tracking-wide text-muted-fg/70">{column.label}</div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className="text-lg font-semibold text-fg">{statusCount[column.status]}</span>
-                    {statusCount[column.status] > 0 && (
-                      <span
-                        className="inline-block h-2 w-2 rounded-full ade-status-breathe"
-                        style={{ backgroundColor: STATUS_ACCENT_COLORS[column.status] }}
-                      />
+          {/* Search */}
+          <div className="px-3 py-2">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
+              <input
+                value={searchFilter}
+                onChange={(e) => setSearchFilter(e.target.value)}
+                placeholder="Search missions..."
+                className="h-7 w-full rounded border border-border/20 bg-zinc-800/60 pl-7 pr-2 text-[11px] text-fg outline-none focus:border-accent/30"
+              />
+            </div>
+          </div>
+
+          {/* Mission list */}
+          <div className="flex-1 overflow-y-auto px-2 pb-2">
+            {filteredMissions.length === 0 ? (
+              <div className="px-2 py-8 text-center text-[11px] text-muted-fg/60">
+                {missions.length === 0 ? "No missions yet" : "No matches"}
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {filteredMissions.map((m) => {
+                  const isSelected = m.id === selectedMissionId;
+                  const progress = m.totalSteps > 0 ? Math.round((m.completedSteps / m.totalSteps) * 100) : 0;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setSelectedMissionId(m.id)}
+                      className={cn(
+                        "w-full text-left rounded-lg px-2.5 py-2 transition-colors",
+                        isSelected
+                          ? "bg-accent/15 border border-accent/30"
+                          : "hover:bg-zinc-800/60 border border-transparent"
+                      )}
+                    >
+                      <div className="flex items-start gap-2">
+                        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", STATUS_DOT_COLORS[m.status])} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[11px] font-medium text-fg">{m.title}</div>
+                          <div className="mt-0.5 flex items-center gap-1.5">
+                            <span className={cn("rounded px-1 py-0.5 text-[9px] font-medium border", STATUS_BADGE_CLASSES[m.status])}>
+                              {STATUS_LABELS[m.status]}
+                            </span>
+                          </div>
+                          {m.totalSteps > 0 && (
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <div className="h-1 flex-1 rounded-full bg-zinc-700">
+                                <div
+                                  className="h-1 rounded-full bg-accent transition-all"
+                                  style={{ width: `${progress}%` }}
+                                />
+                              </div>
+                              <span className="shrink-0 text-[9px] text-muted-fg">
+                                {m.completedSteps}/{m.totalSteps}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ════════════ MAIN WORKSPACE ════════════ */}
+        <div className="flex flex-1 flex-col min-w-0">
+          {!selectedMissionId ? (
+            /* No selection empty state */
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-fg">
+              <Rocket className="h-10 w-10 opacity-20" />
+              <p className="text-sm">Select a mission or create a new one</p>
+              <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                New Mission
+              </Button>
+            </div>
+          ) : (
+            <>
+              {/* ── Header Bar ── */}
+              <div className="flex items-center gap-3 border-b border-border/20 bg-zinc-900/40 px-4 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <h2 className="truncate text-sm font-semibold text-fg">
+                      {selectedMission?.title ?? "Loading..."}
+                    </h2>
+                    {selectedMission && (
+                      <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium border", STATUS_BADGE_CLASSES[selectedMission.status])}>
+                        {STATUS_LABELS[selectedMission.status]}
+                      </span>
+                    )}
+                    {selectedMission && (
+                      <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium border", PRIORITY_CLASSES[selectedMission.priority])}>
+                        {selectedMission.priority}
+                      </span>
                     )}
                   </div>
-                  <div className="text-[10px] text-muted-fg/70">{column.hint}</div>
-                </motion.div>
-              ))}
-            </motion.div>
-          </motion.section>
-
-          {/* ════════════════════ ERROR BANNER ════════════════════ */}
-          <AnimatePresence>
-            {error ? (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200"
-              >
-                {error}
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
-
-          {/* ════════════════════ LAUNCH MISSION FORM ════════════════════ */}
-          <motion.section variants={staggerItem} className="relative">
-            <motion.div
-              className="rounded border border-border/30 shadow-card overflow-hidden"
-              style={{
-                background: "color-mix(in srgb, var(--color-card) 90%, transparent)"
-              }}
-            >
-              {/* Toggle header */}
-              <button
-                type="button"
-                onClick={() => setShowForm(!showForm)}
-                className="flex w-full items-center justify-between gap-2 p-4 text-left transition-colors hover:bg-muted/20"
-              >
-                <div className="flex items-center gap-2 text-sm font-semibold text-fg">
-                  <Plus className={cn("h-4 w-4 text-accent transition-transform duration-200", showForm && "rotate-45")} />
-                  Launch Mission
+                  <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted-fg">
+                    <span><Clock3 className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null)}</span>
+                    {selectedMission?.laneName && (
+                      <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
+                    )}
+                    {runGraph && (
+                      <span>Run: {runGraph.run.status}</span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[11px] text-muted-fg">
-                  {showForm ? "Collapse" : "Expand to create"}
-                </div>
-              </button>
 
+                {/* Quick actions */}
+                <div className="flex items-center gap-1.5">
+                  {canStartOrRerun && (
+                    <Button variant="primary" size="sm" onClick={handleStartRun} disabled={runBusy}>
+                      {runBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                      {runGraph ? "Rerun" : "Start"}
+                    </Button>
+                  )}
+                  {canResumeRun && (
+                    <Button variant="outline" size="sm" onClick={handleResumeRun} disabled={runBusy}>
+                      <Play className="h-3 w-3" />
+                      Resume
+                    </Button>
+                  )}
+                  {canCancelRun && (
+                    <Button variant="outline" size="sm" onClick={handleCancelRun} disabled={runBusy}>
+                      <Square className="h-3 w-3" />
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Error Banner ── */}
               <AnimatePresence>
-                {showForm && (
+                {error && (
                   <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1, transition: { ...springGentle, opacity: easeOut150 } }}
-                    exit={{ height: 0, opacity: 0, transition: { duration: 0.15 } }}
-                    className="overflow-hidden"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-[11px] text-red-300 flex items-center justify-between"
                   >
-                    <motion.div
-                      className="px-4 pb-4"
-                      variants={staggerContainer}
-                      initial="initial"
-                      animate="animate"
-                    >
-                      <motion.div variants={staggerItem} className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                        <label className="space-y-1 xl:col-span-2">
-                          <div className="text-[11px] text-muted-fg">Mission title (optional)</div>
-                          <input
-                            value={createDraft.title}
-                            onChange={(event) => setCreateDraft((prev) => ({ ...prev, title: event.target.value }))}
-                            className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                            placeholder="Refactor auth middleware and open PR"
-                          />
-                        </label>
-
-                        <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Lane</div>
-                          <select
-                            value={createDraft.laneId}
-                            onChange={(event) => setCreateDraft((prev) => ({ ...prev, laneId: event.target.value }))}
-                            className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                          >
-                            <option value="">Any lane</option>
-                            {lanes.map((lane) => (
-                              <option key={lane.id} value={lane.id}>
-                                {lane.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-
-                        <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Priority</div>
-                          <select
-                            value={createDraft.priority}
-                            onChange={(event) => setCreateDraft((prev) => ({ ...prev, priority: event.target.value as MissionPriority }))}
-                            className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                          >
-                            <option value="urgent">urgent</option>
-                            <option value="high">high</option>
-                            <option value="normal">normal</option>
-                            <option value="low">low</option>
-                          </select>
-                        </label>
-
-                        <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Execution target</div>
-                          <select
-                            value={createDraft.executionMode}
-                            onChange={(event) => setCreateDraft((prev) => ({ ...prev, executionMode: event.target.value as "local" | "relay" }))}
-                            className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                          >
-                            <option value="local">local machine</option>
-                            <option value="relay">relay machine (future)</option>
-                          </select>
-                        </label>
-                      </motion.div>
-
-                      <motion.div variants={staggerItem} className="mt-3 grid gap-3 md:grid-cols-[1fr_240px]">
-                        <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Mission prompt</div>
-                          <textarea
-                            value={createDraft.prompt}
-                            onChange={(event) => setCreateDraft((prev) => ({ ...prev, prompt: event.target.value }))}
-                            className="h-28 w-full resize-y rounded-lg border border-border/30 bg-muted/15 px-2 py-2 text-xs leading-relaxed text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                            placeholder="Example: prepare a PR-ready refactor for login flow, run tests, and summarize changes and risks."
-                          />
-                        </label>
-                        <div className="space-y-2">
-                          <label className="space-y-1">
-                            <div className="text-[11px] text-muted-fg">Planner engine</div>
-                            <select
-                              value={createDraft.plannerEngine}
-                              onChange={(event) =>
-                                setCreateDraft((prev) => ({
-                                  ...prev,
-                                  plannerEngine: event.target.value as MissionPlannerEngine
-                                }))
-                              }
-                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                            >
-                              {PLANNER_ENGINES.map((entry) => (
-                                <option key={entry.value} value={entry.value}>
-                                  {entry.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="space-y-1">
-                            <div className="text-[11px] text-muted-fg">Executor policy</div>
-                            <select
-                              value={createDraft.executorPolicy}
-                              onChange={(event) =>
-                                setCreateDraft((prev) => ({
-                                  ...prev,
-                                  executorPolicy: event.target.value as MissionExecutorPolicy
-                                }))
-                              }
-                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                            >
-                              {EXECUTOR_POLICIES.map((entry) => (
-                                <option key={entry.value} value={entry.value}>
-                                  {entry.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <div className="rounded-lg border border-border/25 bg-muted/20 p-2 text-[11px] text-muted-fg">
-                            {EXECUTOR_POLICIES.find((entry) => entry.value === createDraft.executorPolicy)?.description ??
-                              "ADE will route execution deterministically by policy."}
-                          </div>
-                          <label className="space-y-1">
-                            <div className="text-[11px] text-muted-fg">Orchestrator provider</div>
-                            <select
-                              value={createDraft.orchestratorProvider}
-                              onChange={(event) =>
-                                setCreateDraft((prev) => ({
-                                  ...prev,
-                                  orchestratorProvider: event.target.value as "claude" | "codex" | "auto"
-                                }))
-                              }
-                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                            >
-                              <option value="auto">Auto</option>
-                              <option value="claude">Claude (recommended)</option>
-                              <option value="codex">Codex</option>
-                            </select>
-                          </label>
-                          <label className="space-y-1">
-                            <div className="text-[11px] text-muted-fg">Planner mode</div>
-                            <select
-                              value={createDraft.plannerMode}
-                              onChange={(event) =>
-                                setCreateDraft((prev) => ({
-                                  ...prev,
-                                  plannerMode: event.target.value as "ai" | "deterministic" | "auto"
-                                }))
-                              }
-                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                            >
-                              <option value="auto">Auto</option>
-                              <option value="ai">AI Planning</option>
-                              <option value="deterministic">Deterministic</option>
-                            </select>
-                          </label>
-                          <label className="space-y-1">
-                            <div className="text-[11px] text-muted-fg">Target machine id (optional)</div>
-                            <input
-                              value={createDraft.targetMachineId}
-                              onChange={(event) => setCreateDraft((prev) => ({ ...prev, targetMachineId: event.target.value }))}
-                              className="h-9 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                              placeholder="machine-nyc-01"
-                            />
-                          </label>
-                          <label className="flex items-center gap-2 rounded-lg border border-border/25 bg-muted/20 px-2 py-1.5 text-[11px] text-fg">
-                            <input
-                              type="checkbox"
-                              checked={createDraft.autoStart}
-                              onChange={(event) => setCreateDraft((prev) => ({ ...prev, autoStart: event.target.checked }))}
-                              className="h-3.5 w-3.5"
-                            />
-                            Start mission immediately after creation
-                          </label>
-                          <label className="flex items-center gap-2 rounded-lg border border-border/25 bg-muted/20 px-2 py-1.5 text-[11px] text-fg">
-                            <input
-                              type="checkbox"
-                              checked={createDraft.allowPlanningQuestions}
-                              onChange={(event) =>
-                                setCreateDraft((prev) => ({ ...prev, allowPlanningQuestions: event.target.checked }))
-                              }
-                              className="h-3.5 w-3.5"
-                            />
-                            Allow planner follow-up questions during planning only
-                          </label>
-                          <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
-                            <Button
-                              variant="primary"
-                              className="w-full ade-btn-shimmer"
-                              onClick={() => void launchMission()}
-                              disabled={createBusy}
-                            >
-                              {createBusy ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Rocket className={cn("h-4 w-4 transition-transform", launchAnimating && "-translate-y-1")} />
-                              )}
-                              {createDraft.autoStart ? "Launch + Start mission" : "Launch mission"}
-                            </Button>
-                          </motion.div>
-                          <div className="rounded-lg border border-border/25 bg-muted/20 p-2 text-[11px] text-muted-fg">
-                            Launch can auto-start orchestrator runs and attach tracked terminal sessions in autopilot mode.
-                          </div>
-                        </div>
-                      </motion.div>
-                    </motion.div>
+                    <span>{error}</span>
+                    <button onClick={() => setError(null)} className="text-red-300 hover:text-red-100">
+                      <X className="h-3 w-3" />
+                    </button>
                   </motion.div>
                 )}
               </AnimatePresence>
-            </motion.div>
-          </motion.section>
 
-          {/* ════════════════════ STATUS BOARD + DETAIL ════════════════════ */}
-          {loading ? (
-            <motion.div
-              variants={staggerItem}
-              className="rounded border border-border/25 bg-card/55 p-6 text-sm text-muted-fg"
-            >
-              <Loader2 className="inline h-4 w-4 animate-spin mr-2" />
-              Loading missions...
-            </motion.div>
-          ) : missions.length === 0 ? (
-            <motion.div variants={staggerItem}>
-              <EmptyState
-                title="No missions yet"
-                description="Launch your first mission from the intake form to start automatic execution tracking with input requests only when needed."
-              />
-            </motion.div>
-          ) : (
-            <div className="space-y-4">
-              {/* ─── KANBAN BOARD ─── */}
-              <motion.section
-                variants={staggerItem}
-                className="rounded border border-border/30 bg-card/55 p-3 shadow-card"
-              >
-                <div className="mb-2 flex items-center justify-between gap-2 px-1">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-fg">
-                    <Route className="h-4 w-4 text-accent" />
-                    Mission Lanes
-                  </div>
-                  <div className="text-[11px] text-muted-fg">Select a mission for details</div>
-                </div>
-
-                <div className="overflow-x-auto pb-1">
-                  <motion.div
-                    className="flex min-w-max gap-3"
-                    variants={staggerContainerSlow}
-                    initial="initial"
-                    animate="animate"
+              {/* ── Tab Navigation ── */}
+              <div className="flex items-center gap-0.5 border-b border-border/20 bg-zinc-900/30 px-4">
+                {([
+                  { key: "board" as WorkspaceTab, label: "Board", icon: LayoutGrid },
+                  { key: "dag" as WorkspaceTab, label: "DAG", icon: Network },
+                  { key: "activity" as WorkspaceTab, label: "Activity", icon: Activity },
+                  { key: "transcript" as WorkspaceTab, label: "Transcript", icon: Terminal },
+                  { key: "chat" as WorkspaceTab, label: "Chat", icon: MessageSquare }
+                ]).map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setActiveTab(tab.key)}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium transition-colors border-b-2",
+                      activeTab === tab.key
+                        ? "border-accent text-fg"
+                        : "border-transparent text-muted-fg hover:text-fg"
+                    )}
                   >
-                    {STATUS_COLUMNS.map((column) => {
-                    const inColumn = missions.filter((mission) => mission.status === column.status);
-                    return (
-                      <motion.div
-                        key={column.status}
-                        variants={staggerItem}
-                        className="w-[260px] shrink-0 rounded border border-border/25 bg-card/45 overflow-hidden"
-                      >
-                          {/* Column header with accent bar */}
-                          <div
-                            className="border-b border-border/20 px-2 py-2"
-                            style={{ borderTop: `4px solid ${STATUS_ACCENT_COLORS[column.status]}` }}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <div className="text-xs font-semibold text-fg">{column.label}</div>
-                                <div className="text-[10px] text-muted-fg">{column.hint}</div>
-                              </div>
-                              <Chip className={cn("border px-1.5 py-0.5 text-[10px] ade-status-breathe", statusTone(column.status))}>
-                                {inColumn.length}
-                              </Chip>
-                            </div>
-                          </div>
+                    <tab.icon className="h-3.5 w-3.5" />
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
 
-                          <div className="space-y-2 p-2">
-                            {inColumn.length === 0 ? (
-                              <div className="rounded-lg border border-dashed border-border/25 bg-muted/10 px-2 py-3 text-center text-[11px] text-muted-fg ade-status-breathe">
-                                No missions
-                              </div>
-                            ) : (
-                              <motion.div
-                                className="space-y-2"
-                                variants={staggerContainer}
-                                initial="initial"
-                                animate="animate"
-                              >
-                                {inColumn.map((mission) => {
-                                  const active = mission.id === selectedMissionId;
-                                  const progressPct = mission.totalSteps > 0
-                                    ? Math.round((mission.completedSteps / mission.totalSteps) * 100)
-                                    : 0;
-                                  return (
-                                    <motion.button
-                                      key={mission.id}
-                                      variants={staggerItem}
-                                      whileHover={{ y: -2, boxShadow: "var(--shadow-card-hover)" }}
-                                      whileTap={{ scale: 0.98 }}
-                                      type="button"
-                                      onClick={() => setSelectedMissionId(mission.id)}
-                                      className={cn(
-                                        "w-full rounded-lg border-l-[3px] border border-border/25 px-2 py-2 text-left transition-all",
-                                        statusBorderColor(mission.status),
-                                        active
-                                          ? "border-r-accent/50 border-t-accent/50 border-b-accent/50 bg-accent/10 shadow-card-hover"
-                                          : "bg-card/55 hover:bg-muted/35"
-                                      )}
-                                    >
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="min-w-0">
-                                          <div className="truncate text-xs font-semibold text-fg">{mission.title}</div>
-                                          <div className="mt-0.5 truncate text-[10px] text-muted-fg">
-                                            {mission.laneName ?? "Any lane"}
-                                          </div>
-                                        </div>
-                                        <Chip
-                                          className={cn(
-                                            "shrink-0 border px-1.5 py-0.5 text-[10px]",
-                                            priorityTone(mission.priority),
-                                            mission.priority === "urgent" && "ade-glow-pulse",
-                                            mission.priority === "high" && "ade-status-breathe"
-                                          )}
-                                        >
-                                          {mission.priority}
-                                        </Chip>
-                                      </div>
-
-                                      {/* Progress bar */}
-                                      {mission.totalSteps > 0 && mission.status === "in_progress" && (
-                                        <div className="mt-2 h-1.5 w-full rounded-full bg-muted/30 overflow-hidden">
-                                          <div
-                                            className="h-full rounded-full transition-all duration-500"
-                                            style={{
-                                              width: `${progressPct}%`,
-                                              background: `linear-gradient(90deg, ${STATUS_ACCENT_COLORS.in_progress}, ${STATUS_ACCENT_COLORS.completed})`,
-                                              backgroundSize: "200% 100%",
-                                              animation: "ade-gradient-shift 2s linear infinite"
-                                            }}
-                                          />
-                                        </div>
-                                      )}
-
-                                      <div className="mt-2 flex items-center justify-between text-[10px] text-muted-fg">
-                                        <span>{relativeWhen(mission.updatedAt)}</span>
-                                        <span>
-                                          {mission.completedSteps}/{mission.totalSteps} steps
-                                        </span>
-                                      </div>
-                                      {mission.openInterventions > 0 ? (
-                                        <div className="mt-1 flex items-center gap-1 text-[10px] text-amber-300">
-                                          <TriangleAlert className="h-3 w-3" />
-                                          {mission.openInterventions} input request{mission.openInterventions === 1 ? "" : "s"}
-                                        </div>
-                                      ) : null}
-                                    </motion.button>
-                                  );
-                                })}
-                              </motion.div>
-                            )}
-                          </div>
-                      </motion.div>
-                    );
-                  })}
-                  </motion.div>
-                </div>
-              </motion.section>
-
-              {/* ─── DETAIL PANEL ─── */}
-              <AnimatePresence mode="wait">
-                <motion.section
-                  key={selectedMissionId ?? "empty"}
-                  variants={slideInRight}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  className="rounded border border-border/30 bg-card/55 p-3 shadow-card"
-                >
-                  {!selectedMissionSummary ? (
-                    <EmptyState title="Select a mission" description="Choose one from the board to view details." />
-                  ) : detailBusy || !selectedMission || selectedMission.id !== selectedMissionSummary.id ? (
-                    <div className="rounded border border-border/20 bg-card/40 p-4 text-xs text-muted-fg">
-                      <Loader2 className="inline h-3.5 w-3.5 animate-spin mr-1.5" />
-                      Loading mission detail...
+              {/* ── Tab Content ── */}
+              <div className={cn("flex-1 min-h-0", activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
+                {activeTab === "board" && (
+                  <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
+                    <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+                      <BoardTab
+                        stepsByStatus={stepsByStatus}
+                        attemptsByStep={attemptsByStep}
+                        selectedStepId={selectedStepId}
+                        onStepSelect={setSelectedStepId}
+                      />
                     </div>
-                  ) : (
-                    <motion.div
-                      className="space-y-3"
-                      variants={staggerContainer}
-                      initial="initial"
-                      animate="animate"
-                    >
-                      {runtimeLaneStrip.length > 0 ? (
-                        <motion.div variants={staggerItem} className="rounded border border-border/30 bg-card/50 p-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-fg">Active Lanes</div>
-                          <div className="mt-2 overflow-x-auto">
-                            <div className="flex min-w-max gap-2">
-                              {runtimeLaneStrip.map((entry) => (
-                                <button
-                                  key={entry.laneId}
-                                  type="button"
-                                  onClick={() => jumpToLane(entry.laneId)}
-                                  className="rounded-lg border border-border/25 bg-muted/10 px-2 py-1.5 text-left text-[10px] text-muted-fg transition-colors hover:border-accent/40 hover:bg-accent/5"
-                                >
-                                  <div className="truncate text-fg">{entry.laneName}</div>
-                                  <div className="mt-0.5">
-                                    steps {entry.stepCount} · running {entry.runningCount}
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        </motion.div>
-                      ) : null}
+                    <StepDetailPanel
+                      step={selectedStep}
+                      attempts={selectedStepAttempts}
+                      onOpenTranscript={() => setActiveTab("transcript")}
+                    />
+                  </div>
+                )}
 
-                      <motion.div variants={staggerItem} className="rounded border border-accent/30 bg-accent/5 p-3">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
-                            <div className="text-xs font-semibold text-fg">Mission Control</div>
-                            <div className="mt-1 text-[11px] text-muted-fg">
-                              {selectedMission.status === "intervention_required"
-                                ? `Needs input. ${openInterventions.length} input request${openInterventions.length === 1 ? "" : "s"} must be resolved.`
-                                : selectedMission.status === "plan_review"
-                                  ? "Mission plan is ready for review. Approve before execution begins."
-                                  : selectedMission.status === "planning"
-                                    ? "Mission planning is in progress. Step decomposition and routing are being prepared."
-                                : selectedMission.status === "in_progress"
-                                  ? "Mission is in progress. Runtime execution details are in Orchestrator Runtime below."
-                                  : selectedMission.status === "queued"
-                                    ? "Mission is queued and has not started runtime execution yet."
-                                    : selectedMission.status === "completed"
-                                      ? "Mission is marked completed. You can move it back to queued if you want to re-run."
-                                      : selectedMission.status === "failed"
-                                        ? "Mission failed. Check input requests and timeline for recovery context."
-                                        : "Mission is canceled. Requeue to run again."}
-                            </div>
-                          </div>
-                          <div className="rounded border border-border/30 bg-card/40 px-2 py-1 text-[10px] text-muted-fg">
-                            run attempts: {runGraph?.attempts.length ?? 0} · running: {runningAttemptCount}
-                          </div>
-                        </div>
-                        <div className="mt-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
-                          planner: {plannerSummary?.strategy ?? "deterministic_split"} ({plannerSummary?.version ?? "ade.missionPlanner.v1"}) ·
-                          run mode: {runAutopilotState.enabled ? `autopilot${runAutopilotState.executor ? `/${runAutopilotState.executor}` : ""}` : "manual"}
-                        </div>
-                        {plannerRunSummary ? (
-                          <div className="mt-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
-                            planner engine: {plannerRunSummary.requestedEngine} to {plannerRunSummary.resolvedEngine}
-                            {plannerRunSummary.degraded ? ` · degraded (${plannerRunSummary.reasonCode ?? "unknown_reason"})` : " · validated"}
-                            {plannerRunSummary.normalizedPlanHash ? ` · plan ${shortId(plannerRunSummary.normalizedPlanHash, 10)}` : ""}
-                          </div>
-                        ) : null}
-                        {runGraph ? (
-                          <div className="mt-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
-                            lanes touched: {runtimeLaneIds.length ? runtimeLaneIds.map((id) => shortId(id)).join(", ") : "none"} · snapshots:{" "}
-                            {runGraph.contextSnapshots.length} · handoffs: {runGraph.handoffs.length} · claims: {runGraph.claims.length}
-                          </div>
-                        ) : null}
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={openRunningTerminals}>
-                            <Terminal className="h-3.5 w-3.5" />
-                            View running terminals
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => navigate("/settings")}>
-                            Context inventory
-                          </Button>
-                        </div>
-                        {sessionAttempts.length > 0 ? (
-                          <div className="mt-2 space-y-2 rounded border border-border/20 bg-card/35 p-2 text-[10px] text-muted-fg">
-                            <div className="text-fg">Active/linked executor sessions</div>
-                            {sessionAttempts.slice(0, 6).map((entry) => {
-                              const tail = liveSessionTailById[entry.sessionId] ?? "";
-                              return (
-                                <div key={entry.attemptId} className="rounded border border-border/20 bg-muted/10 px-2 py-1.5">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="truncate">
-                                      {entry.executorKind} · {entry.stepTitle} · session {shortId(entry.sessionId)} · {entry.status}
-                                    </span>
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-6 px-2 text-[10px]"
-                                      onClick={() =>
-                                        navigate(
-                                          `/lanes?sessionId=${encodeURIComponent(entry.sessionId)}&inspectorTab=terminals`
-                                        )
-                                      }
-                                    >
-                                      Open
-                                    </Button>
-                                  </div>
-                                  {entry.status === "running" ? (
-                                    <pre className="mt-1 max-h-28 overflow-auto rounded border border-border/15 bg-card/40 p-1.5 font-mono text-[10px] leading-relaxed text-muted-fg">
-                                      {tail.trim().length > 0 ? tail : "Waiting for terminal output..."}
-                                    </pre>
-                                  ) : null}
-                                </div>
-                              );
-                            })}
-                            {liveSessionAttempts.length > 0 ? (
-                              <div className="text-[10px] text-muted-fg">
-                                Live streams: {liveSessionAttempts.length} running session{liveSessionAttempts.length === 1 ? "" : "s"} · refreshes every ~2.5s
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <div className="mt-2 rounded border border-dashed border-border/25 bg-card/30 px-2 py-1.5 text-[10px] text-muted-fg">
-                            No executor sessions attached yet. Start a run in autopilot mode to spawn tracked sessions.
-                          </div>
-                        )}
-                      </motion.div>
+                {activeTab === "dag" && (
+                  <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
+                    <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+                    <OrchestratorDAG
+                      steps={runGraph?.steps ?? []}
+                      attempts={runGraph?.attempts ?? []}
+                      onStepClick={setSelectedStepId}
+                    />
+                    </div>
+                    <StepDetailPanel
+                      step={selectedStep}
+                      attempts={selectedStepAttempts}
+                      onOpenTranscript={() => setActiveTab("transcript")}
+                    />
+                  </div>
+                )}
 
-                      {/* ── Info Card ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/65 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("info")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <span className="text-xs font-semibold text-fg">Mission Prompt & Metadata</span>
-                          <span className="text-[10px] text-muted-fg">{expandedSections.info ? "Collapse" : "Expand"}</span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.info && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <div className="truncate text-sm font-semibold text-fg">{selectedMission.title}</div>
-                                    <div className="mt-1 text-[11px] text-muted-fg">{selectedMission.prompt}</div>
-                                  </div>
-                                  <Chip className={cn("border px-2 py-0.5 text-[10px]", statusTone(selectedMission.status))}>
-                                    {selectedMission.status}
-                                  </Chip>
-                                </div>
+                {activeTab === "activity" && (
+                  <div className="space-y-3">
+                    <ActivityNarrativeHeader
+                      runGraph={runGraph}
+                      steeringLog={steeringLog}
+                    />
+                    <OrchestratorActivityFeed
+                      runId={runGraph?.run.id ?? ""}
+                      initialTimeline={runGraph?.timeline ?? []}
+                    />
+                  </div>
+                )}
 
-                                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-fg">
-                                  <div className="rounded-lg border border-border/20 bg-muted/15 px-2 py-1.5">
-                                    <span className="text-[10px] uppercase tracking-wide">Lane</span>
-                                    <div className="mt-0.5 text-fg">{selectedMission.laneName ?? "Any lane"}</div>
-                                  </div>
-                                  <div className="rounded-lg border border-border/20 bg-muted/15 px-2 py-1.5">
-                                    <span className="text-[10px] uppercase tracking-wide">Execution</span>
-                                    <div className="mt-0.5 text-fg">
-                                      {selectedMission.executionMode}
-                                      {selectedMission.targetMachineId ? ` · ${selectedMission.targetMachineId}` : ""}
-                                    </div>
-                                  </div>
-                                  <div className="rounded-lg border border-border/20 bg-muted/15 px-2 py-1.5">
-                                    <span className="text-[10px] uppercase tracking-wide">Created</span>
-                                    <div className="mt-0.5 text-fg">{formatWhen(selectedMission.createdAt)}</div>
-                                  </div>
-                                  <div className="rounded-lg border border-border/20 bg-muted/15 px-2 py-1.5">
-                                    <span className="text-[10px] uppercase tracking-wide">Completed</span>
-                                    <div className="mt-0.5 text-fg">{formatWhen(selectedMission.completedAt)}</div>
-                                  </div>
-                                </div>
+                {activeTab === "transcript" && (
+                  <WorkerTranscriptPane
+                    attempts={runGraph?.attempts ?? []}
+                    steps={runGraph?.steps}
+                  />
+                )}
 
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {(selectedMission.status === "failed" ||
-                                    selectedMission.status === "completed" ||
-                                    selectedMission.status === "canceled") ? (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      title="Move mission back to queued so it can be started again."
-                                      disabled={missionActionBusy}
-                                      onClick={() => void updateMissionStatus("queued")}
-                                    >
-                                      {missionActionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                                      Move to queued
-                                    </Button>
-                                  ) : null}
+                {activeTab === "chat" && selectedMissionId && (
+                  <MissionChat missionId={selectedMissionId} />
+                )}
+              </div>
 
-                                  <Button size="sm" variant="ghost" onClick={() => jumpToLane(selectedMission.laneId)} disabled={!selectedMission.laneId}>
-                                    <Waypoints className="h-3.5 w-3.5" />
-                                    Open lane workspace
-                                  </Button>
-                                  <Button size="sm" variant="ghost" disabled={missionActionBusy} onClick={() => void deleteMission()}>
-                                    Delete mission
-                                  </Button>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-
-                      {/* ── Outcome Summary ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("outcome")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 text-xs font-semibold text-fg">
-                            <CheckCircle2 className="h-3.5 w-3.5 text-accent" />
-                            Outcome / Operator Notes
-                          </div>
-                          <span className="text-[10px] text-muted-fg">{expandedSections.outcome ? "Collapse" : "Expand"}</span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.outcome && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3">
-                                <textarea
-                                  value={outcomeDraft}
-                                  onChange={(event) => setOutcomeDraft(event.target.value)}
-                                  className="h-20 w-full resize-y rounded-lg border border-border/30 bg-muted/15 px-2 py-1.5 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20 focus:shadow-[0_0_8px_var(--color-glow)]"
-                                  placeholder="Optional. Capture what shipped, validations run, follow-ups, or handoff notes."
-                                />
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  <Button size="sm" variant="outline" disabled={outcomeBusy} onClick={() => void saveOutcome()}>
-                                    {outcomeBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Clock3 className="h-3.5 w-3.5" />}
-                                    Save notes
-                                  </Button>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-
-                      {/* ── Mission Plan Steps (vertical timeline) ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("steps")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <span className="text-xs font-semibold text-fg">Mission Plan Steps</span>
-                          <span className="text-[10px] text-muted-fg">
-                            {selectedMission.steps.length} step{selectedMission.steps.length !== 1 ? "s" : ""}
-                          </span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.steps && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3">
-                                <div className="mb-2 rounded border border-border/20 bg-card/35 px-2 py-1.5 text-[10px] text-muted-fg">
-                                  These are planning steps generated from your mission prompt. Runtime execution state lives in{" "}
-                                  <span className="text-fg">Orchestrator Runtime</span>.
-                                </div>
-                                <div className="relative">
-                                  {/* Vertical timeline line */}
-                                  {selectedMission.steps.length > 1 && (
-                                    <div className="absolute left-[7px] top-3 bottom-3 w-[2px] bg-border/30" />
-                                  )}
-                                  <div className="space-y-3">
-                                    {selectedMission.steps.map((step) => {
-                                      const dependencyIndices = Array.isArray(step.metadata?.dependencyIndices)
-                                        ? step.metadata.dependencyIndices
-                                            .map((value) => Number(value))
-                                            .filter((value) => Number.isFinite(value))
-                                            .map((value) => Math.floor(value) + 1)
-                                        : [];
-                                      const doneCriteria =
-                                        typeof step.metadata?.doneCriteria === "string" ? step.metadata.doneCriteria : null;
-                                      const joinPolicy =
-                                        typeof step.metadata?.joinPolicy === "string" ? step.metadata.joinPolicy : null;
-                                      const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : step.kind;
-
-                                      return (
-                                        <div key={step.id} className="relative flex gap-3">
-                                          <div className="relative z-10 mt-1 flex-shrink-0">
-                                            <div
-                                              className={cn(
-                                                "h-4 w-4 rounded-full border-2 border-card/60",
-                                                stepDotColor(step.status),
-                                                step.status === "running" && "ade-glow-pulse"
-                                              )}
-                                            />
-                                          </div>
-                                          <div className="flex-1 rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
-                                            <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-fg">
-                                              {stepType}
-                                              {joinPolicy ? ` · join=${joinPolicy}` : ""}
-                                              {dependencyIndices.length ? ` · depends on step ${dependencyIndices.join(", ")}` : ""}
-                                            </div>
-                                            <div className="mb-1 text-[10px] text-muted-fg">{step.detail || "Deterministic planner step."}</div>
-                                            {doneCriteria ? (
-                                              <div className="mb-1 rounded border border-border/15 bg-card/35 px-1.5 py-1 text-[10px] text-muted-fg">
-                                                done when: {doneCriteria}
-                                              </div>
-                                            ) : null}
-                                            <div className="flex items-start justify-between gap-2">
-                                              <div className="min-w-0">
-                                                <div className="truncate text-xs font-medium text-fg">
-                                                  {step.index + 1}. {step.title}
-                                                </div>
-                                              </div>
-                                              <Chip className={cn("border px-1.5 py-0.5 text-[10px]", stepTone(step.status))}>{step.status}</Chip>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-
-                      {/* ── Orchestrator Runtime ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("orchestrator")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 text-xs font-semibold text-fg">
-                            <Route className="h-3.5 w-3.5 text-accent" />
-                            Orchestrator Runtime
-                          </div>
-                          <span className="text-[10px] text-muted-fg">
-                            {runGraph ? `run ${runGraph.run.status}` : "no run"}
-                          </span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.orchestrator && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3 space-y-2">
-                                <div className="rounded-lg border border-border/20 bg-card/35 px-2 py-2 text-[10px] text-muted-fg">
-                                  Autopilot is the default runtime mode. ADE schedules runnable steps automatically from the deterministic
-                                  plan and only requests intervention when explicitly blocked.
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  <Button size="sm" variant="outline" disabled={runBusy || !canStartOrRerun} onClick={() => void startOrchestratorRun()}>
-                                    {runBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                                    {runGraph
-                                      ? "Rerun mission"
-                                      : selectedMission.status === "plan_review"
-                                        ? "Approve plan & start"
-                                        : "Start run"}
-                                  </Button>
-                                  <Button size="sm" variant="ghost" disabled={runBusy || !canCancelRun} onClick={() => void cancelRun()}>
-                                    Cancel
-                                  </Button>
-                                  <Button size="sm" variant="ghost" disabled={runBusy || !canResumeRun} onClick={() => void resumeRun()}>
-                                    Resume
-                                  </Button>
-                                  <Button size="sm" variant="ghost" onClick={openRunningTerminals}>
-                                    View terminals
-                                  </Button>
-                                </div>
-                                {!runGraph ? (
-                                  <div className="rounded-lg border border-dashed border-border/25 bg-muted/10 px-2 py-3 text-center text-[11px] text-muted-fg">
-                                    No orchestrator run yet for this mission.
-                                  </div>
-                                ) : (
-                                  <div className="space-y-2">
-                                    <div className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2 text-[11px] text-muted-fg">
-                                      <div>run: {runGraph.run.id}</div>
-                                      <div>status: {runGraph.run.status} · profile: {runGraph.run.contextProfile}</div>
-                                      <div>steps: {runGraph.steps.length} · attempts: {runGraph.attempts.length} · claims: {runGraph.claims.length}</div>
-                                    </div>
-                                    {runGraph.attempts.length === 0 ? (
-                                      <div className="rounded border border-dashed border-border/20 bg-card/30 px-2 py-2 text-[10px] text-muted-fg">
-                                        No attempts started yet.
-                                      </div>
-                                    ) : null}
-                                    <div className="space-y-2">
-                                      {runGraph.steps
-                                        .slice()
-                                        .sort((a, b) => a.stepIndex - b.stepIndex)
-                                        .map((step) => {
-                                          const attempts = attemptsByStep.get(step.id) ?? [];
-                                          const latestAttempt = attempts[0] ?? null;
-                                          return (
-                                            <div key={step.id} className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
-                                              <div className="flex items-center justify-between gap-2">
-                                                <div className="text-[11px] text-fg">
-                                                  {step.stepIndex + 1}. {step.title}
-                                                </div>
-                                                <Chip className={cn("border px-1.5 py-0.5 text-[10px]", step.status === "succeeded" ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" : step.status === "failed" ? "text-red-300 border-red-500/40 bg-red-500/10" : step.status === "running" ? "text-violet-300 border-violet-500/40 bg-violet-500/10" : step.status === "blocked" ? "text-amber-300 border-amber-500/40 bg-amber-500/10" : "text-sky-300 border-sky-500/40 bg-sky-500/10")}>
-                                                  {step.status}
-                                                </Chip>
-                                              </div>
-                                              <div className="mt-1 text-[10px] text-muted-fg">
-                                                attempts: {attempts.length}
-                                                {latestAttempt ? ` · latest #${latestAttempt.attemptNumber} (${latestAttempt.status})` : ""}
-                                              </div>
-                                              {latestAttempt ? (
-                                                <div className="mt-1 text-[10px] text-muted-fg">
-                                                  executor: {latestAttempt.executorKind}
-                                                  {latestAttempt.executorSessionId
-                                                    ? ` · session ${shortId(latestAttempt.executorSessionId)}`
-                                                    : " · session not attached"}
-                                                </div>
-                                              ) : null}
-                                              {latestAttempt?.executorSessionId ? (
-                                                <div className="mt-2">
-                                                  <Button
-                                                    size="sm"
-                                                    variant="ghost"
-                                                    className="h-7 px-2 text-[11px]"
-                                                    onClick={() =>
-                                                      navigate(
-                                                        `/lanes?sessionId=${encodeURIComponent(latestAttempt.executorSessionId!)}&inspectorTab=terminals`
-                                                      )
-                                                    }
-                                                  >
-                                                    Open terminal
-                                                  </Button>
-                                                </div>
-                                              ) : null}
-                                            </div>
-                                          );
-                                        })}
-                                    </div>
-                                    <div className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2 text-[10px] text-muted-fg">
-                                      <div className="font-medium text-fg">Timeline</div>
-                                      {runGraph.timeline.length === 0 ? (
-                                        <div className="mt-1">No timeline events yet.</div>
-                                      ) : (
-                                        runGraph.timeline.slice(0, 6).map((entry) => (
-                                          <div key={entry.id} className="mt-1">
-                                            {entry.createdAt} · {entry.eventType} · {entry.reason}
-                                          </div>
-                                        ))
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-
-                      {/* ── Input Requests ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("interventions")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 text-xs font-semibold text-fg">
-                            <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />
-                            Input Requests
-                          </div>
-                          <span className="text-[10px] text-muted-fg">
-                            {selectedMission.interventions.filter((i) => i.status === "open").length} open
-                          </span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.interventions && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3 space-y-2">
-                                {selectedMission.interventions.length === 0 ? (
-                                  <div className="rounded-lg border border-dashed border-border/25 bg-muted/10 px-2 py-3 text-center text-[11px] text-muted-fg">
-                                    No input requests.
-                                  </div>
-                                ) : (
-                                  selectedMission.interventions.map((intervention) => (
-                                    <div
-                                      key={intervention.id}
-                                      className={cn(
-                                        "rounded-lg border border-border/20 bg-muted/10 px-2 py-2 border-l-[3px]",
-                                        intervention.status === "open" ? "border-l-amber-400" : "border-l-emerald-400"
-                                      )}
-                                    >
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="min-w-0">
-                                          <div className="truncate text-xs font-medium text-fg">{intervention.title}</div>
-                                          <div className="mt-0.5 text-[10px] text-muted-fg">{intervention.body}</div>
-                                        </div>
-                                        <Chip className={cn("border px-1.5 py-0.5 text-[10px]", interventionTone(intervention.status))}>
-                                          {intervention.status}
-                                        </Chip>
-                                      </div>
-                                      {intervention.status === "open" ? (
-                                        <div className="mt-2 flex gap-1.5">
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="h-7 px-2 text-[11px]"
-                                            disabled={interventionBusy}
-                                            onClick={() => void resolveIntervention(intervention.id, "resolved")}
-                                          >
-                                            Resolve
-                                          </Button>
-                                          <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            className="h-7 px-2 text-[11px]"
-                                            disabled={interventionBusy}
-                                            onClick={() => void resolveIntervention(intervention.id, "dismissed")}
-                                          >
-                                            Dismiss
-                                          </Button>
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  ))
-                                )}
-
-                                <div className="mt-3 rounded-lg border border-border/20 bg-card/50 p-2">
-                                  <div className="text-[11px] font-medium text-fg">Add input request</div>
-                                  <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                                    <select
-                                      value={interventionDraft.interventionType}
-                                      onChange={(event) =>
-                                        setInterventionDraft((prev) => ({
-                                          ...prev,
-                                          interventionType: event.target.value as InterventionDraft["interventionType"]
-                                        }))
-                                      }
-                                      className="h-8 rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                    >
-                                      <option value="manual_input">manual_input</option>
-                                      <option value="approval_required">approval_required</option>
-                                      <option value="conflict">conflict</option>
-                                      <option value="policy_block">policy_block</option>
-                                      <option value="failed_step">failed_step</option>
-                                    </select>
-                                    <input
-                                      value={interventionDraft.title}
-                                      onChange={(event) => setInterventionDraft((prev) => ({ ...prev, title: event.target.value }))}
-                                      className="h-8 rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                      placeholder="Intervention title"
-                                    />
-                                  </div>
-                                  <textarea
-                                    value={interventionDraft.body}
-                                    onChange={(event) => setInterventionDraft((prev) => ({ ...prev, body: event.target.value }))}
-                                    className="mt-2 h-16 w-full rounded-lg border border-border/30 bg-muted/15 px-2 py-1.5 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                    placeholder="Describe the decision or input needed."
-                                  />
-                                  <div className="mt-2">
-                                    <Button size="sm" variant="outline" disabled={interventionBusy} onClick={() => void addIntervention()}>
-                                      {interventionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                                      Add input request
-                                    </Button>
-                                  </div>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-
-                      {/* ── Artifacts & PRs ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("artifacts")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 text-xs font-semibold text-fg">
-                            <GitPullRequest className="h-3.5 w-3.5 text-accent" />
-                            Artifacts & PRs
-                          </div>
-                          <span className="text-[10px] text-muted-fg">{selectedMission.artifacts.length} recorded</span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.artifacts && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3">
-                                <div className="space-y-2">
-                                  {selectedMission.artifacts.length === 0 ? (
-                                    <div className="rounded-lg border border-dashed border-border/25 bg-muted/10 px-2 py-3 text-center text-[11px] text-muted-fg">
-                                      No artifacts recorded yet.
-                                    </div>
-                                  ) : (
-                                    selectedMission.artifacts.map((artifact) => (
-                                      <div key={artifact.id} className="rounded-lg border border-border/20 bg-muted/10 px-2 py-2">
-                                        <div className="flex items-start justify-between gap-2">
-                                          <div className="min-w-0">
-                                            <div className="truncate text-xs font-medium text-fg">{artifact.title}</div>
-                                            <div className="mt-0.5 text-[10px] text-muted-fg">{artifact.description || artifact.uri || "No details"}</div>
-                                          </div>
-                                          <Chip className="border border-border/30 px-1.5 py-0.5 text-[10px]">{artifact.artifactType}</Chip>
-                                        </div>
-                                        {artifact.uri ? (
-                                          <div className="mt-2">
-                                            <button
-                                              type="button"
-                                              className="group inline-flex items-center gap-1 text-[11px] text-accent hover:text-accent/80 transition-colors"
-                                              onClick={() => void openArtifact(artifact.uri)}
-                                            >
-                                              <Link2 className="h-3 w-3" />
-                                              <span className="relative">
-                                                {artifact.artifactType === "pr" ? "Open PR" : "Open link"}
-                                                <span className="absolute bottom-0 left-0 w-0 h-[1px] bg-accent transition-all duration-200 group-hover:w-full" />
-                                              </span>
-                                            </button>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    ))
-                                  )}
-                                </div>
-
-                                <div className="mt-3 rounded-lg border border-border/20 bg-card/50 p-2">
-                                  <div className="text-[11px] font-medium text-fg">Add artifact</div>
-                                  <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                                    <select
-                                      value={artifactDraft.artifactType}
-                                      onChange={(event) =>
-                                        setArtifactDraft((prev) => ({
-                                          ...prev,
-                                          artifactType: event.target.value as ArtifactDraft["artifactType"]
-                                        }))
-                                      }
-                                      className="h-8 rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                    >
-                                      <option value="pr">pr</option>
-                                      <option value="link">link</option>
-                                      <option value="summary">summary</option>
-                                      <option value="note">note</option>
-                                      <option value="patch">patch</option>
-                                    </select>
-                                    <input
-                                      value={artifactDraft.title}
-                                      onChange={(event) => setArtifactDraft((prev) => ({ ...prev, title: event.target.value }))}
-                                      className="h-8 rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                      placeholder="Artifact title"
-                                    />
-                                  </div>
-                                  <input
-                                    value={artifactDraft.uri}
-                                    onChange={(event) => setArtifactDraft((prev) => ({ ...prev, uri: event.target.value }))}
-                                    className="mt-2 h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                    placeholder="https://github.com/.../pull/123"
-                                  />
-                                  <textarea
-                                    value={artifactDraft.description}
-                                    onChange={(event) => setArtifactDraft((prev) => ({ ...prev, description: event.target.value }))}
-                                    className="mt-2 h-14 w-full rounded-lg border border-border/30 bg-muted/15 px-2 py-1.5 text-xs text-fg outline-none transition-all duration-200 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
-                                    placeholder="Optional notes about this artifact"
-                                  />
-                                  <div className="mt-2 flex gap-2">
-                                    <Button size="sm" variant="outline" disabled={artifactBusy} onClick={() => void addArtifact()}>
-                                      {artifactBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                                      Add artifact
-                                    </Button>
-                                    <Button size="sm" variant="ghost" onClick={() => navigate("/prs")}>
-                                      <GitPullRequest className="h-3.5 w-3.5" />
-                                      View PR lane
-                                    </Button>
-                                  </div>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-
-                      {/* ── Mission Timeline ── */}
-                      <motion.div variants={staggerItem} className="rounded border border-border/25 bg-card/60 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => toggleSection("timeline")}
-                          className="flex w-full items-center justify-between p-3 text-left hover:bg-muted/10 transition-colors"
-                        >
-                          <span className="text-xs font-semibold text-fg">Mission Timeline</span>
-                          <span className="text-[10px] text-muted-fg">
-                            {selectedMission.events.length} event{selectedMission.events.length !== 1 ? "s" : ""}
-                          </span>
-                        </button>
-                        <AnimatePresence>
-                          {expandedSections.timeline && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: "auto", opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={easeOut150}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-3 pb-3">
-                                <div className="max-h-56 space-y-1 overflow-auto pr-1">
-                                  {selectedMission.events.length === 0 ? (
-                                    <div className="text-[11px] text-muted-fg">No events yet.</div>
-                                  ) : (
-                                    selectedMission.events.map((event) => (
-                                      <div key={event.id} className="rounded-lg border border-border/15 bg-muted/10 px-2 py-1.5">
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="truncate text-[11px] font-medium text-fg">{event.summary}</div>
-                                          <div className="text-[10px] text-muted-fg">{relativeWhen(event.createdAt)}</div>
-                                        </div>
-                                        <div className="mt-0.5 text-[10px] text-muted-fg">
-                                          {event.eventType} · {event.actor}
-                                        </div>
-                                      </div>
-                                    ))
-                                  )}
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-                    </motion.div>
+              {/* ── Bottom Steering Bar (hidden on Chat tab since chat subsumes steering) ── */}
+              {isActiveMission && activeTab !== "chat" && (
+                <div className="border-t border-border/20 bg-zinc-900/60 px-4 py-2.5">
+                  {steerAck && (
+                    <div className="mb-2 rounded border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] text-emerald-300 flex items-center justify-between">
+                      <span>{steerAck}</span>
+                      <button onClick={() => setSteerAck(null)} className="text-emerald-300 hover:text-emerald-100">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
                   )}
-                </motion.section>
-              </AnimatePresence>
-            </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={steerInput}
+                      onChange={(e) => setSteerInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSteer(); } }}
+                      placeholder="Type a directive to steer this mission..."
+                      className="h-8 flex-1 rounded-lg border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+                    />
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => void handleSteer()}
+                      disabled={steerBusy || !steerInput.trim()}
+                    >
+                      {steerBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                      Send
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
-        </motion.div>
+        </div>
       </div>
+
+      {/* ════════════ CREATE DIALOG ════════════ */}
+      <AnimatePresence>
+        {createOpen && (
+          <CreateMissionDialog
+            open={createOpen}
+            onClose={() => setCreateOpen(false)}
+            onLaunch={handleLaunchMission}
+            busy={createBusy}
+            lanes={lanes.map((l) => ({ id: l.id, name: l.name }))}
+            defaultDepthTier={missionSettingsDraft.defaultDepthTier}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ════════════ MISSION SETTINGS DIALOG ════════════ */}
+      <AnimatePresence>
+        {missionSettingsOpen && (
+          <MissionSettingsDialog
+            open={missionSettingsOpen}
+            onClose={() => {
+              if (missionSettingsBusy) return;
+              setMissionSettingsOpen(false);
+            }}
+            draft={missionSettingsDraft}
+            onDraftChange={(update) => setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
+            onSave={() => void saveMissionSettings()}
+            busy={missionSettingsBusy}
+            error={missionSettingsError}
+            notice={missionSettingsNotice}
+          />
+        )}
+      </AnimatePresence>
     </LazyMotion>
   );
 }
+
+/* ════════════════════ ACTIVITY NARRATIVE HEADER ════════════════════ */
+
+function ActivityNarrativeHeader({
+  runGraph,
+  steeringLog
+}: {
+  runGraph: OrchestratorRunGraph | null;
+  steeringLog: SteeringEntry[];
+}) {
+  if (!runGraph) {
+    return (
+      <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-3 text-center">
+        <div className="text-[11px] text-muted-fg">No orchestrator run yet. Start a run to see activity.</div>
+      </div>
+    );
+  }
+
+  const steps = runGraph.steps;
+  const totalSteps = steps.length;
+  const succeededCount = steps.filter((s) => s.status === "succeeded").length;
+  const runningCount = steps.filter((s) => s.status === "running").length;
+  const pendingCount = steps.filter((s) => s.status === "pending" || s.status === "ready" || s.status === "blocked").length;
+  const failedCount = steps.filter((s) => s.status === "failed").length;
+  const skippedCount = steps.filter((s) => s.status === "skipped").length;
+
+  // Determine active workers (unique executor kinds from running attempts)
+  const runningAttempts = runGraph.attempts.filter((a) => a.status === "running");
+  const activeExecutorKinds = [...new Set(runningAttempts.map((a) => a.executorKind))];
+  const activeAgentCount = runningAttempts.length;
+
+  // Build progress string: "3/5 steps done * 1 running * 1 pending"
+  const progressParts: string[] = [];
+  progressParts.push(`${succeededCount}/${totalSteps} steps done`);
+  if (runningCount > 0) progressParts.push(`${runningCount} running`);
+  if (pendingCount > 0) progressParts.push(`${pendingCount} pending`);
+  if (failedCount > 0) progressParts.push(`${failedCount} failed`);
+  if (skippedCount > 0) progressParts.push(`${skippedCount} skipped`);
+  const progressLine = progressParts.join(" \u2022 ");
+
+  // Active workers line
+  const workersLine = activeAgentCount > 0
+    ? `${activeAgentCount} agent${activeAgentCount !== 1 ? "s" : ""} active (${activeExecutorKinds.join(", ")})`
+    : "No agents currently active";
+
+  // Last meaningful action from timeline
+  const timeline = runGraph.timeline;
+  const latestMeaningful = timeline.find(
+    (ev) => ev.eventType !== "claim_heartbeat" && ev.eventType !== "context_pack_bootstrap"
+  );
+  const lastActionLine = latestMeaningful
+    ? `Last: ${narrativeForEvent(latestMeaningful)}`
+    : null;
+
+  // Recent narrative lines from the timeline (top 5 most recent non-heartbeat events)
+  const recentEvents = timeline
+    .filter((ev) => ev.eventType !== "claim_heartbeat")
+    .slice(0, 5);
+  const narrativeLines = narrativeSummary(recentEvents, steeringLog);
+
+  return (
+    <div className="space-y-2">
+      {/* Progress summary card */}
+      <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-2.5">
+        <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wider mb-2">Mission Progress</div>
+
+        {/* Progress bar */}
+        {totalSteps > 0 && (
+          <div className="mb-2">
+            <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-zinc-700">
+              {succeededCount > 0 && (
+                <div
+                  className="bg-emerald-500 transition-all"
+                  style={{ width: `${(succeededCount / totalSteps) * 100}%` }}
+                />
+              )}
+              {runningCount > 0 && (
+                <div
+                  className="bg-violet-500 transition-all"
+                  style={{ width: `${(runningCount / totalSteps) * 100}%` }}
+                />
+              )}
+              {failedCount > 0 && (
+                <div
+                  className="bg-red-500 transition-all"
+                  style={{ width: `${(failedCount / totalSteps) * 100}%` }}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-1">
+          <div className="flex items-center gap-1.5 text-[11px] text-fg/90">
+            <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0" />
+            <span>{progressLine}</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px] text-fg/80">
+            <Bot className="h-3 w-3 text-violet-400 shrink-0" />
+            <span>{workersLine}</span>
+          </div>
+          {lastActionLine && (
+            <div className="flex items-center gap-1.5 text-[11px] text-fg/70">
+              <Zap className="h-3 w-3 text-amber-400 shrink-0" />
+              <span className="truncate">{lastActionLine}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Narrative feed card */}
+      {(narrativeLines.length > 0 || steeringLog.length > 0) && (
+        <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-2.5">
+          <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wider mb-1.5">Recent Activity</div>
+          <div className="space-y-1">
+            {/* Show steering directives first */}
+            {steeringLog.map((d, i) => (
+              <div key={`steer-${i}`} className="flex items-start gap-2">
+                <MessageSquare className="h-3 w-3 text-cyan-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-[11px] text-cyan-300">User directive: {d.directive}</span>
+                  <span className="ml-2 text-[10px] text-muted-fg">{relativeWhen(d.appliedAt)}</span>
+                </div>
+              </div>
+            ))}
+            {/* Show recent timeline events with icons */}
+            {recentEvents.map((ev, i) => {
+              const Icon = iconForEventType(ev.eventType);
+              const color = iconColorForEventType(ev.eventType, ev.reason);
+              return (
+                <div key={`ev-${ev.id ?? i}`} className="flex items-start gap-2">
+                  <Icon className={cn("h-3 w-3 shrink-0 mt-0.5", color)} />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[11px] text-fg/80">{narrativeForEvent(ev)}</span>
+                    <span className="ml-2 text-[10px] text-muted-fg">{relativeWhen(ev.createdAt)}</span>
+                  </div>
+                </div>
+              );
+            })}
+            {narrativeLines.length === 0 && steeringLog.length === 0 && (
+              <div className="text-[11px] text-muted-fg">Processing events...</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════ STEP DETAIL PANEL ════════════════════ */
+
+function StepDetailPanel({
+  step,
+  attempts,
+  onOpenTranscript
+}: {
+  step: OrchestratorStep | null;
+  attempts: OrchestratorAttempt[];
+  onOpenTranscript: () => void;
+}) {
+  if (!step) {
+    return (
+      <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[300px] lg:shrink-0">
+        <div className="text-[11px] font-semibold text-fg">Step Details</div>
+        <p className="mt-2 text-[11px] text-muted-fg">Select a card in Board or a node in DAG to inspect worker progress.</p>
+      </aside>
+    );
+  }
+
+  const latestAttempt = attempts[0] ?? null;
+  const meta = isRecord(step.metadata) ? step.metadata : {};
+  const stepType = typeof meta.stepType === "string" ? meta.stepType : "unknown";
+
+  return (
+    <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[300px] lg:shrink-0">
+      <div className="flex items-center justify-between">
+        <div className="text-[11px] font-semibold text-fg">Step Details</div>
+        <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium", STEP_STATUS_COLORS[step.status] ?? "bg-muted/20 text-muted-fg")}>
+          {step.status}
+        </span>
+      </div>
+
+      <div className="mt-2">
+        <div className="text-xs font-medium text-fg">{step.title}</div>
+        <div className="mt-1 text-[10px] text-muted-fg leading-snug">{stepIntentSummary(step)}</div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+          <div className="text-muted-fg">Key</div>
+          <div className="font-medium text-fg">{step.stepKey}</div>
+        </div>
+        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+          <div className="text-muted-fg">Type</div>
+          <div className="font-medium text-fg">{stepType}</div>
+        </div>
+        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+          <div className="text-muted-fg">Attempts</div>
+          <div className="font-medium text-fg">{attempts.length}</div>
+        </div>
+        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+          <div className="text-muted-fg">Dependencies</div>
+          <div className="font-medium text-fg">{step.dependencyStepIds.length}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px]">
+        <div className="text-muted-fg">Latest Worker Attempt</div>
+        {latestAttempt ? (
+          <div className="mt-1 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-fg">Executor</span>
+              <span className={cn(
+                "rounded px-1 py-0.5 text-[9px] font-medium",
+                EXECUTOR_BADGE_CLASSES[latestAttempt.executorKind] ?? "bg-muted/20 text-muted-fg"
+              )}>
+                {latestAttempt.executorKind}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-fg">Status</span>
+              <span className="text-fg">{latestAttempt.status}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-fg">Started</span>
+              <span className="text-fg">{latestAttempt.startedAt ? relativeWhen(latestAttempt.startedAt) : "--"}</span>
+            </div>
+            {latestAttempt.errorMessage && (
+              <div className="rounded border border-red-500/25 bg-red-500/10 px-1.5 py-1 text-red-300">
+                {compactText(latestAttempt.errorMessage, 160)}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="mt-1 text-muted-fg">No attempt has started yet.</div>
+        )}
+      </div>
+
+      <button
+        onClick={onOpenTranscript}
+        className="mt-3 w-full rounded border border-border/30 bg-zinc-900/60 px-2 py-1.5 text-[10px] font-medium text-fg transition-colors hover:bg-zinc-800/80"
+      >
+        Open Worker Transcript
+      </button>
+    </aside>
+  );
+}
+
+/* ════════════════════ BOARD TAB ════════════════════ */
+
+function BoardTab({
+  stepsByStatus,
+  attemptsByStep,
+  selectedStepId,
+  onStepSelect
+}: {
+  stepsByStatus: Map<MissionStepStatus, OrchestratorStep[]>;
+  attemptsByStep: Map<string, OrchestratorAttempt[]>;
+  selectedStepId: string | null;
+  onStepSelect: (stepId: string) => void;
+}) {
+  const hasAnySteps = Array.from(stepsByStatus.values()).some((arr) => arr.length > 0);
+
+  if (!hasAnySteps) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-muted-fg">
+        <LayoutGrid className="h-8 w-8 opacity-20 mb-2" />
+        <p className="text-[11px]">No steps yet. Start a run to see the board.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-2">
+      {STEP_STATUS_COLUMNS.map((col) => {
+        const steps = stepsByStatus.get(col.status) ?? [];
+        return (
+          <div
+            key={col.status}
+            className="w-[220px] shrink-0 rounded-lg border border-border/20 bg-zinc-800/30"
+          >
+            {/* Column header */}
+            <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
+              <span className="text-[11px] font-semibold text-fg">{col.label}</span>
+              <span className={cn(
+                "rounded-full px-1.5 py-0.5 text-[9px] font-medium",
+                steps.length > 0 ? "bg-accent/15 text-accent" : "bg-muted/10 text-muted-fg"
+              )}>
+                {steps.length}
+              </span>
+            </div>
+
+            {/* Step cards */}
+            <div className="space-y-1.5 p-2">
+              {steps.length === 0 && (
+                <div className="px-2 py-3 text-center text-[10px] text-muted-fg/50">Empty</div>
+              )}
+              {steps.map((step) => {
+                const attempts = attemptsByStep.get(step.id) ?? [];
+                const latestAttempt = attempts[0];
+                const duration = step.startedAt
+                  ? step.completedAt
+                    ? `${Math.round((Date.parse(step.completedAt) - Date.parse(step.startedAt)) / 1000)}s`
+                    : "running..."
+                  : "--";
+
+                return (
+                  <div
+                    key={step.id}
+                    onClick={() => onStepSelect(step.id)}
+                    className={cn(
+                      "rounded-lg border px-2.5 py-2 transition-colors cursor-pointer",
+                      selectedStepId === step.id
+                        ? "border-accent/45 bg-accent/10"
+                        : "border-border/20 bg-zinc-900/60 hover:bg-zinc-800/60"
+                    )}
+                  >
+                    <div className="text-[11px] font-medium text-fg truncate">{step.title}</div>
+                    <div className="mt-0.5 text-[10px] text-muted-fg leading-snug h-[28px] overflow-hidden">
+                      {stepIntentSummary(step)}
+                    </div>
+                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                      {latestAttempt && (
+                        <span className={cn(
+                          "rounded px-1 py-0.5 text-[9px] font-medium",
+                          EXECUTOR_BADGE_CLASSES[latestAttempt.executorKind] ?? "bg-muted/20 text-muted-fg"
+                        )}>
+                          {latestAttempt.executorKind}
+                        </span>
+                      )}
+                      {attempts.length > 0 && (
+                        <span className="text-[9px] text-muted-fg">
+                          {attempts.length} attempt{attempts.length !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                      <span className="text-[9px] text-muted-fg ml-auto">{duration}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Re-export for compatibility: the page was previously a named export */
+export { MissionsPage };

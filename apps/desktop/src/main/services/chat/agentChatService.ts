@@ -377,7 +377,13 @@ export function createAgentChatService(args: {
       if (chat.defaultApprovalPolicy === "auto") return "never" as const;
       if (chat.defaultApprovalPolicy === "approve_all") return "untrusted" as const;
       if (chat.defaultApprovalPolicy === "approve_mutations") return "on-request" as const;
-      if (permissions.codex?.approvalMode) return permissions.codex.approvalMode;
+      const codexApproval = permissions.codex?.approvalMode ?? permissions.codex?.approval_mode;
+      if (codexApproval === "untrusted" || codexApproval === "on-request" || codexApproval === "on-failure" || codexApproval === "never") {
+        return codexApproval;
+      }
+      if (codexApproval === "suggest") return "untrusted" as const;
+      if (codexApproval === "auto-edit") return "on-request" as const;
+      if (codexApproval === "full-auto") return "never" as const;
       return "on-request" as const;
     })();
 

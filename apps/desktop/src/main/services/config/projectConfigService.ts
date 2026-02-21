@@ -413,6 +413,10 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       if (maxBudgetUsd != null && maxBudgetUsd > 0) entry.maxBudgetUsd = maxBudgetUsd;
       const sandbox = asBool(claude.sandbox);
       if (sandbox != null) entry.sandbox = sandbox;
+      const dangerouslySkipPermissions = asBool(claude.dangerouslySkipPermissions) ?? asBool(claude.dangerously_skip_permissions);
+      if (dangerouslySkipPermissions != null) entry.dangerouslySkipPermissions = dangerouslySkipPermissions;
+      const allowedTools = asStringArray(claude.allowedTools) ?? asStringArray(claude.allowed_tools);
+      if (allowedTools?.length) entry.allowedTools = allowedTools;
       if (Object.keys(entry).length) permissions.claude = entry;
     }
 
@@ -424,13 +428,23 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
         entry.sandboxPermissions = sandboxPermissions;
       }
       const approvalMode = (asString(codex.approvalMode) ?? asString(codex.approval_mode))?.trim();
-      if (approvalMode === "untrusted" || approvalMode === "on-request" || approvalMode === "on-failure" || approvalMode === "never") {
+      if (
+        approvalMode === "untrusted"
+        || approvalMode === "on-request"
+        || approvalMode === "on-failure"
+        || approvalMode === "never"
+        || approvalMode === "suggest"
+        || approvalMode === "auto-edit"
+        || approvalMode === "full-auto"
+      ) {
         entry.approvalMode = approvalMode;
       }
       const writablePaths = asStringArray(codex.writablePaths) ?? asStringArray(codex.writable_paths);
       if (writablePaths?.length) entry.writablePaths = writablePaths;
       const commandAllowlist = asStringArray(codex.commandAllowlist) ?? asStringArray(codex.command_allowlist);
       if (commandAllowlist?.length) entry.commandAllowlist = commandAllowlist;
+      const configPath = asString(codex.configPath) ?? asString(codex.config_path);
+      if (configPath) entry.configPath = configPath;
       if (Object.keys(entry).length) permissions.codex = entry;
     }
 
@@ -513,11 +527,32 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const progressiveLoading = asBool(orchestratorRaw.progressiveLoading) ?? asBool(orchestratorRaw.progressive_loading);
     if (progressiveLoading != null) orchestrator.progressiveLoading = progressiveLoading;
 
-    const maxTotalBudgetUsd = asNumber(orchestratorRaw.maxTotalBudgetUsd) ?? asNumber(orchestratorRaw.max_total_budget_usd);
-    if (maxTotalBudgetUsd != null && maxTotalBudgetUsd > 0) orchestrator.maxTotalBudgetUsd = maxTotalBudgetUsd;
+    const maxTotalTokenBudget = asNumber(orchestratorRaw.maxTotalTokenBudget) ?? asNumber(orchestratorRaw.max_total_token_budget);
+    if (maxTotalTokenBudget != null && maxTotalTokenBudget > 0) orchestrator.maxTotalTokenBudget = maxTotalTokenBudget;
 
-    const maxPerStepBudgetUsd = asNumber(orchestratorRaw.maxPerStepBudgetUsd) ?? asNumber(orchestratorRaw.max_per_step_budget_usd);
-    if (maxPerStepBudgetUsd != null && maxPerStepBudgetUsd > 0) orchestrator.maxPerStepBudgetUsd = maxPerStepBudgetUsd;
+    const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget) ?? asNumber(orchestratorRaw.max_per_step_token_budget);
+    if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
+
+    const defaultDepthTier = (asString(orchestratorRaw.defaultDepthTier) ?? asString(orchestratorRaw.default_depth_tier))?.trim();
+    if (defaultDepthTier === "light" || defaultDepthTier === "standard" || defaultDepthTier === "deep") {
+      orchestrator.defaultDepthTier = defaultDepthTier;
+    }
+
+    const defaultPlannerProvider =
+      (asString(orchestratorRaw.defaultPlannerProvider) ?? asString(orchestratorRaw.default_planner_provider))?.trim();
+    if (defaultPlannerProvider === "auto" || defaultPlannerProvider === "claude" || defaultPlannerProvider === "codex") {
+      orchestrator.defaultPlannerProvider = defaultPlannerProvider;
+    }
+
+    const autoResolveInterventions =
+      asBool(orchestratorRaw.autoResolveInterventions) ?? asBool(orchestratorRaw.auto_resolve_interventions);
+    if (autoResolveInterventions != null) orchestrator.autoResolveInterventions = autoResolveInterventions;
+
+    const interventionConfidenceThreshold =
+      asNumber(orchestratorRaw.interventionConfidenceThreshold) ?? asNumber(orchestratorRaw.intervention_confidence_threshold);
+    if (interventionConfidenceThreshold != null) {
+      orchestrator.interventionConfidenceThreshold = Math.max(0, Math.min(1, interventionConfidenceThreshold));
+    }
 
     if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;
   }

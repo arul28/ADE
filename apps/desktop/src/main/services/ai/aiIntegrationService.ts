@@ -51,8 +51,10 @@ export type ExecuteAiTaskArgs = {
   systemPrompt?: string;
   timeoutMs?: number;
   model?: string;
+  reasoningEffort?: string;
   permissionMode?: ExecutorOpts["permissions"]["mode"];
   oneShot?: boolean;
+  sessionId?: string;
 };
 
 export type ExecuteAiTaskResult = {
@@ -139,6 +141,22 @@ const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = [
   { id: "o3", label: "o3" }
 ];
 
+// Known Claude model aliases — if the resolved provider is codex and the model
+// matches one of these, it means we fell back to a wrong-provider default.
+const CLAUDE_MODEL_ALIASES = new Set([
+  "sonnet", "opus", "haiku",
+  "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5",
+  "claude-haiku-4-5-20251001"
+]);
+const CODEX_MODEL_ALIASES = new Set([
+  "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex",
+  "gpt-5.1-codex-max", "codex-mini-latest", "o4-mini", "o3"
+]);
+const PROVIDER_DEFAULT_MODEL: Record<AgentProvider, string> = {
+  claude: "sonnet",
+  codex: "gpt-5.3-codex"
+};
+
 type ClaudeProviderConfig = NonNullable<NonNullable<ExecutorOpts["providerConfig"]>["claude"]>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -218,6 +236,9 @@ function mapCodexPermission(args: {
   sandboxPermissions: string | null;
   approvalMode: string | null;
 }): ExecutorOpts["permissions"]["mode"] {
+  if (args.approvalMode === "full-auto") return "full-auto";
+  if (args.approvalMode === "auto-edit") return "edit";
+  if (args.approvalMode === "suggest") return "read-only";
   if (args.sandboxPermissions === "danger-full-access" || args.approvalMode === "never") return "full-auto";
   if (args.sandboxPermissions === "workspace-write" || args.approvalMode === "on-request" || args.approvalMode === "on-failure") {
     return "edit";
@@ -368,6 +389,7 @@ export function createAiIntegrationService(args: {
     provider: AgentProvider;
     cwd: string;
     model?: string;
+    reasoningEffort?: string;
     timeoutMs?: number;
     systemPrompt?: string;
     jsonSchema?: unknown;
@@ -379,10 +401,19 @@ export function createAiIntegrationService(args: {
     const taskOverride = extractTaskOverride(snapshot, args.taskType);
     const aiConfig = extractAiConfig(snapshot);
 
-    const model =
+    const rawModel =
       toStringOrNull(args.model) ??
       toStringOrNull(taskOverride.model) ??
       defaults.model;
+
+    // Guard against provider/model mismatch (e.g. when planning falls back
+    // from Claude to Codex but the default model is still "sonnet").
+    const provider = args.provider as AgentProvider | undefined;
+    const model = (() => {
+      if (provider === "codex" && CLAUDE_MODEL_ALIASES.has(rawModel)) return PROVIDER_DEFAULT_MODEL.codex;
+      if (provider === "claude" && CODEX_MODEL_ALIASES.has(rawModel)) return PROVIDER_DEFAULT_MODEL.claude;
+      return rawModel;
+    })();
 
     const timeoutMs =
       toNumberOrNull(args.timeoutMs) ??
@@ -405,6 +436,15 @@ export function createAiIntegrationService(args: {
       });
     })();
 
+    const codexApprovalModeRaw = toStringOrNull(codexPermissions.approvalMode) ?? toStringOrNull(codexPermissions.approval_mode);
+    const codexApprovalMode =
+      codexApprovalModeRaw === "untrusted"
+      || codexApprovalModeRaw === "on-request"
+      || codexApprovalModeRaw === "on-failure"
+      || codexApprovalModeRaw === "never"
+        ? codexApprovalModeRaw
+        : undefined;
+
     const claudeMaxBudgetUsd =
       toPositiveNumberOrUndefined(claudePermissions.maxBudgetUsd) ??
       toPositiveNumberOrUndefined(claudePermissions.max_budget_usd);
@@ -412,6 +452,7 @@ export function createAiIntegrationService(args: {
     return {
       cwd: args.cwd,
       model,
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
       timeoutMs: Math.max(1_000, Math.floor(timeoutMs)),
       systemPrompt: args.systemPrompt,
       jsonSchema: args.jsonSchema,
@@ -432,13 +473,7 @@ export function createAiIntegrationService(args: {
           maxBudgetUsd: claudeMaxBudgetUsd
         },
         codex: {
-          approvalMode:
-            (toStringOrNull(codexPermissions.approvalMode) ?? toStringOrNull(codexPermissions.approval_mode)) as
-              | "untrusted"
-              | "on-request"
-              | "on-failure"
-              | "never"
-              | undefined,
+          approvalMode: codexApprovalMode,
           sandboxPermissions:
             (toStringOrNull(codexPermissions.sandboxPermissions) ?? toStringOrNull(codexPermissions.sandbox_permissions)) as
               | "read-only"
@@ -489,6 +524,7 @@ export function createAiIntegrationService(args: {
       provider,
       cwd: args.cwd,
       model: args.model,
+      reasoningEffort: args.reasoningEffort,
       timeoutMs: args.timeoutMs,
       systemPrompt: args.systemPrompt,
       jsonSchema: args.jsonSchema,
@@ -496,12 +532,18 @@ export function createAiIntegrationService(args: {
       oneShot: args.oneShot
     });
 
+    const requestedSessionId = typeof args.sessionId === "string" && args.sessionId.trim().length > 0
+      ? args.sessionId.trim()
+      : null;
+
     logger.info("ai.task.begin", {
       requestId,
       taskType: args.taskType,
       feature: args.feature,
       provider,
       model: opts.model ?? null,
+      sessionId: requestedSessionId,
+      resume: requestedSessionId != null,
       timeoutMs: opts.timeoutMs,
       permissionMode: opts.permissions.mode,
       oneShot: opts.oneShot === true,
@@ -535,7 +577,11 @@ export function createAiIntegrationService(args: {
     let structuredOutput: unknown = null;
 
     try {
-      for await (const event of executor.execute(args.prompt, opts)) {
+      const stream = requestedSessionId != null
+        ? executor.resume(requestedSessionId, args.prompt, opts)
+        : executor.execute(args.prompt, opts);
+
+      for await (const event of stream) {
         if (event.type === "text") {
           text += event.content;
           continue;

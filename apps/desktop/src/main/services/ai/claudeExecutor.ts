@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { generateText } from "ai";
-import { createClaudeCode, type ClaudeCodeSettings } from "ai-sdk-provider-claude-code";
-import { unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
+import { query, unstable_v2_createSession } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, ModelInfo, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentEvent,
@@ -9,7 +7,7 @@ import type {
   AgentModelDescriptor,
   ExecutorOpts
 } from "./agentExecutor";
-import { parseStructuredOutput, withTimeout } from "./utils";
+import { parseStructuredOutput } from "./utils";
 
 const CLAUDE_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku"]);
 const CLAUDE_FULL_ID_TO_ALIAS: Record<string, "opus" | "sonnet" | "haiku"> = {
@@ -32,10 +30,22 @@ function resolveClaudeModel(model: string | undefined): string {
   return CLAUDE_FULL_ID_TO_ALIAS[normalized] ?? requested;
 }
 
-function mapPermissionMode(mode: ExecutorOpts["permissions"]["mode"]): ClaudeCodeSettings["permissionMode"] {
+function mapPermissionMode(mode: ExecutorOpts["permissions"]["mode"]): "plan" | "acceptEdits" | "bypassPermissions" {
   if (mode === "read-only") return "plan";
   if (mode === "edit") return "acceptEdits";
   return "bypassPermissions";
+}
+
+function mapEffort(reasoningEffort: string | undefined): "low" | "medium" | "high" | "max" | undefined {
+  if (reasoningEffort === "low" || reasoningEffort === "medium" || reasoningEffort === "high" || reasoningEffort === "max") {
+    return reasoningEffort;
+  }
+  return undefined;
+}
+
+function toNullableNumber(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function mapCanUseTool(canUseTool: ExecutorOpts["permissions"]["canUseTool"]): CanUseTool | undefined {
@@ -57,8 +67,6 @@ function mapCanUseTool(canUseTool: ExecutorOpts["permissions"]["canUseTool"]): C
 }
 
 export function createClaudeExecutor(): AgentExecutor {
-  const provider = createClaudeCode();
-
   const listModels = async (): Promise<AgentModelDescriptor[]> => {
     try {
       const session = unstable_v2_createSession({
@@ -99,84 +107,126 @@ export function createClaudeExecutor(): AgentExecutor {
     return DEFAULT_CLAUDE_MODELS;
   };
 
-  const execute = (prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent> => {
+  const runClaudeQuery = (args: {
+    prompt: string;
+    opts: ExecutorOpts;
+    resumeSessionId?: string;
+  }): AsyncIterable<AgentEvent> => {
+    const { prompt, opts, resumeSessionId } = args;
     return {
       async *[Symbol.asyncIterator]() {
-        const sessionId = randomUUID();
         const permissionMode = opts.providerConfig?.claude?.permissionMode ?? mapPermissionMode(opts.permissions.mode);
-        const sandboxEnabled = opts.providerConfig?.claude?.sandbox;
-        const mergedSettings: ClaudeCodeSettings = {
-          cwd: opts.cwd,
-          permissionMode,
-          systemPrompt: opts.systemPrompt,
-          settingSources: opts.providerConfig?.claude?.settingSources ?? [],
-          allowedTools: opts.permissions.allowedTools,
-          disallowedTools: opts.permissions.disallowedTools,
-          canUseTool: mapCanUseTool(opts.permissions.canUseTool),
-          maxBudgetUsd: opts.providerConfig?.claude?.maxBudgetUsd ?? opts.maxBudgetUsd,
-          ...(sandboxEnabled != null ? { sandbox: { enabled: sandboxEnabled } } : {}),
-          hooks: opts.providerConfig?.claude?.hooks as ClaudeCodeSettings["hooks"]
-        };
-
+        const abortController = new AbortController();
+        const timeoutMs = Math.max(1_000, Math.floor(opts.timeoutMs || 0));
+        const timeoutHandle = setTimeout(() => abortController.abort(), timeoutMs);
         const modelId = resolveClaudeModel(opts.model);
+        let resolvedSessionId = resumeSessionId ?? randomUUID();
+        let inputTokens: number | null = null;
+        let outputTokens: number | null = null;
+        let finalText = "";
+        let structuredOutput: unknown = null;
+
+        const queryHandle = query({
+          prompt,
+          options: {
+            model: modelId,
+            ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+            permissionMode,
+            effort: mapEffort(opts.reasoningEffort),
+            outputFormat: opts.jsonSchema ? { type: "json_schema", schema: opts.jsonSchema as Record<string, unknown> } : undefined,
+            cwd: opts.cwd,
+            systemPrompt: opts.systemPrompt,
+            settingSources: opts.providerConfig?.claude?.settingSources ?? [],
+            allowedTools: opts.permissions.allowedTools,
+            disallowedTools: opts.permissions.disallowedTools,
+            canUseTool: mapCanUseTool(opts.permissions.canUseTool),
+            maxBudgetUsd: opts.providerConfig?.claude?.maxBudgetUsd ?? opts.maxBudgetUsd,
+            abortController
+          }
+        });
 
         try {
-          const operation = generateText({
-            model: provider(modelId as any, mergedSettings),
-            system: opts.systemPrompt,
-            prompt
-          });
+          for await (const message of queryHandle) {
+            if (typeof message?.session_id === "string" && message.session_id.trim().length > 0) {
+              resolvedSessionId = message.session_id;
+            }
 
-          const result = await withTimeout(
-            operation,
-            opts.timeoutMs,
-            `Claude execution timed out after ${opts.timeoutMs}ms.`
-          );
+            if (message.type !== "result") {
+              continue;
+            }
 
-          const text = String(result.text ?? "");
-          if (text.trim().length > 0) {
-            yield { type: "text", content: text } satisfies AgentEvent;
+            inputTokens = toNullableNumber(message.usage?.inputTokens);
+            outputTokens = toNullableNumber(message.usage?.outputTokens);
+
+            if (message.subtype !== "success") {
+              const errorText = Array.isArray(message.errors) && message.errors.length > 0
+                ? message.errors.join("; ")
+                : `Claude query failed with subtype '${message.subtype}'.`;
+              yield {
+                type: "error",
+                message: errorText
+              } satisfies AgentEvent;
+              return;
+            }
+
+            finalText = typeof message.result === "string" ? message.result : "";
+            structuredOutput = message.structured_output ?? null;
+          }
+
+          if (finalText.trim().length > 0) {
+            yield { type: "text", content: finalText } satisfies AgentEvent;
           }
 
           if (opts.jsonSchema) {
-            const structured = parseStructuredOutput(text);
-            if (structured != null) {
-              yield { type: "structured_output", data: structured } satisfies AgentEvent;
+            if (structuredOutput != null) {
+              yield { type: "structured_output", data: structuredOutput } satisfies AgentEvent;
+            } else {
+              const parsed = parseStructuredOutput(finalText);
+              if (parsed != null) {
+                yield { type: "structured_output", data: parsed } satisfies AgentEvent;
+              }
             }
           }
 
           yield {
             type: "done",
-            sessionId,
+            sessionId: resolvedSessionId,
             provider: "claude",
             model: modelId,
             usage: {
-              inputTokens: result.usage?.inputTokens ?? null,
-              outputTokens: result.usage?.outputTokens ?? null
+              inputTokens,
+              outputTokens
             }
           } satisfies AgentEvent;
         } catch (error) {
+          const message = abortController.signal.aborted
+            ? `Claude execution timed out after ${timeoutMs}ms.`
+            : error instanceof Error ? error.message : String(error);
           yield {
             type: "error",
-            message: error instanceof Error ? error.message : String(error)
+            message
           } satisfies AgentEvent;
+        } finally {
+          clearTimeout(timeoutHandle);
+          queryHandle.close();
         }
       }
     };
   };
 
+  const execute = (prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent> => {
+    return runClaudeQuery({ prompt, opts });
+  };
+
   return {
     provider: "claude",
     execute,
-    resume(sessionId: string): AsyncIterable<AgentEvent> {
-      return {
-        async *[Symbol.asyncIterator]() {
-          yield {
-            type: "error",
-            message: `Claude session resume is not implemented for session '${sessionId}'.`
-          } satisfies AgentEvent;
-        }
-      };
+    resume(sessionId: string, prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent> {
+      return runClaudeQuery({
+        prompt,
+        opts,
+        resumeSessionId: sessionId
+      });
     },
     listModels
   };

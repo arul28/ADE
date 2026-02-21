@@ -67,6 +67,16 @@ function createMockAiIntegrationService(overrides: {
   } as any;
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
 async function createFixture(args: {
   requirePlanReview?: boolean;
   aiIntegrationService?: any;
@@ -870,6 +880,125 @@ describe("aiOrchestratorService", () => {
       expect(refreshed?.status).toBe("completed");
       expect(refreshed?.steps.every((step) => step.status === "succeeded")).toBe(true);
       expect((refreshed?.outcomeSummary ?? "").length).toBeGreaterThan(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("persists chat and steering directives and hydrates them after service recreation", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep chat history durable across orchestrator restarts.",
+        laneId: fixture.laneId
+      });
+
+      fixture.aiOrchestratorService.sendChat({
+        missionId: mission.id,
+        content: "Please prioritize tests first."
+      });
+
+      const initialMessages = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(initialMessages.some((entry) => entry.role === "user" && entry.content.includes("prioritize tests"))).toBe(true);
+      expect(initialMessages.some((entry) => entry.role === "orchestrator" && entry.content.includes("Directive received"))).toBe(true);
+
+      const recreatedService = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        projectRoot: fixture.projectRoot
+      });
+      const hydratedMessages = recreatedService.getChat({ missionId: mission.id });
+      expect(hydratedMessages.some((entry) => entry.role === "user" && entry.content.includes("prioritize tests"))).toBe(true);
+
+      const metaRow = fixture.db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ?`,
+        [mission.id]
+      );
+      const metadata = metaRow?.metadata_json ? JSON.parse(metaRow.metadata_json) : {};
+      expect(Array.isArray(metadata.orchestratorChat)).toBe(true);
+      expect(Array.isArray(metadata.steeringDirectives)).toBe(true);
+      expect(
+        (metadata.steeringDirectives as unknown[]).some(
+          (entry) => typeof (entry as { directive?: unknown }).directive === "string"
+            && String((entry as { directive?: unknown }).directive).includes("prioritize tests")
+        )
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reuses persisted orchestrator chat session ids across mission chat turns", async () => {
+    const executeTask = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: "Hello. I can help with this mission.",
+        structuredOutput: null,
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        sessionId: "chat-session-1",
+        inputTokens: 42,
+        outputTokens: 17,
+        durationMs: 50
+      })
+      .mockResolvedValueOnce({
+        text: "Second response on the same thread.",
+        structuredOutput: null,
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        sessionId: "chat-session-1",
+        inputTokens: 44,
+        outputTokens: 19,
+        durationMs: 50
+      });
+
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({
+        executeTask
+      })
+    });
+
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Use a persistent orchestrator chat thread.",
+        laneId: fixture.laneId
+      });
+
+      fixture.aiOrchestratorService.sendChat({
+        missionId: mission.id,
+        content: "hello orchestrator"
+      });
+
+      await waitFor(() =>
+        fixture.aiOrchestratorService.getChat({ missionId: mission.id })
+          .some((entry) => entry.role === "orchestrator" && entry.content.includes("Hello. I can help"))
+      );
+
+      fixture.aiOrchestratorService.sendChat({
+        missionId: mission.id,
+        content: "what's the run status?"
+      });
+
+      await waitFor(() =>
+        fixture.aiOrchestratorService.getChat({ missionId: mission.id })
+          .some((entry) => entry.role === "orchestrator" && entry.content.includes("Second response on the same thread"))
+      );
+
+      expect(executeTask).toHaveBeenCalledTimes(2);
+      expect(executeTask.mock.calls[0]?.[0]?.sessionId).toBeUndefined();
+      expect(executeTask.mock.calls[1]?.[0]?.sessionId).toBe("chat-session-1");
+
+      const row = fixture.db.get<{ metadata_json: string | null }>(
+        `select metadata_json from missions where id = ?`,
+        [mission.id]
+      );
+      const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+      expect(metadata.orchestratorChatSession).toMatchObject({
+        provider: "claude",
+        sessionId: "chat-session-1"
+      });
     } finally {
       fixture.dispose();
     }

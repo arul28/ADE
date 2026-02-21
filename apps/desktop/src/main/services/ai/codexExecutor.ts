@@ -258,19 +258,19 @@ export function createCodexExecutor(): AgentExecutor {
   return {
     provider: "codex",
     execute,
-    resume(sessionId: string, prompt = "Continue.", opts): AsyncIterable<AgentEvent> {
+    resume(sessionId: string, prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent> {
       return {
         async *[Symbol.asyncIterator]() {
           const codex = await createCodexClient();
           const thread = codex.resumeThread(sessionId, {
-            model: opts?.model,
-            sandboxMode: opts?.providerConfig?.codex?.sandboxPermissions ?? "workspace-write",
-            approvalPolicy: opts?.providerConfig?.codex?.approvalMode ?? "on-request"
+            model: opts.model,
+            sandboxMode: opts.providerConfig?.codex?.sandboxPermissions ?? "workspace-write",
+            approvalPolicy: opts.providerConfig?.codex?.approvalMode ?? "on-request"
           });
 
           try {
             const turn = await thread.run(prompt, {
-              ...(opts?.jsonSchema ? { outputSchema: opts.jsonSchema } : {})
+              ...(opts.jsonSchema ? { outputSchema: opts.jsonSchema } : {})
             });
 
             if (turn.finalResponse.trim().length) {
@@ -281,7 +281,7 @@ export function createCodexExecutor(): AgentExecutor {
               type: "done",
               sessionId: thread.id ?? sessionId,
               provider: "codex",
-              model: opts?.model ?? null,
+              model: opts.model ?? null,
               usage: {
                 inputTokens: toNumber(turn.usage?.input_tokens),
                 outputTokens: toNumber(turn.usage?.output_tokens)

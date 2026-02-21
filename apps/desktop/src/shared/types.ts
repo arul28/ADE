@@ -1569,17 +1569,23 @@ export type AiClaudePermissionSettings = {
   maxBudgetUsd?: number;
   max_budget_usd?: number;
   sandbox?: boolean;
+  dangerouslySkipPermissions?: boolean;
+  dangerously_skip_permissions?: boolean;
+  allowedTools?: string[];
+  allowed_tools?: string[];
 };
 
 export type AiCodexPermissionSettings = {
   sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
   sandbox_permissions?: "read-only" | "workspace-write" | "danger-full-access";
-  approvalMode?: "untrusted" | "on-request" | "on-failure" | "never";
-  approval_mode?: "untrusted" | "on-request" | "on-failure" | "never";
+  approvalMode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
+  approval_mode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
   writablePaths?: string[];
   writable_paths?: string[];
   commandAllowlist?: string[];
   command_allowlist?: string[];
+  configPath?: string;
+  config_path?: string;
 };
 
 export type AiPermissionSettings = {
@@ -1622,10 +1628,18 @@ export type AiOrchestratorConfig = {
   context_pressure_threshold?: number;
   progressiveLoading?: boolean;
   progressive_loading?: boolean;
-  maxTotalBudgetUsd?: number;
-  max_total_budget_usd?: number;
-  maxPerStepBudgetUsd?: number;
-  max_per_step_budget_usd?: number;
+  maxTotalTokenBudget?: number;
+  max_total_token_budget?: number;
+  maxPerStepTokenBudget?: number;
+  max_per_step_token_budget?: number;
+  defaultDepthTier?: MissionDepthTier;
+  default_depth_tier?: MissionDepthTier;
+  defaultPlannerProvider?: AiTaskProvider;
+  default_planner_provider?: AiTaskProvider;
+  autoResolveInterventions?: boolean;
+  auto_resolve_interventions?: boolean;
+  interventionConfidenceThreshold?: number;
+  intervention_confidence_threshold?: number;
 };
 
 export type AiChatConfig = {
@@ -2625,6 +2639,7 @@ export type CreateMissionArgs = {
   autostart?: boolean;
   launchMode?: "autopilot" | "manual";
   autopilotExecutor?: OrchestratorExecutorKind;
+  missionDepth?: MissionDepthTier;
 };
 
 export type PlanMissionArgs = {
@@ -3579,4 +3594,94 @@ export type StartMissionRunWithAIResult = {
   blockedByPlanReview: boolean;
   started: { run: OrchestratorRun; steps: OrchestratorStep[] } | null;
   mission: MissionDetail | null;
+};
+
+// ─────────────────────────────────────────────────────
+// Phase 3+: Mission Depth Tiers, Model Capabilities,
+// PM Intelligence, and User Steering
+// ─────────────────────────────────────────────────────
+
+export type MissionDepthTier = "light" | "standard" | "deep";
+
+export type MissionDepthConfig = {
+  tier: MissionDepthTier;
+  planning: {
+    useAiPlanner: boolean;
+    plannerModel?: string;
+    maxPlanningTimeMs: number;
+    requirePlanReview: boolean;
+  };
+  execution: {
+    maxParallelWorkers: number;
+    defaultRetryLimit: number;
+    stepTimeoutMs: number;
+    maxTotalTokenBudget: number;
+    maxPerStepTokenBudget: number;
+  };
+  evaluation: {
+    evaluateEveryStep: boolean;
+    evaluationModel?: string;
+    autoAdjustPlan: boolean;
+    autoResolveInterventions: boolean;
+    interventionConfidenceThreshold: number;
+  };
+  context: {
+    contextProfile: OrchestratorContextProfileId;
+    includeNarrative: boolean;
+    docsMode: OrchestratorContextDocsMode;
+  };
+};
+
+export type ModelCapabilityProfile = {
+  provider: "claude" | "codex";
+  modelId: string;
+  displayName: string;
+  strengths: string[];
+  weaknesses: string[];
+  costTier: "low" | "medium" | "high" | "very_high";
+  bestFor: AiTaskRoutingKey[];
+  parallelCapable: boolean;
+  reasoningTiers?: string[];
+};
+
+export type UserSteeringDirective = {
+  missionId: string;
+  directive: string;
+  priority: "suggestion" | "instruction" | "override";
+  targetStepKey?: string | null;
+};
+
+export type SteerMissionArgs = UserSteeringDirective;
+
+export type SteerMissionResult = {
+  acknowledged: boolean;
+  appliedAt: string;
+  response?: string;
+};
+
+export type GetMissionDepthConfigArgs = {
+  tier: MissionDepthTier;
+};
+
+export type GetModelCapabilitiesResult = {
+  profiles: ModelCapabilityProfile[];
+};
+
+export type OrchestratorChatMessage = {
+  id: string;
+  missionId: string;
+  role: "user" | "orchestrator" | "worker";
+  content: string;
+  timestamp: string;
+  stepKey?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type SendOrchestratorChatArgs = {
+  missionId: string;
+  content: string;
+};
+
+export type GetOrchestratorChatArgs = {
+  missionId: string;
 };

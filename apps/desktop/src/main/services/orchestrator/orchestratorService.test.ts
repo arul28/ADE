@@ -998,7 +998,7 @@ describe("orchestratorService", () => {
           effective: {
             ai: {
               orchestrator: {
-                maxTotalBudgetUsd: 5.0
+                maxTotalTokenBudget: 50_000
               }
             }
           }
@@ -1008,7 +1008,7 @@ describe("orchestratorService", () => {
     try {
       const started = fixture.service.startRun({
         missionId: fixture.missionId,
-        metadata: { budgetConsumedUsd: 6.0 },
+        metadata: { tokensConsumed: 60_000 },
         steps: [{ stepKey: "expensive", title: "Expensive", stepIndex: 0 }]
       });
       const step = fixture.service.listSteps(started.run.id)[0];
@@ -1040,7 +1040,7 @@ describe("orchestratorService", () => {
           effective: {
             ai: {
               orchestrator: {
-                maxTotalBudgetUsd: 10.0
+                maxTotalTokenBudget: 100_000
               }
             }
           }
@@ -1068,7 +1068,7 @@ describe("orchestratorService", () => {
       fixture.service.completeAttempt({
         attemptId: attemptA.id,
         status: "succeeded",
-        metadata: { budgetConsumedUsd: 7.0 }
+        metadata: { tokensConsumed: 70_000 }
       });
 
       // Budget should be accumulated
@@ -1085,10 +1085,10 @@ describe("orchestratorService", () => {
       fixture.service.completeAttempt({
         attemptId: attemptB.id,
         status: "succeeded",
-        metadata: { budgetConsumedUsd: 5.0 }
+        metadata: { tokensConsumed: 50_000 }
       });
 
-      // Total is now 12.0, exceeding 10.0 limit. Step C is still pending so run pauses.
+      // Total is now 120,000, exceeding 100,000 limit. Step C is still pending so run pauses.
       const runs = fixture.service.listRuns({ missionId: fixture.missionId });
       const run = runs.find((r) => r.id === started.run.id);
       expect(run?.status).toBe("paused");

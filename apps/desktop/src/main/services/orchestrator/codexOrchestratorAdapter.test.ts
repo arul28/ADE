@@ -135,11 +135,11 @@ describe("codexOrchestratorAdapter", () => {
     expect(sessionArgs.toolType).toBe("codex-orchestrated");
     expect(sessionArgs.title).toContain("Fix authentication");
     expect(sessionArgs.startupCommand).toContain("codex");
-    expect(sessionArgs.startupCommand).toContain("--approval-mode");
+    expect(sessionArgs.startupCommand).toContain("--full-auto");
     expect(sessionArgs.startupCommand).toContain("o4-mini");
   });
 
-  it("uses default model o4-mini when not specified in metadata", async () => {
+  it("uses default model gpt-5.3-codex when not specified in metadata", async () => {
     const adapter = createCodexOrchestratorAdapter();
     const args = buildMockArgs({
       step: {
@@ -150,7 +150,7 @@ describe("codexOrchestratorAdapter", () => {
     const result = await adapter.start(args);
 
     if (result.status !== "accepted") throw new Error("Expected accepted");
-    expect(result.metadata?.model).toBe("o4-mini");
+    expect(result.metadata?.model).toBe("gpt-5.3-codex");
     expect(result.metadata?.approvalMode).toBe("full-auto");
   });
 
@@ -198,5 +198,124 @@ describe("codexOrchestratorAdapter", () => {
     if (result.status !== "failed") throw new Error("Expected failed");
     expect(result.errorClass).toBe("executor_failure");
     expect(result.errorMessage).toContain("Session creation failed");
+  });
+
+  it("reads approval mode from config when step metadata does not specify it", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        codex: { approvalMode: "suggest" }
+      }
+    });
+    const result = await adapter.start(args);
+
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.approvalMode).toBe("suggest");
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--suggest");
+    expect(command).not.toContain("--full-auto");
+  });
+
+  it("step metadata wins over config for approval mode", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: {
+          instructions: "Do something",
+          approvalMode: "auto-edit"
+        }
+      },
+      permissionConfig: {
+        codex: { approvalMode: "suggest" }
+      }
+    });
+    const result = await adapter.start(args);
+
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.approvalMode).toBe("auto-edit");
+  });
+
+  it("adds --config flag when configPath is set in config", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        codex: { configPath: "/home/user/.codex/config.toml" }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--config");
+    expect(command).toContain("/home/user/.codex/config.toml");
+  });
+
+  it("adds --writable-root flags for each writable path", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        codex: { writablePaths: ["/tmp/output", "/var/data"] }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--writable-root");
+    expect(command).toContain("/tmp/output");
+    expect(command).toContain("/var/data");
+  });
+
+  it("falls back to hardcoded defaults when no config or step metadata", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      }
+    });
+    const result = await adapter.start(args);
+
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.approvalMode).toBe("full-auto");
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("--full-auto");
+    expect(command).not.toContain("--config");
+    expect(command).not.toContain("--writable-root");
+  });
+
+  it("does not add --config when configPath is empty", async () => {
+    const adapter = createCodexOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: { instructions: "Do something" }
+      },
+      permissionConfig: {
+        codex: { configPath: "" }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).not.toContain("--config");
   });
 });

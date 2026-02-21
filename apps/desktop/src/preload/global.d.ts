@@ -230,7 +230,15 @@ import type {
   GetOrchestratorWorkerStatesArgs,
   OrchestratorWorkerState,
   StartMissionRunWithAIArgs,
-  StartMissionRunWithAIResult
+  StartMissionRunWithAIResult,
+  SteerMissionArgs,
+  SteerMissionResult,
+  GetMissionDepthConfigArgs,
+  MissionDepthConfig,
+  GetModelCapabilitiesResult,
+  OrchestratorChatMessage,
+  SendOrchestratorChatArgs,
+  GetOrchestratorChatArgs
 } from "../shared/types";
 
 export {};
@@ -329,6 +337,11 @@ declare global {
         getGateReport: (args?: GetOrchestratorGateReportArgs) => Promise<OrchestratorGateReport>;
         getWorkerStates: (args: GetOrchestratorWorkerStatesArgs) => Promise<OrchestratorWorkerState[]>;
         startMissionRun: (args: StartMissionRunWithAIArgs) => Promise<StartMissionRunWithAIResult>;
+        steerMission: (args: SteerMissionArgs) => Promise<SteerMissionResult>;
+        getDepthConfig: (args: GetMissionDepthConfigArgs) => Promise<MissionDepthConfig>;
+        getModelCapabilities: () => Promise<GetModelCapabilitiesResult>;
+        sendChat: (args: SendOrchestratorChatArgs) => Promise<OrchestratorChatMessage>;
+        getChat: (args: GetOrchestratorChatArgs) => Promise<OrchestratorChatMessage[]>;
         onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
       };
       lanes: {

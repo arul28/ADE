@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { AppInfo, ProjectConfigSnapshot } from "../../../shared/types";
+import type { AppInfo, ProjectConfigSnapshot, AiTaskRoutingKey, AiTaskProvider } from "../../../shared/types";
 import { useAppStore, ThemeId, THEME_IDS } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
@@ -137,10 +137,52 @@ function readNumber(primary: unknown, fallback: unknown, defaultValue: number): 
   return defaultValue;
 }
 
+function readString(primary: unknown, fallback: unknown, defaultValue: string): string {
+  if (typeof primary === "string" && primary.length > 0) return primary;
+  if (typeof fallback === "string" && fallback.length > 0) return fallback;
+  return defaultValue;
+}
+
+type DepthTier = "light" | "standard" | "deep";
+type PlannerProvider = "auto" | "claude" | "codex";
+
+const TASK_ROUTING_KEYS: AiTaskRoutingKey[] = [
+  "planning",
+  "implementation",
+  "review",
+  "narrative",
+  "mission_planning"
+];
+
+const TASK_ROUTING_LABELS: Record<string, string> = {
+  planning: "Planning",
+  implementation: "Implementation",
+  review: "Review",
+  narrative: "Narrative",
+  mission_planning: "Mission Planning"
+};
+
+type TaskRoutingDraft = Record<string, { provider: AiTaskProvider; model: string }>;
+
 export function GeneralSection() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [configSnapshot, setConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
+
+  // Mission defaults
+  const [defaultDepthTier, setDefaultDepthTier] = useState<DepthTier>("standard");
+  const [defaultPlannerProvider, setDefaultPlannerProvider] = useState<PlannerProvider>("auto");
+
+  // Task routing
+  const [taskRoutingDraft, setTaskRoutingDraft] = useState<TaskRoutingDraft>(() => {
+    const initial: TaskRoutingDraft = {};
+    for (const key of TASK_ROUTING_KEYS) {
+      initial[key] = { provider: "auto", model: "" };
+    }
+    return initial;
+  });
+
+  // Orchestrator settings
   const [orchestratorDraft, setOrchestratorDraft] = useState({
     requirePlanReview: false,
     maxParallelWorkers: "4",
@@ -149,12 +191,24 @@ export function GeneralSection() {
     progressiveLoading: true,
     defaultMergePolicy: "sequential" as "sequential" | "batch-at-end" | "per-step",
     defaultConflictHandoff: "ask-user" as "auto-resolve" | "ask-user" | "orchestrator-decides",
-    maxTotalBudgetUsd: "0",
-    maxPerStepBudgetUsd: "0"
+    maxTotalTokenBudget: "0",
+    maxPerStepTokenBudget: "0",
+    autoResolveInterventions: false,
+    interventionConfidenceThreshold: "0.7"
   });
   const [orchestratorBusy, setOrchestratorBusy] = useState(false);
   const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
   const [orchestratorNotice, setOrchestratorNotice] = useState<string | null>(null);
+
+  // Worker permission settings
+  const [workerPermDraft, setWorkerPermDraft] = useState({
+    claudePermissionMode: "acceptEdits" as string,
+    claudeDangerouslySkip: false,
+    codexSandboxPermissions: "workspace-write" as string,
+    codexApprovalMode: "full-auto" as string,
+    codexConfigPath: ""
+  });
+
   const providerMode = useAppStore((s) => s.providerMode);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -181,11 +235,29 @@ export function GeneralSection() {
     const effectiveAi = isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
     const effectiveOrchestrator = isRecord(effectiveAi.orchestrator) ? effectiveAi.orchestrator : {};
     setConfigSnapshot(snapshot);
-    const readString = (primary: unknown, fallback: unknown, defaultValue: string): string => {
-      if (typeof primary === "string" && primary.length > 0) return primary;
-      if (typeof fallback === "string" && fallback.length > 0) return fallback;
-      return defaultValue;
-    };
+
+    // Mission defaults from config
+    setDefaultDepthTier(
+      readString(localOrchestrator.defaultDepthTier, effectiveOrchestrator.defaultDepthTier, "standard") as DepthTier
+    );
+    setDefaultPlannerProvider(
+      readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto") as PlannerProvider
+    );
+
+    // Task routing
+    const localRouting = isRecord(localAi.taskRouting) ? localAi.taskRouting : (isRecord(localAi.task_routing) ? localAi.task_routing : {});
+    const effectiveRouting = isRecord(effectiveAi.taskRouting) ? effectiveAi.taskRouting : (isRecord(effectiveAi.task_routing) ? effectiveAi.task_routing : {});
+    const nextRouting: TaskRoutingDraft = {};
+    for (const key of TASK_ROUTING_KEYS) {
+      const local = isRecord(localRouting[key]) ? localRouting[key] : {};
+      const effective = isRecord(effectiveRouting[key]) ? effectiveRouting[key] : {};
+      nextRouting[key] = {
+        provider: readString(local.provider, effective.provider, "auto") as AiTaskProvider,
+        model: readString(local.model, effective.model, "")
+      };
+    }
+    setTaskRoutingDraft(nextRouting);
+
     setOrchestratorDraft({
       requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
       maxParallelWorkers: String(
@@ -200,8 +272,27 @@ export function GeneralSection() {
       progressiveLoading: readBool(localOrchestrator.progressiveLoading, effectiveOrchestrator.progressiveLoading, true),
       defaultMergePolicy: readString(localOrchestrator.defaultMergePolicy, effectiveOrchestrator.defaultMergePolicy, "sequential") as "sequential" | "batch-at-end" | "per-step",
       defaultConflictHandoff: readString(localOrchestrator.defaultConflictHandoff, effectiveOrchestrator.defaultConflictHandoff, "ask-user") as "auto-resolve" | "ask-user" | "orchestrator-decides",
-      maxTotalBudgetUsd: String(Math.max(0, readNumber(localOrchestrator.maxTotalBudgetUsd, effectiveOrchestrator.maxTotalBudgetUsd, 0))),
-      maxPerStepBudgetUsd: String(Math.max(0, readNumber(localOrchestrator.maxPerStepBudgetUsd, effectiveOrchestrator.maxPerStepBudgetUsd, 0)))
+      maxTotalTokenBudget: String(Math.max(0, readNumber(localOrchestrator.maxTotalTokenBudget, effectiveOrchestrator.maxTotalTokenBudget, 0))),
+      maxPerStepTokenBudget: String(Math.max(0, readNumber(localOrchestrator.maxPerStepTokenBudget, effectiveOrchestrator.maxPerStepTokenBudget, 0))),
+      autoResolveInterventions: readBool(localOrchestrator.autoResolveInterventions, effectiveOrchestrator.autoResolveInterventions, false),
+      interventionConfidenceThreshold: String(
+        Math.max(0, Math.min(1, readNumber(localOrchestrator.interventionConfidenceThreshold, effectiveOrchestrator.interventionConfidenceThreshold, 0.7)))
+      )
+    });
+
+    // Worker permissions
+    const localPermissions = isRecord(localAi.permissions) ? localAi.permissions : {};
+    const effectivePermissions = isRecord(effectiveAi.permissions) ? effectiveAi.permissions : {};
+    const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
+    const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
+    const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
+    const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
+    setWorkerPermDraft({
+      claudePermissionMode: readString(localClaude.permissionMode, effectiveClaude.permissionMode, "acceptEdits"),
+      claudeDangerouslySkip: readBool(localClaude.dangerouslySkipPermissions, effectiveClaude.dangerouslySkipPermissions, false),
+      codexSandboxPermissions: readString(localCodex.sandboxPermissions, effectiveCodex.sandboxPermissions, "workspace-write"),
+      codexApprovalMode: readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto"),
+      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, "")
     });
   }, []);
 
@@ -211,14 +302,15 @@ export function GeneralSection() {
     });
   }, [refreshOrchestratorDraft]);
 
-  const saveOrchestratorSettings = async () => {
+  const saveAllSettings = async () => {
     setOrchestratorError(null);
     setOrchestratorNotice(null);
     const maxParallelWorkers = Number(orchestratorDraft.maxParallelWorkers);
     const maxRetriesPerStep = Number(orchestratorDraft.maxRetriesPerStep);
     const contextPressureThreshold = Number(orchestratorDraft.contextPressureThreshold);
-    if (!Number.isFinite(maxParallelWorkers) || maxParallelWorkers < 1 || maxParallelWorkers > 16) {
-      setOrchestratorError("Max parallel workers must be between 1 and 16.");
+    const interventionConfidenceThreshold = Number(orchestratorDraft.interventionConfidenceThreshold);
+    if (!Number.isFinite(maxParallelWorkers) || maxParallelWorkers < 1 || maxParallelWorkers > 10) {
+      setOrchestratorError("Max parallel workers must be between 1 and 10.");
       return;
     }
     if (!Number.isFinite(maxRetriesPerStep) || maxRetriesPerStep < 0 || maxRetriesPerStep > 8) {
@@ -229,14 +321,30 @@ export function GeneralSection() {
       setOrchestratorError("Context pressure threshold must be between 0.1 and 0.99.");
       return;
     }
+    if (!Number.isFinite(interventionConfidenceThreshold) || interventionConfidenceThreshold < 0 || interventionConfidenceThreshold > 1) {
+      setOrchestratorError("Intervention confidence threshold must be between 0.0 and 1.0.");
+      return;
+    }
 
     setOrchestratorBusy(true);
     try {
       const snapshot = configSnapshot ?? (await window.ade.projectConfig.get());
       const localAi = isRecord(snapshot.local.ai) ? snapshot.local.ai : {};
       const localOrchestrator = isRecord(localAi.orchestrator) ? localAi.orchestrator : {};
-      const maxTotalBudgetUsd = Number(orchestratorDraft.maxTotalBudgetUsd);
-      const maxPerStepBudgetUsd = Number(orchestratorDraft.maxPerStepBudgetUsd);
+      const maxTotalTokenBudget = Number(orchestratorDraft.maxTotalTokenBudget);
+      const maxPerStepTokenBudget = Number(orchestratorDraft.maxPerStepTokenBudget);
+
+      // Build task routing
+      const nextTaskRouting: Record<string, { provider?: string; model?: string }> = {};
+      for (const key of TASK_ROUTING_KEYS) {
+        const entry = taskRoutingDraft[key];
+        if (entry.provider !== "auto" || entry.model.length > 0) {
+          nextTaskRouting[key] = {};
+          if (entry.provider !== "auto") nextTaskRouting[key].provider = entry.provider;
+          if (entry.model.length > 0) nextTaskRouting[key].model = entry.model;
+        }
+      }
+
       const nextOrchestrator = {
         ...localOrchestrator,
         requirePlanReview: orchestratorDraft.requirePlanReview,
@@ -246,9 +354,36 @@ export function GeneralSection() {
         progressiveLoading: orchestratorDraft.progressiveLoading,
         defaultMergePolicy: orchestratorDraft.defaultMergePolicy,
         defaultConflictHandoff: orchestratorDraft.defaultConflictHandoff,
-        maxTotalBudgetUsd: Number.isFinite(maxTotalBudgetUsd) && maxTotalBudgetUsd >= 0 ? maxTotalBudgetUsd : 0,
-        maxPerStepBudgetUsd: Number.isFinite(maxPerStepBudgetUsd) && maxPerStepBudgetUsd >= 0 ? maxPerStepBudgetUsd : 0
+        maxTotalTokenBudget: Number.isFinite(maxTotalTokenBudget) && maxTotalTokenBudget >= 0 ? maxTotalTokenBudget : 0,
+        maxPerStepTokenBudget: Number.isFinite(maxPerStepTokenBudget) && maxPerStepTokenBudget >= 0 ? maxPerStepTokenBudget : 0,
+        autoResolveInterventions: orchestratorDraft.autoResolveInterventions,
+        interventionConfidenceThreshold,
+        defaultDepthTier,
+        defaultPlannerProvider
       };
+      // Build worker permissions
+      const nextPermissions: Record<string, Record<string, unknown>> = {};
+      const claudePerms: Record<string, unknown> = {};
+      if (workerPermDraft.claudePermissionMode && workerPermDraft.claudePermissionMode !== "acceptEdits") {
+        claudePerms.permissionMode = workerPermDraft.claudePermissionMode;
+      }
+      if (workerPermDraft.claudeDangerouslySkip) {
+        claudePerms.dangerouslySkipPermissions = true;
+      }
+      if (Object.keys(claudePerms).length) nextPermissions.claude = claudePerms;
+
+      const codexPerms: Record<string, unknown> = {};
+      if (workerPermDraft.codexSandboxPermissions && workerPermDraft.codexSandboxPermissions !== "workspace-write") {
+        codexPerms.sandboxPermissions = workerPermDraft.codexSandboxPermissions;
+      }
+      if (workerPermDraft.codexApprovalMode && workerPermDraft.codexApprovalMode !== "full-auto") {
+        codexPerms.approvalMode = workerPermDraft.codexApprovalMode;
+      }
+      if (workerPermDraft.codexConfigPath.trim().length > 0) {
+        codexPerms.configPath = workerPermDraft.codexConfigPath.trim();
+      }
+      if (Object.keys(codexPerms).length) nextPermissions.codex = codexPerms;
+
       await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: {
@@ -256,12 +391,14 @@ export function GeneralSection() {
           ai: {
             ...(snapshot.local.ai ?? {}),
             ...localAi,
-            orchestrator: nextOrchestrator
+            orchestrator: nextOrchestrator,
+            taskRouting: Object.keys(nextTaskRouting).length > 0 ? nextTaskRouting : undefined,
+            permissions: Object.keys(nextPermissions).length > 0 ? nextPermissions : undefined
           }
         }
       });
       await refreshOrchestratorDraft();
-      setOrchestratorNotice("Orchestrator settings saved to .ade/local.yaml.");
+      setOrchestratorNotice("Settings saved to .ade/local.yaml.");
     } catch (error) {
       setOrchestratorError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -276,6 +413,9 @@ export function GeneralSection() {
   if (!info) {
     return <EmptyState title="General" description="Loading..." />;
   }
+
+  const inputClass = "mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm";
+  const selectClass = inputClass;
 
   return (
     <div className="space-y-6">
@@ -316,47 +456,135 @@ export function GeneralSection() {
           <div className="mt-2 text-sm">{providerMode}</div>
         </div>
 
+        {/* Mission Defaults */}
         <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
-          <div className="text-xs text-muted-fg">AI Orchestrator</div>
-          <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="flex items-center gap-2 text-sm">
+          <div className="text-xs text-muted-fg">Mission Defaults</div>
+          <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Default depth tier</div>
+              <select
+                className={selectClass}
+                value={defaultDepthTier}
+                onChange={(e) => setDefaultDepthTier(e.target.value as DepthTier)}
+              >
+                <option value="light">Light</option>
+                <option value="standard">Standard</option>
+                <option value="deep">Deep</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Default planner provider</div>
+              <select
+                className={selectClass}
+                value={defaultPlannerProvider}
+                onChange={(e) => setDefaultPlannerProvider(e.target.value as PlannerProvider)}
+              >
+                <option value="auto">Auto</option>
+                <option value="claude">Claude</option>
+                <option value="codex">Codex</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm pt-4">
               <input
                 type="checkbox"
                 checked={orchestratorDraft.requirePlanReview}
-                onChange={(event) =>
+                onChange={(e) =>
                   setOrchestratorDraft((prev) => ({
                     ...prev,
-                    requirePlanReview: event.target.checked
+                    requirePlanReview: e.target.checked
                   }))
                 }
               />
-              Require plan review before execution
+              Require plan review
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={orchestratorDraft.progressiveLoading}
-                onChange={(event) =>
-                  setOrchestratorDraft((prev) => ({
-                    ...prev,
-                    progressiveLoading: event.target.checked
-                  }))
-                }
-              />
-              Progressive context loading
-            </label>
+          </div>
+        </div>
+
+        {/* Model Preferences (Task Routing) */}
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">Model Preferences</div>
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-muted-fg">
+                  <th className="pb-2 text-left font-medium">Task Type</th>
+                  <th className="pb-2 text-left font-medium">Provider</th>
+                  <th className="pb-2 text-left font-medium">Model (optional)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {TASK_ROUTING_KEYS.map((key) => (
+                  <tr key={key} className="border-t border-border/50">
+                    <td className="py-2 pr-3 text-sm">{TASK_ROUTING_LABELS[key] ?? key}</td>
+                    <td className="py-2 pr-3">
+                      <select
+                        className="h-7 w-full rounded border border-border bg-bg px-1.5 text-sm"
+                        value={taskRoutingDraft[key]?.provider ?? "auto"}
+                        onChange={(e) =>
+                          setTaskRoutingDraft((prev) => ({
+                            ...prev,
+                            [key]: { ...prev[key], provider: e.target.value as AiTaskProvider }
+                          }))
+                        }
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="claude">Claude</option>
+                        <option value="codex">Codex</option>
+                      </select>
+                    </td>
+                    <td className="py-2">
+                      <input
+                        type="text"
+                        className="h-7 w-full rounded border border-border bg-bg px-1.5 text-sm"
+                        placeholder="e.g. claude-sonnet-4-6"
+                        value={taskRoutingDraft[key]?.model ?? ""}
+                        onChange={(e) =>
+                          setTaskRoutingDraft((prev) => ({
+                            ...prev,
+                            [key]: { ...prev[key], model: e.target.value }
+                          }))
+                        }
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Orchestrator Settings */}
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">Orchestrator Settings</div>
+          <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
             <label className="text-sm">
               <div className="text-xs text-muted-fg">Max parallel workers</div>
               <input
                 type="number"
                 min={1}
-                max={16}
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                max={10}
+                className={inputClass}
                 value={orchestratorDraft.maxParallelWorkers}
-                onChange={(event) =>
+                onChange={(e) =>
                   setOrchestratorDraft((prev) => ({
                     ...prev,
-                    maxParallelWorkers: event.target.value
+                    maxParallelWorkers: e.target.value
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Max total token budget (0 = unlimited)</div>
+              <input
+                type="number"
+                min={0}
+                step={10000}
+                className={inputClass}
+                value={orchestratorDraft.maxTotalTokenBudget}
+                onChange={(e) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    maxTotalTokenBudget: e.target.value
                   }))
                 }
               />
@@ -367,12 +595,28 @@ export function GeneralSection() {
                 type="number"
                 min={0}
                 max={8}
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                className={inputClass}
                 value={orchestratorDraft.maxRetriesPerStep}
-                onChange={(event) =>
+                onChange={(e) =>
                   setOrchestratorDraft((prev) => ({
                     ...prev,
-                    maxRetriesPerStep: event.target.value
+                    maxRetriesPerStep: e.target.value
+                  }))
+                }
+              />
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Max per-step token budget (0 = unlimited)</div>
+              <input
+                type="number"
+                min={0}
+                step={10000}
+                className={inputClass}
+                value={orchestratorDraft.maxPerStepTokenBudget}
+                onChange={(e) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    maxPerStepTokenBudget: e.target.value
                   }))
                 }
               />
@@ -384,25 +628,69 @@ export function GeneralSection() {
                 min={0.1}
                 max={0.99}
                 step={0.01}
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm md:w-56"
+                className={cn(inputClass, "md:w-56")}
                 value={orchestratorDraft.contextPressureThreshold}
-                onChange={(event) =>
+                onChange={(e) =>
                   setOrchestratorDraft((prev) => ({
                     ...prev,
-                    contextPressureThreshold: event.target.value
+                    contextPressureThreshold: e.target.value
                   }))
                 }
               />
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={orchestratorDraft.progressiveLoading}
+                onChange={(e) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    progressiveLoading: e.target.checked
+                  }))
+                }
+              />
+              Progressive context loading
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={orchestratorDraft.autoResolveInterventions}
+                onChange={(e) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    autoResolveInterventions: e.target.checked
+                  }))
+                }
+              />
+              Auto-resolve interventions
+            </label>
+            <label className="text-sm">
+              <div className="text-xs text-muted-fg">Intervention confidence threshold (0.0 - 1.0)</div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                className="mt-1 w-full"
+                value={orchestratorDraft.interventionConfidenceThreshold}
+                onChange={(e) =>
+                  setOrchestratorDraft((prev) => ({
+                    ...prev,
+                    interventionConfidenceThreshold: e.target.value
+                  }))
+                }
+              />
+              <div className="mt-0.5 text-xs text-muted-fg">{orchestratorDraft.interventionConfidenceThreshold}</div>
+            </label>
             <label className="text-sm">
               <div className="text-xs text-muted-fg">Default merge policy</div>
               <select
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                className={selectClass}
                 value={orchestratorDraft.defaultMergePolicy}
-                onChange={(event) =>
+                onChange={(e) =>
                   setOrchestratorDraft((prev) => ({
                     ...prev,
-                    defaultMergePolicy: event.target.value as "sequential" | "batch-at-end" | "per-step"
+                    defaultMergePolicy: e.target.value as "sequential" | "batch-at-end" | "per-step"
                   }))
                 }
               >
@@ -411,15 +699,15 @@ export function GeneralSection() {
                 <option value="per-step">Per step</option>
               </select>
             </label>
-            <label className="text-sm">
+            <label className="text-sm md:col-span-2">
               <div className="text-xs text-muted-fg">Default conflict handoff</div>
               <select
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
+                className={cn(selectClass, "md:w-56")}
                 value={orchestratorDraft.defaultConflictHandoff}
-                onChange={(event) =>
+                onChange={(e) =>
                   setOrchestratorDraft((prev) => ({
                     ...prev,
-                    defaultConflictHandoff: event.target.value as "auto-resolve" | "ask-user" | "orchestrator-decides"
+                    defaultConflictHandoff: e.target.value as "auto-resolve" | "ask-user" | "orchestrator-decides"
                   }))
                 }
               >
@@ -428,43 +716,103 @@ export function GeneralSection() {
                 <option value="orchestrator-decides">Orchestrator decides</option>
               </select>
             </label>
-            <label className="text-sm">
-              <div className="text-xs text-muted-fg">Max total budget (USD, 0 = unlimited)</div>
-              <input
-                type="number"
-                min={0}
-                step={0.5}
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
-                value={orchestratorDraft.maxTotalBudgetUsd}
-                onChange={(event) =>
-                  setOrchestratorDraft((prev) => ({
-                    ...prev,
-                    maxTotalBudgetUsd: event.target.value
-                  }))
-                }
-              />
-            </label>
-            <label className="text-sm">
-              <div className="text-xs text-muted-fg">Max per-step budget (USD, 0 = unlimited)</div>
-              <input
-                type="number"
-                min={0}
-                step={0.5}
-                className="mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm"
-                value={orchestratorDraft.maxPerStepBudgetUsd}
-                onChange={(event) =>
-                  setOrchestratorDraft((prev) => ({
-                    ...prev,
-                    maxPerStepBudgetUsd: event.target.value
-                  }))
-                }
-              />
-            </label>
           </div>
           <div className="mt-3">
-            <Button size="sm" onClick={() => void saveOrchestratorSettings()} disabled={orchestratorBusy}>
-              {orchestratorBusy ? "Saving..." : "Save orchestrator settings"}
+            <Button size="sm" onClick={() => void saveAllSettings()} disabled={orchestratorBusy}>
+              {orchestratorBusy ? "Saving..." : "Save all settings"}
             </Button>
+          </div>
+        </div>
+
+        {/* Worker Permissions */}
+        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+          <div className="text-xs text-muted-fg">Worker Permissions</div>
+          <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
+            {/* Claude worker permissions */}
+            <div className="space-y-2">
+              <div className="text-xs font-semibold">Claude Worker</div>
+              <label className="text-sm">
+                <div className="text-xs text-muted-fg">Permission mode</div>
+                <select
+                  className={selectClass}
+                  value={workerPermDraft.claudePermissionMode}
+                  disabled={workerPermDraft.claudeDangerouslySkip}
+                  onChange={(e) =>
+                    setWorkerPermDraft((prev) => ({ ...prev, claudePermissionMode: e.target.value }))
+                  }
+                >
+                  <option value="plan">Plan (read-only)</option>
+                  <option value="acceptEdits">Accept edits</option>
+                  <option value="bypassPermissions">Bypass permissions</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={workerPermDraft.claudeDangerouslySkip}
+                  onChange={(e) =>
+                    setWorkerPermDraft((prev) => ({ ...prev, claudeDangerouslySkip: e.target.checked }))
+                  }
+                />
+                Dangerously skip permissions
+              </label>
+              {workerPermDraft.claudeDangerouslySkip ? (
+                <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                  Warning: This disables all permission checks for Claude workers. Use with caution.
+                </div>
+              ) : null}
+              <div className="text-xs text-muted-fg">
+                Claude workers will also read CLAUDE.md and .claude/settings.json from your project root.
+              </div>
+            </div>
+
+            {/* Codex worker permissions */}
+            <div className="space-y-2">
+              <div className="text-xs font-semibold">Codex Worker</div>
+              <label className="text-sm">
+                <div className="text-xs text-muted-fg">Sandbox mode</div>
+                <select
+                  className={selectClass}
+                  value={workerPermDraft.codexSandboxPermissions}
+                  onChange={(e) =>
+                    setWorkerPermDraft((prev) => ({ ...prev, codexSandboxPermissions: e.target.value }))
+                  }
+                >
+                  <option value="read-only">Read-only</option>
+                  <option value="workspace-write">Workspace write</option>
+                  <option value="danger-full-access">Full access (dangerous)</option>
+                </select>
+              </label>
+              <label className="text-sm">
+                <div className="text-xs text-muted-fg">Approval mode</div>
+                <select
+                  className={selectClass}
+                  value={workerPermDraft.codexApprovalMode}
+                  onChange={(e) =>
+                    setWorkerPermDraft((prev) => ({ ...prev, codexApprovalMode: e.target.value }))
+                  }
+                >
+                  <option value="suggest">Suggest</option>
+                  <option value="auto-edit">Auto-edit</option>
+                  <option value="full-auto">Full auto</option>
+                </select>
+              </label>
+              <label className="text-sm">
+                <div className="text-xs text-muted-fg">Config TOML path</div>
+                <input
+                  type="text"
+                  className={inputClass}
+                  placeholder="Leave blank to use default Codex configuration"
+                  value={workerPermDraft.codexConfigPath}
+                  onChange={(e) =>
+                    setWorkerPermDraft((prev) => ({ ...prev, codexConfigPath: e.target.value }))
+                  }
+                />
+              </label>
+              <div className="text-xs text-muted-fg">
+                Leave blank to use default Codex configuration.
+              </div>
+            </div>
           </div>
         </div>
 

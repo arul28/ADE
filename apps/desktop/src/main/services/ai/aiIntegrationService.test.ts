@@ -3,7 +3,9 @@ import type { AgentEvent, ExecutorOpts } from "./agentExecutor";
 
 const mockState = vi.hoisted(() => ({
   claudeExecute: vi.fn(),
+  claudeResume: vi.fn(),
   codexExecute: vi.fn(),
+  codexResume: vi.fn(),
   commandExists: vi.fn()
 }));
 
@@ -11,11 +13,7 @@ vi.mock("./claudeExecutor", () => ({
   createClaudeExecutor: () => ({
     provider: "claude" as const,
     execute: mockState.claudeExecute,
-    resume: () => ({
-      async *[Symbol.asyncIterator]() {
-        // no-op
-      }
-    })
+    resume: mockState.claudeResume
   })
 }));
 
@@ -23,11 +21,7 @@ vi.mock("./codexExecutor", () => ({
   createCodexExecutor: () => ({
     provider: "codex" as const,
     execute: mockState.codexExecute,
-    resume: () => ({
-      async *[Symbol.asyncIterator]() {
-        // no-op
-      }
-    })
+    resume: mockState.codexResume
   })
 }));
 
@@ -125,6 +119,17 @@ beforeEach(() => {
       }
     ])
   );
+  mockState.claudeResume.mockImplementation((_sessionId: string, _prompt: string, opts: ExecutorOpts) =>
+    streamEvents([
+      { type: "text", content: "claude resumed response" },
+      {
+        type: "done",
+        sessionId: "claude-session-resumed",
+        model: opts.model ?? "sonnet",
+        usage: { inputTokens: 77, outputTokens: 21 }
+      }
+    ])
+  );
 
   mockState.codexExecute.mockImplementation((_prompt: string, opts: ExecutorOpts) =>
     streamEvents([
@@ -134,6 +139,17 @@ beforeEach(() => {
         sessionId: "codex-session",
         model: opts.model ?? "gpt-5.3-codex",
         usage: { inputTokens: 88, outputTokens: 33 }
+      }
+    ])
+  );
+  mockState.codexResume.mockImplementation((_sessionId: string, _prompt: string, opts: ExecutorOpts) =>
+    streamEvents([
+      { type: "text", content: "codex resumed response" },
+      {
+        type: "done",
+        sessionId: "codex-session-resumed",
+        model: opts.model ?? "gpt-5.3-codex",
+        usage: { inputTokens: 55, outputTokens: 19 }
       }
     ])
   );
@@ -166,6 +182,36 @@ describe("aiIntegrationService", () => {
 
     expect(mockState.codexExecute).toHaveBeenCalledTimes(1);
     expect(mockState.claudeExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes provider-native sessions when sessionId is provided", async () => {
+    const { service } = makeService();
+
+    const codexResult = await service.executeTask({
+      feature: "orchestrator",
+      taskType: "implementation",
+      prompt: "continue",
+      cwd: "/tmp",
+      provider: "codex",
+      sessionId: "codex-thread-123"
+    });
+    expect(mockState.codexResume).toHaveBeenCalledTimes(1);
+    expect(mockState.codexResume.mock.calls[0]?.[0]).toBe("codex-thread-123");
+    expect(mockState.codexExecute).not.toHaveBeenCalled();
+    expect(codexResult.sessionId).toBe("codex-session-resumed");
+
+    const claudeResult = await service.executeTask({
+      feature: "orchestrator",
+      taskType: "review",
+      prompt: "continue",
+      cwd: "/tmp",
+      provider: "claude",
+      sessionId: "claude-session-123"
+    });
+    expect(mockState.claudeResume).toHaveBeenCalledTimes(1);
+    expect(mockState.claudeResume.mock.calls[0]?.[0]).toBe("claude-session-123");
+    expect(mockState.claudeExecute).not.toHaveBeenCalled();
+    expect(claudeResult.sessionId).toBe("claude-session-resumed");
   });
 
   it("maps Claude and Codex permissions into ADE unified modes", async () => {

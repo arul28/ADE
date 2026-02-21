@@ -247,7 +247,15 @@ import type {
   GetOrchestratorWorkerStatesArgs,
   OrchestratorWorkerState,
   StartMissionRunWithAIArgs,
-  StartMissionRunWithAIResult
+  StartMissionRunWithAIResult,
+  SteerMissionArgs,
+  SteerMissionResult,
+  GetMissionDepthConfigArgs,
+  MissionDepthConfig,
+  GetModelCapabilitiesResult,
+  OrchestratorChatMessage,
+  SendOrchestratorChatArgs,
+  GetOrchestratorChatArgs
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -383,6 +391,16 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorGetWorkerStates, args),
     startMissionRun: async (args: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> =>
       ipcRenderer.invoke(IPC.orchestratorStartMissionRun, args),
+    steerMission: async (args: SteerMissionArgs): Promise<SteerMissionResult> =>
+      ipcRenderer.invoke(IPC.orchestratorSteerMission, args),
+    getDepthConfig: async (args: GetMissionDepthConfigArgs): Promise<MissionDepthConfig> =>
+      ipcRenderer.invoke(IPC.orchestratorGetDepthConfig, args),
+    getModelCapabilities: async (): Promise<GetModelCapabilitiesResult> =>
+      ipcRenderer.invoke(IPC.orchestratorGetModelCapabilities),
+    sendChat: async (args: SendOrchestratorChatArgs): Promise<OrchestratorChatMessage> =>
+      ipcRenderer.invoke(IPC.orchestratorSendChat, args),
+    getChat: async (args: GetOrchestratorChatArgs): Promise<OrchestratorChatMessage[]> =>
+      ipcRenderer.invoke(IPC.orchestratorGetChat, args),
     onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => cb(payload);
       ipcRenderer.on(IPC.orchestratorEvent, listener);

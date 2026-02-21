@@ -236,7 +236,15 @@ import type {
   GetOrchestratorWorkerStatesArgs,
   OrchestratorWorkerState,
   StartMissionRunWithAIArgs,
-  StartMissionRunWithAIResult
+  StartMissionRunWithAIResult,
+  SteerMissionArgs,
+  SteerMissionResult,
+  GetMissionDepthConfigArgs,
+  MissionDepthConfig,
+  GetModelCapabilitiesResult,
+  OrchestratorChatMessage,
+  SendOrchestratorChatArgs,
+  GetOrchestratorChatArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -1191,6 +1199,80 @@ export function registerIpc({
     const executorPolicy = normalizeMissionExecutorPolicy(arg?.executorPolicy);
     const executionMode = arg?.executionMode ?? "local";
     const targetMachineId = typeof arg?.targetMachineId === "string" ? arg.targetMachineId.trim() || null : null;
+    const autostart = arg?.autostart !== false;
+    const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
+    const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
+      ? "manual"
+      : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? defaultExecutorForPolicy(executorPolicy));
+
+    // Fast-path for autostart missions: create immediately and launch in the background
+    // so renderer IPC does not block on planning/launch work.
+    if (autostart) {
+      const created = ctx.missionService.create({
+        ...arg,
+        launchMode: runMode,
+        autostart: true,
+        autopilotExecutor: defaultExecutorKind
+      });
+
+      try {
+        await ctx.packService.refreshMissionPack({
+          missionId: created.id,
+          reason: "mission_created"
+        });
+      } catch (error) {
+        ctx.logger.warn("packs.refresh_mission_pack_failed", {
+          missionId: created.id,
+          reason: "mission_created",
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+
+      void (async () => {
+        try {
+          const launch = await ctx.aiOrchestratorService.startMissionRun({
+            missionId: created.id,
+            runMode,
+            autopilotOwnerId: "missions-autopilot",
+            defaultExecutorKind,
+            defaultRetryLimit: 1,
+            metadata: {
+              launchSource: "missions.create.fast_path",
+              plannerEngineRequested: plannerEngine,
+              plannerExecutorPolicy: executorPolicy
+            }
+          });
+          if (launch.blockedByPlanReview) {
+            ctx.logger.info("missions.autostart_plan_review_blocked", {
+              missionId: created.id
+            });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          ctx.logger.warn("missions.autostart_failed", {
+            missionId: created.id,
+            runMode,
+            defaultExecutorKind,
+            error: message
+          });
+          try {
+            ctx.missionService.addIntervention({
+              missionId: created.id,
+              interventionType: "policy_block",
+              title: "Mission launch requires action",
+              body: `Automatic run launch failed: ${message}`,
+              requestedAction: "Review planner/runtime configuration and retry the blocked step."
+            });
+          } catch {
+            // ignore best-effort intervention creation
+          }
+        }
+      })();
+
+      const detail = ctx.missionService.get(created.id);
+      if (detail) return detail;
+      return created;
+    }
 
     const planning = await planMissionOnce({
       title,
@@ -1240,56 +1322,6 @@ export function registerIpc({
         reason: "mission_created",
         error: error instanceof Error ? error.message : String(error)
       });
-    }
-
-    const autostart = arg?.autostart !== false;
-    if (autostart) {
-      const runMode = arg?.launchMode === "manual" ? "manual" : "autopilot";
-      const defaultExecutorKind: OrchestratorExecutorKind = runMode === "manual"
-        ? "manual"
-        : normalizeAutopilotExecutor(arg?.autopilotExecutor ?? defaultExecutorForPolicy(executorPolicy));
-      try {
-        const launch = await ctx.aiOrchestratorService.startMissionRun({
-          missionId: created.id,
-          runMode,
-          autopilotOwnerId: "missions-autopilot",
-          defaultExecutorKind,
-          defaultRetryLimit: 1,
-          metadata: {
-            launchSource: "missions.create",
-            plannerRunId: planning.run.id,
-            plannerEngineRequested: planning.run.requestedEngine,
-            plannerEngineResolved: planning.run.resolvedEngine,
-            plannerExecutorPolicy: executorPolicy,
-            plannerDegraded: planning.run.degraded,
-            plannerReasonCode: planning.run.reasonCode
-          }
-        });
-        if (launch.blockedByPlanReview) {
-          ctx.logger.info("missions.autostart_plan_review_blocked", {
-            missionId: created.id
-          });
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.logger.warn("missions.autostart_failed", {
-          missionId: created.id,
-          runMode,
-          defaultExecutorKind,
-          error: message
-        });
-        try {
-          ctx.missionService.addIntervention({
-            missionId: created.id,
-            interventionType: "policy_block",
-            title: "Mission launch requires action",
-            body: `Automatic run launch failed: ${message}`,
-            requestedAction: "Review planner/runtime configuration and retry the blocked step."
-          });
-        } catch {
-          // ignore best-effort intervention creation
-        }
-      }
     }
 
     const detail = ctx.missionService.get(created.id);
@@ -1525,6 +1557,46 @@ export function registerIpc({
     async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.startMissionRun(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorSteerMission,
+    async (_event, arg: SteerMissionArgs): Promise<SteerMissionResult> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.steerMission(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetDepthConfig,
+    async (_event, arg: GetMissionDepthConfigArgs): Promise<MissionDepthConfig> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getDepthConfig(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetModelCapabilities,
+    async (): Promise<GetModelCapabilitiesResult> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getModelCapabilities();
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorSendChat,
+    async (_event, arg: SendOrchestratorChatArgs): Promise<OrchestratorChatMessage> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.sendChat(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetChat,
+    async (_event, arg: GetOrchestratorChatArgs): Promise<OrchestratorChatMessage[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getChat(arg);
     }
   );
 

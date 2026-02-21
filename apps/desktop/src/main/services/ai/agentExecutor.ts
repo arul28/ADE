@@ -30,6 +30,7 @@ export type ExecutorOpts = {
   systemPrompt?: string;
   jsonSchema?: unknown;
   model?: string;
+  reasoningEffort?: string;
   timeoutMs: number;
   maxBudgetUsd?: number;
   oneShot?: boolean;
@@ -72,6 +73,6 @@ export type AgentModelDescriptor = {
 export interface AgentExecutor {
   readonly provider: AgentProvider;
   execute(prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
-  resume(sessionId: string, prompt?: string, opts?: Omit<ExecutorOpts, "cwd" | "timeoutMs" | "permissions">): AsyncIterable<AgentEvent>;
+  resume(sessionId: string, prompt: string, opts: ExecutorOpts): AsyncIterable<AgentEvent>;
   listModels?(): Promise<AgentModelDescriptor[]>;
 }

@@ -193,8 +193,8 @@ type ResolvedOrchestratorRuntimeConfig = {
   maxRetriesPerStep: number;
   contextPressureThreshold: number;
   progressiveLoading: boolean;
-  maxTotalBudgetUsd: number | null;
-  maxPerStepBudgetUsd: number | null;
+  maxTotalTokenBudget: number | null;
+  maxPerStepTokenBudget: number | null;
 };
 
 export type OrchestratorEvent = {
@@ -239,6 +239,22 @@ export type OrchestratorExecutorStartArgs = {
   docsRefs: OrchestratorDocsRef[];
   fullDocs: Array<{ path: string; content: string; truncated: boolean }>;
   createTrackedSession: (args: Omit<PtyCreateArgs, "tracked"> & { tracked?: boolean }) => Promise<{ ptyId: string; sessionId: string }>;
+  permissionConfig?: {
+    claude?: {
+      permissionMode?: string;
+      dangerouslySkipPermissions?: boolean;
+      allowedTools?: string[];
+      settingsSources?: string[];
+      sandbox?: boolean;
+    };
+    codex?: {
+      sandboxPermissions?: string;
+      approvalMode?: string;
+      writablePaths?: string[];
+      commandAllowlist?: string[];
+      configPath?: string;
+    };
+  };
 };
 
 export type OrchestratorExecutorAdapter = {
@@ -304,8 +320,8 @@ const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
   maxRetriesPerStep: 2,
   contextPressureThreshold: 0.8,
   progressiveLoading: true,
-  maxTotalBudgetUsd: null,
-  maxPerStepBudgetUsd: null
+  maxTotalTokenBudget: null,
+  maxPerStepTokenBudget: null
 };
 
 function nowIso(): string {
@@ -946,8 +962,8 @@ export function createOrchestratorService({
       0.99
     );
     out.progressiveLoading = asBool(orchestrator.progressiveLoading, asBool(orchestrator.progressive_loading, out.progressiveLoading));
-    out.maxTotalBudgetUsd = asPositiveNumberOrNull(orchestrator.maxTotalBudgetUsd ?? orchestrator.max_total_budget_usd);
-    out.maxPerStepBudgetUsd = asPositiveNumberOrNull(orchestrator.maxPerStepBudgetUsd ?? orchestrator.max_per_step_budget_usd);
+    out.maxTotalTokenBudget = asPositiveNumberOrNull(orchestrator.maxTotalTokenBudget ?? orchestrator.max_total_token_budget);
+    out.maxPerStepTokenBudget = asPositiveNumberOrNull(orchestrator.maxPerStepTokenBudget ?? orchestrator.max_per_step_token_budget);
     return out;
   };
 
@@ -3616,12 +3632,12 @@ export function createOrchestratorService({
         contextProfile: contextPolicy
       });
 
-      // Budget guard: check total budget before dispatching
-      const budgetConsumed = Number(run.metadata?.budgetConsumedUsd ?? 0);
-      if (runtimeConfig.maxTotalBudgetUsd != null && budgetConsumed >= runtimeConfig.maxTotalBudgetUsd) {
+      // Budget guard: check total token budget before dispatching
+      const tokensConsumed = Number(run.metadata?.tokensConsumed ?? 0);
+      if (runtimeConfig.maxTotalTokenBudget != null && tokensConsumed >= runtimeConfig.maxTotalTokenBudget) {
         releaseClaimsForAttempt({ attemptId, state: "released" });
         updateRunStatus(run.id, "paused", {
-          last_error: `Total budget exceeded: $${budgetConsumed.toFixed(2)} >= $${runtimeConfig.maxTotalBudgetUsd.toFixed(2)}`
+          last_error: `Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`
         });
         appendTimelineEvent({
           runId: run.id,
@@ -3630,11 +3646,11 @@ export function createOrchestratorService({
           eventType: "budget_exceeded",
           reason: "total_budget_limit",
           detail: {
-            budgetConsumedUsd: budgetConsumed,
-            maxTotalBudgetUsd: runtimeConfig.maxTotalBudgetUsd
+            tokensConsumed,
+            maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget
           }
         });
-        throw new Error(`Total budget exceeded: $${budgetConsumed.toFixed(2)} >= $${runtimeConfig.maxTotalBudgetUsd.toFixed(2)}`);
+        throw new Error(`Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`);
       }
 
       db.run(
@@ -3773,6 +3789,37 @@ export function createOrchestratorService({
 
       const adapter = adapters.get(executorKind) ?? defaultAdapterFor(executorKind);
       if (adapter) {
+        // Read permission config from project config for worker adapters
+        const permissionConfig = (() => {
+          const snapshot = projectConfigService?.get();
+          const ai = asRecord(snapshot?.effective?.ai);
+          const permissions = asRecord(ai?.permissions);
+          if (!permissions) return undefined;
+          const claudePerms = asRecord(permissions.claude);
+          const codexPerms = asRecord(permissions.codex);
+          if (!claudePerms && !codexPerms) return undefined;
+          const config: NonNullable<OrchestratorExecutorStartArgs["permissionConfig"]> = {};
+          if (claudePerms) {
+            config.claude = {
+              permissionMode: typeof claudePerms.permissionMode === "string" ? claudePerms.permissionMode : undefined,
+              dangerouslySkipPermissions: typeof claudePerms.dangerouslySkipPermissions === "boolean" ? claudePerms.dangerouslySkipPermissions : undefined,
+              allowedTools: Array.isArray(claudePerms.allowedTools) ? claudePerms.allowedTools.filter((v): v is string => typeof v === "string") : undefined,
+              settingsSources: Array.isArray(claudePerms.settingsSources) ? claudePerms.settingsSources.filter((v): v is string => typeof v === "string") : undefined,
+              sandbox: typeof claudePerms.sandbox === "boolean" ? claudePerms.sandbox : undefined,
+            };
+          }
+          if (codexPerms) {
+            config.codex = {
+              sandboxPermissions: typeof codexPerms.sandboxPermissions === "string" ? codexPerms.sandboxPermissions : undefined,
+              approvalMode: typeof codexPerms.approvalMode === "string" ? codexPerms.approvalMode : undefined,
+              writablePaths: Array.isArray(codexPerms.writablePaths) ? codexPerms.writablePaths.filter((v): v is string => typeof v === "string") : undefined,
+              commandAllowlist: Array.isArray(codexPerms.commandAllowlist) ? codexPerms.commandAllowlist.filter((v): v is string => typeof v === "string") : undefined,
+              configPath: typeof codexPerms.configPath === "string" ? codexPerms.configPath : undefined,
+            };
+          }
+          return config;
+        })();
+
         const result = await adapter.start({
           run,
           step,
@@ -3786,7 +3833,8 @@ export function createOrchestratorService({
             this.createOrchestratedSession({
               ...sessionArgs,
               tracked: true
-            })
+            }),
+          permissionConfig
         });
         if (result.status === "accepted") {
           const sessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
@@ -4107,14 +4155,14 @@ export function createOrchestratorService({
         }
       });
 
-      // Budget accumulation: if attempt metadata includes budgetConsumedUsd, accumulate into run
-      const attemptBudget = Number(args.metadata?.budgetConsumedUsd ?? 0);
-      if (attemptBudget > 0) {
+      // Budget accumulation: if attempt metadata includes tokensConsumed, accumulate into run
+      const attemptTokens = Number(args.metadata?.tokensConsumed ?? 0);
+      if (attemptTokens > 0) {
         const currentRunRow = getRunRow(run.id);
         const currentRunMeta = currentRunRow ? (parseRecord(currentRunRow.metadata_json) ?? {}) : (run.metadata ?? {});
-        const currentTotal = Number(currentRunMeta.budgetConsumedUsd ?? 0);
-        const newTotal = currentTotal + attemptBudget;
-        const updatedMeta = { ...currentRunMeta, budgetConsumedUsd: newTotal };
+        const currentTotal = Number(currentRunMeta.tokensConsumed ?? 0);
+        const newTotal = currentTotal + attemptTokens;
+        const updatedMeta = { ...currentRunMeta, tokensConsumed: newTotal };
         db.run(
           `
             update orchestrator_runs
@@ -4132,15 +4180,15 @@ export function createOrchestratorService({
           eventType: "budget_updated",
           reason: "attempt_budget_accumulated",
           detail: {
-            attemptBudgetUsd: attemptBudget,
-            totalBudgetUsd: newTotal
+            attemptTokens,
+            totalTokensConsumed: newTotal
           }
         });
         // Check if total exceeds limit; if so, pause the run
         const runtimeConfig = getRuntimeConfig();
-        if (runtimeConfig.maxTotalBudgetUsd != null && newTotal >= runtimeConfig.maxTotalBudgetUsd) {
+        if (runtimeConfig.maxTotalTokenBudget != null && newTotal >= runtimeConfig.maxTotalTokenBudget) {
           updateRunStatus(run.id, "paused", {
-            last_error: `Total budget exceeded: $${newTotal.toFixed(2)} >= $${runtimeConfig.maxTotalBudgetUsd.toFixed(2)}`,
+            last_error: `Total token budget exceeded: ${newTotal} >= ${runtimeConfig.maxTotalTokenBudget}`,
             metadata_json: JSON.stringify(updatedMeta)
           });
           appendTimelineEvent({
@@ -4150,8 +4198,8 @@ export function createOrchestratorService({
             eventType: "budget_exceeded",
             reason: "total_budget_limit",
             detail: {
-              budgetConsumedUsd: newTotal,
-              maxTotalBudgetUsd: runtimeConfig.maxTotalBudgetUsd
+              tokensConsumed: newTotal,
+              maxTotalTokenBudget: runtimeConfig.maxTotalTokenBudget
             }
           });
         }
