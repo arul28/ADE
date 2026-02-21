@@ -33,6 +33,7 @@ import type {
   MissionSummary,
   OrchestratorAttempt,
   OrchestratorChatMessage,
+  OrchestratorClaim,
   OrchestratorExecutorKind,
   OrchestratorRunGraph,
   OrchestratorStep,
@@ -239,6 +240,37 @@ function stepIntentSummary(step: OrchestratorStep): string {
   }
   const first = candidates.find((entry) => entry.trim().length > 0);
   return compactText(first ?? "No additional detail yet.");
+}
+
+export function resolveStepHeartbeatAt(args: {
+  step: OrchestratorStep;
+  attempts: OrchestratorAttempt[];
+  claims: OrchestratorClaim[];
+}): string | null {
+  const toEpoch = (iso: string): number => {
+    const ts = Date.parse(iso);
+    return Number.isFinite(ts) ? ts : -1;
+  };
+  const pickMostRecent = (claims: OrchestratorClaim[]): string | null => {
+    if (!claims.length) return null;
+    return [...claims]
+      .sort((a, b) => toEpoch(b.heartbeatAt) - toEpoch(a.heartbeatAt))[0]?.heartbeatAt ?? null;
+  };
+
+  const latestAttemptId = args.attempts[0]?.id ?? null;
+  if (latestAttemptId) {
+    const latestAttemptHeartbeat = pickMostRecent(
+      args.claims.filter((claim) => claim.attemptId === latestAttemptId)
+    );
+    if (latestAttemptHeartbeat) return latestAttemptHeartbeat;
+  }
+
+  const attemptIds = new Set(args.attempts.map((attempt) => attempt.id));
+  return pickMostRecent(
+    args.claims.filter((claim) =>
+      claim.stepId === args.step.id || (claim.attemptId ? attemptIds.has(claim.attemptId) : false)
+    )
+  );
 }
 
 /** Turn a raw orchestrator timeline event into a human-readable sentence. */
@@ -1500,6 +1532,8 @@ export default function MissionsPage() {
                     <StepDetailPanel
                       step={selectedStep}
                       attempts={selectedStepAttempts}
+                      allSteps={runGraph?.steps ?? []}
+                      claims={runGraph?.claims ?? []}
                       onOpenTranscript={() => setActiveTab("transcript")}
                     />
                   </div>
@@ -1517,6 +1551,8 @@ export default function MissionsPage() {
                     <StepDetailPanel
                       step={selectedStep}
                       attempts={selectedStepAttempts}
+                      allSteps={runGraph?.steps ?? []}
+                      claims={runGraph?.claims ?? []}
                       onOpenTranscript={() => setActiveTab("transcript")}
                     />
                   </div>
@@ -1772,10 +1808,14 @@ function ActivityNarrativeHeader({
 function StepDetailPanel({
   step,
   attempts,
+  allSteps,
+  claims,
   onOpenTranscript
 }: {
   step: OrchestratorStep | null;
   attempts: OrchestratorAttempt[];
+  allSteps: OrchestratorStep[];
+  claims: OrchestratorClaim[];
   onOpenTranscript: () => void;
 }) {
   if (!step) {
@@ -1790,6 +1830,17 @@ function StepDetailPanel({
   const latestAttempt = attempts[0] ?? null;
   const meta = isRecord(step.metadata) ? step.metadata : {};
   const stepType = typeof meta.stepType === "string" ? meta.stepType : "unknown";
+  const expectedSignals = Array.isArray(meta.expectedSignals)
+    ? meta.expectedSignals
+        .map((entry) => String(entry ?? "").trim())
+        .filter(Boolean)
+    : [];
+  const doneCriteria = typeof meta.doneCriteria === "string" ? meta.doneCriteria.trim() : "";
+  const dependencyLabels = step.dependencyStepIds
+    .map((depId) => allSteps.find((candidate) => candidate.id === depId))
+    .filter((dep): dep is OrchestratorStep => Boolean(dep))
+    .map((dep) => dep.title.trim() || dep.stepKey);
+  const latestHeartbeatAt = resolveStepHeartbeatAt({ step, attempts, claims });
 
   return (
     <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[300px] lg:shrink-0">
@@ -1822,7 +1873,34 @@ function StepDetailPanel({
           <div className="text-muted-fg">Dependencies</div>
           <div className="font-medium text-fg">{step.dependencyStepIds.length}</div>
         </div>
+        <div className="col-span-2 rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+          <div className="text-muted-fg">Lane</div>
+          <div className="font-medium text-fg">{step.laneId ?? "none"}</div>
+        </div>
       </div>
+
+      {(dependencyLabels.length > 0 || doneCriteria || expectedSignals.length > 0) && (
+        <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px] space-y-1.5">
+          {dependencyLabels.length > 0 && (
+            <div>
+              <div className="text-muted-fg">Depends on</div>
+              <div className="mt-0.5 text-fg leading-snug">{dependencyLabels.join(", ")}</div>
+            </div>
+          )}
+          {doneCriteria && (
+            <div>
+              <div className="text-muted-fg">Completion Criteria</div>
+              <div className="mt-0.5 text-fg leading-snug">{compactText(doneCriteria, 220)}</div>
+            </div>
+          )}
+          {expectedSignals.length > 0 && (
+            <div>
+              <div className="text-muted-fg">Expected Signals</div>
+              <div className="mt-0.5 text-fg leading-snug">{expectedSignals.slice(0, 4).join(", ")}</div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px]">
         <div className="text-muted-fg">Latest Worker Attempt</div>
@@ -1844,6 +1922,10 @@ function StepDetailPanel({
             <div className="flex items-center justify-between">
               <span className="text-muted-fg">Started</span>
               <span className="text-fg">{latestAttempt.startedAt ? relativeWhen(latestAttempt.startedAt) : "--"}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-fg">Heartbeat age</span>
+              <span className="text-fg">{latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}</span>
             </div>
             {latestAttempt.errorMessage && (
               <div className="rounded border border-red-500/25 bg-red-500/10 px-1.5 py-1 text-red-300">

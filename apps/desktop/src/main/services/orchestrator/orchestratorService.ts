@@ -464,6 +464,117 @@ function normalizeProfileId(value: string | null | undefined): OrchestratorConte
   return DEFAULT_CONTEXT_PROFILE_ID;
 }
 
+function normalizeTerminalSessionStatus(value: unknown): "running" | "completed" | "failed" | "disposed" | "unknown" {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "running" || normalized === "completed" || normalized === "failed" || normalized === "disposed") {
+    return normalized;
+  }
+  return "unknown";
+}
+
+type StepGraphValidationStep = {
+  stepKey: string;
+  dependencyStepKeys: string[];
+  joinPolicy: OrchestratorJoinPolicy;
+  quorumCount: number | null;
+};
+
+function normalizeDependencyStepKeys(dependencyStepKeys: string[] | undefined): string[] {
+  if (!Array.isArray(dependencyStepKeys)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of dependencyStepKeys) {
+    const key = String(raw ?? "").trim();
+    if (!key.length) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function validateStepGraphIntegrity(args: {
+  context: "startRun" | "addSteps";
+  steps: StepGraphValidationStep[];
+}): void {
+  const byKey = new Map<string, StepGraphValidationStep>();
+  for (const step of args.steps) {
+    const stepKey = step.stepKey.trim();
+    if (!stepKey.length) {
+      throw new Error(`Encountered empty stepKey while validating ${args.context} graph.`);
+    }
+    if (byKey.has(stepKey)) {
+      throw new Error(`Duplicate stepKey in ${args.context} graph: ${stepKey}`);
+    }
+    byKey.set(stepKey, {
+      ...step,
+      stepKey,
+      dependencyStepKeys: normalizeDependencyStepKeys(step.dependencyStepKeys)
+    });
+  }
+
+  for (const step of byKey.values()) {
+    for (const dependencyKey of step.dependencyStepKeys) {
+      if (!byKey.has(dependencyKey)) {
+        throw new Error(`Unknown dependency stepKey '${dependencyKey}' referenced by step '${step.stepKey}'.`);
+      }
+      if (dependencyKey === step.stepKey) {
+        throw new Error(`Step '${step.stepKey}' cannot depend on itself.`);
+      }
+    }
+
+    if (step.joinPolicy === "any_success" && step.dependencyStepKeys.length === 0) {
+      throw new Error(`Step '${step.stepKey}' uses joinPolicy=any_success without dependencies.`);
+    }
+    if (step.joinPolicy === "quorum") {
+      if (step.dependencyStepKeys.length === 0) {
+        throw new Error(`Step '${step.stepKey}' uses joinPolicy=quorum without dependencies.`);
+      }
+      if (step.quorumCount != null) {
+        const quorum = Number(step.quorumCount);
+        if (!Number.isFinite(quorum) || quorum <= 0 || Math.floor(quorum) > step.dependencyStepKeys.length) {
+          throw new Error(
+            `Step '${step.stepKey}' has quorumCount=${String(step.quorumCount)} outside valid range 1..${step.dependencyStepKeys.length}.`
+          );
+        }
+      }
+    }
+  }
+
+  const indegree = new Map<string, number>();
+  const adjacency = new Map<string, string[]>();
+  for (const step of byKey.values()) {
+    indegree.set(step.stepKey, 0);
+    adjacency.set(step.stepKey, []);
+  }
+  for (const step of byKey.values()) {
+    for (const dependencyKey of step.dependencyStepKeys) {
+      adjacency.get(dependencyKey)?.push(step.stepKey);
+      indegree.set(step.stepKey, (indegree.get(step.stepKey) ?? 0) + 1);
+    }
+  }
+
+  const queue = [...indegree.entries()]
+    .filter(([, degree]) => degree === 0)
+    .map(([stepKey]) => stepKey);
+  let visited = 0;
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    visited += 1;
+    for (const dependentKey of adjacency.get(current) ?? []) {
+      const nextDegree = (indegree.get(dependentKey) ?? 0) - 1;
+      indegree.set(dependentKey, nextDegree);
+      if (nextDegree === 0) {
+        queue.push(dependentKey);
+      }
+    }
+  }
+
+  if (visited !== byKey.size) {
+    throw new Error(`Dependency cycle detected in ${args.context} step graph.`);
+  }
+}
+
 function toRun(row: RunRow): OrchestratorRun {
   return {
     id: row.id,
@@ -1521,13 +1632,26 @@ export function createOrchestratorService({
     return count;
   };
 
-  const evaluateDependencyGate = (step: OrchestratorStep, statusesById: Map<string, OrchestratorStepStatus>) => {
+  const isPermanentlyBlockedStep = (step: OrchestratorStep): boolean => {
+    if (step.status !== "blocked") return false;
+    if (step.metadata?.blockedSticky === true) return true;
+    return step.metadata?.blockedErrorClass === "policy";
+  };
+
+  const isTerminalForDependencyGate = (step: OrchestratorStep | null): boolean => {
+    if (!step) return false;
+    if (TERMINAL_STEP_STATUSES.has(step.status)) return true;
+    return isPermanentlyBlockedStep(step);
+  };
+
+  const evaluateDependencyGate = (step: OrchestratorStep, stepsById: Map<string, OrchestratorStep>) => {
     if (!step.dependencyStepIds.length) {
       return { satisfied: true, permanentlyBlocked: false };
     }
-    const depStatuses = step.dependencyStepIds.map((id) => statusesById.get(id) ?? "pending");
+    const depSteps = step.dependencyStepIds.map((id) => stepsById.get(id) ?? null);
+    const depStatuses = depSteps.map((dep) => dep?.status ?? "pending");
     const successCount = depStatuses.filter((status) => status === "succeeded" || status === "skipped").length;
-    const allTerminal = depStatuses.every((status) => TERMINAL_STEP_STATUSES.has(status));
+    const allTerminal = depSteps.every((dep) => isTerminalForDependencyGate(dep));
     if (step.joinPolicy === "any_success") {
       if (successCount >= 1) return { satisfied: true, permanentlyBlocked: false };
       return { satisfied: false, permanentlyBlocked: allTerminal };
@@ -1547,20 +1671,24 @@ export function createOrchestratorService({
     const rows = listStepRows(runId);
     if (!rows.length) return;
     const steps = rows.map(toStep);
+    const stepsById = new Map<string, OrchestratorStep>(steps.map((step) => [step.id, step] as const));
     const statusesById = new Map<string, OrchestratorStepStatus>(steps.map((step) => [step.id, step.status] as const));
     const now = nowIso();
 
     for (const step of steps) {
       if (step.status === "running" || TERMINAL_STEP_STATUSES.has(step.status)) continue;
-      const gate = evaluateDependencyGate(step, statusesById);
+      const gate = evaluateDependencyGate(step, stepsById);
       const stepPolicy = resolveStepPolicy(step);
       const claimScoped = (stepPolicy.claimScopes ?? []).length > 0;
       const nextRetryAtRaw = typeof step.metadata?.nextRetryAt === "string" ? step.metadata.nextRetryAt : null;
       const nextRetryAtMs = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : NaN;
       const retryDeferred = Number.isFinite(nextRetryAtMs) && nextRetryAtMs > Date.now();
+      const stickyBlocked = step.status === "blocked" && step.metadata?.blockedSticky === true;
       let next: OrchestratorStepStatus = step.status;
       if (gate.satisfied) {
-        if (retryDeferred) {
+        if (stickyBlocked) {
+          next = "blocked";
+        } else if (retryDeferred) {
           next = "pending";
         } else if (step.status === "pending" || step.status === "blocked") {
           next = "ready";
@@ -1611,6 +1739,12 @@ export function createOrchestratorService({
           `,
           [next, JSON.stringify(nextMetadata ?? null), now, step.id, runId, projectId]
         );
+        stepsById.set(step.id, {
+          ...step,
+          status: next,
+          metadata: nextMetadata ?? null,
+          updatedAt: now
+        });
         statusesById.set(step.id, next);
         emit({ type: "orchestrator-step-updated", runId, stepId: step.id, reason: "readiness_recomputed" });
         appendTimelineEvent({
@@ -1983,8 +2117,11 @@ export function createOrchestratorService({
       metadata.integration && typeof metadata.integration === "object" && !Array.isArray(metadata.integration)
         ? (metadata.integration as Record<string, unknown>)
         : metadata;
-    const isIntegrationStep = integrationConfig.stepType === "integration" || integrationConfig.integrationFlow === true;
-    if (!isIntegrationStep) return null;
+    const isMergeFlowStep =
+      integrationConfig.integrationFlow === true
+      || integrationConfig.requiresConflictResolver === true
+      || integrationConfig.stepType === "merge";
+    if (!isMergeFlowStep) return null;
 
     const targetLaneId =
       typeof integrationConfig.targetLaneId === "string" && integrationConfig.targetLaneId.trim().length
@@ -2523,9 +2660,9 @@ export function createOrchestratorService({
     }): { run: OrchestratorRun; steps: OrchestratorStep[] } {
       const missionId = String(args.missionId ?? "").trim();
       if (!missionId) throw new Error("missionId is required.");
-      const mission = db.get<{ id: string; prompt: string | null; metadata_json: string | null }>(
+      const mission = db.get<{ id: string; prompt: string | null; lane_id: string | null; metadata_json: string | null }>(
         `
-          select id, prompt, metadata_json
+          select id, prompt, lane_id, metadata_json
           from missions
           where id = ?
             and project_id = ?
@@ -2539,12 +2676,13 @@ export function createOrchestratorService({
         id: string;
         step_index: number;
         title: string;
+        detail: string | null;
         kind: string;
         lane_id: string | null;
         metadata_json: string | null;
       }>(
         `
-          select id, step_index, title, kind, lane_id, metadata_json
+          select id, step_index, title, detail, kind, lane_id, metadata_json
           from mission_steps
           where mission_id = ?
             and project_id = ?
@@ -2589,8 +2727,12 @@ export function createOrchestratorService({
         bucket.push(descriptor.stepKey);
         stepKeysByIndex.set(descriptor.stepIndex, bucket);
       }
+      const descriptorByStepKey = new Map(descriptors.map((descriptor) => [descriptor.stepKey, descriptor] as const));
 
       const resolveDependencyKeys = (descriptor: (typeof descriptors)[number]): string[] => {
+        const hasExplicitDependencies =
+          Array.isArray(descriptor.metadata.dependencyStepKeys)
+          || Array.isArray(descriptor.metadata.dependencyIndices);
         const explicitKeys = Array.isArray(descriptor.metadata.dependencyStepKeys)
           ? descriptor.metadata.dependencyStepKeys
               .map((entry) => String(entry ?? "").trim())
@@ -2600,6 +2742,7 @@ export function createOrchestratorService({
         const joined = [...explicitKeys, ...indexedKeys];
         const deduped = [...new Set(joined.filter((key) => key !== descriptor.stepKey))];
         if (deduped.length) return deduped;
+        if (hasExplicitDependencies) return [];
         if (descriptor.index > 0) {
           return [descriptors[descriptor.index - 1]!.stepKey];
         }
@@ -2620,22 +2763,89 @@ export function createOrchestratorService({
         const quorumRaw = Number(metadata.quorumCount);
         const quorumCount = Number.isFinite(quorumRaw) && quorumRaw > 0 ? Math.floor(quorumRaw) : undefined;
         const dependencyStepKeys = resolveDependencyKeys(descriptor);
+        const stepType = String(metadata.stepType ?? row.kind ?? "").trim() || "manual";
+        const integrationHints = (() => {
+          if (stepType !== "integration" && stepType !== "merge") {
+            return {
+              targetLaneId: null as string | null,
+              sourceLaneIds: [] as string[]
+            };
+          }
+          const existingTarget = typeof metadata.targetLaneId === "string" ? metadata.targetLaneId.trim() : "";
+          const targetLaneId =
+            existingTarget.length > 0
+              ? existingTarget
+              : typeof row.lane_id === "string" && row.lane_id.trim().length > 0
+                ? row.lane_id.trim()
+                : typeof mission.lane_id === "string" && mission.lane_id.trim().length > 0
+                  ? mission.lane_id.trim()
+                  : null;
+          const explicitSourceLaneIds = Array.isArray(metadata.sourceLaneIds)
+            ? metadata.sourceLaneIds
+                .map((entry) => String(entry ?? "").trim())
+                .filter((entry) => entry.length > 0)
+            : [];
+          if (explicitSourceLaneIds.length > 0) {
+            return {
+              targetLaneId,
+              sourceLaneIds: [...new Set(explicitSourceLaneIds.filter((entry) => entry !== targetLaneId))]
+            };
+          }
+          const derivedSourceLaneIds = dependencyStepKeys
+            .map((depKey) => {
+              const depDescriptor = descriptorByStepKey.get(depKey);
+              const depLaneId = depDescriptor?.row?.lane_id;
+              return typeof depLaneId === "string" ? depLaneId.trim() : "";
+            })
+            .filter((laneId) => laneId.length > 0 && laneId !== targetLaneId);
+          return {
+            targetLaneId,
+            sourceLaneIds: [...new Set(derivedSourceLaneIds)]
+          };
+        })();
         const inferredPattern =
           joinPolicy === "any_success"
             ? "speculative_parallel"
             : dependencyStepKeys.length > 1
               ? "fan_in_merge"
-              : String(metadata.stepType ?? row.kind ?? "").trim() === "analysis"
+              : stepType === "analysis"
                 ? "plan_then_implement"
-                : String(metadata.stepType ?? row.kind ?? "").trim() === "review"
+                : stepType === "review"
                   ? "review_and_revise"
                   : dependencyStepKeys.length === 0 && requestedRunMode === "autopilot"
                     ? "parallel_fan_out"
                     : "sequential_chain";
+        const stepInstructions =
+          typeof metadata.instructions === "string" && metadata.instructions.trim().length
+            ? metadata.instructions.trim()
+            : typeof row.detail === "string" && row.detail.trim().length
+              ? row.detail.trim()
+              : "";
         const requiresPlanApproval =
           metadata.requiresPlanApproval === true
-            || inferredPattern === "plan_then_implement"
-            || String(metadata.stepType ?? row.kind ?? "").trim() === "analysis";
+          || inferredPattern === "plan_then_implement"
+          || stepType === "analysis";
+        const mergedMetadata: Record<string, unknown> = {
+          ...metadata,
+          instructions: stepInstructions,
+          stepType,
+          requiresPlanApproval,
+          coordinationPattern: metadata.coordinationPattern ?? inferredPattern
+        };
+        if (
+          (stepType === "integration" || stepType === "merge")
+          && integrationHints.targetLaneId
+          && typeof mergedMetadata.targetLaneId !== "string"
+        ) {
+          mergedMetadata.targetLaneId = integrationHints.targetLaneId;
+        }
+        if (
+          (stepType === "integration" || stepType === "merge")
+          && integrationHints.sourceLaneIds.length > 0
+          && !Array.isArray(mergedMetadata.sourceLaneIds)
+        ) {
+          mergedMetadata.sourceLaneIds = integrationHints.sourceLaneIds;
+        }
         return {
           missionStepId: row.id,
           stepKey: descriptor.stepKey,
@@ -2648,12 +2858,7 @@ export function createOrchestratorService({
           retryLimit,
           executorKind: explicitExecutor,
           policy: parseStepPolicyFromMetadata(metadata),
-          metadata: {
-            ...metadata,
-            stepType: metadata.stepType ?? row.kind ?? "manual",
-            requiresPlanApproval,
-            coordinationPattern: metadata.coordinationPattern ?? inferredPattern
-          }
+          metadata: mergedMetadata
         };
       });
 
@@ -2694,6 +2899,8 @@ export function createOrchestratorService({
         schedulerState: args.schedulerState,
         metadata: {
           ...(args.metadata ?? {}),
+          missionGoal: mission.prompt ?? "",
+          missionPrompt: mission.prompt ?? "",
           runMode: requestedRunMode,
           planner: {
             source: "mission_steps",
@@ -2824,6 +3031,23 @@ export function createOrchestratorService({
     async onTrackedSessionEnded(args: { sessionId: string; laneId?: string | null; exitCode: number | null }): Promise<number> {
       const sessionId = String(args.sessionId ?? "").trim();
       if (!sessionId.length) return 0;
+      const sessionRow = db.get<{ status: string | null; exit_code: number | null }>(
+        `
+          select status, exit_code
+          from terminal_sessions
+          where id = ?
+          limit 1
+        `,
+        [sessionId]
+      );
+      const sessionStatus = normalizeTerminalSessionStatus(sessionRow?.status);
+      const resolvedExitCode = (() => {
+        const fromArgs = Number(args.exitCode);
+        if (Number.isFinite(fromArgs)) return Math.floor(fromArgs);
+        const fromRow = Number(sessionRow?.exit_code);
+        if (Number.isFinite(fromRow)) return Math.floor(fromRow);
+        return null;
+      })();
       const runningAttempts = db.all<AttemptRow>(
         `
           select
@@ -2855,30 +3079,63 @@ export function createOrchestratorService({
       );
       if (!runningAttempts.length) return 0;
 
-      const finalStatus: Extract<OrchestratorAttemptStatus, "succeeded" | "failed" | "canceled"> =
-        args.exitCode == null ? "canceled" : args.exitCode === 0 ? "succeeded" : "failed";
+      const completion = (() => {
+        if (resolvedExitCode != null) {
+          if (resolvedExitCode === 0) {
+            return {
+              status: "succeeded" as const,
+              errorClass: null,
+              errorMessage: null
+            };
+          }
+          return {
+            status: "failed" as const,
+            errorClass: "executor_failure" as const,
+            errorMessage: `Tracked session exited with code ${resolvedExitCode}.`
+          };
+        }
+        if (sessionStatus === "completed") {
+          return {
+            status: "succeeded" as const,
+            errorClass: null,
+            errorMessage: null
+          };
+        }
+        if (sessionStatus === "disposed") {
+          return {
+            status: "canceled" as const,
+            errorClass: "canceled" as const,
+            errorMessage: "Tracked session was disposed before completion."
+          };
+        }
+        return {
+          status: "failed" as const,
+          errorClass: "executor_failure" as const,
+          errorMessage:
+            sessionStatus === "failed"
+              ? "Tracked session reported failed status."
+              : "Tracked session ended unexpectedly without an exit code."
+        };
+      })();
+
       const touchedRunIds = new Set<string>();
       for (const attempt of runningAttempts) {
         touchedRunIds.add(attempt.run_id);
         this.completeAttempt({
           attemptId: attempt.id,
-          status: finalStatus,
-          ...(finalStatus === "failed"
+          status: completion.status,
+          ...(completion.errorClass
             ? {
-                errorClass: "executor_failure" as const,
-                errorMessage: `Tracked session exited with code ${args.exitCode}.`
+                errorClass: completion.errorClass,
+                errorMessage: completion.errorMessage
               }
-            : finalStatus === "canceled"
-              ? {
-                  errorClass: "canceled" as const,
-                  errorMessage: "Tracked session ended without exit code."
-                }
-              : {}),
+            : {}),
           metadata: {
             reconciledFromTrackedSession: true,
             trackedSessionId: sessionId,
             laneId: args.laneId ?? null,
-            exitCode: args.exitCode
+            exitCode: resolvedExitCode,
+            sessionStatus
           }
         });
       }
@@ -3191,6 +3448,38 @@ export function createOrchestratorService({
       const schedulerState = String(args.schedulerState ?? "initialized").trim() || "initialized";
       const metadata = args.metadata ?? {};
 
+      const byKey = new Map<string, string>();
+      const dependencyStepKeysByStepKey = new Map<string, string[]>();
+      const stepRows = [...args.steps]
+        .sort((a, b) => a.stepIndex - b.stepIndex || a.stepKey.localeCompare(b.stepKey))
+        .map((input, index) => {
+          const id = randomUUID();
+          const stepKey = input.stepKey.trim();
+          if (!stepKey) throw new Error("stepKey is required for every orchestrator step.");
+          if (byKey.has(stepKey)) throw new Error(`Duplicate stepKey in run: ${stepKey}`);
+          byKey.set(stepKey, id);
+          const dependencyStepKeys = normalizeDependencyStepKeys(input.dependencyStepKeys);
+          dependencyStepKeysByStepKey.set(stepKey, dependencyStepKeys);
+          return {
+            id,
+            input,
+            createdAt,
+            order: Number.isFinite(input.stepIndex) ? input.stepIndex : index,
+            stepKey,
+            dependencyStepKeys
+          };
+        });
+
+      validateStepGraphIntegrity({
+        context: "startRun",
+        steps: stepRows.map(({ stepKey, dependencyStepKeys, input }) => ({
+          stepKey,
+          dependencyStepKeys,
+          joinPolicy: normalizeJoinPolicy(String(input.joinPolicy ?? "all_success")),
+          quorumCount: input.quorumCount != null ? Math.floor(Number(input.quorumCount)) : null
+        }))
+      });
+
       db.run(
         `
           insert into orchestrator_runs(
@@ -3222,24 +3511,7 @@ export function createOrchestratorService({
         }
       });
 
-      const byKey = new Map<string, string>();
-      const stepRows = [...args.steps]
-        .sort((a, b) => a.stepIndex - b.stepIndex || a.stepKey.localeCompare(b.stepKey))
-        .map((input, index) => {
-          const id = randomUUID();
-          const stepKey = input.stepKey.trim();
-          if (!stepKey) throw new Error("stepKey is required for every orchestrator step.");
-          if (byKey.has(stepKey)) throw new Error(`Duplicate stepKey in run: ${stepKey}`);
-          byKey.set(stepKey, id);
-          return {
-            id,
-            input,
-            createdAt,
-            order: Number.isFinite(input.stepIndex) ? input.stepIndex : index
-          };
-        });
-
-      for (const { id, input, createdAt: created } of stepRows) {
+      for (const { id, input, createdAt: created, stepKey } of stepRows) {
         const policy: Record<string, unknown> = {
           includeNarrative: input.policy?.includeNarrative === true,
           includeFullDocs: input.policy?.includeFullDocs === true,
@@ -3288,9 +3560,9 @@ export function createOrchestratorService({
             runId,
             projectId,
             input.missionStepId ?? null,
-            input.stepKey.trim(),
+            stepKey,
             Number.isFinite(input.stepIndex) ? Math.floor(input.stepIndex) : 0,
-            input.title.trim() || input.stepKey.trim(),
+            input.title.trim() || stepKey,
             input.laneId ?? null,
             input.joinPolicy ?? "all_success",
             input.quorumCount ?? null,
@@ -3307,7 +3579,7 @@ export function createOrchestratorService({
           eventType: "step_registered",
           reason: "start_run",
           detail: {
-            stepKey: input.stepKey.trim(),
+            stepKey,
             stepIndex: Number.isFinite(input.stepIndex) ? Math.floor(input.stepIndex) : 0,
             joinPolicy: input.joinPolicy ?? "all_success",
             retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0))
@@ -3316,11 +3588,15 @@ export function createOrchestratorService({
       }
 
       // Fill resolved dependency IDs after all step rows exist.
-      for (const { id, input } of stepRows) {
-        const depKeys = input.dependencyStepKeys ?? [];
-        const depIds = depKeys
-          .map((key) => byKey.get(key.trim()) ?? null)
-          .filter((value): value is string => Boolean(value));
+      for (const { id, stepKey } of stepRows) {
+        const depKeys = dependencyStepKeysByStepKey.get(stepKey) ?? [];
+        const depIds = depKeys.map((key) => {
+          const depId = byKey.get(key);
+          if (!depId) {
+            throw new Error(`Unknown dependency stepKey '${key}' referenced by step '${stepKey}'.`);
+          }
+          return depId;
+        });
         db.run(
           `
             update orchestrator_steps
@@ -4044,17 +4320,26 @@ export function createOrchestratorService({
           [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
         );
       } else if (status === "blocked") {
+        const blockedMetadata = {
+          ...(step.metadata ?? {}),
+          blockedAt: completedAt,
+          blockedByAttemptId: args.attemptId,
+          blockedErrorClass: errorClass,
+          blockedErrorMessage: args.errorMessage ?? defaultSummary,
+          blockedSticky: errorClass === "policy"
+        };
         db.run(
           `
             update orchestrator_steps
             set status = 'blocked',
+                metadata_json = ?,
                 updated_at = ?,
                 last_attempt_id = ?
             where id = ?
               and run_id = ?
               and project_id = ?
           `,
-        [completedAt, args.attemptId, step.id, run.id, projectId]
+        [JSON.stringify(blockedMetadata), completedAt, args.attemptId, step.id, run.id, projectId]
       );
       } else {
         if (shouldRetry) {
@@ -4466,10 +4751,15 @@ export function createOrchestratorService({
       for (const step of existingSteps) {
         existingKeyToId.set(step.stepKey, step.id);
       }
+      const existingKeyById = new Map<string, string>();
+      for (const step of existingSteps) {
+        existingKeyById.set(step.id, step.stepKey);
+      }
       const maxExistingIndex = existingSteps.reduce((max, step) => Math.max(max, step.stepIndex), -1);
 
       const createdAt = nowIso();
       const newKeyToId = new Map<string, string>();
+      const dependencyStepKeysByNewStepKey = new Map<string, string[]>();
       const sorted = [...args.steps].sort(
         (a, b) => a.stepIndex - b.stepIndex || a.stepKey.localeCompare(b.stepKey)
       );
@@ -4481,15 +4771,38 @@ export function createOrchestratorService({
           throw new Error(`Duplicate stepKey: ${stepKey}`);
         }
         newKeyToId.set(stepKey, id);
+        const dependencyStepKeys = normalizeDependencyStepKeys(input.dependencyStepKeys);
+        dependencyStepKeysByNewStepKey.set(stepKey, dependencyStepKeys);
         return {
           id,
           input,
-          stepIndex: Number.isFinite(input.stepIndex) ? input.stepIndex : maxExistingIndex + 1 + index
+          stepIndex: Number.isFinite(input.stepIndex) ? input.stepIndex : maxExistingIndex + 1 + index,
+          stepKey,
+          dependencyStepKeys
         };
       });
 
+      const existingGraphSteps: StepGraphValidationStep[] = existingSteps.map((step) => ({
+        stepKey: step.stepKey,
+        dependencyStepKeys: step.dependencyStepIds
+          .map((depId) => existingKeyById.get(depId) ?? "")
+          .filter((depKey): depKey is string => depKey.length > 0),
+        joinPolicy: step.joinPolicy,
+        quorumCount: step.quorumCount
+      }));
+      const newGraphSteps: StepGraphValidationStep[] = stepEntries.map(({ stepKey, dependencyStepKeys, input }) => ({
+        stepKey,
+        dependencyStepKeys,
+        joinPolicy: normalizeJoinPolicy(String(input.joinPolicy ?? "all_success")),
+        quorumCount: input.quorumCount != null ? Math.floor(Number(input.quorumCount)) : null
+      }));
+      validateStepGraphIntegrity({
+        context: "addSteps",
+        steps: [...existingGraphSteps, ...newGraphSteps]
+      });
+
       // Insert step rows
-      for (const { id, input, stepIndex } of stepEntries) {
+      for (const { id, input, stepIndex, stepKey } of stepEntries) {
         const policy: Record<string, unknown> = {
           includeNarrative: input.policy?.includeNarrative === true,
           includeFullDocs: input.policy?.includeFullDocs === true,
@@ -4538,9 +4851,9 @@ export function createOrchestratorService({
             runId,
             projectId,
             input.missionStepId ?? null,
-            input.stepKey.trim(),
+            stepKey,
             stepIndex,
-            input.title.trim() || input.stepKey.trim(),
+            input.title.trim() || stepKey,
             input.laneId ?? null,
             input.joinPolicy ?? "all_success",
             input.quorumCount ?? null,
@@ -4557,7 +4870,7 @@ export function createOrchestratorService({
           eventType: "step_registered",
           reason: "add_steps",
           detail: {
-            stepKey: input.stepKey.trim(),
+            stepKey,
             stepIndex,
             joinPolicy: input.joinPolicy ?? "all_success",
             retryLimit: Math.max(0, Math.floor(input.retryLimit ?? 0))
@@ -4567,11 +4880,15 @@ export function createOrchestratorService({
 
       // Resolve dependency IDs from keys (can reference both existing and new steps)
       const combinedKeyToId = new Map([...existingKeyToId, ...newKeyToId]);
-      for (const { id, input } of stepEntries) {
-        const depKeys = input.dependencyStepKeys ?? [];
-        const depIds = depKeys
-          .map((key) => combinedKeyToId.get(key.trim()) ?? null)
-          .filter((value): value is string => Boolean(value));
+      for (const { id, stepKey } of stepEntries) {
+        const depKeys = dependencyStepKeysByNewStepKey.get(stepKey) ?? [];
+        const depIds = depKeys.map((key) => {
+          const depId = combinedKeyToId.get(key);
+          if (!depId) {
+            throw new Error(`Unknown dependency stepKey '${key}' referenced by step '${stepKey}'.`);
+          }
+          return depId;
+        });
         db.run(
           `
             update orchestrator_steps

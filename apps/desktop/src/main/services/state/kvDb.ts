@@ -201,6 +201,7 @@ function migrate(db: Database) {
       head_sha_end text,
       status text not null,
       last_output_preview text,
+      last_output_at text,
       summary text,
       resume_command text,
       foreign key(lane_id) references lanes(id)
@@ -211,6 +212,7 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "terminal_sessions", "tool_type text", "tool_type");
   addColumnIfMissing(db, "terminal_sessions", "pinned integer not null default 0", "pinned");
   addColumnIfMissing(db, "terminal_sessions", "summary text", "summary");
+  addColumnIfMissing(db, "terminal_sessions", "last_output_at text", "last_output_at");
   addColumnIfMissing(db, "terminal_sessions", "resume_command text", "resume_command");
   createIndexIfColumnsExist(
     db,
@@ -1089,6 +1091,36 @@ function migrate(db: Database) {
     "create index if not exists idx_orchestrator_attempts_project_created on orchestrator_attempts(project_id, created_at)",
     "orchestrator_attempts",
     ["project_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_attempt_runtime (
+      attempt_id text primary key,
+      session_id text,
+      runtime_state text,
+      last_signal_at text,
+      last_output_preview text,
+      last_preview_digest text,
+      digest_since_ms integer not null default 0,
+      repeat_count integer not null default 0,
+      last_waiting_intervention_at_ms integer not null default 0,
+      last_event_heartbeat_at_ms integer not null default 0,
+      last_waiting_notified_at_ms integer not null default 0,
+      updated_at text not null,
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempt_runtime_session on orchestrator_attempt_runtime(session_id)",
+    "orchestrator_attempt_runtime",
+    ["session_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_attempt_runtime_updated on orchestrator_attempt_runtime(updated_at)",
+    "orchestrator_attempt_runtime",
+    ["updated_at"]
   );
 
   db.run(`

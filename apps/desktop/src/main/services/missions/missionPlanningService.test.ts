@@ -254,4 +254,91 @@ describe("missionPlanningService planner contract", () => {
     });
     expect(claudeOnly.every((step) => step.metadata.executorKind === "claude")).toBe(true);
   });
+
+  it("rejects generic step labels from AI planner output", () => {
+    const { validationErrors } = validateAndCanonicalizePlannerPlan({
+      schemaVersion: "1.0",
+      missionSummary: {
+        title: "Generic",
+        objective: "Should fail generic labels",
+        domain: "mixed",
+        complexity: "medium",
+        strategy: "parallel-lite",
+        parallelismCap: 2
+      },
+      assumptions: [],
+      risks: [],
+      steps: [
+        {
+          stepId: "s1",
+          name: "Step 1",
+          description: "Execute mission work for this step.",
+          taskType: "code",
+          executorHint: "either",
+          preferredScope: "lane",
+          requiresContextProfiles: ["deterministic"],
+          dependencies: [],
+          artifactHints: [],
+          claimPolicy: { lanes: ["backend"] },
+          maxAttempts: 2,
+          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+          outputContract: { expectedSignals: [], completionCriteria: "done" }
+        }
+      ],
+      handoffPolicy: {
+        externalConflictDefault: "intervention"
+      }
+    });
+
+    expect(validationErrors.some((entry) => entry.includes("generic name"))).toBe(true);
+    expect(validationErrors.some((entry) => entry.includes("uninformative description"))).toBe(true);
+  });
+
+  it("does not translate abstract planner lane hints into coarse claim locks", () => {
+    const { plan } = validateAndCanonicalizePlannerPlan({
+      schemaVersion: "1.0",
+      missionSummary: {
+        title: "Claims",
+        objective: "Avoid accidental serialization",
+        domain: "backend",
+        complexity: "medium",
+        strategy: "parallel-lite",
+        parallelismCap: 3
+      },
+      assumptions: [],
+      risks: [],
+      steps: [
+        {
+          stepId: "code-a",
+          name: "Implement endpoint",
+          description: "Add endpoint implementation and unit tests.",
+          taskType: "code",
+          executorHint: "either",
+          preferredScope: "lane",
+          requiresContextProfiles: ["deterministic"],
+          dependencies: [],
+          artifactHints: [],
+          claimPolicy: { lanes: ["backend"] },
+          maxAttempts: 2,
+          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+          outputContract: { expectedSignals: ["endpoint_added"], completionCriteria: "endpoint_added" }
+        }
+      ],
+      handoffPolicy: {
+        externalConflictDefault: "intervention"
+      }
+    });
+
+    const steps = plannerPlanToMissionSteps({
+      plan,
+      requestedEngine: "auto",
+      resolvedEngine: "claude_cli",
+      executorPolicy: "both",
+      degraded: false,
+      reasonCode: null,
+      validationErrors: []
+    });
+    const policy = steps[0]?.metadata?.policy as { claimScopes?: unknown[] } | undefined;
+    expect(policy?.claimScopes ?? []).toHaveLength(0);
+  });
 });

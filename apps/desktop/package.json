@@ -10,6 +10,8 @@
     "build": "tsup && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
+    "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
     "mcp:dev": "npm --prefix ../mcp-server run dev -- --project-root ../..",
     "mcp:build": "npm --prefix ../mcp-server run build",
     "mcp:typecheck": "npm --prefix ../mcp-server run typecheck",

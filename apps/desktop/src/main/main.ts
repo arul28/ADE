@@ -383,6 +383,7 @@ app.whenReady().then(async () => {
     });
 
     let orchestratorServiceRef: ReturnType<typeof createOrchestratorService> | null = null;
+    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const onTrackedSessionEnded = ({ laneId, sessionId, exitCode }: { laneId: string; sessionId: string; exitCode: number | null }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
@@ -407,6 +408,9 @@ app.whenReady().then(async () => {
       broadcastData: (ev) => broadcast(IPC.ptyData, ev),
       broadcastExit: (ev) => broadcast(IPC.ptyExit, ev),
       onSessionEnded: onTrackedSessionEnded,
+      onSessionRuntimeSignal: (signal) => {
+        aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
+      },
       loadPty
     });
 
@@ -472,7 +476,6 @@ app.whenReady().then(async () => {
       onEvent: (event) => broadcast(IPC.missionsEvent, event)
     });
 
-    let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
     const orchestratorService = createOrchestratorService({
       db,
       projectId,
@@ -492,6 +495,7 @@ app.whenReady().then(async () => {
       logger,
       missionService,
       orchestratorService,
+      laneService,
       projectConfigService,
       aiIntegrationService,
       projectRoot
@@ -646,6 +650,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctxRef.automationService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctxRef.aiOrchestratorService.dispose();
     } catch {
       // ignore
     }

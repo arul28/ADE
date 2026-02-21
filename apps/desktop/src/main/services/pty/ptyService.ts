@@ -42,6 +42,9 @@ type PtyEntry = {
   resumeCommand: string | null;
   resumeCommandIsFallback: boolean;
   resumeScanBuffer: string;
+  lastRuntimeSignalAt: number;
+  lastRuntimeSignalState: TerminalRuntimeState;
+  lastRuntimeSignalPreview: string | null;
   disposed: boolean;
 };
 
@@ -116,6 +119,7 @@ export function createPtyService({
   broadcastData,
   broadcastExit,
   onSessionEnded,
+  onSessionRuntimeSignal,
   loadPty
 }: {
   projectRoot: string;
@@ -127,6 +131,13 @@ export function createPtyService({
   broadcastData: (ev: PtyDataEvent) => void;
   broadcastExit: (ev: PtyExitEvent) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
+  onSessionRuntimeSignal?: (args: {
+    laneId: string;
+    sessionId: string;
+    runtimeState: TerminalRuntimeState;
+    lastOutputPreview: string | null;
+    at: string;
+  }) => void;
   loadPty: () => typeof ptyNs;
 }) {
   const ptys = new Map<string, PtyEntry>();
@@ -249,8 +260,20 @@ export function createPtyService({
     const status = statusFromExit(exitCode);
     sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
     clearIdleTimer(entry.sessionId);
-    setRuntimeState(entry.sessionId, runtimeFromStatus(status), { touch: false });
+    const finalRuntimeState = runtimeFromStatus(status);
+    setRuntimeState(entry.sessionId, finalRuntimeState, { touch: false });
     runtimeStates.delete(entry.sessionId);
+    try {
+      onSessionRuntimeSignal?.({
+        laneId: entry.laneId,
+        sessionId: entry.sessionId,
+        runtimeState: finalRuntimeState,
+        lastOutputPreview: entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null,
+        at: endedAt
+      });
+    } catch {
+      // ignore callback failures
+    }
     summarizeSessionBestEffort(entry.sessionId);
 
     // Best-effort head SHA at end; never block exit.
@@ -305,6 +328,31 @@ export function createPtyService({
     if (now - entry.lastPreviewWriteAt < 900) return;
     entry.lastPreviewWriteAt = now;
     flushPreview(entry);
+  };
+
+  const emitRuntimeSignalThrottled = (entry: PtyEntry, runtimeState: TerminalRuntimeState) => {
+    if (!entry.tracked || !onSessionRuntimeSignal) return;
+    const now = Date.now();
+    const preview = entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null;
+    const stateChanged = runtimeState !== entry.lastRuntimeSignalState;
+    const previewChanged = preview !== entry.lastRuntimeSignalPreview;
+    const periodicHeartbeatDue = now - entry.lastRuntimeSignalAt >= 10_000;
+    const previewEmitDue = previewChanged && now - entry.lastRuntimeSignalAt >= 1_200;
+    if (!stateChanged && !previewEmitDue && !periodicHeartbeatDue) return;
+    entry.lastRuntimeSignalAt = now;
+    entry.lastRuntimeSignalState = runtimeState;
+    entry.lastRuntimeSignalPreview = preview;
+    try {
+      onSessionRuntimeSignal({
+        laneId: entry.laneId,
+        sessionId: entry.sessionId,
+        runtimeState,
+        lastOutputPreview: preview,
+        at: new Date(now).toISOString()
+      });
+    } catch {
+      // ignore callback failures
+    }
   };
 
   return {
@@ -412,6 +460,9 @@ export function createPtyService({
         resumeCommand: initialResumeCommand,
         resumeCommandIsFallback: Boolean(initialResumeCommand),
         resumeScanBuffer: "",
+        lastRuntimeSignalAt: 0,
+        lastRuntimeSignalState: "running",
+        lastRuntimeSignalPreview: null,
         disposed: false
       };
       ptys.set(ptyId, entry);
@@ -432,6 +483,7 @@ export function createPtyService({
         } else {
           clearIdleTimer(sessionId);
         }
+        emitRuntimeSignalThrottled(entry, runtimeState);
 
         if (!entry.resumeCommand || entry.resumeCommandIsFallback) {
           entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-12_000);
@@ -565,6 +617,17 @@ export function createPtyService({
         clearIdleTimer(sessionId);
         setRuntimeState(sessionId, "killed", { touch: false });
         runtimeStates.delete(sessionId);
+        try {
+          onSessionRuntimeSignal?.({
+            laneId: session.laneId,
+            sessionId,
+            runtimeState: "killed",
+            lastOutputPreview: session.lastOutputPreview ?? null,
+            at: endedAt
+          });
+        } catch {
+          // ignore callback failures
+        }
         summarizeSessionBestEffort(sessionId);
         broadcastExit({ ptyId, sessionId, exitCode: null });
         if (session.tracked) {
@@ -594,6 +657,17 @@ export function createPtyService({
       clearIdleTimer(entry.sessionId);
       setRuntimeState(entry.sessionId, "killed", { touch: false });
       runtimeStates.delete(entry.sessionId);
+      try {
+        onSessionRuntimeSignal?.({
+          laneId: entry.laneId,
+          sessionId: entry.sessionId,
+          runtimeState: "killed",
+          lastOutputPreview: entry.latestPreviewLine ?? entry.lastPreviewWritten ?? null,
+          at: endedAt
+        });
+      } catch {
+        // ignore callback failures
+      }
       summarizeSessionBestEffort(entry.sessionId);
       broadcastExit({ ptyId, sessionId: entry.sessionId, exitCode: null });
       ptys.delete(ptyId);

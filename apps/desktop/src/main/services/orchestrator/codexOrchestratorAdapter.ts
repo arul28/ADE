@@ -82,7 +82,7 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
 
         const prompt = [systemParts.join("\n\n"), userParts.join("\n\n")].join("\n\n");
 
-        // 3. Determine model and approval mode
+        // 3. Determine model and execution policy
         const model =
           typeof step.metadata?.model === "string" && step.metadata.model.trim().length
             ? step.metadata.model.trim()
@@ -94,31 +94,43 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
             ? step.metadata.approvalMode.trim()
             : args.permissionConfig?.codex?.approvalMode ?? "full-auto";
 
+        const approvalPolicy =
+          approvalMode === "suggest"
+            ? "untrusted"
+            : approvalMode === "auto-edit"
+              ? "on-request"
+              : "never";
+
+        const sandboxMode =
+          typeof step.metadata?.sandboxPermissions === "string" && step.metadata.sandboxPermissions.trim().length
+            ? step.metadata.sandboxPermissions.trim()
+            : args.permissionConfig?.codex?.sandboxPermissions
+              ?? (approvalMode === "suggest" ? "read-only" : "workspace-write");
+
         const configPath = args.permissionConfig?.codex?.configPath;
         const writablePaths = args.permissionConfig?.codex?.writablePaths ?? [];
 
         // 4. Construct startup command
-        // Codex CLI uses standalone flags for approval mode (--full-auto, --suggest, --auto-edit)
-        const approvalFlag =
-          approvalMode === "suggest" ? "--suggest"
-            : approvalMode === "auto-edit" ? "--auto-edit"
-              : "--full-auto";
         const commandParts: string[] = [
           "codex",
           "--model",
           shellEscapeArg(model),
-          approvalFlag
+          "-a",
+          shellEscapeArg(approvalPolicy),
+          "-s",
+          shellEscapeArg(sandboxMode),
+          "exec"
         ];
-
-        if (typeof configPath === "string" && configPath.trim().length) {
-          commandParts.push("--config", shellEscapeArg(configPath.trim()));
-        }
 
         for (const wp of writablePaths) {
           if (wp.trim().length) {
-            commandParts.push("--writable-root", shellEscapeArg(wp.trim()));
+            commandParts.push("--add-dir", shellEscapeArg(wp.trim()));
           }
         }
+
+        // The Codex CLI no longer accepts "--config <path>" for custom config files.
+        // Keep configPath in metadata for visibility but avoid emitting invalid flags.
+        void configPath;
 
         commandParts.push(shellEscapeArg(prompt));
         // Use exec so the shell exits when the command exits, allowing the
@@ -143,8 +155,11 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
             adapterKind: "codex",
             model,
             approvalMode,
+            approvalPolicy,
+            sandboxMode,
             filePatterns: filePatterns.length ? filePatterns : undefined,
             promptLength: prompt.length,
+            configPathApplied: false,
             startupCommandPreview: startupCommand.slice(0, 320)
           }
         };

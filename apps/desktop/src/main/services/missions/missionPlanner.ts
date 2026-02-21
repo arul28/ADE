@@ -12,6 +12,7 @@ type RawPlanStep = {
   dependencyIndices: number[];
   joinPolicy: OrchestratorJoinPolicy;
   quorumCount: number | null;
+  timeoutMs: number | null;
   retryLimit: number;
   executorKind: OrchestratorExecutorKind;
   doneCriteria: string;
@@ -39,6 +40,30 @@ const IMPLEMENT_WORDS = ["implement", "refactor", "fix", "build", "create", "upd
 const VALIDATION_WORDS = ["test", "verify", "validate", "check", "lint", "typecheck", "ci", "qa"];
 const INTEGRATION_WORDS = ["merge", "integrate", "reconcile", "combine", "conflict", "land", "cherry-pick"];
 const SUMMARY_WORDS = ["summary", "summarize", "handoff", "report", "pr", "pull request", "document"];
+const ACTION_HINT_WORDS = [
+  ...ANALYSIS_WORDS,
+  ...IMPLEMENT_WORDS,
+  ...VALIDATION_WORDS,
+  ...INTEGRATION_WORDS,
+  ...SUMMARY_WORDS,
+  "harden",
+  "instrument",
+  "expose",
+  "show",
+  "prove"
+];
+const NON_EXECUTABLE_LINE_RE =
+  /^(?:goals?|plan requirements?|hard constraints?|constraints?|important|notes?|final output|output)\s*:?\s*$/i;
+const NON_EXECUTABLE_PHRASES = [
+  "keep changes minimal",
+  "changes minimal and focused",
+  "exercise real parallel fan-out",
+  "dependency-safe joins",
+  "clean terminal completion",
+  "no manual intervention",
+  "step titles must be descriptive",
+  "run roots concurrently when dependencies allow"
+];
 
 function normalizePrompt(prompt: string): string {
   return prompt
@@ -85,15 +110,56 @@ function dedupe(values: string[]): string[] {
   return out;
 }
 
-function extractTaskCandidates(prompt: string): string[] {
-  const lines = normalizePrompt(prompt)
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+function hasActionHint(task: string): boolean {
+  const lower = task.toLowerCase();
+  return ACTION_HINT_WORDS.some((word) => lower.includes(word));
+}
 
+function isActionableTask(task: string): boolean {
+  const normalized = task
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.;]+$/g, "")
+    .trim();
+  if (normalized.length < 8) return false;
+  if (NON_EXECUTABLE_LINE_RE.test(normalized)) return false;
+  const lower = normalized.toLowerCase();
+  if (NON_EXECUTABLE_PHRASES.some((phrase) => lower.includes(phrase))) return false;
+  if (normalized.endsWith(":")) return false;
+  if (hasActionHint(lower)) return true;
+  return /^(?:backend|runtime|ui|frontend|api|docs?|tests?|review)\b/i.test(normalized);
+}
+
+function extractTaskCandidates(prompt: string): string[] {
+  const lines = prompt
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+$/g, ""))
+    .filter((line) => line.trim().length > 0);
+
+  const bulletLineRe = /^(\s*)(?:[-*•]|\d+[.)])\s+(.+)$/;
   const bulletTasks = lines
-    .map((line) => line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/)?.[1]?.trim() ?? null)
-    .filter((entry): entry is string => Boolean(entry));
+    .map((line, index) => {
+      const match = line.match(bulletLineRe);
+      if (!match?.[2]) return null;
+      return {
+        index,
+        indent: match[1]?.length ?? 0,
+        task: match[2].trim()
+      };
+    })
+    .filter((entry): entry is { index: number; indent: number; task: string } => Boolean(entry))
+    .filter((entry) => {
+      if (!entry.task.endsWith(":")) return true;
+      const nextLine = lines[entry.index + 1];
+      if (!nextLine) return true;
+      const nextMatch = nextLine.match(bulletLineRe);
+      if (!nextMatch) return true;
+      const nextIndent = nextMatch[1]?.length ?? 0;
+      return nextIndent <= entry.indent;
+    })
+    .map((entry) => entry.task.replace(/\s+/g, " ").trim())
+    .filter((task) => isActionableTask(task));
   if (bulletTasks.length >= 2) {
     return dedupe(bulletTasks.map((task) => task.slice(0, 140)));
   }
@@ -104,7 +170,7 @@ function extractTaskCandidates(prompt: string): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length >= 8)
     .map((entry) => entry.replace(/[.!?;]+$/g, "").trim())
-    .filter(Boolean);
+    .filter((entry) => isActionableTask(entry));
 
   return dedupe(sentenceTasks.slice(0, 8).map((task) => task.slice(0, 140)));
 }
@@ -191,6 +257,9 @@ function toPlannerStep(step: RawPlanStep, index: number, strategy: string, keywo
       keywords
     }
   };
+  if (Number.isFinite(step.timeoutMs ?? NaN) && (step.timeoutMs ?? 0) > 0) {
+    metadata.timeoutMs = Math.floor(step.timeoutMs as number);
+  }
 
   return {
     index,
@@ -205,6 +274,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   const prompt = normalizePrompt(args.prompt);
   const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : null;
   const taskCandidates = extractTaskCandidates(prompt);
+  const lowerPrompt = prompt.toLowerCase();
   const promptWords = toWords(prompt);
   const keywords = dedupe(promptWords.filter((word) =>
     ANALYSIS_WORDS.includes(word) ||
@@ -225,6 +295,9 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   const validationCandidates = classified.filter((entry) => entry.kind === "validation").map((entry) => entry.task);
   const summaryCandidates = classified.filter((entry) => entry.kind === "summary").map((entry) => entry.task);
   const explicitIntegration = classified.some((entry) => entry.kind === "integration");
+  const explicitParallelRootIntent =
+    /\bparallel\b/.test(lowerPrompt) &&
+    (/\broot\b/.test(lowerPrompt) || /\bfan[-\s]?out\b/.test(lowerPrompt) || /\bbranches?\b/.test(lowerPrompt));
 
   const strategy =
     workCandidates.length >= 2
@@ -238,7 +311,8 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   let analysisIndex = -1;
 
   const shouldSeedAnalysis =
-    prompt.length >= 120 || hasAnyKeyword(prompt, ANALYSIS_WORDS) || taskCandidates.length >= 3;
+    (!explicitParallelRootIntent || workCandidates.length < 2) &&
+    (prompt.length >= 120 || hasAnyKeyword(prompt, ANALYSIS_WORDS) || taskCandidates.length >= 3);
   if (shouldSeedAnalysis) {
     const index = rawSteps.length;
     analysisIndex = index;
@@ -249,6 +323,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
       dependencyIndices: [],
       joinPolicy: "all_success",
       quorumCount: null,
+      timeoutMs: 180_000,
       retryLimit: 0,
       executorKind: "codex",
       doneCriteria: "Context baseline and explicit success criteria are recorded for downstream steps.",
@@ -265,18 +340,28 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
 
   const effectiveWork = workCandidates.length > 0 ? workCandidates : ["Implement the mission objective"];
   const parallelBranches = effectiveWork.length >= 2 ? effectiveWork.slice(0, 3) : effectiveWork.slice(0, 1);
+  const fanOutDependencies = analysisIndex >= 0 ? [analysisIndex] : [];
   const workIndexes: number[] = [];
 
   for (const workTask of parallelBranches) {
     const index = rawSteps.length;
     workIndexes.push(index);
+    const dependencyIndices =
+      parallelBranches.length > 1
+        ? fanOutDependencies
+        : analysisIndex >= 0
+          ? [analysisIndex]
+          : previousIndex >= 0
+            ? [previousIndex]
+            : [];
     rawSteps.push({
       title: workTask,
       detail: "Execute this branch and keep outputs isolated for deterministic integration.",
       kind: "implementation",
-      dependencyIndices: analysisIndex >= 0 ? [analysisIndex] : previousIndex >= 0 ? [previousIndex] : [],
+      dependencyIndices: [...dependencyIndices],
       joinPolicy: "all_success",
       quorumCount: null,
+      timeoutMs: 420_000,
       retryLimit: 1,
       executorKind: "codex",
       doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
@@ -300,15 +385,16 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
     const index = rawSteps.length;
     rawSteps.push({
       title: "Integrate branch outputs",
-      detail: "Apply deterministic merge sequencing and finalize a single integration result.",
+      detail: "Verify cross-branch compatibility and consolidate a single integration result.",
       kind: "integration",
       dependencyIndices: workIndexes.length ? workIndexes : previousIndex >= 0 ? [previousIndex] : [],
       joinPolicy: joinConfig.joinPolicy,
       quorumCount: joinConfig.quorumCount,
+      timeoutMs: 900_000,
       retryLimit: 1,
       executorKind: "codex",
-      doneCriteria: "Integration lane state is conflict-free or a deterministic policy block is produced.",
-      splitReason: "Multiple branches require deterministic join semantics before validation.",
+      doneCriteria: "Cross-branch contracts are validated and integration outputs are summarized for downstream gates.",
+      splitReason: "Parallel branches require a compatibility gate before validation.",
       policy: buildPolicy({
         kind: "integration",
         laneId,
@@ -330,6 +416,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
       dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
       joinPolicy: "all_success",
       quorumCount: null,
+      timeoutMs: 600_000,
       retryLimit: 1,
       executorKind: "codex",
       doneCriteria: "Required checks complete and outcomes are attached to mission artifacts/handoffs.",
@@ -352,6 +439,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
     dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
     joinPolicy: "all_success",
     quorumCount: null,
+    timeoutMs: 180_000,
     retryLimit: 0,
     executorKind: "codex",
     doneCriteria: "Outcome summary and required artifact links are persisted for operators.",

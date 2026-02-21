@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-21
 
 ---
 
@@ -410,3 +410,20 @@ Lifecycle/transition coverage:
 - Real-time agent output streaming from main process to renderer via IPC.
 - AI-planned steps replace or augment deterministic planner for intelligent mission decomposition.
 - MCP server exposes lane, git, pack, conflict, and session tools to the orchestrator agent.
+- Planner normalization now rejects generic step labels/descriptions (for example `Step 1`) and falls back to deterministic planning when AI output is low quality.
+- Mission-step dependency resolution preserves explicit empty dependency sets to allow true fan-out execution instead of implicit sequential fallback.
+- Parallel lane auto-provisioning now creates child lanes for independent root workstreams and reuses pre-assigned non-base lanes to avoid duplicate lane creation on reruns.
+- Codex worker sessions use non-interactive `codex exec` startup semantics to prevent idle interactive shells from masquerading as active mission work.
+- A deterministic health sweep loop runs in main process to:
+  - tick active runs,
+  - heartbeat active claims,
+  - detect stale running attempts by timeout policy,
+  - reconcile attempts when tracked sessions already ended but callbacks were missed,
+  - fail/retry stuck attempts and trigger autopilot reassignment.
+- Status/progress chat prompts now trigger deterministic run telemetry replies (progress, active steps, blockers, recovered stale attempts) in addition to AI chat responses when available.
+- Mission detail step-inspector now surfaces lane assignment, current step status, worker heartbeat age, dependency names, completion criteria, and expected signals for clearer operator visibility.
+- A dedicated no-UI orchestrator smoke harness is available at:
+  - `apps/desktop/src/main/services/orchestrator/orchestratorSmoke.test.ts`
+  - run with `npm --prefix apps/desktop run test:orchestrator-smoke`
+  - complex observer-mode prompt run: `npm --prefix apps/desktop run test:orchestrator-complex-mock`
+  - complex run report path: `/tmp/ade-orchestrator-complex-mock-report.json`

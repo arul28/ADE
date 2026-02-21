@@ -81,6 +81,9 @@ const TASK_TYPES: PlannerTaskType[] = ["analysis", "code", "integration", "test"
 const CONTEXT_PROFILES: PlannerContextProfileRequirement[] = ["deterministic", "deterministic_plus_narrative"];
 const CLAIM_LANES: PlannerClaimLane[] = ["analysis", "backend", "frontend", "integration", "conflict"];
 const DEFAULT_TIMEOUT_MS = 45_000;
+const GENERIC_STEP_NAME_RE = /^(?:step|task|phase)\s*[-_#]?\s*\d+$/i;
+const GENERIC_STEP_DESCRIPTION_RE =
+  /^(?:execute|do|perform)\s+(?:mission|this|the)\s+(?:work|step|task)(?:\s+for\s+this\s+step)?\.?$/i;
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -121,6 +124,18 @@ function normalizeStepId(stepId: string | null, index: number): string {
   const normalized = toLowerSlug(stepId ?? "");
   if (normalized.length > 0) return normalized;
   return `plan-${String(index + 1).padStart(3, "0")}`;
+}
+
+function isGenericStepName(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized.length) return true;
+  return GENERIC_STEP_NAME_RE.test(normalized);
+}
+
+function isGenericStepDescription(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized.length) return true;
+  return GENERIC_STEP_DESCRIPTION_RE.test(normalized);
 }
 
 function normalizeText(input: unknown, fallback: string): string {
@@ -289,6 +304,9 @@ function buildPlannerPrompt(args: {
     "AI is only for initial planning. Runtime transitions are deterministic.",
     "Return valid JSON only. No markdown. No explanations outside JSON.",
     "Use stable deterministic step IDs suitable for resume/replay.",
+    "Do not use generic names such as 'Step 1' or 'Task 2'. Step names must be specific and action-oriented.",
+    "Each step description must include concrete deliverables and verification intent.",
+    "Dependencies must reflect true execution order. Independent workstreams should not depend on each other.",
     "Prefer minimal safe parallelism unless units are independent.",
     args.allowPlanningQuestions
       ? "Clarifying questions are allowed only in planning output assumptions/risks; runtime must not request extra input unless blocked."
@@ -323,7 +341,7 @@ function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
   return {
     stepId: normalizeStepId(typeof record.stepId === "string" ? record.stepId : null, index),
     name: normalizeText(record.name, `Step ${index + 1}`),
-    description: normalizeText(record.description, "Execute mission work for this step."),
+    description: normalizeText(record.description, "Execute this step and verify completion criteria."),
     taskType: toEnum(record.taskType, TASK_TYPES, "code"),
     executorHint: toEnum(record.executorHint, ["claude", "codex", "either"] as const, "either"),
     preferredScope: toEnum(record.preferredScope, ["lane", "file", "session", "global"] as const, "lane"),
@@ -346,7 +364,7 @@ function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
         .map((entry) => toEnum(entry, CLAIM_LANES, "analysis"))
         .filter((entry, idx, arr) => arr.indexOf(entry) === idx);
       return {
-        lanes: lanes.length > 0 ? lanes : (["analysis"] as PlannerClaimLane[]),
+        lanes,
         filePatterns: toStringArray(claim.filePatterns),
         envKeys: toStringArray(claim.envKeys),
         exclusive: claim.exclusive === true
@@ -394,6 +412,12 @@ export function validateAndCanonicalizePlannerPlan(raw: unknown): {
 
   const seen = new Set<string>();
   for (const step of normalizedSteps) {
+    if (isGenericStepName(step.name)) {
+      validationErrors.push(`Step '${step.stepId}' uses a generic name ('${step.name}').`);
+    }
+    if (isGenericStepDescription(step.description)) {
+      validationErrors.push(`Step '${step.stepId}' uses an uninformative description.`);
+    }
     if (seen.has(step.stepId)) validationErrors.push(`Duplicate stepId: ${step.stepId}`);
     seen.add(step.stepId);
   }
@@ -685,13 +709,8 @@ function mapHintToExecutor(args: {
 
 function toClaimScopes(step: PlannerStepPlan): Array<{ scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number }> {
   const scopes: Array<{ scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number }> = [];
-  for (const lane of step.claimPolicy.lanes) {
-    scopes.push({
-      scopeKind: "lane",
-      scopeValue: `lane:${lane}`,
-      ttlMs: step.timeoutMs ?? 60_000
-    });
-  }
+  // Planner lane hints are semantic domains (backend/frontend/integration), not concrete ADE lanes.
+  // We only emit deterministic lock scopes when explicit file/env scopes are present.
   for (const pattern of step.claimPolicy.filePatterns ?? []) {
     scopes.push({
       scopeKind: "file",
@@ -756,6 +775,7 @@ export function plannerPlanToMissionSteps(args: {
         doneCriteria: step.outputContract.completionCriteria,
         expectedSignals: step.outputContract.expectedSignals,
         artifactHints: step.artifactHints,
+        laneHints: step.claimPolicy.lanes,
         planner: {
           version: "ade.missionPlanner.v2",
           schemaVersion: args.plan.schemaVersion,

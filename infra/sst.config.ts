@@ -343,6 +343,7 @@ export default $config({
 
     const apiEnvironment = {
       APP_STAGE: stage,
+      API_VERSION: process.env.ADE_API_VERSION ?? "0.1.0",
       PROJECTS_TABLE_NAME: projectsTable.name,
       LANES_TABLE_NAME: lanesTable.name,
       JOBS_TABLE_NAME: jobsTable.name,
@@ -423,6 +424,8 @@ export default $config({
     };
 
     api.route("OPTIONS /{proxy+}", "packages/functions/src/api/handlers.options");
+
+    api.route("GET /api/health", "packages/functions/src/api/handlers.apiHealth");
 
     api.route("GET /health", "packages/functions/src/api/handlers.health");
 

@@ -80,6 +80,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 async function createFixture(args: {
   requirePlanReview?: boolean;
   aiIntegrationService?: any;
+  laneService?: any;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ai-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -142,6 +143,8 @@ async function createFixture(args: {
   );
 
   const missionService = createMissionService({ db, projectId });
+  const laneService = args.laneService ?? null;
+  const aiIntegrationService = args.aiIntegrationService ?? null;
   const projectConfigService = {
     get: () => ({
       effective: {
@@ -224,8 +227,9 @@ async function createFixture(args: {
     logger: createLogger(),
     missionService,
     orchestratorService,
+    laneService,
     projectConfigService,
-    aiIntegrationService: args.aiIntegrationService ?? null,
+    aiIntegrationService,
     projectRoot
   });
 
@@ -236,8 +240,14 @@ async function createFixture(args: {
     laneId,
     missionService,
     orchestratorService,
+    laneService,
+    projectConfigService,
+    aiIntegrationService,
     aiOrchestratorService,
-    dispose: () => db.close()
+    dispose: () => {
+      aiOrchestratorService.dispose();
+      db.close();
+    }
   };
 }
 
@@ -424,6 +434,776 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("recovers stale non-manual attempts during health sweep", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Implement and validate orchestrator health checks.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      // Simulate a long-running codex worker that exceeded its timeout.
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              started_at = ?,
+              created_at = ?
+          where id = ?
+        `,
+        ["2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", attempt.id]
+      );
+
+      const sweep = await fixture.aiOrchestratorService.runHealthSweep("test");
+      expect(sweep.staleRecovered).toBeGreaterThanOrEqual(1);
+
+      const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
+      const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
+      expect(refreshedAttempt?.status).toBe("failed");
+      expect(refreshedAttempt?.errorMessage ?? "").toContain("Marking as stuck");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps running attempts alive when tracked sessions show recent output activity", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Do long-running work while continuously streaming output.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-active-1";
+      const transcriptPath = path.join(fixture.projectRoot, ".ade", "transcripts", `${sessionId}.log`);
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, "still producing output\n", "utf8");
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?,
+              started_at = ?,
+              created_at = ?
+          where id = ?
+        `,
+        [sessionId, "2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", attempt.id]
+      );
+
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id,
+            lane_id,
+            pty_id,
+            tracked,
+            title,
+            started_at,
+            ended_at,
+            exit_code,
+            transcript_path,
+            head_sha_start,
+            head_sha_end,
+            status,
+            last_output_preview,
+            summary,
+            tool_type,
+            resume_command,
+            last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null, 'running', null, null, 'codex-orchestrated', null, ?)
+        `,
+        [
+          sessionId,
+          fixture.laneId,
+          "2026-02-20T00:00:00.000Z",
+          transcriptPath,
+          new Date().toISOString()
+        ]
+      );
+
+      const sweep = await fixture.aiOrchestratorService.runHealthSweep("active_output");
+      expect(sweep.staleRecovered).toBe(0);
+
+      const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
+      const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
+      expect(refreshedAttempt?.status).toBe("running");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers running attempts with tracked sessions that go silent", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover no-output workers before they block the mission forever.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-silent-1";
+      const transcriptPath = path.join(fixture.projectRoot, ".ade", "transcripts", `${sessionId}.log`);
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, "", "utf8");
+      const old = new Date("2000-01-01T00:00:00.000Z");
+      fs.utimesSync(transcriptPath, old, old);
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?,
+              started_at = ?,
+              created_at = ?
+          where id = ?
+        `,
+        [sessionId, "2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.000Z", attempt.id]
+      );
+
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id,
+            lane_id,
+            pty_id,
+            tracked,
+            title,
+            started_at,
+            ended_at,
+            exit_code,
+            transcript_path,
+            head_sha_start,
+            head_sha_end,
+            status,
+            last_output_preview,
+            summary,
+            tool_type,
+            resume_command,
+            last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null, 'running', null, null, 'codex-orchestrated', null, ?)
+        `,
+        [
+          sessionId,
+          fixture.laneId,
+          "2026-02-20T00:00:00.000Z",
+          transcriptPath,
+          "2000-01-01T00:00:00.000Z"
+        ]
+      );
+
+      const sweep = await fixture.aiOrchestratorService.runHealthSweep("silent_output");
+      expect(sweep.staleRecovered).toBeGreaterThanOrEqual(1);
+
+      const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
+      const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
+      expect(refreshedAttempt?.status).toBe("failed");
+      expect(refreshedAttempt?.errorMessage ?? "").toContain("Marking as stuck");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not open failed-step intervention when failure already queued a retry", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Implement endpoint and run verification checks.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorClass: "transient",
+        errorMessage: "Temporary CI outage"
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "failed"
+      });
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      const failedStepInterventions = refreshedMission?.interventions.filter((item) => item.interventionType === "failed_step") ?? [];
+      expect(failedStepInterventions).toHaveLength(0);
+
+      const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(chat.some((entry) => entry.content.includes("Retry scheduled"))).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reconciles running attempts when tracked sessions already ended", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Recover attempts when tracked worker sessions end.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        ["session-ended-1", attempt.id]
+      );
+
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id,
+            lane_id,
+            pty_id,
+            tracked,
+            title,
+            started_at,
+            ended_at,
+            exit_code,
+            transcript_path,
+            head_sha_start,
+            head_sha_end,
+            status,
+            last_output_preview,
+            summary,
+            tool_type,
+            resume_command
+          ) values (?, ?, null, 1, 'Worker', ?, ?, 0, ?, null, null, 'completed', null, null, 'codex-orchestrated', null)
+        `,
+        [
+          "session-ended-1",
+          fixture.laneId,
+          "2026-02-20T00:00:00.000Z",
+          "2026-02-20T00:05:00.000Z",
+          path.join(fixture.projectRoot, ".ade", "transcripts", "session-ended-1.log")
+        ]
+      );
+
+      const sweep = await fixture.aiOrchestratorService.runHealthSweep("session_ended_test");
+      expect(sweep.staleRecovered).toBeGreaterThanOrEqual(1);
+
+      const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
+      const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
+      expect(refreshedAttempt?.status).toBe("succeeded");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("opens manual-input interventions from runtime waiting-input signals", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep workers moving and request help when blocked.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-waiting-input-1";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "waiting-input",
+        lastOutputPreview: "Need your input: choose option A or B before proceeding.",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const refreshed = fixture.missionService.get(mission.id);
+        return Boolean(
+          refreshed?.interventions.some(
+            (entry) =>
+              entry.status === "open" &&
+              entry.interventionType === "manual_input" &&
+              String(entry.metadata?.attemptId ?? "") === attempt.id
+          )
+        );
+      });
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(
+        refreshedMission?.interventions.some(
+          (entry) =>
+            entry.status === "open" &&
+            entry.interventionType === "manual_input" &&
+            String(entry.metadata?.attemptId ?? "") === attempt.id
+        )
+      ).toBe(true);
+
+      const states = fixture.aiOrchestratorService.getWorkerStates({ runId });
+      const tracked = states.find((entry) => entry.attemptId === attempt.id);
+      expect(tracked?.state).toBe("waiting_input");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reconciles attempts immediately on terminal runtime end signals", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Detect ended sessions and reconcile without waiting for periodic sweeps.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-runtime-ended-1";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id,
+            lane_id,
+            pty_id,
+            tracked,
+            title,
+            started_at,
+            ended_at,
+            exit_code,
+            transcript_path,
+            head_sha_start,
+            head_sha_end,
+            status,
+            last_output_preview,
+            summary,
+            tool_type,
+            resume_command
+          ) values (?, ?, null, 1, 'Worker', ?, ?, 0, ?, null, null, 'completed', null, null, 'codex-orchestrated', null)
+        `,
+        [
+          sessionId,
+          fixture.laneId,
+          "2026-02-20T00:00:00.000Z",
+          "2026-02-20T00:05:00.000Z",
+          path.join(fixture.projectRoot, ".ade", "transcripts", "session-runtime-ended-1.log")
+        ]
+      );
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "exited",
+        lastOutputPreview: "Done",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const refreshed = fixture.orchestratorService.getRunGraph({ runId });
+        const matched = refreshed.attempts.find((entry) => entry.id === attempt.id);
+        return matched?.status === "succeeded";
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("rehydrates persisted runtime waiting-input state after service restart", async () => {
+    const fixture = await createFixture();
+    let restartedService: ReturnType<typeof createAiOrchestratorService> | null = null;
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep waiting-input awareness across orchestrator restarts.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-runtime-restart-1";
+      const transcriptPath = path.join(fixture.projectRoot, ".ade", "transcripts", `${sessionId}.log`);
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, "still waiting...\n", "utf8");
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id,
+            lane_id,
+            pty_id,
+            tracked,
+            title,
+            started_at,
+            ended_at,
+            exit_code,
+            transcript_path,
+            head_sha_start,
+            head_sha_end,
+            status,
+            last_output_preview,
+            summary,
+            tool_type,
+            resume_command,
+            last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null, 'running', ?, null, 'codex-orchestrated', null, ?)
+        `,
+        [
+          sessionId,
+          fixture.laneId,
+          "2026-02-20T00:00:00.000Z",
+          transcriptPath,
+          "still waiting...",
+          new Date().toISOString()
+        ]
+      );
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "waiting-input",
+        lastOutputPreview: "still waiting...",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const row = fixture.db.get<{ runtime_state: string | null }>(
+          `select runtime_state from orchestrator_attempt_runtime where attempt_id = ? limit 1`,
+          [attempt.id]
+        );
+        return String(row?.runtime_state ?? "") === "waiting-input";
+      });
+
+      fixture.db.run(
+        `delete from mission_interventions where mission_id = ? and intervention_type = 'manual_input'`,
+        [mission.id]
+      );
+
+      fixture.aiOrchestratorService.dispose();
+      restartedService = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        laneService: fixture.laneService,
+        projectConfigService: fixture.projectConfigService,
+        aiIntegrationService: fixture.aiIntegrationService,
+        projectRoot: fixture.projectRoot
+      });
+
+      await restartedService.runHealthSweep("restart_hydrate");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(
+        refreshed?.interventions.some(
+          (entry) =>
+            entry.status === "open" &&
+            entry.interventionType === "manual_input" &&
+            String(entry.metadata?.attemptId ?? "") === attempt.id
+        )
+      ).toBe(true);
+    } finally {
+      restartedService?.dispose();
+      fixture.dispose();
+    }
+  });
+
+  it("clears persisted runtime rows once attempts become terminal", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Persist runtime tracking while running and clean it on terminal status.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      const sessionId = "session-runtime-cleanup-1";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "running",
+        lastOutputPreview: "processing work",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const row = fixture.db.get<{ attempt_id: string | null }>(
+          `select attempt_id from orchestrator_attempt_runtime where attempt_id = ? limit 1`,
+          [attempt.id]
+        );
+        return String(row?.attempt_id ?? "") === attempt.id;
+      });
+
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorClass: "deterministic",
+        errorMessage: "cleanup check"
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "failed"
+      });
+
+      const persisted = fixture.db.get<{ attempt_id: string | null }>(
+        `select attempt_id from orchestrator_attempt_runtime where attempt_id = ? limit 1`,
+        [attempt.id]
+      );
+      expect(persisted).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("clips chat context before calling AI so orchestrator prompts stay compact", async () => {
+    const mockAi = createMockAiIntegrationService({
+      executeTask: vi.fn().mockResolvedValue({
+        text: "Acknowledged.",
+        structuredOutput: null,
+        provider: "claude",
+        model: "sonnet",
+        sessionId: null,
+        inputTokens: 80,
+        outputTokens: 20,
+        durationMs: 300
+      })
+    });
+    const fixture = await createFixture({ aiIntegrationService: mockAi });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep prompts concise while preserving decision-relevant context.",
+        laneId: fixture.laneId
+      });
+
+      const hugeMessage = `Need a compact response context.\n${"x".repeat(12_000)}`;
+      fixture.aiOrchestratorService.sendChat({
+        missionId: mission.id,
+        content: hugeMessage
+      });
+
+      await waitFor(() => (mockAi.executeTask as any).mock.calls.length > 0);
+      const firstCallArgs = (mockAi.executeTask as any).mock.calls[0]?.[0];
+      expect(firstCallArgs).toBeTruthy();
+      expect(typeof firstCallArgs.prompt).toBe("string");
+      expect(firstCallArgs.prompt.length).toBeLessThan(9_000);
+      expect(firstCallArgs.prompt).toContain("...[truncated]");
+      expect(firstCallArgs.prompt.includes("x".repeat(5_000))).toBe(false);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("planWithAI gracefully degrades when aiIntegrationService is not available", async () => {
     const fixture = await createFixture();
     try {
@@ -539,6 +1319,112 @@ describe("aiOrchestratorService", () => {
       expect(meta.plannerPlan).toBeTruthy();
       expect(meta.plannerPlan.stepCount).toBe(2);
       expect(meta.planner).toBeTruthy();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("startMissionRun reports deterministic fallback reason when AI planner degrades", async () => {
+    const mockAi = createMockAiIntegrationService({
+      planMission: vi.fn().mockResolvedValue({
+        text: "planner output was malformed",
+        structuredOutput: null,
+        provider: "claude",
+        model: "sonnet",
+        sessionId: null,
+        inputTokens: 120,
+        outputTokens: 80,
+        durationMs: 900
+      })
+    });
+
+    const fixture = await createFixture({ aiIntegrationService: mockAi });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Add endpoint, tests, docs, and final review.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        plannerProvider: "claude",
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      expect(launch.started).toBeTruthy();
+
+      const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(chat.some((entry) => entry.content.includes("fell back to deterministic"))).toBe(true);
+      expect(chat.some((entry) => entry.content.includes("planner_parse_error"))).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("planWithAI rejects generic AI plans and preserves non-generic mission steps", async () => {
+    const genericPlan = {
+      schemaVersion: "1.0",
+      missionSummary: {
+        title: "Generic plan",
+        objective: "Should be rejected by planner validation",
+        domain: "backend",
+        complexity: "medium",
+        strategy: "parallel-lite",
+        parallelismCap: 2
+      },
+      assumptions: [],
+      risks: [],
+      steps: [
+        {
+          stepId: "step-1",
+          name: "Step 1",
+          description: "Execute mission work for this step.",
+          taskType: "code",
+          executorHint: "either",
+          preferredScope: "lane",
+          requiresContextProfiles: ["deterministic"],
+          dependencies: [],
+          artifactHints: [],
+          claimPolicy: { lanes: ["backend"] },
+          maxAttempts: 2,
+          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+          outputContract: { expectedSignals: [], completionCriteria: "done" }
+        }
+      ],
+      handoffPolicy: { externalConflictDefault: "intervention" }
+    };
+
+    const mockAi = createMockAiIntegrationService({
+      planMission: vi.fn().mockResolvedValue({
+        text: JSON.stringify(genericPlan),
+        structuredOutput: genericPlan,
+        provider: "claude",
+        model: "sonnet",
+        sessionId: null,
+        inputTokens: 150,
+        outputTokens: 120,
+        durationMs: 1200
+      })
+    });
+
+    const fixture = await createFixture({ aiIntegrationService: mockAi });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Add health endpoint, tests, docs, and final review.",
+        laneId: fixture.laneId
+      });
+      const originalStepTitles = mission.steps.map((step) => step.title);
+      expect(originalStepTitles.some((title) => title === "Step 1")).toBe(false);
+
+      await fixture.aiOrchestratorService.planWithAI({
+        missionId: mission.id,
+        provider: "claude"
+      });
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed).toBeTruthy();
+      expect(refreshed!.steps.some((step) => step.title === "Step 1")).toBe(false);
+      expect(refreshed!.steps.length).toBeGreaterThan(0);
     } finally {
       fixture.dispose();
     }
@@ -770,6 +1656,207 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("auto-creates lanes for independent parallel steps and assigns downstream lanes", async () => {
+    const laneService = {
+      createChild: vi.fn().mockResolvedValue({
+        id: "lane-child-1",
+        name: "m-auto-child-1"
+      })
+    };
+    const fixture = await createFixture({ laneService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Implement two independent units in parallel, then integrate.",
+        laneId: fixture.laneId
+      });
+
+      const now = "2026-02-21T00:00:00.000Z";
+      fixture.db.run(`delete from mission_steps where mission_id = ?`, [mission.id]);
+      fixture.db.run(
+        `
+          insert into mission_steps(
+            id,
+            mission_id,
+            project_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values
+            ('mstep-par-1', ?, ?, 0, 'Build API slice', 'Implement API changes', 'implementation', ?, 'pending', '{"stepType":"implementation","dependencyStepKeys":[]}', ?, ?, null, null),
+            ('mstep-par-2', ?, ?, 1, 'Build UI slice', 'Implement UI changes', 'implementation', ?, 'pending', '{"stepType":"implementation","dependencyStepKeys":[]}', ?, ?, null, null),
+            ('mstep-par-3', ?, ?, 2, 'Integrate and verify', 'Join outputs and verify', 'integration', ?, 'pending', '{"stepType":"integration","dependencyIndices":[0,1],"joinPolicy":"all_success"}', ?, ?, null, null)
+        `,
+        [
+          mission.id,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now,
+          mission.id,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now,
+          mission.id,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now
+        ]
+      );
+
+      const started = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "manual"
+      });
+      expect(started.blockedByPlanReview).toBe(false);
+      expect(laneService.createChild).toHaveBeenCalledTimes(1);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(refreshedMission).toBeTruthy();
+      const apiStep = refreshedMission!.steps.find((step) => step.id === "mstep-par-1");
+      const uiStep = refreshedMission!.steps.find((step) => step.id === "mstep-par-2");
+      const joinStep = refreshedMission!.steps.find((step) => step.id === "mstep-par-3");
+      expect(apiStep?.laneId).toBe(fixture.laneId);
+      expect(uiStep?.laneId).toBe("lane-child-1");
+      expect(joinStep?.laneId).toBe(fixture.laneId);
+
+      const runs = fixture.orchestratorService.listRuns({ missionId: mission.id });
+      expect(runs.length).toBeGreaterThan(0);
+      const graph = fixture.orchestratorService.getRunGraph({ runId: runs[0]!.id });
+      const runUiStep = graph.steps.find((step) => step.missionStepId === "mstep-par-2");
+      expect(runUiStep?.laneId).toBe("lane-child-1");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not create duplicate child lanes when parallel roots are already assigned", async () => {
+    const laneService = {
+      createChild: vi.fn().mockResolvedValue({
+        id: "lane-child-unexpected",
+        name: "unexpected"
+      })
+    };
+    const fixture = await createFixture({ laneService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Run existing parallel workstreams and integrate.",
+        laneId: fixture.laneId
+      });
+
+      const now = "2026-02-21T00:00:00.000Z";
+      fixture.db.run(
+        `
+          insert into lanes(
+            id,
+            project_id,
+            name,
+            description,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            is_edit_protected,
+            parent_lane_id,
+            color,
+            icon,
+            tags_json,
+            status,
+            created_at,
+            archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "lane-child-existing",
+          fixture.projectId,
+          "Child Existing",
+          null,
+          "worktree",
+          "main",
+          "feature/lane-child-existing",
+          fixture.projectRoot,
+          null,
+          0,
+          fixture.laneId,
+          null,
+          null,
+          null,
+          "active",
+          now,
+          null
+        ]
+      );
+
+      fixture.db.run(`delete from mission_steps where mission_id = ?`, [mission.id]);
+      fixture.db.run(
+        `
+          insert into mission_steps(
+            id,
+            mission_id,
+            project_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values
+            ('mstep-pre-1', ?, ?, 0, 'Build API slice', 'Implement API changes', 'implementation', ?, 'pending', '{"stepType":"implementation","dependencyStepKeys":[]}', ?, ?, null, null),
+            ('mstep-pre-2', ?, ?, 1, 'Build UI slice', 'Implement UI changes', 'implementation', ?, 'pending', '{"stepType":"implementation","dependencyStepKeys":[]}', ?, ?, null, null),
+            ('mstep-pre-3', ?, ?, 2, 'Integrate and verify', 'Join outputs and verify', 'integration', ?, 'pending', '{"stepType":"integration","dependencyIndices":[0,1],"joinPolicy":"all_success"}', ?, ?, null, null)
+        `,
+        [
+          mission.id,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now,
+          mission.id,
+          fixture.projectId,
+          "lane-child-existing",
+          now,
+          now,
+          mission.id,
+          fixture.projectId,
+          fixture.laneId,
+          now,
+          now
+        ]
+      );
+
+      const started = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "autopilot",
+        defaultExecutorKind: "manual"
+      });
+      expect(started.blockedByPlanReview).toBe(false);
+      expect(laneService.createChild).toHaveBeenCalledTimes(0);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(refreshedMission).toBeTruthy();
+      const uiStep = refreshedMission!.steps.find((step) => step.id === "mstep-pre-2");
+      expect(uiStep?.laneId).toBe("lane-child-existing");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("adjustPlanFromResults runs deterministic checks and logs progress", async () => {
     const fixture = await createFixture();
     try {
@@ -925,6 +2012,39 @@ describe("aiOrchestratorService", () => {
             && String((entry as { directive?: unknown }).directive).includes("prioritize tests")
         )
       ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("returns a deterministic telemetry summary for status chat prompts", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Expose orchestrator telemetry on demand.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      expect(launch.started?.run.id).toBeTruthy();
+
+      fixture.aiOrchestratorService.sendChat({
+        missionId: mission.id,
+        content: "status update please"
+      });
+
+      await waitFor(() =>
+        fixture.aiOrchestratorService
+          .getChat({ missionId: mission.id })
+          .some((entry) => entry.role === "orchestrator" && entry.content.includes("Progress"))
+      );
+
+      const messages = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
+      expect(messages.some((entry) => entry.role === "orchestrator" && entry.content.includes("Progress"))).toBe(true);
     } finally {
       fixture.dispose();
     }

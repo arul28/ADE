@@ -3555,6 +3555,7 @@ export type OrchestratorWorkerStatus =
   | "spawned"
   | "initializing"
   | "working"
+  | "waiting_input"
   | "idle"
   | "completed"
   | "failed"

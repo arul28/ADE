@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
   MissionDetail,
+  MissionStep,
   MissionDepthTier,
   MissionDepthConfig,
   MissionPlannerEngine,
@@ -14,6 +16,7 @@ import type {
   OrchestratorWorkerState,
   OrchestratorWorkerStatus,
   OrchestratorPlannerProvider,
+  TerminalRuntimeState,
   SteerMissionArgs,
   SteerMissionResult,
   GetMissionDepthConfigArgs,
@@ -29,6 +32,7 @@ import type { createMissionService } from "../missions/missionService";
 import type { createOrchestratorService } from "./orchestratorService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import type { createLaneService } from "../lanes/laneService";
 import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
 
 type MissionRunStartArgs = {
@@ -60,6 +64,39 @@ const ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
 const ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
 const MAX_PERSISTED_STEERING_DIRECTIVES = 200;
 const MAX_PERSISTED_CHAT_MESSAGES = 200;
+const HEALTH_SWEEP_INTERVAL_MS = 15_000;
+const STALE_ATTEMPT_GRACE_MS = 10_000;
+const WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS = 120_000;
+const WORKER_STAGNATION_MIN_MS = 120_000;
+const WORKER_STAGNATION_REPEAT_THRESHOLD = 6;
+const WORKER_EVENT_HEARTBEAT_INTERVAL_MS = 10_000;
+const MAX_CHAT_CONTEXT_CHARS = 4_000;
+const MAX_CHAT_CONTEXT_MESSAGES = 8;
+const MAX_CHAT_LINE_CHARS = 420;
+const MAX_LATEST_CHAT_MESSAGE_CHARS = 1_500;
+const SESSION_SIGNAL_RETENTION_MS = 20 * 60_000;
+const MAX_STEERING_CONTEXT_DIRECTIVES = 8;
+const MAX_STEERING_CONTEXT_CHARS = 1_600;
+const ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS = 2_000;
+const MAX_RUNTIME_SIGNAL_PREVIEW_CHARS = 320;
+
+type SessionRuntimeSignal = {
+  laneId: string;
+  sessionId: string;
+  runtimeState: TerminalRuntimeState;
+  lastOutputPreview: string | null;
+  at: string;
+};
+
+type AttemptRuntimeTracker = {
+  lastPreviewDigest: string | null;
+  digestSinceMs: number;
+  repeatCount: number;
+  lastWaitingInterventionAtMs: number;
+  lastEventHeartbeatAtMs: number;
+  lastWaitingNotifiedAtMs: number;
+  lastPersistedAtMs: number;
+};
 
 type OrchestratorChatSessionState = {
   provider: "claude" | "codex";
@@ -125,6 +162,64 @@ function parseChatSessionState(value: unknown): OrchestratorChatSessionState | n
     sessionId,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : nowIso()
   };
+}
+
+function normalizeSignalText(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function digestSignalText(value: string | null | undefined): string | null {
+  const normalized = normalizeSignalText(value);
+  if (!normalized.length) return null;
+  // Keep a compact deterministic fingerprint without importing heavier crypto deps.
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i += 1) {
+    hash = ((hash << 5) - hash + normalized.charCodeAt(i)) | 0;
+  }
+  return String(hash);
+}
+
+function detectWaitingInputSignal(text: string | null | undefined): boolean {
+  const normalized = normalizeSignalText(text);
+  if (!normalized.length) return false;
+  return /\b(waiting for|need(?:s)? (?:your|user|operator) input|requires? (?:approval|confirmation)|please (?:confirm|choose|select|provide)|which (?:option|one)|can you clarify|press enter|y\/n|yes\/no)\b/i.test(normalized);
+}
+
+function clipTextForContext(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n...[truncated]`;
+}
+
+function workerStateFromRuntimeSignal(args: {
+  runtimeState: TerminalRuntimeState;
+  waitingForInput: boolean;
+}): OrchestratorWorkerStatus {
+  if (args.waitingForInput) return "waiting_input";
+  if (args.runtimeState === "idle") return "idle";
+  if (args.runtimeState === "running") return "working";
+  if (args.runtimeState === "killed") return "disposed";
+  return "working";
+}
+
+function parseTerminalRuntimeState(raw: unknown): TerminalRuntimeState | null {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (value === "running" || value === "waiting-input" || value === "idle" || value === "exited" || value === "killed") {
+    return value;
+  }
+  return null;
+}
+
+function parseJsonRecord(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function readConfig(projectConfigService: ReturnType<typeof createProjectConfigService> | null | undefined): ResolvedOrchestratorConfig {
@@ -437,11 +532,12 @@ export function createAiOrchestratorService(args: {
   logger: Logger;
   missionService: ReturnType<typeof createMissionService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  laneService?: ReturnType<typeof createLaneService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   projectRoot?: string;
 }) {
-  const { db, logger, missionService, orchestratorService, projectConfigService, aiIntegrationService, projectRoot } = args;
+  const { db, logger, missionService, orchestratorService, laneService, projectConfigService, aiIntegrationService, projectRoot } = args;
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
   const activeSteeringDirectives = new Map<string, UserSteeringDirective[]>();
@@ -449,6 +545,11 @@ export function createAiOrchestratorService(args: {
   const chatMessages = new Map<string, OrchestratorChatMessage[]>();
   const activeChatSessions = new Map<string, OrchestratorChatSessionState>();
   const chatTurnQueues = new Map<string, Promise<void>>();
+  const activeHealthSweepRuns = new Set<string>();
+  const sessionRuntimeSignals = new Map<string, SessionRuntimeSignal>();
+  const attemptRuntimeTrackers = new Map<string, AttemptRuntimeTracker>();
+  const sessionSignalQueues = new Map<string, Promise<void>>();
+  let healthSweepTimer: NodeJS.Timeout | null = null;
 
   const getMissionMetadata = (missionId: string): Record<string, unknown> => {
     const row = db.get<{ metadata_json: string | null }>(
@@ -596,14 +697,17 @@ export function createAiOrchestratorService(args: {
   const getSteeringContext = (missionId: string): string => {
     const directives = activeSteeringDirectives.get(missionId) ?? loadSteeringDirectivesFromMetadata(missionId);
     if (!directives?.length) return "";
-    return [
+    const recent = directives.slice(-MAX_STEERING_CONTEXT_DIRECTIVES);
+    const rendered = [
       "",
       "Active user steering directives (apply these to your decisions):",
-      ...directives.map((d, i) =>
-        `  ${i + 1}. [${d.priority}] ${d.directive}${d.targetStepKey ? ` (target: ${d.targetStepKey})` : ""}`
-      ),
+      ...recent.map((d, i) => {
+        const compactDirective = clipTextForContext(d.directive.replace(/\s+/g, " ").trim(), MAX_CHAT_LINE_CHARS);
+        return `  ${i + 1}. [${d.priority}] ${compactDirective}${d.targetStepKey ? ` (target: ${d.targetStepKey})` : ""}`;
+      }),
       ""
     ].join("\n");
+    return clipTextForContext(rendered, MAX_STEERING_CONTEXT_CHARS);
   };
 
   const getWorkerStates = (args: { runId: string }): OrchestratorWorkerState[] => {
@@ -650,6 +754,304 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const ensureAttemptRuntimeTracker = (attemptId: string): AttemptRuntimeTracker => {
+    const existing = attemptRuntimeTrackers.get(attemptId);
+    if (existing) return existing;
+    const next: AttemptRuntimeTracker = {
+      lastPreviewDigest: null,
+      digestSinceMs: Date.now(),
+      repeatCount: 0,
+      lastWaitingInterventionAtMs: 0,
+      lastEventHeartbeatAtMs: 0,
+      lastWaitingNotifiedAtMs: 0,
+      lastPersistedAtMs: 0
+    };
+    attemptRuntimeTrackers.set(attemptId, next);
+    return next;
+  };
+
+  const deletePersistedAttemptRuntimeState = (attemptId: string) => {
+    try {
+      db.run(`delete from orchestrator_attempt_runtime where attempt_id = ?`, [attemptId]);
+    } catch (error) {
+      logger.debug("ai_orchestrator.runtime_state_delete_failed", {
+        attemptId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const persistAttemptRuntimeState = (args: {
+    attemptId: string;
+    sessionId: string | null;
+    runtimeState: TerminalRuntimeState | null;
+    lastSignalAt: string | null;
+    lastOutputPreview: string | null;
+    force?: boolean;
+  }) => {
+    const attemptId = String(args.attemptId ?? "").trim();
+    if (!attemptId.length) return;
+    const tracker = ensureAttemptRuntimeTracker(attemptId);
+    const nowMs = Date.now();
+    if (!args.force && nowMs - tracker.lastPersistedAtMs < ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS) return;
+    const updatedAt = nowIso();
+    try {
+      db.run(
+        `
+          insert into orchestrator_attempt_runtime(
+            attempt_id,
+            session_id,
+            runtime_state,
+            last_signal_at,
+            last_output_preview,
+            last_preview_digest,
+            digest_since_ms,
+            repeat_count,
+            last_waiting_intervention_at_ms,
+            last_event_heartbeat_at_ms,
+            last_waiting_notified_at_ms,
+            updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(attempt_id) do update set
+            session_id = excluded.session_id,
+            runtime_state = excluded.runtime_state,
+            last_signal_at = excluded.last_signal_at,
+            last_output_preview = excluded.last_output_preview,
+            last_preview_digest = excluded.last_preview_digest,
+            digest_since_ms = excluded.digest_since_ms,
+            repeat_count = excluded.repeat_count,
+            last_waiting_intervention_at_ms = excluded.last_waiting_intervention_at_ms,
+            last_event_heartbeat_at_ms = excluded.last_event_heartbeat_at_ms,
+            last_waiting_notified_at_ms = excluded.last_waiting_notified_at_ms,
+            updated_at = excluded.updated_at
+        `,
+        [
+          attemptId,
+          args.sessionId,
+          args.runtimeState,
+          args.lastSignalAt,
+          args.lastOutputPreview,
+          tracker.lastPreviewDigest,
+          Math.max(0, Math.floor(tracker.digestSinceMs)),
+          Math.max(0, Math.floor(tracker.repeatCount)),
+          Math.max(0, Math.floor(tracker.lastWaitingInterventionAtMs)),
+          Math.max(0, Math.floor(tracker.lastEventHeartbeatAtMs)),
+          Math.max(0, Math.floor(tracker.lastWaitingNotifiedAtMs)),
+          updatedAt
+        ]
+      );
+      tracker.lastPersistedAtMs = nowMs;
+    } catch (error) {
+      logger.debug("ai_orchestrator.runtime_state_persist_failed", {
+        attemptId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const hydratePersistedAttemptRuntimeState = () => {
+    const nowMs = Date.now();
+    try {
+      db.run(
+        `
+          delete from orchestrator_attempt_runtime
+          where attempt_id in (
+            select r.attempt_id
+            from orchestrator_attempt_runtime r
+            left join orchestrator_attempts a on a.id = r.attempt_id
+            where a.id is null or a.status != 'running'
+          )
+        `
+      );
+    } catch (error) {
+      logger.debug("ai_orchestrator.runtime_state_prune_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    const rows = db.all<{
+      attempt_id: string;
+      session_id: string | null;
+      runtime_state: string | null;
+      last_signal_at: string | null;
+      last_output_preview: string | null;
+      last_preview_digest: string | null;
+      digest_since_ms: number | null;
+      repeat_count: number | null;
+      last_waiting_intervention_at_ms: number | null;
+      last_event_heartbeat_at_ms: number | null;
+      last_waiting_notified_at_ms: number | null;
+    }>(
+      `
+        select
+          r.attempt_id as attempt_id,
+          r.session_id as session_id,
+          r.runtime_state as runtime_state,
+          r.last_signal_at as last_signal_at,
+          r.last_output_preview as last_output_preview,
+          r.last_preview_digest as last_preview_digest,
+          r.digest_since_ms as digest_since_ms,
+          r.repeat_count as repeat_count,
+          r.last_waiting_intervention_at_ms as last_waiting_intervention_at_ms,
+          r.last_event_heartbeat_at_ms as last_event_heartbeat_at_ms,
+          r.last_waiting_notified_at_ms as last_waiting_notified_at_ms
+        from orchestrator_attempt_runtime r
+        join orchestrator_attempts a on a.id = r.attempt_id
+        where a.status = 'running'
+      `
+    );
+    if (!rows.length) return;
+
+    for (const row of rows) {
+      const attemptId = String(row.attempt_id ?? "").trim();
+      if (!attemptId.length) continue;
+      const tracker: AttemptRuntimeTracker = {
+        lastPreviewDigest: typeof row.last_preview_digest === "string" ? row.last_preview_digest : null,
+        digestSinceMs: Number.isFinite(Number(row.digest_since_ms))
+          ? Math.max(0, Math.floor(Number(row.digest_since_ms)))
+          : nowMs,
+        repeatCount: Number.isFinite(Number(row.repeat_count))
+          ? Math.max(0, Math.floor(Number(row.repeat_count)))
+          : 0,
+        lastWaitingInterventionAtMs: Number.isFinite(Number(row.last_waiting_intervention_at_ms))
+          ? Math.max(0, Math.floor(Number(row.last_waiting_intervention_at_ms)))
+          : 0,
+        lastEventHeartbeatAtMs: Number.isFinite(Number(row.last_event_heartbeat_at_ms))
+          ? Math.max(0, Math.floor(Number(row.last_event_heartbeat_at_ms)))
+          : 0,
+        lastWaitingNotifiedAtMs: Number.isFinite(Number(row.last_waiting_notified_at_ms))
+          ? Math.max(0, Math.floor(Number(row.last_waiting_notified_at_ms)))
+          : 0,
+        lastPersistedAtMs: nowMs
+      };
+      attemptRuntimeTrackers.set(attemptId, tracker);
+
+      const sessionId = typeof row.session_id === "string" ? row.session_id.trim() : "";
+      const runtimeState = parseTerminalRuntimeState(row.runtime_state);
+      const at = typeof row.last_signal_at === "string" && row.last_signal_at.trim().length ? row.last_signal_at : nowIso();
+      if (!sessionId.length || !runtimeState) continue;
+      const existing = sessionRuntimeSignals.get(sessionId);
+      if (existing) {
+        const existingMs = Date.parse(existing.at);
+        const nextMs = Date.parse(at);
+        if (Number.isFinite(existingMs) && Number.isFinite(nextMs) && existingMs > nextMs) {
+          continue;
+        }
+      }
+      sessionRuntimeSignals.set(sessionId, {
+        laneId: "",
+        sessionId,
+        runtimeState,
+        lastOutputPreview:
+          typeof row.last_output_preview === "string" && row.last_output_preview.trim().length
+            ? row.last_output_preview.trim()
+            : null,
+        at
+      });
+    }
+  };
+
+  const updateAttemptStagnationTracker = (attemptId: string, preview: string | null): { digest: string | null; stagnantMs: number } => {
+    const tracker = ensureAttemptRuntimeTracker(attemptId);
+    const now = Date.now();
+    const digest = digestSignalText(preview);
+    if (!digest) {
+      tracker.lastPreviewDigest = null;
+      tracker.repeatCount = 0;
+      tracker.digestSinceMs = now;
+      return { digest: null, stagnantMs: 0 };
+    }
+    if (tracker.lastPreviewDigest !== digest) {
+      tracker.lastPreviewDigest = digest;
+      tracker.repeatCount = 1;
+      tracker.digestSinceMs = now;
+      return { digest, stagnantMs: 0 };
+    }
+    tracker.repeatCount += 1;
+    return { digest, stagnantMs: Math.max(0, now - tracker.digestSinceMs) };
+  };
+
+  const shouldTreatAsStagnating = (attemptId: string, stagnantMs: number, stepTimeoutMs: number): boolean => {
+    const tracker = ensureAttemptRuntimeTracker(attemptId);
+    if (tracker.repeatCount < WORKER_STAGNATION_REPEAT_THRESHOLD) return false;
+    const threshold = Math.max(
+      WORKER_STAGNATION_MIN_MS,
+      Math.min(12 * 60_000, Math.floor(stepTimeoutMs * 0.4))
+    );
+    return stagnantMs >= threshold;
+  };
+
+  const resolveAttemptOwnerIdFromRows = (attemptMetadataJson: string | null, runMetadataJson: string | null): string => {
+    const attemptMeta = parseJsonRecord(attemptMetadataJson);
+    const explicitOwner = typeof attemptMeta?.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
+    if (explicitOwner.length > 0) return explicitOwner;
+    const runMeta = parseJsonRecord(runMetadataJson);
+    const autopilot = runMeta && isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
+    const owner = autopilot && typeof autopilot.ownerId === "string" ? autopilot.ownerId.trim() : "";
+    if (owner.length > 0) return owner;
+    return "orchestrator-autopilot";
+  };
+
+  const ensureManualInputIntervention = (args: {
+    missionId: string;
+    runId: string;
+    stepId: string;
+    stepKey: string;
+    stepTitle: string;
+    laneId: string | null;
+    attemptId: string;
+    sessionId: string;
+    preview: string | null;
+    reason: "runtime_signal" | "health_sweep";
+  }) => {
+    const mission = missionService.get(args.missionId);
+    if (!mission) return;
+    const existing = mission.interventions.find((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+      if (!isRecord(entry.metadata)) return false;
+      return entry.metadata.attemptId === args.attemptId;
+    });
+    if (existing) return existing;
+    const tracker = ensureAttemptRuntimeTracker(args.attemptId);
+    const now = Date.now();
+    if (
+      args.reason !== "health_sweep" &&
+      now - tracker.lastWaitingInterventionAtMs < WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS
+    ) {
+      return null;
+    }
+    tracker.lastWaitingInterventionAtMs = now;
+    const preview = typeof args.preview === "string" && args.preview.trim().length
+      ? args.preview.trim()
+      : "Worker requested operator guidance.";
+    const intervention = missionService.addIntervention({
+      missionId: args.missionId,
+      interventionType: "manual_input",
+      title: `Worker waiting for input: ${args.stepTitle}`,
+      body: `Step ${args.stepKey} is waiting for operator input. Latest signal: ${preview}`,
+      requestedAction: "Provide steering instruction so execution can continue.",
+      laneId: args.laneId,
+      metadata: {
+        attemptId: args.attemptId,
+        stepId: args.stepId,
+        runId: args.runId,
+        sessionId: args.sessionId,
+        reason: args.reason
+      }
+    });
+    emitOrchestratorMessage(
+      args.missionId,
+      `Step "${args.stepTitle}" is waiting for input. I opened an intervention so you can respond without babysitting terminals.`,
+      args.stepKey,
+      {
+        interventionId: intervention.id,
+        attemptId: args.attemptId,
+        sessionId: args.sessionId
+      }
+    );
+    return intervention;
+  };
+
   const extractOutcomeTags = (attempt: OrchestratorRunGraph["attempts"][number]): string[] => {
     const tags: string[] = [];
     if (attempt.resultEnvelope) {
@@ -670,6 +1072,522 @@ export function createAiOrchestratorService(args: {
       tags.push(`duration_category:${category}`);
     }
     return tags;
+  };
+
+  const resolveAttemptOwnerId = (run: OrchestratorRunGraph["run"], attempt: OrchestratorRunGraph["attempts"][number]): string => {
+    const attemptMeta = isRecord(attempt.metadata) ? attempt.metadata : {};
+    const explicitOwner = typeof attemptMeta.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
+    if (explicitOwner.length > 0) return explicitOwner;
+    const runMeta = isRecord(run.metadata) ? run.metadata : {};
+    const autopilot = isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
+    const runOwner = autopilot && typeof autopilot.ownerId === "string" ? autopilot.ownerId.trim() : "";
+    if (runOwner.length > 0) return runOwner;
+    return "orchestrator-autopilot";
+  };
+
+  const resolveStepTimeoutMs = (args: {
+    runId: string;
+    missionId: string;
+    step: OrchestratorRunGraph["steps"][number];
+  }): number => {
+    const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
+    const planStep = isRecord(stepMeta.planStep) ? stepMeta.planStep : null;
+    const explicitStepTimeout = Number(stepMeta.timeoutMs);
+    const planStepTimeout = Number(planStep?.timeoutMs ?? NaN);
+    const depthConfig = runDepthConfigs.get(args.runId) ?? resolveActiveDepthConfig(args.missionId);
+    const fallback = depthConfig.execution.stepTimeoutMs;
+    const raw =
+      Number.isFinite(explicitStepTimeout) && explicitStepTimeout > 0
+        ? explicitStepTimeout
+        : Number.isFinite(planStepTimeout) && planStepTimeout > 0
+          ? planStepTimeout
+          : fallback;
+    return Math.max(30_000, Math.floor(raw));
+  };
+
+  const stepTitleForMessage = (step: OrchestratorRunGraph["steps"][number]): string => {
+    const raw = String(step.title ?? "").trim();
+    if (raw.length > 0) return raw;
+    return step.stepKey || step.id.slice(0, 8);
+  };
+
+  const isRetryQueuedForStep = (step: OrchestratorRunGraph["steps"][number] | undefined): boolean => {
+    if (!step) return false;
+    return step.status === "pending" || step.status === "ready" || step.status === "running";
+  };
+
+  const getTrackedSessionState = (sessionId: string): {
+    laneId: string | null;
+    status: string;
+    endedAt: string | null;
+    exitCode: number | null;
+    lastOutputAt: string | null;
+    lastOutputPreview: string | null;
+    transcriptPath: string | null;
+  } | null => {
+    const row = db.get<{
+      lane_id: string | null;
+      status: string | null;
+      ended_at: string | null;
+      exit_code: number | null;
+      last_output_at: string | null;
+      last_output_preview: string | null;
+      transcript_path: string | null;
+    }>(
+      `
+        select lane_id, status, ended_at, exit_code, last_output_at, last_output_preview, transcript_path
+        from terminal_sessions
+        where id = ?
+        limit 1
+      `,
+      [sessionId]
+    );
+    if (!row) return null;
+    return {
+      laneId: row.lane_id ?? null,
+      status: String(row.status ?? "").trim().toLowerCase(),
+      endedAt: typeof row.ended_at === "string" ? row.ended_at : null,
+      exitCode: Number.isFinite(Number(row.exit_code)) ? Number(row.exit_code) : null,
+      lastOutputAt: typeof row.last_output_at === "string" ? row.last_output_at : null,
+      lastOutputPreview: typeof row.last_output_preview === "string" ? row.last_output_preview : null,
+      transcriptPath: typeof row.transcript_path === "string" ? row.transcript_path : null
+    };
+  };
+
+  const pruneSessionRuntimeSignals = () => {
+    const now = Date.now();
+    for (const [sessionId, signal] of sessionRuntimeSignals.entries()) {
+      const atMs = Date.parse(signal.at);
+      if (!Number.isFinite(atMs) || now - atMs > SESSION_SIGNAL_RETENTION_MS) {
+        sessionRuntimeSignals.delete(sessionId);
+      }
+    }
+  };
+
+  const listRunningAttemptsForSession = (sessionId: string): Array<{
+    attemptId: string;
+    runId: string;
+    stepId: string;
+    executorKind: OrchestratorExecutorKind;
+    attemptMetadataJson: string | null;
+    runMetadataJson: string | null;
+  }> => {
+    const rows = db.all<{
+      attempt_id: string;
+      run_id: string;
+      step_id: string;
+      executor_kind: string | null;
+      attempt_metadata_json: string | null;
+      run_metadata_json: string | null;
+    }>(
+      `
+        select
+          a.id as attempt_id,
+          a.run_id as run_id,
+          a.step_id as step_id,
+          a.executor_kind as executor_kind,
+          a.metadata_json as attempt_metadata_json,
+          r.metadata_json as run_metadata_json
+        from orchestrator_attempts a
+        join orchestrator_runs r on r.id = a.run_id
+        where a.status = 'running'
+          and a.executor_session_id = ?
+        order by a.created_at asc
+      `,
+      [sessionId]
+    );
+    return rows
+      .map((row) => {
+        const executorKindRaw = String(row.executor_kind ?? "").trim();
+        const executorKind: OrchestratorExecutorKind =
+          executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
+            ? executorKindRaw
+            : "manual";
+        return {
+          attemptId: row.attempt_id,
+          runId: row.run_id,
+          stepId: row.step_id,
+          executorKind,
+          attemptMetadataJson: row.attempt_metadata_json ?? null,
+          runMetadataJson: row.run_metadata_json ?? null
+        };
+      })
+      .filter((row) => row.attemptId.length > 0 && row.runId.length > 0 && row.stepId.length > 0);
+  };
+
+  const processSessionRuntimeSignal = async (signal: SessionRuntimeSignal): Promise<void> => {
+    const sessionId = signal.sessionId.trim();
+    if (!sessionId.length) return;
+
+    const waitingForInput =
+      signal.runtimeState === "waiting-input" || detectWaitingInputSignal(signal.lastOutputPreview);
+    const runtimeWorkerState = workerStateFromRuntimeSignal({
+      runtimeState: signal.runtimeState,
+      waitingForInput
+    });
+    const isTerminalSignal = signal.runtimeState === "exited" || signal.runtimeState === "killed";
+    const attempts = listRunningAttemptsForSession(sessionId);
+    if (!attempts.length) return;
+
+    const graphByRunId = new Map<string, OrchestratorRunGraph>();
+    const syncedRunIds = new Set<string>();
+
+    for (const attempt of attempts) {
+      const tracker = ensureAttemptRuntimeTracker(attempt.attemptId);
+      const nowMs = Date.now();
+      const ownerId = resolveAttemptOwnerIdFromRows(attempt.attemptMetadataJson, attempt.runMetadataJson);
+      if (nowMs - tracker.lastEventHeartbeatAtMs >= WORKER_EVENT_HEARTBEAT_INTERVAL_MS) {
+        tracker.lastEventHeartbeatAtMs = nowMs;
+        try {
+          orchestratorService.heartbeatClaims({
+            attemptId: attempt.attemptId,
+            ownerId
+          });
+        } catch (error) {
+          logger.debug("ai_orchestrator.runtime_signal_heartbeat_failed", {
+            attemptId: attempt.attemptId,
+            runId: attempt.runId,
+            ownerId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      let graph = graphByRunId.get(attempt.runId);
+      if (!graph) {
+        try {
+          graph = orchestratorService.getRunGraph({ runId: attempt.runId, timelineLimit: 0 });
+          graphByRunId.set(attempt.runId, graph);
+        } catch (error) {
+          logger.debug("ai_orchestrator.runtime_signal_graph_lookup_failed", {
+            sessionId,
+            runId: attempt.runId,
+            attemptId: attempt.attemptId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          continue;
+        }
+      }
+
+      const step = graph.steps.find((entry) => entry.id === attempt.stepId);
+      if (!step) continue;
+
+      updateAttemptStagnationTracker(attempt.attemptId, signal.lastOutputPreview);
+      upsertWorkerState(attempt.attemptId, {
+        runId: attempt.runId,
+        stepId: attempt.stepId,
+        sessionId,
+        executorKind: attempt.executorKind,
+        state: runtimeWorkerState
+      });
+
+      if (waitingForInput) {
+        if (Date.now() - tracker.lastWaitingNotifiedAtMs >= 30_000) {
+          tracker.lastWaitingNotifiedAtMs = Date.now();
+          emitOrchestratorMessage(
+            graph.run.missionId,
+            `Step "${stepTitleForMessage(step)}" is waiting for input from the worker. I opened intervention tracking and will resume scheduling once guidance is provided.`,
+            step.stepKey
+          );
+        }
+        ensureManualInputIntervention({
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          stepId: step.id,
+          stepKey: step.stepKey,
+          stepTitle: stepTitleForMessage(step),
+          laneId: step.laneId ?? signal.laneId ?? null,
+          attemptId: attempt.attemptId,
+          sessionId,
+          preview: signal.lastOutputPreview,
+          reason: "runtime_signal"
+        });
+      }
+      persistAttemptRuntimeState({
+        attemptId: attempt.attemptId,
+        sessionId,
+        runtimeState: signal.runtimeState,
+        lastSignalAt: signal.at,
+        lastOutputPreview: signal.lastOutputPreview,
+        force: waitingForInput || isTerminalSignal
+      });
+    }
+
+    if (!isTerminalSignal) return;
+    const sessionState = getTrackedSessionState(sessionId);
+    if (!sessionState || sessionState.status === "running") return;
+    let reconciled = 0;
+    try {
+      reconciled = await orchestratorService.onTrackedSessionEnded({
+        sessionId,
+        laneId: signal.laneId || sessionState.laneId,
+        exitCode: sessionState.exitCode
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.runtime_signal_session_reconcile_failed", {
+        sessionId,
+        sessionStatus: sessionState.status,
+        runtimeState: signal.runtimeState,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+    if (reconciled <= 0) return;
+    for (const attempt of attempts) {
+      attemptRuntimeTrackers.delete(attempt.attemptId);
+      deletePersistedAttemptRuntimeState(attempt.attemptId);
+      if (syncedRunIds.has(attempt.runId)) continue;
+      syncedRunIds.add(attempt.runId);
+      syncMissionFromRun(attempt.runId, "runtime_signal_session_end");
+    }
+  };
+
+  const getRecentSessionActivityAt = (sessionState: {
+    lastOutputAt: string | null;
+    transcriptPath: string | null;
+  } | null): number => {
+    if (!sessionState) return Number.NaN;
+    let latest = Number.NaN;
+    const lastOutputMs = sessionState.lastOutputAt ? Date.parse(sessionState.lastOutputAt) : Number.NaN;
+    if (Number.isFinite(lastOutputMs)) latest = lastOutputMs;
+
+    const transcriptPath = typeof sessionState.transcriptPath === "string" ? sessionState.transcriptPath.trim() : "";
+    if (transcriptPath.length > 0 && fs.existsSync(transcriptPath)) {
+      try {
+        const stat = fs.statSync(transcriptPath);
+        const transcriptMs = stat.mtimeMs;
+        if (Number.isFinite(transcriptMs) && (!Number.isFinite(latest) || transcriptMs > latest)) {
+          latest = transcriptMs;
+        }
+      } catch {
+        // Best-effort only.
+      }
+    }
+    return latest;
+  };
+
+  const runHealthSweep = async (reason: string): Promise<{ sweeps: number; staleRecovered: number }> => {
+    pruneSessionRuntimeSignals();
+    const runs = orchestratorService
+      .listRuns({ limit: 1_000 })
+      .filter((run) => run.status === "queued" || run.status === "running");
+    let sweeps = 0;
+    let staleRecovered = 0;
+
+    for (const run of runs) {
+      if (activeHealthSweepRuns.has(run.id)) continue;
+      activeHealthSweepRuns.add(run.id);
+      try {
+        sweeps += 1;
+        orchestratorService.tick({ runId: run.id });
+        const graph = orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
+        const stepById = new Map(graph.steps.map((step) => [step.id, step] as const));
+
+        for (const attempt of graph.attempts.filter((entry) => entry.status === "running")) {
+          const step = stepById.get(attempt.stepId);
+          if (!step) continue;
+          if (attempt.executorKind === "manual") continue;
+
+          const sessionId = typeof attempt.executorSessionId === "string" ? attempt.executorSessionId.trim() : "";
+          const sessionSignal = sessionId.length > 0 ? sessionRuntimeSignals.get(sessionId) ?? null : null;
+          const sessionState = sessionId.length > 0 ? getTrackedSessionState(sessionId) : null;
+          if (sessionId.length > 0) {
+            if (sessionState && sessionState.status && sessionState.status !== "running") {
+              const endedAtMs = sessionState.endedAt ? Date.parse(sessionState.endedAt) : Number.NaN;
+              const endedRecently = Number.isFinite(endedAtMs) && Date.now() - endedAtMs < STALE_ATTEMPT_GRACE_MS;
+              if (!endedRecently) {
+                try {
+                  const reconciled = await orchestratorService.onTrackedSessionEnded({
+                    sessionId,
+                    laneId: sessionState.laneId,
+                    exitCode: sessionState.exitCode
+                  });
+                  if (reconciled > 0) {
+                    staleRecovered += reconciled;
+                    attemptRuntimeTrackers.delete(attempt.id);
+                    deletePersistedAttemptRuntimeState(attempt.id);
+                    emitOrchestratorMessage(
+                      graph.run.missionId,
+                      `Step "${stepTitleForMessage(step)}" session ended (${sessionState.status}${sessionState.exitCode == null ? "" : ` exit ${sessionState.exitCode}`}). Reconciled attempt state and advanced scheduling.`,
+                      step.stepKey
+                    );
+                    continue;
+                  }
+                } catch (error) {
+                  logger.debug("ai_orchestrator.health_sweep_session_reconcile_failed", {
+                    runId: run.id,
+                    attemptId: attempt.id,
+                    sessionId,
+                    sessionStatus: sessionState.status,
+                    error: error instanceof Error ? error.message : String(error)
+                  });
+                }
+              }
+            }
+          }
+
+          const ownerId = resolveAttemptOwnerId(graph.run, attempt);
+          try {
+            orchestratorService.heartbeatClaims({
+              attemptId: attempt.id,
+              ownerId
+            });
+          } catch (error) {
+            logger.debug("ai_orchestrator.health_sweep_heartbeat_failed", {
+              runId: run.id,
+              attemptId: attempt.id,
+              ownerId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+
+          const previewFromSignals = typeof sessionSignal?.lastOutputPreview === "string" ? sessionSignal.lastOutputPreview : null;
+          const previewFromSession = typeof sessionState?.lastOutputPreview === "string" ? sessionState.lastOutputPreview : null;
+          const effectivePreview = previewFromSignals ?? previewFromSession;
+          const runtimeWaiting = sessionSignal?.runtimeState === "waiting-input";
+          const textWaiting = detectWaitingInputSignal(effectivePreview);
+          const waitingForInput = runtimeWaiting || textWaiting;
+          const stagnationSnapshot = updateAttemptStagnationTracker(attempt.id, effectivePreview);
+
+          upsertWorkerState(attempt.id, {
+            runId: run.id,
+            stepId: step.id,
+            sessionId: attempt.executorSessionId,
+            executorKind: attempt.executorKind,
+            state: waitingForInput ? "waiting_input" : "working"
+          });
+
+          if (waitingForInput && sessionId.length > 0) {
+            const tracker = ensureAttemptRuntimeTracker(attempt.id);
+            const now = Date.now();
+            if (now - tracker.lastWaitingNotifiedAtMs >= 30_000) {
+              tracker.lastWaitingNotifiedAtMs = now;
+              emitOrchestratorMessage(
+                graph.run.missionId,
+                `Step "${stepTitleForMessage(step)}" is waiting for input from the worker. I am monitoring and will keep scheduling once guidance is provided.`,
+                step.stepKey
+              );
+            }
+            ensureManualInputIntervention({
+              missionId: graph.run.missionId,
+              runId: run.id,
+              stepId: step.id,
+              stepKey: step.stepKey,
+              stepTitle: stepTitleForMessage(step),
+              laneId: step.laneId ?? null,
+              attemptId: attempt.id,
+              sessionId,
+              preview: effectivePreview,
+              reason: "health_sweep"
+            });
+            persistAttemptRuntimeState({
+              attemptId: attempt.id,
+              sessionId,
+              runtimeState: "waiting-input",
+              lastSignalAt: sessionSignal?.at ?? nowIso(),
+              lastOutputPreview: effectivePreview,
+              force: true
+            });
+            continue;
+          }
+
+          persistAttemptRuntimeState({
+            attemptId: attempt.id,
+            sessionId: sessionId.length > 0 ? sessionId : null,
+            runtimeState: sessionSignal?.runtimeState ?? null,
+            lastSignalAt: sessionSignal?.at ?? sessionState?.lastOutputAt ?? null,
+            lastOutputPreview: effectivePreview,
+            force: false
+          });
+
+          const startedAt = attempt.startedAt ?? attempt.createdAt;
+          const startedMs = Date.parse(startedAt);
+          if (!Number.isFinite(startedMs)) continue;
+          const elapsedMs = Date.now() - startedMs;
+          const timeoutMs = resolveStepTimeoutMs({
+            runId: run.id,
+            missionId: graph.run.missionId,
+            step
+          });
+          if (elapsedMs <= timeoutMs + STALE_ATTEMPT_GRACE_MS) continue;
+
+          if (sessionId.length > 0) {
+            const activityAtMs = getRecentSessionActivityAt(sessionState);
+            const activeOutputWindowMs = Math.max(90_000, Math.min(15 * 60_000, Math.floor(timeoutMs * 0.5)));
+            if (Number.isFinite(activityAtMs) && Date.now() - activityAtMs <= activeOutputWindowMs) {
+              if (!shouldTreatAsStagnating(attempt.id, stagnationSnapshot.stagnantMs, timeoutMs)) {
+                continue;
+              }
+            }
+          }
+
+          const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
+          const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60_000));
+          const stagnantMs = stagnationSnapshot.stagnantMs;
+          const stagnating = shouldTreatAsStagnating(attempt.id, stagnantMs, timeoutMs);
+          const errorMessage = stagnating
+            ? `Attempt appears stagnant despite output (${Math.max(1, Math.round(stagnantMs / 60_000))}m repeated state). Marking as stuck.`
+            : `Attempt exceeded timeout (${elapsedMinutes}m > ${timeoutMinutes}m). Marking as stuck.`;
+          try {
+            orchestratorService.completeAttempt({
+              attemptId: attempt.id,
+              status: "failed",
+              errorClass: "transient",
+              errorMessage,
+              metadata: {
+                watchdogReason: reason,
+                watchdogRecoveredAt: nowIso(),
+                watchdogTimeoutMs: timeoutMs,
+                watchdogElapsedMs: elapsedMs,
+                watchdogStagnantMs: stagnating ? stagnantMs : undefined,
+                ownerId
+              }
+            });
+            staleRecovered += 1;
+            const refreshedGraph = orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
+            const refreshedStep = refreshedGraph.steps.find((entry) => entry.id === step.id);
+            const retryQueued = isRetryQueuedForStep(refreshedStep);
+            const retriesLeft = refreshedStep ? Math.max(0, refreshedStep.retryLimit - refreshedStep.retryCount) : 0;
+            emitOrchestratorMessage(
+              graph.run.missionId,
+              retryQueued
+                ? `Step "${stepTitleForMessage(step)}" looked stuck (${elapsedMinutes}m runtime). I marked it failed and scheduled a retry${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : ""}.`
+                : `Step "${stepTitleForMessage(step)}" looked stuck (${elapsedMinutes}m runtime). I marked it failed and no retries remain.`,
+              step.stepKey
+            );
+          } catch (error) {
+            logger.debug("ai_orchestrator.health_sweep_complete_failed", {
+              runId: run.id,
+              attemptId: attempt.id,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+
+        const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+        const autopilot = isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
+        const autopilotEnabled = autopilot?.enabled === true;
+        if (autopilotEnabled) {
+          await orchestratorService.startReadyAutopilotAttempts({
+            runId: run.id,
+            reason: staleRecovered > 0 ? "health_sweep_recovered" : "health_sweep_tick"
+          });
+        } else {
+          orchestratorService.tick({ runId: run.id });
+        }
+        syncMissionFromRun(run.id, `health_sweep:${reason}`);
+      } catch (error) {
+        logger.debug("ai_orchestrator.health_sweep_failed", {
+          runId: run.id,
+          reason,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      } finally {
+        activeHealthSweepRuns.delete(run.id);
+      }
+    }
+
+    return { sweeps, staleRecovered };
   };
 
   const updateWorkerStateFromEvent = (event: OrchestratorRuntimeEvent) => {
@@ -702,6 +1620,8 @@ export function createAiOrchestratorService(args: {
           );
         }
       } else if (attempt.status === "succeeded") {
+        attemptRuntimeTrackers.delete(attempt.id);
+        deletePersistedAttemptRuntimeState(attempt.id);
         const outcomeTags = extractOutcomeTags(attempt);
         upsertWorkerState(attempt.id, {
           stepId: attempt.stepId,
@@ -744,8 +1664,8 @@ export function createAiOrchestratorService(args: {
               emitOrchestratorMessage(
                 graph.run.missionId,
                 evalResult.approved
-                  ? `Step "${step.stepKey}" passed evaluation. ${evalResult.feedback}`
-                  : `Step "${step.stepKey}" failed evaluation: ${evalResult.feedback}.`,
+                  ? `Step "${stepTitleForMessage(step)}" passed evaluation. ${evalResult.feedback}`
+                  : `Step "${stepTitleForMessage(step)}" failed evaluation: ${evalResult.feedback}.`,
                 step.stepKey
               );
               if (!evalResult.approved) {
@@ -771,6 +1691,8 @@ export function createAiOrchestratorService(args: {
           outcomeTags
         });
       } else if (attempt.status === "failed") {
+        attemptRuntimeTrackers.delete(attempt.id);
+        deletePersistedAttemptRuntimeState(attempt.id);
         const outcomeTags = extractOutcomeTags(attempt);
         upsertWorkerState(attempt.id, {
           stepId: attempt.stepId,
@@ -784,19 +1706,24 @@ export function createAiOrchestratorService(args: {
 
         // Check for retry exhaustion → create real intervention then trigger AI
         const step = graph.steps.find((s) => s.id === attempt.stepId);
-        const retriesLeft = step ? step.retryLimit - step.retryCount : 0;
+        const retryQueued = isRetryQueuedForStep(step);
+        const retriesLeft = step ? Math.max(0, step.retryLimit - step.retryCount) : 0;
         emitOrchestratorMessage(
           graph.run.missionId,
-          `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${retriesLeft > 0 ? `Retrying (${retriesLeft} retries left).` : "No retries remaining."}`,
+          `Step "${stepTitle}" failed: ${attempt.errorMessage ?? "unknown error"}. ${
+            retryQueued
+              ? `Retry scheduled${retriesLeft > 0 ? ` (${retriesLeft} retries left).` : "."}`
+              : "No retries remaining."
+          }`,
           stepKey
         );
-        if (step && step.retryCount >= step.retryLimit) {
+        if (step && step.status === "failed" && step.retryCount >= step.retryLimit) {
           try {
             const intervention = missionService.addIntervention({
               missionId: graph.run.missionId,
               interventionType: "failed_step",
-              title: `Step "${step.stepKey}" failed after ${step.retryCount} retries`,
-              body: `Step ${step.stepKey} exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
+              title: `Step "${stepTitleForMessage(step)}" failed after ${step.retryCount} retries`,
+              body: `Step ${step.stepKey} (${stepTitleForMessage(step)}) exhausted all ${step.retryLimit} retries. Last error: ${attempt.errorMessage ?? "unknown"}`,
               requestedAction: "Review and decide whether to retry, skip, or add a workaround."
             });
 
@@ -850,23 +1777,52 @@ export function createAiOrchestratorService(args: {
       ).length;
       const failed = graph.steps.filter((step) => step.status === "failed").length;
       const blocked = graph.steps.filter((step) => step.status === "blocked").length;
-      return `Run ${targetRun.id.slice(0, 8)} is ${targetRun.status}. Progress ${done}/${total}. Running ${running}. Failed ${failed}. Blocked ${blocked}.`;
+      const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+      const autopilot = isRecord(runMeta.autopilot) ? runMeta.autopilot : null;
+      const parallelCap =
+        autopilot && Number.isFinite(Number(autopilot.parallelismCap))
+          ? Math.max(1, Math.floor(Number(autopilot.parallelismCap)))
+          : null;
+      const runningSteps = graph.steps
+        .filter((step) => step.status === "running")
+        .slice(0, 3)
+        .map((step) => `${step.title || step.stepKey}${step.laneId ? ` @${step.laneId}` : ""}`);
+      const readySteps = graph.steps
+        .filter((step) => step.status === "ready")
+        .slice(0, 3)
+        .map((step) => `${step.title || step.stepKey}${step.laneId ? ` @${step.laneId}` : ""}`);
+      return [
+        `Run ${targetRun.id.slice(0, 8)} is ${targetRun.status}. Progress ${done}/${total}. Running ${running}. Failed ${failed}. Blocked ${blocked}.`,
+        parallelCap ? `Parallelism cap: ${parallelCap}.` : null,
+        runningSteps.length ? `Active steps: ${runningSteps.join("; ")}.` : null,
+        readySteps.length ? `Ready queue: ${readySteps.join("; ")}.` : null
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join(" ");
     } catch {
       return `Latest run ${targetRun.id.slice(0, 8)} is ${targetRun.status}.`;
     }
   };
 
-  const formatRecentChatContext = (messages: OrchestratorChatMessage[], limit = 12): string => {
+  const formatRecentChatContext = (
+    messages: OrchestratorChatMessage[],
+    limit = MAX_CHAT_CONTEXT_MESSAGES
+  ): string => {
     const recent = messages.slice(-limit);
     if (!recent.length) return "";
     const lines = recent.map((entry) => {
       const role = entry.role === "user" ? "User" : entry.role === "worker" ? "Worker" : "Orchestrator";
-      return `- ${role}: ${entry.content}`;
+      const compact = clipTextForContext(
+        entry.content.replace(/\s+/g, " ").trim(),
+        MAX_CHAT_LINE_CHARS
+      );
+      return `- ${role}: ${compact}`;
     });
-    return ["Recent mission chat:", ...lines, ""].join("\n");
+    const rendered = ["Recent mission chat:", ...lines, ""].join("\n");
+    return clipTextForContext(rendered, MAX_CHAT_CONTEXT_CHARS);
   };
 
-  const buildRecentChatContext = (missionId: string, limit = 12): string => {
+  const buildRecentChatContext = (missionId: string, limit = MAX_CHAT_CONTEXT_MESSAGES): string => {
     const messages = chatMessages.get(missionId) ?? loadChatMessagesFromMetadata(missionId);
     return formatRecentChatContext(messages, limit);
   };
@@ -916,6 +1872,7 @@ export function createAiOrchestratorService(args: {
 
     const steeringContext = getSteeringContext(chatArgs.missionId);
     const recentChatContext = precomputedRecentChatContext ?? buildRecentChatContext(chatArgs.missionId);
+    const latestUserMessage = clipTextForContext(chatArgs.content, MAX_LATEST_CHAT_MESSAGE_CHARS);
 
     const prompt = [
       PM_SYSTEM_PREAMBLE,
@@ -931,7 +1888,7 @@ export function createAiOrchestratorService(args: {
       `Run summary: ${summarizeRunForChat(chatArgs.missionId)}`,
       recentChatContext,
       steeringContext,
-      `Latest user message: ${chatArgs.content}`,
+      `Latest user message: ${latestUserMessage}`,
       "",
       "Reply as the orchestrator in plain text (max 6 short sentences)."
     ].join("\n");
@@ -1142,7 +2099,17 @@ export function createAiOrchestratorService(args: {
 
       emitOrchestratorMessage(
         args.missionId,
-        `Planning complete. Created ${plannedSteps.length} steps: ${plannedSteps.map((s) => s.title).join(", ")}. ${planning.run.degraded ? "Note: AI planning was unavailable, used deterministic fallback." : ""}`
+        (() => {
+          const titles = plannedSteps.map((step) => step.title);
+          const preview =
+            titles.length <= 6
+              ? titles.join(", ")
+              : `${titles.slice(0, 6).join(", ")} (+${titles.length - 6} more)`;
+          const fallbackDetail = planning.run.degraded
+            ? ` Note: AI planning fell back to deterministic (${planning.run.reasonCode ?? "unknown"}${planning.run.reasonDetail ? `: ${planning.run.reasonDetail}` : ""}).`
+            : "";
+          return `Planning complete. Created ${plannedSteps.length} steps: ${preview}.${fallbackDetail}`;
+        })()
       );
 
       logger.info("ai_orchestrator.plan_with_ai_completed", {
@@ -1417,7 +2384,7 @@ export function createAiOrchestratorService(args: {
 
       emitOrchestratorMessage(
         graph.run.missionId,
-        `Analyzing results from step "${step.stepKey}". ${shouldTriggerAiAdjustment ? "Triggering AI plan adjustment." : "No plan adjustments needed."}`,
+        `Analyzing results from step "${stepTitleForMessage(step)}". ${shouldTriggerAiAdjustment ? "Triggering AI plan adjustment." : "No plan adjustments needed."}`,
         step.stepKey
       );
 
@@ -1728,11 +2695,209 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  type ParallelMissionStepDescriptor = {
+    id: string;
+    index: number;
+    title: string;
+    kind: string;
+    laneId: string | null;
+    stepType: string;
+    stepKey: string;
+    dependencyStepKeys: string[];
+  };
+
+  const parseNumericDependencyIndices = (metadata: Record<string, unknown>): number[] => {
+    if (!Array.isArray(metadata.dependencyIndices)) return [];
+    return metadata.dependencyIndices
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+      .map((value) => Math.floor(value));
+  };
+
+  const toStepKey = (step: MissionStep, position: number): string => {
+    const metadata = isRecord(step.metadata) ? step.metadata : {};
+    const explicit = typeof metadata.stepKey === "string" ? metadata.stepKey.trim() : "";
+    if (explicit.length > 0) return explicit;
+    return `mission_step_${step.index}_${position}`;
+  };
+
+  const slugify = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 28) || "lane";
+
+  const isParallelCandidateStepType = (stepType: string): boolean => {
+    const normalized = stepType.trim().toLowerCase();
+    if (normalized === "analysis" || normalized === "summary" || normalized === "review") return false;
+    if (normalized === "integration" || normalized === "merge") return false;
+    return true;
+  };
+
+  const buildParallelDescriptors = (steps: MissionStep[]): ParallelMissionStepDescriptor[] => {
+    const ordered = [...steps].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+    const keyed = ordered.map((step, position) => ({
+      step,
+      position,
+      metadata: isRecord(step.metadata) ? step.metadata : {},
+      stepKey: toStepKey(step, position)
+    }));
+    const stepKeysByIndex = new Map<number, string[]>();
+    for (const entry of keyed) {
+      const bucket = stepKeysByIndex.get(entry.step.index) ?? [];
+      bucket.push(entry.stepKey);
+      stepKeysByIndex.set(entry.step.index, bucket);
+    }
+
+    return keyed.map((entry, position) => {
+      const metadata = entry.metadata;
+      const explicitDeps = Array.isArray(metadata.dependencyStepKeys)
+        ? metadata.dependencyStepKeys
+            .map((value) => String(value ?? "").trim())
+            .filter(Boolean)
+        : [];
+      const indexedDeps = parseNumericDependencyIndices(metadata).flatMap((depIdx) => stepKeysByIndex.get(depIdx) ?? []);
+      const hasExplicitDeps = Array.isArray(metadata.dependencyStepKeys) || Array.isArray(metadata.dependencyIndices);
+      const depSet = new Set([...explicitDeps, ...indexedDeps].filter((dep) => dep !== entry.stepKey));
+      if (!depSet.size && !hasExplicitDeps && position > 0) {
+        depSet.add(keyed[position - 1]!.stepKey);
+      }
+      const stepType =
+        typeof metadata.stepType === "string" && metadata.stepType.trim().length
+          ? metadata.stepType.trim()
+          : entry.step.kind;
+      return {
+        id: entry.step.id,
+        index: entry.step.index,
+        title: entry.step.title,
+        kind: entry.step.kind,
+        laneId: entry.step.laneId,
+        stepType,
+        stepKey: entry.stepKey,
+        dependencyStepKeys: [...depSet]
+      };
+    });
+  };
+
+  const provisionParallelMissionLanes = async (args: {
+    missionId: string;
+    runMode?: "autopilot" | "manual";
+  }): Promise<{ createdLaneIds: string[]; assignedSteps: number }> => {
+    if (!laneService) return { createdLaneIds: [], assignedSteps: 0 };
+    const mission = missionService.get(args.missionId);
+    if (!mission) return { createdLaneIds: [], assignedSteps: 0 };
+    if (mission.steps.length < 2) return { createdLaneIds: [], assignedSteps: 0 };
+
+    const descriptors = buildParallelDescriptors(mission.steps);
+    const baseLaneId = mission.laneId ?? descriptors.find((step) => step.laneId)?.laneId ?? null;
+    if (!baseLaneId) return { createdLaneIds: [], assignedSteps: 0 };
+
+    const rootCandidates = descriptors
+      .filter((step) => step.dependencyStepKeys.length === 0 && isParallelCandidateStepType(step.stepType))
+      .sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+    if (rootCandidates.length < 2) return { createdLaneIds: [], assignedSteps: 0 };
+
+    const laneByStepKey = new Map<string, string>();
+    const createdLaneIds: string[] = [];
+    laneByStepKey.set(rootCandidates[0]!.stepKey, rootCandidates[0]!.laneId ?? baseLaneId);
+
+    for (let i = 1; i < rootCandidates.length; i += 1) {
+      const root = rootCandidates[i]!;
+      if (root.laneId && root.laneId !== baseLaneId) {
+        laneByStepKey.set(root.stepKey, root.laneId);
+        continue;
+      }
+      let laneId = baseLaneId;
+      const requestedName = `m-${args.missionId.slice(0, 6)}-${slugify(root.title || root.stepKey)}-${i + 1}`;
+      try {
+        const child = await laneService.createChild({
+          parentLaneId: baseLaneId,
+          name: requestedName,
+          description: `Auto-created by orchestrator for mission ${args.missionId} (${root.title || root.stepKey}).`
+        });
+        laneId = child.id;
+        createdLaneIds.push(child.id);
+      } catch (error) {
+        logger.warn("ai_orchestrator.parallel_lane_create_failed", {
+          missionId: args.missionId,
+          stepKey: root.stepKey,
+          requestedName,
+          fallbackLaneId: baseLaneId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+      laneByStepKey.set(root.stepKey, laneId);
+    }
+
+    const laneByStepId = new Map<string, string>();
+    const byStepKey = new Map(descriptors.map((step) => [step.stepKey, step] as const));
+    const ordered = [...descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+
+    for (const step of ordered) {
+      const explicitNonBaseLane = step.laneId && step.laneId !== baseLaneId ? step.laneId : null;
+      if (explicitNonBaseLane) {
+        laneByStepId.set(step.id, explicitNonBaseLane);
+        laneByStepKey.set(step.stepKey, explicitNonBaseLane);
+        continue;
+      }
+      let laneId = step.laneId ?? baseLaneId;
+      if (step.dependencyStepKeys.length > 1 || step.stepType === "integration" || step.stepType === "merge") {
+        laneId = baseLaneId;
+      } else if (step.dependencyStepKeys.length === 1) {
+        const depKey = step.dependencyStepKeys[0]!;
+        laneId = laneByStepKey.get(depKey) ?? byStepKey.get(depKey)?.laneId ?? baseLaneId;
+      } else {
+        laneId = laneByStepKey.get(step.stepKey) ?? laneId;
+      }
+      laneByStepId.set(step.id, laneId);
+      laneByStepKey.set(step.stepKey, laneId);
+    }
+
+    let assignedSteps = 0;
+    for (const step of ordered) {
+      const nextLaneId = laneByStepId.get(step.id) ?? baseLaneId;
+      const currentLaneId = step.laneId ?? baseLaneId;
+      if (nextLaneId === currentLaneId) continue;
+      db.run(
+        `
+          update mission_steps
+          set lane_id = ?,
+              updated_at = ?
+          where id = ?
+            and mission_id = ?
+        `,
+        [nextLaneId, nowIso(), step.id, args.missionId]
+      );
+      assignedSteps += 1;
+    }
+
+    if (createdLaneIds.length > 0 || assignedSteps > 0) {
+      updateMissionMetadata(args.missionId, (metadata) => {
+        metadata.parallelLanes = {
+          enabled: true,
+          createdLaneIds,
+          assignedSteps,
+          rootStepCount: rootCandidates.length,
+          baseLaneId,
+          updatedAt: nowIso()
+        };
+      });
+      emitOrchestratorMessage(
+        args.missionId,
+        `Parallel lane provisioning complete. ${createdLaneIds.length} new lane${createdLaneIds.length === 1 ? "" : "s"} created; ${assignedSteps} step lane assignments updated.`
+      );
+    }
+
+    return { createdLaneIds, assignedSteps };
+  };
+
   const startMissionRun = async (args: MissionRunStartArgs): Promise<MissionRunStartResult> => {
     const missionId = String(args.missionId ?? "").trim();
     if (!missionId.length) throw new Error("missionId is required.");
-    const mission = missionService.get(missionId);
-    if (!mission) throw new Error(`Mission not found: ${missionId}`);
+    const initialMission = missionService.get(missionId);
+    if (!initialMission) throw new Error(`Mission not found: ${missionId}`);
 
     // Resolve depth config from mission metadata or args
     const depthConfig = resolveActiveDepthConfig(missionId);
@@ -1762,6 +2927,7 @@ export function createAiOrchestratorService(args: {
 
     const bypassPlanReview = args.forcePlanReviewBypass === true;
     const requireReview = config.requirePlanReview || depthConfig.planning.requirePlanReview;
+    const mission = missionService.get(missionId) ?? initialMission;
     if (requireReview && !bypassPlanReview) {
       if (mission.status !== "plan_review") {
         transitionMissionStatus(missionId, "planning");
@@ -1774,6 +2940,11 @@ export function createAiOrchestratorService(args: {
         mission: missionService.get(missionId)
       };
     }
+
+    await provisionParallelMissionLanes({
+      missionId,
+      runMode: args.runMode
+    });
 
     transitionMissionStatus(missionId, "planning");
     const plannerParallelismCap = resolveMissionParallelismCap(missionId);
@@ -1801,9 +2972,25 @@ export function createAiOrchestratorService(args: {
     // Cache depth config for this run
     runDepthConfigs.set(started.run.id, depthConfig);
 
+    const plannerMeta = (() => {
+      const metadata = getMissionMetadata(missionId);
+      const planner = isRecord(metadata.planner) ? metadata.planner : null;
+      if (!planner) return null;
+      return {
+        degraded: planner.degraded === true,
+        reasonCode: typeof planner.reasonCode === "string" ? planner.reasonCode : null
+      };
+    })();
+    const plannerSummary = (() => {
+      if (!attemptedAiPlanner) return "Using deterministic planner.";
+      if (!plannerMeta) return `Using AI planner (${provider ?? "auto"}).`;
+      if (!plannerMeta.degraded) return `Using AI planner (${provider ?? "auto"}).`;
+      return `AI planner attempted (${provider ?? "auto"}) and fell back to deterministic${plannerMeta.reasonCode ? ` (${plannerMeta.reasonCode})` : ""}.`;
+    })();
+
     emitOrchestratorMessage(
       missionId,
-      `Starting mission with ${started.steps.length} steps. Depth tier: ${depthConfig.tier}. ${attemptedAiPlanner ? `Using AI planner (${provider ?? "auto"}).` : "Using deterministic planner."}`
+      `Starting mission with ${started.steps.length} steps. Depth tier: ${depthConfig.tier}. ${plannerSummary}`
     );
 
     transitionMissionStatus(missionId, "in_progress");
@@ -1915,6 +3102,22 @@ export function createAiOrchestratorService(args: {
     };
     appendChatMessage(msg);
     const recentChatContext = formatRecentChatContext(chatMessages.get(chatArgs.missionId) ?? [msg]);
+    const statusIntent = /\b(status|progress|stuck|heartbeat|worker|lane)\b/i.test(chatArgs.content);
+    if (statusIntent) {
+      void (async () => {
+        try {
+          const sweep = await runHealthSweep("chat_status");
+          const summary = summarizeRunForChat(chatArgs.missionId);
+          const recoveryNote =
+            sweep.staleRecovered > 0
+              ? ` Recovered ${sweep.staleRecovered} stale attempt${sweep.staleRecovered === 1 ? "" : "s"} during health sweep.`
+              : "";
+          emitOrchestratorMessage(chatArgs.missionId, `${summary}${recoveryNote}`.trim());
+        } catch {
+          emitOrchestratorMessage(chatArgs.missionId, summarizeRunForChat(chatArgs.missionId));
+        }
+      })();
+    }
 
     // Also store as a steering directive (preserves existing behavior)
     try {
@@ -1927,7 +3130,7 @@ export function createAiOrchestratorService(args: {
 
     if (aiIntegrationService && projectRoot) {
       enqueueChatResponse(chatArgs, recentChatContext);
-    } else {
+    } else if (!statusIntent) {
       emitOrchestratorMessage(
         chatArgs.missionId,
         "Directive received. I will apply it at the next planning/evaluation decision point."
@@ -1941,6 +3144,56 @@ export function createAiOrchestratorService(args: {
     return chatMessages.get(chatArgs.missionId) ?? loadChatMessagesFromMetadata(chatArgs.missionId);
   };
 
+  const startHealthSweepLoop = () => {
+    if (healthSweepTimer) return;
+    healthSweepTimer = setInterval(() => {
+      void runHealthSweep("interval");
+    }, HEALTH_SWEEP_INTERVAL_MS);
+    void runHealthSweep("startup");
+  };
+
+  const onSessionRuntimeSignal = (signal: SessionRuntimeSignal): void => {
+    const sessionId = String(signal.sessionId ?? "").trim();
+    if (!sessionId.length) return;
+    const runtimeState = parseTerminalRuntimeState(signal.runtimeState) ?? "running";
+    const normalizedSignal: SessionRuntimeSignal = {
+      laneId: String(signal.laneId ?? "").trim(),
+      sessionId,
+      runtimeState,
+      lastOutputPreview:
+        typeof signal.lastOutputPreview === "string" && signal.lastOutputPreview.trim().length > 0
+          ? clipTextForContext(signal.lastOutputPreview.trim(), MAX_RUNTIME_SIGNAL_PREVIEW_CHARS)
+          : null,
+      at: typeof signal.at === "string" && signal.at.trim().length > 0 ? signal.at : nowIso()
+    };
+    sessionRuntimeSignals.set(sessionId, normalizedSignal);
+    if (sessionRuntimeSignals.size > 500) {
+      pruneSessionRuntimeSignals();
+    }
+    const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        await processSessionRuntimeSignal(normalizedSignal);
+      })
+      .catch((error) => {
+        logger.debug("ai_orchestrator.runtime_signal_process_failed", {
+          sessionId,
+          runtimeState: normalizedSignal.runtimeState,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      })
+      .finally(() => {
+        if (sessionSignalQueues.get(sessionId) === next) {
+          sessionSignalQueues.delete(sessionId);
+        }
+      });
+    sessionSignalQueues.set(sessionId, next);
+  };
+
+  hydratePersistedAttemptRuntimeState();
+  startHealthSweepLoop();
+
   return {
     startMissionRun,
 
@@ -1951,6 +3204,8 @@ export function createAiOrchestratorService(args: {
       updateWorkerStateFromEvent(event);
       syncMissionFromRun(event.runId, event.reason);
     },
+
+    onSessionRuntimeSignal,
 
     syncMissionFromRun,
 
@@ -1964,6 +3219,13 @@ export function createAiOrchestratorService(args: {
     getModelCapabilities: () => getModelCapabilities(),
     resolveMissionDepthConfig: (tier: MissionDepthTier) => resolveMissionDepthConfig(tier),
     sendChat,
-    getChat
+    getChat,
+    runHealthSweep: (reason = "manual") => runHealthSweep(reason),
+    dispose: () => {
+      if (healthSweepTimer) {
+        clearInterval(healthSweepTimer);
+        healthSweepTimer = null;
+      }
+    }
   };
 }

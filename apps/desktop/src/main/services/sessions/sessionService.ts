@@ -263,8 +263,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, summary, tool_type, resume_command
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, ?, ?)
+            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?)
         `,
         [
           sessionId,
@@ -302,7 +302,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     setLastOutputPreview(sessionId: string, preview: string): void {
-      db.run("update terminal_sessions set last_output_preview = ? where id = ?", [preview, sessionId]);
+      db.run(
+        "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
+        [preview, new Date().toISOString(), sessionId]
+      );
     },
 
     setSummary(sessionId: string, summary: string | null): void {

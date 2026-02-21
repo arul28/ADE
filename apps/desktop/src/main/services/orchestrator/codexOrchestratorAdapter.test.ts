@@ -135,7 +135,8 @@ describe("codexOrchestratorAdapter", () => {
     expect(sessionArgs.toolType).toBe("codex-orchestrated");
     expect(sessionArgs.title).toContain("Fix authentication");
     expect(sessionArgs.startupCommand).toContain("codex");
-    expect(sessionArgs.startupCommand).toContain("--full-auto");
+    expect(sessionArgs.startupCommand).toContain("exec");
+    expect(sessionArgs.startupCommand).toContain("-a");
     expect(sessionArgs.startupCommand).toContain("o4-mini");
   });
 
@@ -215,11 +216,11 @@ describe("codexOrchestratorAdapter", () => {
 
     if (result.status !== "accepted") throw new Error("Expected accepted");
     expect(result.metadata?.approvalMode).toBe("suggest");
+    expect(result.metadata?.approvalPolicy).toBe("untrusted");
 
     const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
     const command = createSession.mock.calls[0][0].startupCommand as string;
-    expect(command).toContain("--suggest");
-    expect(command).not.toContain("--full-auto");
+    expect(command).toContain("untrusted");
   });
 
   it("step metadata wins over config for approval mode", async () => {
@@ -240,9 +241,10 @@ describe("codexOrchestratorAdapter", () => {
 
     if (result.status !== "accepted") throw new Error("Expected accepted");
     expect(result.metadata?.approvalMode).toBe("auto-edit");
+    expect(result.metadata?.approvalPolicy).toBe("on-request");
   });
 
-  it("adds --config flag when configPath is set in config", async () => {
+  it("ignores configPath because codex exec does not support config files via flag", async () => {
     const adapter = createCodexOrchestratorAdapter();
     const args = buildMockArgs({
       step: {
@@ -257,11 +259,10 @@ describe("codexOrchestratorAdapter", () => {
 
     const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
     const command = createSession.mock.calls[0][0].startupCommand as string;
-    expect(command).toContain("--config");
-    expect(command).toContain("/home/user/.codex/config.toml");
+    expect(command).not.toContain("--config");
   });
 
-  it("adds --writable-root flags for each writable path", async () => {
+  it("adds --add-dir flags for each writable path", async () => {
     const adapter = createCodexOrchestratorAdapter();
     const args = buildMockArgs({
       step: {
@@ -276,7 +277,7 @@ describe("codexOrchestratorAdapter", () => {
 
     const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
     const command = createSession.mock.calls[0][0].startupCommand as string;
-    expect(command).toContain("--writable-root");
+    expect(command).toContain("--add-dir");
     expect(command).toContain("/tmp/output");
     expect(command).toContain("/var/data");
   });
@@ -293,12 +294,13 @@ describe("codexOrchestratorAdapter", () => {
 
     if (result.status !== "accepted") throw new Error("Expected accepted");
     expect(result.metadata?.approvalMode).toBe("full-auto");
+    expect(result.metadata?.approvalPolicy).toBe("never");
 
     const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
     const command = createSession.mock.calls[0][0].startupCommand as string;
-    expect(command).toContain("--full-auto");
+    expect(command).toContain("never");
     expect(command).not.toContain("--config");
-    expect(command).not.toContain("--writable-root");
+    expect(command).not.toContain("--add-dir");
   });
 
   it("does not add --config when configPath is empty", async () => {

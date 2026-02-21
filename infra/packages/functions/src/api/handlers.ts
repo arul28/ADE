@@ -137,6 +137,14 @@ export async function health(): Promise<APIGatewayProxyStructuredResultV2> {
   });
 }
 
+export async function apiHealth(): Promise<APIGatewayProxyStructuredResultV2> {
+  return json(200, {
+    ok: true,
+    version: process.env.API_VERSION ?? "0.1.0",
+    timestamp: nowIso()
+  });
+}
+
 export async function createProject(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyStructuredResultV2> {
   try {
     const userId = getUserIdFromEvent(event);
