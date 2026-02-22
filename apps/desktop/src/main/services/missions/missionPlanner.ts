@@ -244,6 +244,21 @@ function buildPolicy(args: {
 }
 
 function toPlannerStep(step: RawPlanStep, index: number, strategy: string, keywords: string[]): DeterministicMissionPlannerStep {
+  const rawStepType = String(step.extraMetadata?.stepType ?? step.extraMetadata?.taskType ?? step.kind ?? "").trim().toLowerCase();
+  const roleClass =
+    step.kind === "analysis"
+      ? "planning"
+      : step.kind === "implementation"
+        ? "implementation"
+        : step.kind === "integration"
+          ? "integration"
+          : step.kind === "merge"
+            ? "merge"
+            : step.kind === "summary"
+              ? "handoff"
+              : rawStepType === "review" || rawStepType === "test_review" || rawStepType === "review_test"
+                ? "review"
+                : "testing";
   const metadata: Record<string, unknown> = {
     stepType: step.kind,
     dependencyIndices: step.dependencyIndices,
@@ -258,7 +273,9 @@ function toPlannerStep(step: RawPlanStep, index: number, strategy: string, keywo
       strategy,
       splitReason: step.splitReason,
       keywords
-    }
+    },
+    roleClass,
+    requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration"
   };
   if (Number.isFinite(step.timeoutMs ?? NaN) && (step.timeoutMs ?? 0) > 0) {
     metadata.timeoutMs = Math.floor(step.timeoutMs as number);
@@ -328,6 +345,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   const implExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.implementation.model) : "codex";
   const testExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.testing.model) : "codex";
   const reviewExecutor: OrchestratorExecutorKind = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "codex";
+  const testReviewExecutor: OrchestratorExecutorKind = policy?.testReview.model ? phaseModelToExecutorKind(policy.testReview.model) : "codex";
   const integrationExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.integration.model) : "codex";
 
   const rawSteps: RawPlanStep[] = [];
@@ -550,6 +568,37 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         parallelBranch: false
       }),
       extraMetadata: policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : undefined
+    });
+    previousIndex = index;
+  }
+
+  // Test review gate (policy-driven)
+  if (policy && policy.testReview.mode !== "off" && policy.testing.mode !== "none") {
+    const index = rawSteps.length;
+    rawSteps.push({
+      title: "Test review gate",
+      detail: "Review test outcomes and failure diagnostics before final handoff/merge.",
+      kind: "validation",
+      dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
+      joinPolicy: "all_success",
+      quorumCount: null,
+      timeoutMs: 420_000,
+      retryLimit: 0,
+      executorKind: testReviewExecutor,
+      doneCriteria: "Test findings are reviewed and release blockers are called out explicitly.",
+      splitReason: "Execution policy requires a dedicated test review phase.",
+      policy: buildPolicy({
+        kind: "validation",
+        laneId,
+        title: "test-review",
+        parallelBranch: false
+      }),
+      extraMetadata: {
+        taskType: "test_review",
+        stepType: "test_review",
+        reviewTarget: "tests",
+        ...(policy.testReview.reasoningEffort ? { reasoningEffort: policy.testReview.reasoningEffort } : {})
+      }
     });
     previousIndex = index;
   }

@@ -533,6 +533,16 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget) ?? asNumber(orchestratorRaw.max_per_step_token_budget);
     if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
 
+    const defaultExecutionPolicy = isRecord(orchestratorRaw.defaultExecutionPolicy)
+      ? orchestratorRaw.defaultExecutionPolicy
+      : isRecord(orchestratorRaw.default_execution_policy)
+        ? orchestratorRaw.default_execution_policy
+        : null;
+    if (defaultExecutionPolicy) {
+      orchestrator.defaultExecutionPolicy =
+        defaultExecutionPolicy as NonNullable<NonNullable<AiConfig["orchestrator"]>["defaultExecutionPolicy"]>;
+    }
+
     const defaultDepthTier = (asString(orchestratorRaw.defaultDepthTier) ?? asString(orchestratorRaw.default_depth_tier))?.trim();
     if (defaultDepthTier === "light" || defaultDepthTier === "standard" || defaultDepthTier === "deep") {
       orchestrator.defaultDepthTier = defaultDepthTier;

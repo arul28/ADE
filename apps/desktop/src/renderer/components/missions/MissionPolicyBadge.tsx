@@ -4,7 +4,6 @@ import { cn } from "../ui/cn";
 
 type MissionPolicyBadgeProps = {
   policy?: MissionExecutionPolicy | null;
-  depthTier?: string | null;
   className?: string;
 };
 
@@ -31,12 +30,6 @@ function detectPresetLabel(policy: MissionExecutionPolicy): { label: string; col
   return { label: "Custom", color: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30" };
 }
 
-const DEPTH_TIER_BADGE: Record<string, { label: string; color: string }> = {
-  light: { label: "Light", color: "bg-sky-500/20 text-sky-300 border-sky-500/30" },
-  standard: { label: "Standard", color: "bg-violet-500/20 text-violet-300 border-violet-500/30" },
-  deep: { label: "Deep", color: "bg-orange-500/20 text-orange-300 border-orange-500/30" }
-};
-
 function PhaseIcon({ active, label }: { active: boolean; label: string }) {
   return (
     <span
@@ -51,7 +44,7 @@ function PhaseIcon({ active, label }: { active: boolean; label: string }) {
   );
 }
 
-export function MissionPolicyBadge({ policy, depthTier, className }: MissionPolicyBadgeProps) {
+export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProps) {
   if (policy) {
     const preset = detectPresetLabel(policy);
     return (
@@ -70,15 +63,6 @@ export function MissionPolicyBadge({ policy, depthTier, className }: MissionPoli
           </span>
         )}
       </div>
-    );
-  }
-
-  if (depthTier && DEPTH_TIER_BADGE[depthTier]) {
-    const badge = DEPTH_TIER_BADGE[depthTier];
-    return (
-      <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium border", badge.color, className)}>
-        {badge.label}
-      </span>
     );
   }
 

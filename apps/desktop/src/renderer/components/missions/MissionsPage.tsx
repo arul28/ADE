@@ -25,7 +25,6 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
-  MissionDepthTier,
   MissionDetail,
   MissionExecutionPolicy,
   MissionPriority,
@@ -95,18 +94,6 @@ const STATUS_LABELS: Record<MissionStatus, string> = {
   canceled: "Canceled"
 };
 
-const DEPTH_TIER_COLORS: Record<MissionDepthTier, string> = {
-  light: "bg-sky-500/20 text-sky-300 border-sky-500/30",
-  standard: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-  deep: "bg-orange-500/20 text-orange-300 border-orange-500/30"
-};
-
-const DEPTH_DESCRIPTIONS: Record<MissionDepthTier, { label: string; desc: string; budget: string }> = {
-  light: { label: "Light", desc: "Quick task, minimal AI planning, single agent", budget: "~$0.50" },
-  standard: { label: "Standard", desc: "Balanced, AI planning, up to 3 agents, evaluation", budget: "~$5" },
-  deep: { label: "Deep", desc: "Comprehensive, extensive AI planning, up to 6 agents, continuous evaluation", budget: "~$25" }
-};
-
 const PRIORITY_CLASSES: Record<MissionPriority, string> = {
   urgent: "bg-red-500/20 text-red-300 border-red-500/30",
   high: "bg-amber-500/20 text-amber-300 border-amber-500/30",
@@ -143,7 +130,6 @@ type WorkspaceTab = "board" | "dag" | "activity" | "transcript" | "chat";
 type PlannerProvider = "auto" | "claude" | "codex";
 
 type MissionSettingsDraft = {
-  defaultDepthTier: MissionDepthTier;
   defaultExecutionPolicy: MissionExecutionPolicy;
   defaultPlannerProvider: PlannerProvider;
   requirePlanReview: boolean;
@@ -155,7 +141,6 @@ type MissionSettingsDraft = {
 };
 
 const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
-  defaultDepthTier: "standard",
   defaultExecutionPolicy: PRESET_STANDARD,
   defaultPlannerProvider: "auto",
   requirePlanReview: false,
@@ -182,8 +167,24 @@ function readString(primary: unknown, fallback: unknown, defaultValue: string): 
   return defaultValue;
 }
 
-function toDepthTier(value: string, fallback: MissionDepthTier = "standard"): MissionDepthTier {
-  return value === "light" || value === "standard" || value === "deep" ? value : fallback;
+function mergeExecutionPolicyWithDefaults(source: unknown, defaults: MissionExecutionPolicy = PRESET_STANDARD): MissionExecutionPolicy {
+  if (!isRecord(source)) return defaults;
+  const mergePhase = <T extends Record<string, unknown>>(key: keyof MissionExecutionPolicy, phaseDefaults: T): T => {
+    const candidate = source[key];
+    if (!isRecord(candidate)) return { ...phaseDefaults };
+    return { ...phaseDefaults, ...candidate } as T;
+  };
+  return {
+    planning: mergePhase("planning", defaults.planning),
+    implementation: mergePhase("implementation", defaults.implementation),
+    testing: mergePhase("testing", defaults.testing),
+    validation: mergePhase("validation", defaults.validation),
+    codeReview: mergePhase("codeReview", defaults.codeReview),
+    testReview: mergePhase("testReview", defaults.testReview),
+    integration: mergePhase("integration", defaults.integration),
+    merge: mergePhase("merge", defaults.merge),
+    completion: mergePhase("completion", defaults.completion)
+  };
 }
 
 function toPlannerProvider(value: string): PlannerProvider {
@@ -1151,7 +1152,6 @@ type CreateDraft = {
   prompt: string;
   laneId: string;
   priority: MissionPriority;
-  depthTier: MissionDepthTier;
   executionPolicy: MissionExecutionPolicy;
 };
 
@@ -1161,22 +1161,21 @@ function CreateMissionDialog({
   onLaunch,
   busy,
   lanes,
-  defaultDepthTier
+  defaultExecutionPolicy
 }: {
   open: boolean;
   onClose: () => void;
   onLaunch: (draft: CreateDraft) => void;
   busy: boolean;
   lanes: Array<{ id: string; name: string }>;
-  defaultDepthTier: MissionDepthTier;
+  defaultExecutionPolicy: MissionExecutionPolicy;
 }) {
   const [draft, setDraft] = useState<CreateDraft>({
     title: "",
     prompt: "",
     laneId: "",
     priority: "normal",
-    depthTier: defaultDepthTier,
-    executionPolicy: PRESET_STANDARD
+    executionPolicy: defaultExecutionPolicy
   });
 
   useEffect(() => {
@@ -1186,10 +1185,9 @@ function CreateMissionDialog({
       prompt: "",
       laneId: "",
       priority: "normal",
-      depthTier: defaultDepthTier,
-      executionPolicy: PRESET_STANDARD
+      executionPolicy: defaultExecutionPolicy
     });
-  }, [open, defaultDepthTier]);
+  }, [open, defaultExecutionPolicy]);
 
   const handleLaunch = useCallback(() => {
     if (!draft.prompt.trim()) return;
@@ -1554,13 +1552,14 @@ export default function MissionsPage() {
     const effectiveClaude = isRecord(effectivePermissions.claude) ? effectivePermissions.claude : {};
     const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
     const effectiveCodex = isRecord(effectivePermissions.codex) ? effectivePermissions.codex : {};
+    const effectivePolicySource = effectiveOrchestrator.defaultExecutionPolicy ?? effectiveOrchestrator.default_execution_policy;
+    const localPolicySource = localOrchestrator.defaultExecutionPolicy ?? localOrchestrator.default_execution_policy;
+    const effectiveDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(effectivePolicySource, PRESET_STANDARD);
+    const localDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(localPolicySource, effectiveDefaultExecutionPolicy);
 
     setMissionSettingsSnapshot(snapshot);
     setMissionSettingsDraft({
-      defaultDepthTier: toDepthTier(
-        readString(localOrchestrator.defaultDepthTier, effectiveOrchestrator.defaultDepthTier, "standard"),
-        "standard"
-      ),
+      defaultExecutionPolicy: localDefaultExecutionPolicy,
       defaultPlannerProvider: toPlannerProvider(
         readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
       ),
@@ -1575,8 +1574,7 @@ export default function MissionsPage() {
       codexApprovalMode: toCodexApprovalMode(
         readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto")
       ),
-      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, ""),
-      defaultExecutionPolicy: PRESET_STANDARD
+      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, "")
     });
   }, []);
 
@@ -1602,7 +1600,6 @@ export default function MissionsPage() {
       const localClaude = isRecord(localPermissions.claude) ? localPermissions.claude : {};
       const localCodex = isRecord(localPermissions.codex) ? localPermissions.codex : {};
 
-      const normalizedDepthTier = toDepthTier(missionSettingsDraft.defaultDepthTier, "standard");
       const normalizedPlannerProvider = toPlannerProvider(missionSettingsDraft.defaultPlannerProvider);
       const normalizedClaudePermissionMode = toClaudePermissionMode(missionSettingsDraft.claudePermissionMode);
       const normalizedCodexSandbox = toCodexSandboxPermissions(missionSettingsDraft.codexSandboxPermissions);
@@ -1610,10 +1607,12 @@ export default function MissionsPage() {
 
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
-        defaultDepthTier: normalizedDepthTier,
+        defaultExecutionPolicy: missionSettingsDraft.defaultExecutionPolicy,
         defaultPlannerProvider: normalizedPlannerProvider,
         requirePlanReview: missionSettingsDraft.requirePlanReview
       };
+      delete nextOrchestrator.defaultDepthTier;
+      delete nextOrchestrator.default_depth_tier;
 
       const nextClaude: Record<string, unknown> = {
         ...localClaude,
@@ -2120,7 +2119,6 @@ export default function MissionsPage() {
                     {runGraph?.run?.metadata && (
                       <MissionPolicyBadge
                         policy={(runGraph.run.metadata as Record<string, unknown>).executionPolicy as MissionExecutionPolicy | undefined}
-                        depthTier={(runGraph.run.metadata as Record<string, unknown>).depthTier as string | undefined}
                       />
                     )}
                   </div>
@@ -2335,7 +2333,7 @@ export default function MissionsPage() {
             onLaunch={handleLaunchMission}
             busy={createBusy}
             lanes={lanes.map((l) => ({ id: l.id, name: l.name }))}
-            defaultDepthTier={missionSettingsDraft.defaultDepthTier}
+            defaultExecutionPolicy={missionSettingsDraft.defaultExecutionPolicy}
           />
         )}
       </AnimatePresence>

@@ -26,6 +26,7 @@ import type {
   OrchestratorGateReport,
   OrchestratorGateStatus,
   OrchestratorJoinPolicy,
+  OrchestratorMemoryHierarchy,
   OrchestratorRun,
   OrchestratorRunGraph,
   OrchestratorRunStatus,
@@ -2749,6 +2750,141 @@ export function createOrchestratorService({
       deepPackV2.consumedBytes = measureBytes(deepPackV2);
     }
 
+    const recentWorkerDigests = db.all<{
+      step_key: string | null;
+      status: string;
+      summary: string;
+      created_at: string;
+    }>(
+      `
+        select step_key, status, summary, created_at
+        from orchestrator_worker_digests
+        where project_id = ?
+          and mission_id = ?
+          and run_id = ?
+        order by created_at desc
+        limit 12
+      `,
+      [projectId, args.run.missionId, args.run.id]
+    ).map((row) => ({
+      stepKey: row.step_key ?? null,
+      status: String(row.status ?? "").trim() || "unknown",
+      summary: clipText(String(row.summary ?? ""), 360),
+      createdAt: row.created_at
+    }));
+
+    const recentCheckpoints = db.all<{
+      id: string;
+      trigger: string;
+      summary: string;
+      created_at: string;
+    }>(
+      `
+        select id, trigger, summary, created_at
+        from orchestrator_context_checkpoints
+        where project_id = ?
+          and mission_id = ?
+          and (run_id = ? or run_id is null)
+        order by created_at desc
+        limit 8
+      `,
+      [projectId, args.run.missionId, args.run.id]
+    ).map((row) => ({
+      id: row.id,
+      trigger: row.trigger,
+      summary: clipText(String(row.summary ?? ""), 280),
+      createdAt: row.created_at
+    }));
+
+    const MEMORY_L1_BUDGET_BYTES = 10_240;
+    const MEMORY_L2_BUDGET_BYTES = 6_144;
+
+    let memoryL1: OrchestratorMemoryHierarchy["l1"] = {
+      budgetBytes: MEMORY_L1_BUDGET_BYTES,
+      consumedBytes: 0,
+      truncated: false,
+      stepKey: executionPackV2.stepKey,
+      stepTitle: executionPackV2.stepTitle,
+      dependencies: executionPackV2.dependencies,
+      handoffIds: executionPackV2.handoffIds,
+      handoffDigest: executionPackV2.handoffDigest ?? null,
+      recentWorkerDigests,
+      recentCheckpoints
+    };
+    memoryL1.consumedBytes = measureBytes(memoryL1);
+    if (memoryL1.consumedBytes > MEMORY_L1_BUDGET_BYTES) {
+      memoryL1 = {
+        ...memoryL1,
+        truncated: true,
+        recentWorkerDigests: memoryL1.recentWorkerDigests.slice(0, 8),
+        recentCheckpoints: memoryL1.recentCheckpoints.slice(0, 5),
+        handoffIds: memoryL1.handoffIds.slice(0, 10)
+      };
+      memoryL1.consumedBytes = measureBytes(memoryL1);
+    }
+    if (memoryL1.consumedBytes > MEMORY_L1_BUDGET_BYTES) {
+      memoryL1 = {
+        ...memoryL1,
+        recentWorkerDigests: memoryL1.recentWorkerDigests.slice(0, 5),
+        recentCheckpoints: memoryL1.recentCheckpoints.slice(0, 3),
+        dependencies: memoryL1.dependencies.slice(0, 10),
+        handoffIds: memoryL1.handoffIds.slice(0, 6)
+      };
+      memoryL1.consumedBytes = measureBytes(memoryL1);
+    }
+
+    let memoryL2: OrchestratorMemoryHierarchy["l2"] = {
+      budgetBytes: MEMORY_L2_BUDGET_BYTES,
+      consumedBytes: 0,
+      truncated: false,
+      docsMode: deepPackV2.docsMode,
+      docsCount: deepPackV2.docsCount,
+      fullDocsIncluded: deepPackV2.fullDocsIncluded,
+      docsRefsOnly: deepPackV2.docsRefsOnly,
+      packRefs: [
+        {
+          packKey: projectExport.packKey,
+          level: projectExport.level,
+          approxTokens: projectExport.approxTokens ?? null
+        },
+        ...(laneExport
+          ? [
+              {
+                packKey: laneExport.packKey,
+                level: laneExport.level,
+                approxTokens: laneExport.approxTokens ?? null
+              }
+            ]
+          : [])
+      ]
+    };
+    memoryL2.consumedBytes = measureBytes(memoryL2);
+    if (memoryL2.consumedBytes > MEMORY_L2_BUDGET_BYTES) {
+      memoryL2 = {
+        ...memoryL2,
+        truncated: true,
+        packRefs: memoryL2.packRefs.slice(0, 1)
+      };
+      memoryL2.consumedBytes = measureBytes(memoryL2);
+    }
+
+    const memoryHierarchy: OrchestratorMemoryHierarchy = {
+      schema: "ade.contextMemoryHierarchy.v1",
+      l0: {
+        budgetBytes: controlPackV2.budgetBytes,
+        consumedBytes: controlPackV2.consumedBytes,
+        truncated: controlPackV2.truncated,
+        frontier: controlPackV2.frontier,
+        openQuestions: controlPackV2.openQuestions,
+        activeClaims: controlPackV2.activeClaims,
+        activeClaimConflicts: controlPackV2.activeClaimConflicts,
+        gateState: controlPackV2.gateState,
+        recentDecisions: controlPackV2.recentDecisions
+      },
+      l1: memoryL1,
+      l2: memoryL2
+    };
+
     const laneHead = lanePackKey ? packService.getHeadVersion({ packKey: lanePackKey }) : null;
     const projectHead = packService.getHeadVersion({ packKey: "project" });
     const cursor: OrchestratorContextSnapshotCursor = {
@@ -2766,10 +2902,12 @@ export function createOrchestratorService({
 	      controlPackV2,
 	      executionPackV2,
 	      deepPackV2,
+        memoryHierarchy,
 	      contextSources: [
 	        "control_pack_v2",
 	        "execution_pack_v2",
 	        "deep_pack_v2",
+          "memory_hierarchy_v1",
 	        `pack:project:${projectExport.level}`,
 	        ...(lanePackKey ? [`pack:${lanePackKey}:${laneExport?.level ?? laneExportLevel}`] : []),
         ...(packDeltaDigest ? ["delta_digest"] : []),
@@ -3523,6 +3661,29 @@ export function createOrchestratorService({
           const contextDir = path.join(projectRoot, ".ade", "orchestrator", "contexts", args.run.id);
           fs.mkdirSync(contextDir, { recursive: true });
           const contextFilePath = path.join(contextDir, `${args.attempt.id}.json`);
+          const memoryHierarchy = (() => {
+            const snapshotId = args.attempt.contextSnapshotId;
+            if (!snapshotId) return null;
+            const row = db.get<{ cursor_json: string | null }>(
+              `
+                select cursor_json
+                from orchestrator_context_snapshots
+                where id = ?
+                  and project_id = ?
+                limit 1
+              `,
+              [snapshotId, projectId]
+            );
+            if (!row?.cursor_json) return null;
+            try {
+              const parsed = JSON.parse(row.cursor_json) as Record<string, unknown>;
+              const hierarchy = parsed?.memoryHierarchy;
+              if (!hierarchy || typeof hierarchy !== "object" || Array.isArray(hierarchy)) return null;
+              return hierarchy as OrchestratorMemoryHierarchy;
+            } catch {
+              return null;
+            }
+          })();
           const contextManifest = {
             schema: "ade.orchestratorWorkerContext.v1",
             mission: {
@@ -3558,6 +3719,11 @@ export function createOrchestratorService({
               truncated: entry.truncated,
               contentPreview: clipText(entry.content, 1_200)
             })),
+            contextBroker: {
+              assembly: "memory_hierarchy_v1",
+              availableTiers: memoryHierarchy ? ["l0", "l1", "l2"] : []
+            },
+            memoryHierarchy,
             generatedAt: nowIso()
           };
           fs.writeFileSync(contextFilePath, `${JSON.stringify(contextManifest, null, 2)}\n`, "utf8");
@@ -4282,6 +4448,7 @@ export function createOrchestratorService({
         let lastCapSignature = "";
 
         let startedAttempts = 0;
+        const startedByExecutor: Record<string, number> = {};
         let loops = 0;
         while (loops < 12) {
           loops += 1;
@@ -4326,16 +4493,34 @@ export function createOrchestratorService({
             const fresh = getStepRow(step.id);
             if (!fresh) continue;
             if (toStep(fresh).status !== "ready") continue;
+            const explicitStepExecutor =
+              typeof step.metadata?.executorKind === "string"
+                ? normalizeExecutorKind(String(step.metadata.executorKind))
+                : null;
+            const stepExecutor = explicitStepExecutor ?? autopilot.executorKind;
+            if (stepExecutor === "manual") {
+              appendTimelineEvent({
+                runId,
+                stepId: step.id,
+                eventType: "autopilot_step_skipped",
+                reason: "manual_step_requires_operator",
+                detail: {
+                  stepKey: step.stepKey
+                }
+              });
+              continue;
+            }
             try {
               await this.startAttempt({
                 runId,
                 stepId: step.id,
                 ownerId: autopilot.ownerId,
-                executorKind: autopilot.executorKind
+                executorKind: stepExecutor
               });
               startedAttempts += 1;
               startedInLoop += 1;
               runningAttemptCount += 1;
+              startedByExecutor[stepExecutor] = (startedByExecutor[stepExecutor] ?? 0) + 1;
             } catch (error) {
               appendTimelineEvent({
                 runId,
@@ -4359,6 +4544,8 @@ export function createOrchestratorService({
             detail: {
               startedAttempts,
               executorKind: autopilot.executorKind,
+              executorRouting: "step_policy",
+              startedByExecutor,
               parallelismCap: parallelismCap
             }
           });

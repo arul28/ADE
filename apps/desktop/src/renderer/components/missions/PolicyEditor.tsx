@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useCallback } from "react";
 import type {
   MissionExecutionPolicy,
   PlanningPhaseMode,
@@ -58,7 +58,7 @@ const PRESET_LABELS: Record<PresetKey, { label: string; desc: string; color: str
   quick: { label: "Quick", desc: "Minimal steps, no testing", color: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
   standard: { label: "Standard", desc: "Balanced with testing", color: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
   thorough: { label: "Thorough", desc: "Full pipeline with review", color: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
-  custom: { label: "Custom", desc: "Advanced configuration", color: "border-zinc-500/40 bg-zinc-500/10 text-zinc-300" }
+  custom: { label: "Custom", desc: "Phase-level configuration", color: "border-zinc-500/40 bg-zinc-500/10 text-zinc-300" }
 };
 
 function detectPreset(policy: MissionExecutionPolicy): PresetKey {
@@ -98,10 +98,7 @@ function PhaseRow({
   onModeChange,
   model,
   onModelChange,
-  showModel,
-  reasoningEffort,
-  onReasoningEffortChange,
-  showReasoning
+  showModel
 }: {
   label: string;
   mode: string;
@@ -110,9 +107,6 @@ function PhaseRow({
   model?: PhaseModelChoice;
   onModelChange?: (value: PhaseModelChoice) => void;
   showModel: boolean;
-  reasoningEffort?: string;
-  onReasoningEffortChange?: (value: string) => void;
-  showReasoning: boolean;
 }) {
   return (
     <div className="flex items-center gap-2 py-1">
@@ -138,26 +132,12 @@ function PhaseRow({
       ) : (
         <div className="w-20" />
       )}
-      {showReasoning && onReasoningEffortChange ? (
-        <select
-          className={cn(selectClass, "w-20")}
-          value={reasoningEffort ?? ""}
-          onChange={(e) => onReasoningEffortChange(e.target.value)}
-        >
-          <option value="">Default</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      ) : (
-        <div className="w-20" />
-      )}
+      <div className="w-20 text-[10px] text-muted-fg">Dedicated</div>
     </div>
   );
 }
 
 export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
-  const [advanced, setAdvanced] = useState(false);
   const preset = detectPreset(value);
 
   const applyPreset = useCallback((key: PresetKey) => {
@@ -175,7 +155,6 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
 
   return (
     <div className="space-y-2">
-      {/* Simple mode: preset buttons */}
       <div className="flex gap-2">
         {(["quick", "standard", "thorough"] as const).map((key) => (
           <button
@@ -194,164 +173,131 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
         ))}
       </div>
 
-      {/* Advanced toggle */}
-      <button
-        className="text-[10px] text-accent/70 hover:text-accent transition-colors"
-        onClick={() => setAdvanced(!advanced)}
-      >
-        {advanced ? "Simple mode" : "Advanced"}
-      </button>
-
-      {/* Advanced mode: per-phase config */}
-      {advanced && (
-        <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-2 space-y-0.5">
-          <div className="flex items-center gap-2 pb-1 border-b border-border/10 mb-1">
-            <span className="w-24 text-[10px] text-muted-fg font-medium">Phase</span>
-            <span className="flex-1 text-[10px] text-muted-fg font-medium">Mode</span>
-            <span className="w-20 text-[10px] text-muted-fg font-medium">Model</span>
-            <span className="w-20 text-[10px] text-muted-fg font-medium">Reasoning</span>
-          </div>
-
-          <PhaseRow
-            label="Planning"
-            mode={value.planning.mode}
-            modeOptions={[
-              { value: "off", label: "Off" },
-              { value: "auto", label: "Auto" },
-              { value: "manual_review", label: "Manual Review" }
-            ]}
-            onModeChange={(v) => updatePhase("planning", { mode: v as PlanningPhaseMode })}
-            model={value.planning.model}
-            onModelChange={(v) => updatePhase("planning", { model: v })}
-            showModel={value.planning.mode !== "off"}
-            reasoningEffort={value.planning.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("planning", { reasoningEffort: v || undefined })}
-            showReasoning={value.planning.mode !== "off"}
-          />
-
-          <PhaseRow
-            label="Implementation"
-            mode="active"
-            modeOptions={[{ value: "active", label: "Active" }]}
-            onModeChange={() => {}}
-            model={value.implementation.model}
-            onModelChange={(v) => updatePhase("implementation", { model: v })}
-            showModel
-            reasoningEffort={value.implementation.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("implementation", { reasoningEffort: v || undefined })}
-            showReasoning
-          />
-
-          <PhaseRow
-            label="Testing"
-            mode={value.testing.mode}
-            modeOptions={[
-              { value: "none", label: "None" },
-              { value: "post_implementation", label: "Post-Implementation" },
-              { value: "tdd", label: "TDD" }
-            ]}
-            onModeChange={(v) => updatePhase("testing", { mode: v as TestingPhaseMode })}
-            model={value.testing.model}
-            onModelChange={(v) => updatePhase("testing", { model: v })}
-            showModel={value.testing.mode !== "none"}
-            reasoningEffort={value.testing.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("testing", { reasoningEffort: v || undefined })}
-            showReasoning={value.testing.mode !== "none"}
-          />
-
-          <PhaseRow
-            label="Validation"
-            mode={value.validation.mode}
-            modeOptions={[
-              { value: "off", label: "Off" },
-              { value: "optional", label: "Optional" },
-              { value: "required", label: "Required" }
-            ]}
-            onModeChange={(v) => updatePhase("validation", { mode: v as GatePhaseMode })}
-            model={value.validation.model}
-            onModelChange={(v) => updatePhase("validation", { model: v })}
-            showModel={value.validation.mode !== "off"}
-            reasoningEffort={value.validation.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("validation", { reasoningEffort: v || undefined })}
-            showReasoning={value.validation.mode !== "off"}
-          />
-
-          <PhaseRow
-            label="Code Review"
-            mode={value.codeReview.mode}
-            modeOptions={[
-              { value: "off", label: "Off" },
-              { value: "optional", label: "Optional" },
-              { value: "required", label: "Required" }
-            ]}
-            onModeChange={(v) => updatePhase("codeReview", { mode: v as GatePhaseMode })}
-            model={value.codeReview.model}
-            onModelChange={(v) => updatePhase("codeReview", { model: v })}
-            showModel={value.codeReview.mode !== "off"}
-            reasoningEffort={value.codeReview.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("codeReview", { reasoningEffort: v || undefined })}
-            showReasoning={value.codeReview.mode !== "off"}
-          />
-
-          <PhaseRow
-            label="Test Review"
-            mode={value.testReview.mode}
-            modeOptions={[
-              { value: "off", label: "Off" },
-              { value: "optional", label: "Optional" },
-              { value: "required", label: "Required" }
-            ]}
-            onModeChange={(v) => updatePhase("testReview", { mode: v as GatePhaseMode })}
-            model={value.testReview.model}
-            onModelChange={(v) => updatePhase("testReview", { model: v })}
-            showModel={value.testReview.mode !== "off"}
-            reasoningEffort={value.testReview.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("testReview", { reasoningEffort: v || undefined })}
-            showReasoning={value.testReview.mode !== "off"}
-          />
-
-          <PhaseRow
-            label="Integration"
-            mode={value.integration.mode}
-            modeOptions={[
-              { value: "off", label: "Off" },
-              { value: "auto", label: "Auto" }
-            ]}
-            onModeChange={(v) => updatePhase("integration", { mode: v as IntegrationPhaseMode })}
-            model={value.integration.model}
-            onModelChange={(v) => updatePhase("integration", { model: v })}
-            showModel={value.integration.mode !== "off"}
-            reasoningEffort={value.integration.reasoningEffort}
-            onReasoningEffortChange={(v) => updatePhase("integration", { reasoningEffort: v || undefined })}
-            showReasoning={value.integration.mode !== "off"}
-          />
-
-          <PhaseRow
-            label="Merge"
-            mode={value.merge.mode}
-            modeOptions={[
-              { value: "off", label: "Off" },
-              { value: "manual", label: "Manual" },
-              { value: "auto_if_green", label: "Auto if Green" }
-            ]}
-            onModeChange={(v) => updatePhase("merge", { mode: v as MergePhaseMode })}
-            showModel={false}
-            showReasoning={false}
-          />
-
-          <div className="flex items-center gap-2 pt-1 border-t border-border/10 mt-1">
-            <label className="flex items-center gap-1.5 text-[11px] text-muted-fg cursor-pointer">
-              <input
-                type="checkbox"
-                checked={value.completion.allowCompletionWithRisk}
-                onChange={(e) => updatePhase("completion", { allowCompletionWithRisk: e.target.checked })}
-                className="rounded"
-              />
-              Allow completion with risk
-            </label>
-          </div>
+      <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-2 space-y-0.5">
+        <div className="flex items-center gap-2 pb-1 border-b border-border/10 mb-1">
+          <span className="w-24 text-[10px] text-muted-fg font-medium">Phase</span>
+          <span className="flex-1 text-[10px] text-muted-fg font-medium">Mode</span>
+          <span className="w-20 text-[10px] text-muted-fg font-medium">Model</span>
+          <span className="w-20 text-[10px] text-muted-fg font-medium">Worker</span>
         </div>
-      )}
+
+        <PhaseRow
+          label="Planning"
+          mode={value.planning.mode}
+          modeOptions={[
+            { value: "off", label: "Off" },
+            { value: "auto", label: "Auto" },
+            { value: "manual_review", label: "Manual Review" }
+          ]}
+          onModeChange={(v) => updatePhase("planning", { mode: v as PlanningPhaseMode })}
+          model={value.planning.model}
+          onModelChange={(v) => updatePhase("planning", { model: v })}
+          showModel={value.planning.mode !== "off"}
+        />
+
+        <PhaseRow
+          label="Implementation"
+          mode="active"
+          modeOptions={[{ value: "active", label: "Active" }]}
+          onModeChange={() => {}}
+          model={value.implementation.model}
+          onModelChange={(v) => updatePhase("implementation", { model: v })}
+          showModel
+        />
+
+        <PhaseRow
+          label="Testing"
+          mode={value.testing.mode}
+          modeOptions={[
+            { value: "none", label: "None" },
+            { value: "post_implementation", label: "Post-Implementation" },
+            { value: "tdd", label: "TDD" }
+          ]}
+          onModeChange={(v) => updatePhase("testing", { mode: v as TestingPhaseMode })}
+          model={value.testing.model}
+          onModelChange={(v) => updatePhase("testing", { model: v })}
+          showModel={value.testing.mode !== "none"}
+        />
+
+        <PhaseRow
+          label="Validation"
+          mode={value.validation.mode}
+          modeOptions={[
+            { value: "off", label: "Off" },
+            { value: "optional", label: "Optional" },
+            { value: "required", label: "Required" }
+          ]}
+          onModeChange={(v) => updatePhase("validation", { mode: v as GatePhaseMode })}
+          model={value.validation.model}
+          onModelChange={(v) => updatePhase("validation", { model: v })}
+          showModel={value.validation.mode !== "off"}
+        />
+
+        <PhaseRow
+          label="Code Review"
+          mode={value.codeReview.mode}
+          modeOptions={[
+            { value: "off", label: "Off" },
+            { value: "optional", label: "Optional" },
+            { value: "required", label: "Required" }
+          ]}
+          onModeChange={(v) => updatePhase("codeReview", { mode: v as GatePhaseMode })}
+          model={value.codeReview.model}
+          onModelChange={(v) => updatePhase("codeReview", { model: v })}
+          showModel={value.codeReview.mode !== "off"}
+        />
+
+        <PhaseRow
+          label="Test Review"
+          mode={value.testReview.mode}
+          modeOptions={[
+            { value: "off", label: "Off" },
+            { value: "optional", label: "Optional" },
+            { value: "required", label: "Required" }
+          ]}
+          onModeChange={(v) => updatePhase("testReview", { mode: v as GatePhaseMode })}
+          model={value.testReview.model}
+          onModelChange={(v) => updatePhase("testReview", { model: v })}
+          showModel={value.testReview.mode !== "off"}
+        />
+
+        <PhaseRow
+          label="Integration"
+          mode={value.integration.mode}
+          modeOptions={[
+            { value: "off", label: "Off" },
+            { value: "auto", label: "Auto" }
+          ]}
+          onModeChange={(v) => updatePhase("integration", { mode: v as IntegrationPhaseMode })}
+          model={value.integration.model}
+          onModelChange={(v) => updatePhase("integration", { model: v })}
+          showModel={value.integration.mode !== "off"}
+        />
+
+        <PhaseRow
+          label="Merge"
+          mode={value.merge.mode}
+          modeOptions={[
+            { value: "off", label: "Off" },
+            { value: "manual", label: "Manual" },
+            { value: "auto_if_green", label: "Auto if Green" }
+          ]}
+          onModeChange={(v) => updatePhase("merge", { mode: v as MergePhaseMode })}
+          showModel={false}
+        />
+
+        <div className="flex items-center gap-2 pt-1 border-t border-border/10 mt-1">
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-fg cursor-pointer">
+            <input
+              type="checkbox"
+              checked={value.completion.allowCompletionWithRisk}
+              onChange={(e) => updatePhase("completion", { allowCompletionWithRisk: e.target.checked })}
+              className="rounded"
+            />
+            Allow completion with risk
+          </label>
+        </div>
+      </div>
     </div>
   );
 }

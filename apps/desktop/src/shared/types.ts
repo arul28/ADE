@@ -1632,6 +1632,8 @@ export type AiOrchestratorConfig = {
   max_total_token_budget?: number;
   maxPerStepTokenBudget?: number;
   max_per_step_token_budget?: number;
+  defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
+  default_execution_policy?: Partial<MissionExecutionPolicy>;
   defaultDepthTier?: MissionDepthTier;
   default_depth_tier?: MissionDepthTier;
   defaultPlannerProvider?: AiTaskProvider;
@@ -2787,6 +2789,54 @@ export type OrchestratorDocsRef = {
   mode: "digest_ref" | "full_body";
 };
 
+export type OrchestratorMemoryHierarchy = {
+  schema: "ade.contextMemoryHierarchy.v1";
+  l0: {
+    budgetBytes: number;
+    consumedBytes: number;
+    truncated: boolean;
+    frontier: {
+      pending: number;
+      ready: number;
+      running: number;
+      blocked: number;
+      terminal: number;
+    };
+    openQuestions: number;
+    activeClaims: number;
+    activeClaimConflicts: number;
+    gateState: "pass" | "warn" | "fail" | "unknown";
+    recentDecisions: string[];
+  };
+  l1: {
+    budgetBytes: number;
+    consumedBytes: number;
+    truncated: boolean;
+    stepKey: string;
+    stepTitle: string;
+    dependencies: Array<{ stepId: string; status: OrchestratorStepStatus }>;
+    handoffIds: string[];
+    handoffDigest: {
+      summarizedCount: number;
+      byType: Record<string, number>;
+      oldestCreatedAt: string | null;
+      newestCreatedAt: string | null;
+    } | null;
+    recentWorkerDigests: Array<{ stepKey: string | null; status: string; summary: string; createdAt: string }>;
+    recentCheckpoints: Array<{ id: string; trigger: string; summary: string; createdAt: string }>;
+  };
+  l2: {
+    budgetBytes: number;
+    consumedBytes: number;
+    truncated: boolean;
+    docsMode: "digest_ref" | "full_body";
+    docsCount: number;
+    fullDocsIncluded: number;
+    docsRefsOnly: number;
+    packRefs: Array<{ packKey: string; level: string; approxTokens: number | null }>;
+  };
+};
+
 export type OrchestratorContextSnapshotCursor = {
   lanePackKey: string | null;
   lanePackVersionId: string | null;
@@ -2846,6 +2896,7 @@ export type OrchestratorContextSnapshotCursor = {
     fullDocsIncluded: number;
     docsRefsOnly: number;
   };
+  memoryHierarchy?: OrchestratorMemoryHierarchy;
 };
 
 export type OrchestratorRun = {

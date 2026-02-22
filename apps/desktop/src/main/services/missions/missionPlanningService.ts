@@ -728,6 +728,22 @@ function mapHintToExecutor(args: {
   return "claude";
 }
 
+function inferReviewTarget(step: PlannerStepPlan): "code" | "tests" {
+  const label = `${step.name} ${step.description}`.toLowerCase();
+  if (/\b(test|tests|qa|verification|assert|spec)\b/.test(label)) return "tests";
+  return "code";
+}
+
+function inferRoleClass(step: PlannerStepPlan): string {
+  if (step.taskType === "analysis") return "planning";
+  if (step.taskType === "code" || step.taskType === "deploy") return "implementation";
+  if (step.taskType === "test") return "testing";
+  if (step.taskType === "review") return "review";
+  if (step.taskType === "integration") return "integration";
+  if (step.taskType === "merge") return "merge";
+  return "handoff";
+}
+
 function toClaimScopes(step: PlannerStepPlan): Array<{ scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number }> {
   const scopes: Array<{ scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number }> = [];
   // Planner lane hints are semantic domains (backend/frontend/integration), not concrete ADE lanes.
@@ -769,6 +785,8 @@ export function plannerPlanToMissionSteps(args: {
   return args.plan.steps.map((step, index) => {
     const requiresNarrative = step.requiresContextProfiles.includes("deterministic_plus_narrative");
     const retryLimit = Math.max(0, step.maxAttempts - 1);
+    const reviewTarget = step.taskType === "review" ? inferReviewTarget(step) : null;
+    const roleClass = inferRoleClass(step);
     const dependencyIndices = step.dependencies
       .map((dep) => indexByStepId.get(dep))
       .filter((value): value is number => typeof value === "number");
@@ -784,7 +802,10 @@ export function plannerPlanToMissionSteps(args: {
       } else if (taskType === "test") {
         executorKind = phaseModelToExecutorKind(args.policy.testing.model);
       } else if (taskType === "review") {
-        executorKind = phaseModelToExecutorKind(args.policy.codeReview.model);
+        executorKind =
+          reviewTarget === "tests"
+            ? phaseModelToExecutorKind(args.policy.testReview.model)
+            : phaseModelToExecutorKind(args.policy.codeReview.model);
       } else if (taskType === "integration" || taskType === "merge") {
         executorKind = phaseModelToExecutorKind(args.policy.integration.model);
       } else {
@@ -813,7 +834,10 @@ export function plannerPlanToMissionSteps(args: {
       } else if (taskType === "test") {
         reasoningEffort = args.policy.testing.reasoningEffort;
       } else if (taskType === "review") {
-        reasoningEffort = args.policy.codeReview.reasoningEffort;
+        reasoningEffort =
+          reviewTarget === "tests"
+            ? args.policy.testReview.reasoningEffort
+            : args.policy.codeReview.reasoningEffort;
       } else if (taskType === "integration" || taskType === "merge") {
         reasoningEffort = args.policy.integration.reasoningEffort;
       }
@@ -848,6 +872,9 @@ export function plannerPlanToMissionSteps(args: {
         docsMaxBytes: requiresNarrative ? 220_000 : 120_000,
         claimScopes: toClaimScopes(step)
       },
+      roleClass,
+      requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration",
+      ...(reviewTarget ? { reviewTarget } : {}),
       planStep: step
     };
 

@@ -82,6 +82,39 @@ type ResolvedOrchestratorConfig = {
   requirePlanReview: boolean;
   defaultDepthTier: MissionDepthTier;
   defaultPlannerProvider: "claude" | "codex" | null;
+  defaultExecutionPolicy: Partial<MissionExecutionPolicy> | null;
+};
+
+type RuntimeReasoningEffort = "low" | "medium" | "high";
+
+type MissionRuntimeProfile = {
+  planning: {
+    useAiPlanner: boolean;
+    requirePlanReview: boolean;
+    preferProvider: "claude" | "codex" | null;
+  };
+  execution: {
+    maxParallelWorkers: number;
+    defaultRetryLimit: number;
+    stepTimeoutMs: number;
+  };
+  evaluation: {
+    evaluateEveryStep: boolean;
+    autoAdjustPlan: boolean;
+    autoResolveInterventions: boolean;
+    interventionConfidenceThreshold: number;
+    evaluationReasoningEffort: RuntimeReasoningEffort;
+    interventionReasoningEffort: RuntimeReasoningEffort;
+  };
+  context: {
+    contextProfile: "orchestrator_deterministic_v1" | "orchestrator_narrative_opt_in_v1";
+    includeNarrative: boolean;
+    docsMode: "digest_refs" | "full_docs";
+  };
+  provenance: {
+    source: "policy" | "legacy_depth_fallback";
+    legacyDepthTier: MissionDepthTier | null;
+  };
 };
 
 const PLAN_REVIEW_INTERVENTION_TITLE = "Mission plan approval required";
@@ -542,10 +575,16 @@ function readConfig(projectConfigService: ReturnType<typeof createProjectConfigS
     defaultPlannerProviderRaw === "claude" || defaultPlannerProviderRaw === "codex"
       ? defaultPlannerProviderRaw
       : null;
+  const defaultExecutionPolicy = isRecord(orchestrator.defaultExecutionPolicy)
+    ? (orchestrator.defaultExecutionPolicy as Partial<MissionExecutionPolicy>)
+    : isRecord(orchestrator.default_execution_policy)
+      ? (orchestrator.default_execution_policy as Partial<MissionExecutionPolicy>)
+      : null;
   return {
     requirePlanReview,
     defaultDepthTier,
-    defaultPlannerProvider
+    defaultPlannerProvider,
+    defaultExecutionPolicy
   };
 }
 
@@ -675,6 +714,123 @@ export function resolveMissionDepthConfig(tier: MissionDepthTier): MissionDepthC
         }
       };
   }
+}
+
+function normalizeReasoningEffort(value: unknown, fallback: RuntimeReasoningEffort): RuntimeReasoningEffort {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "low" || normalized === "medium" || normalized === "high") return normalized;
+  return fallback;
+}
+
+function deriveRuntimeProfileFromPolicy(
+  policy: MissionExecutionPolicy,
+  config: ResolvedOrchestratorConfig
+): MissionRuntimeProfile {
+  const testingEnabled = policy.testing.mode !== "none";
+  const reviewEnabled = policy.codeReview.mode !== "off" || policy.testReview.mode !== "off";
+  const strictGates =
+    policy.validation.mode === "required"
+    || policy.codeReview.mode === "required"
+    || policy.testReview.mode === "required"
+    || policy.completion.allowCompletionWithRisk === false;
+  const integrationEnabled = policy.integration.mode === "auto";
+
+  let maxParallelWorkers = 2;
+  if (testingEnabled) maxParallelWorkers += 1;
+  if (reviewEnabled) maxParallelWorkers += 1;
+  if (integrationEnabled) maxParallelWorkers += 1;
+  if (policy.testing.mode === "tdd") maxParallelWorkers = Math.max(maxParallelWorkers, 4);
+  maxParallelWorkers = Math.max(1, Math.min(6, maxParallelWorkers));
+
+  let stepTimeoutMs = 300_000;
+  if (!testingEnabled && !reviewEnabled && !integrationEnabled) {
+    stepTimeoutMs = 180_000;
+  }
+  if (strictGates || policy.planning.mode === "manual_review") {
+    stepTimeoutMs = 600_000;
+  } else if (policy.testing.mode === "tdd") {
+    stepTimeoutMs = 480_000;
+  }
+
+  const includeNarrative = policy.planning.mode === "manual_review" || strictGates;
+  const contextProfile = includeNarrative ? "orchestrator_narrative_opt_in_v1" : "orchestrator_deterministic_v1";
+
+  return {
+    planning: {
+      useAiPlanner: policy.planning.mode !== "off",
+      requirePlanReview: policy.planning.mode === "manual_review",
+      preferProvider: policy.planning.model ?? config.defaultPlannerProvider ?? null
+    },
+    execution: {
+      maxParallelWorkers,
+      defaultRetryLimit: strictGates || testingEnabled ? 2 : 1,
+      stepTimeoutMs
+    },
+    evaluation: {
+      evaluateEveryStep: strictGates || policy.testing.mode === "tdd",
+      autoAdjustPlan: policy.planning.mode !== "off" || integrationEnabled || reviewEnabled,
+      autoResolveInterventions: testingEnabled || reviewEnabled || integrationEnabled,
+      interventionConfidenceThreshold: strictGates ? 0.75 : 0.9,
+      evaluationReasoningEffort: normalizeReasoningEffort(
+        policy.codeReview.reasoningEffort ?? policy.testReview.reasoningEffort ?? policy.validation.reasoningEffort,
+        strictGates ? "high" : "medium"
+      ),
+      interventionReasoningEffort: normalizeReasoningEffort(
+        policy.integration.reasoningEffort ?? policy.planning.reasoningEffort,
+        strictGates ? "high" : "medium"
+      )
+    },
+    context: {
+      contextProfile,
+      includeNarrative,
+      docsMode: includeNarrative ? "full_docs" : "digest_refs"
+    },
+    provenance: {
+      source: "policy",
+      legacyDepthTier: null
+    }
+  };
+}
+
+function deriveRuntimeProfileFromDepthConfig(
+  depthConfig: MissionDepthConfig,
+  config: ResolvedOrchestratorConfig
+): MissionRuntimeProfile {
+  const preferProvider = depthConfig.planning.plannerModel?.toLowerCase().includes("claude")
+    ? "claude"
+    : depthConfig.planning.plannerModel?.toLowerCase().includes("codex")
+      ? "codex"
+      : config.defaultPlannerProvider;
+  return {
+    planning: {
+      useAiPlanner: depthConfig.planning.useAiPlanner,
+      requirePlanReview: depthConfig.planning.requirePlanReview,
+      preferProvider: preferProvider ?? null
+    },
+    execution: {
+      maxParallelWorkers: depthConfig.execution.maxParallelWorkers,
+      defaultRetryLimit: depthConfig.execution.defaultRetryLimit,
+      stepTimeoutMs: depthConfig.execution.stepTimeoutMs
+    },
+    evaluation: {
+      evaluateEveryStep: depthConfig.evaluation.evaluateEveryStep,
+      autoAdjustPlan: depthConfig.evaluation.autoAdjustPlan,
+      autoResolveInterventions: depthConfig.evaluation.autoResolveInterventions,
+      interventionConfidenceThreshold: depthConfig.evaluation.interventionConfidenceThreshold,
+      evaluationReasoningEffort: depthConfig.tier === "deep" ? "high" : "medium",
+      interventionReasoningEffort: depthConfig.tier === "deep" ? "high" : "medium"
+    },
+    context: {
+      contextProfile: depthConfig.context.contextProfile,
+      includeNarrative: depthConfig.context.includeNarrative,
+      docsMode: depthConfig.context.docsMode
+    },
+    provenance: {
+      source: "legacy_depth_fallback",
+      legacyDepthTier: depthConfig.tier
+    }
+  };
 }
 
 // ─────────────────────────────────────────────────────
@@ -863,8 +1019,7 @@ export function createAiOrchestratorService(args: {
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
   const activeSteeringDirectives = new Map<string, UserSteeringDirective[]>();
-  const runDepthConfigs = new Map<string, MissionDepthConfig>();
-  const runPolicies = new Map<string, MissionExecutionPolicy>();
+  const runRuntimeProfiles = new Map<string, MissionRuntimeProfile>();
   const chatMessages = new Map<string, OrchestratorChatMessage[]>();
   const activeChatSessions = new Map<string, OrchestratorChatSessionState>();
   const chatTurnQueues = new Map<string, Promise<void>>();
@@ -1648,38 +1803,18 @@ export function createAiOrchestratorService(args: {
     }
   };
 
-  const resolveActiveDepthConfig = (missionId: string): MissionDepthConfig => {
-    // Check mission metadata for depth tier
-    const row = db.get<{ metadata_json: string | null }>(
-      `select metadata_json from missions where id = ? limit 1`,
-      [missionId]
-    );
-    if (row?.metadata_json) {
-      try {
-        const meta = JSON.parse(row.metadata_json) as Record<string, unknown>;
-        if (typeof meta.missionDepth === "string") {
-          const tier = meta.missionDepth as MissionDepthTier;
-          if (tier === "light" || tier === "standard" || tier === "deep") {
-            return resolveMissionDepthConfig(tier);
-          }
-        }
-      } catch { /* ignore */ }
-    }
-    const config = readConfig(projectConfigService);
-    return resolveMissionDepthConfig(config.defaultDepthTier);
-  };
-
   const resolveActivePolicy = (missionId: string): MissionExecutionPolicy => {
     const metadata = getMissionMetadata(missionId);
+    const config = readConfig(projectConfigService);
 
-    // 1. Check mission metadata for explicit executionPolicy
+    // 1) Mission metadata explicit policy
     if (isRecord(metadata.executionPolicy)) {
       return resolveExecutionPolicy({
         missionMetadata: metadata.executionPolicy as Partial<MissionExecutionPolicy>
       });
     }
 
-    // 2. Check mission metadata for missionDepth → convert via depthTierToPolicy
+    // 2) Mission legacy depth (mission-local backward compatibility)
     if (typeof metadata.missionDepth === "string") {
       const tier = metadata.missionDepth as MissionDepthTier;
       if (tier === "light" || tier === "standard" || tier === "deep") {
@@ -1687,26 +1822,52 @@ export function createAiOrchestratorService(args: {
       }
     }
 
-    // 3. Check project config for defaultExecutionPolicy
-    const snapshot = projectConfigService?.get();
-    const ai = snapshot?.effective?.ai;
-    const orchestratorConfig = isRecord(ai) && isRecord((ai as Record<string, unknown>).orchestrator)
-      ? ((ai as Record<string, unknown>).orchestrator as Record<string, unknown>)
-      : null;
-    if (orchestratorConfig && isRecord(orchestratorConfig.defaultExecutionPolicy)) {
+    // 3) Project default execution policy
+    if (config.defaultExecutionPolicy) {
       return resolveExecutionPolicy({
-        projectConfig: orchestratorConfig.defaultExecutionPolicy as Partial<MissionExecutionPolicy>
+        projectConfig: config.defaultExecutionPolicy
       });
     }
 
-    // 4. Check project config for defaultDepthTier → convert
-    const config = readConfig(projectConfigService);
+    // 4) Project legacy depth default
     if (config.defaultDepthTier !== "standard") {
       return depthTierToPolicy(config.defaultDepthTier);
     }
 
-    // 5. Fall back to DEFAULT_EXECUTION_POLICY
+    // 5) Built-in default policy
     return DEFAULT_EXECUTION_POLICY;
+  };
+
+  const resolveActiveRuntimeProfile = (missionId: string): MissionRuntimeProfile => {
+    const metadata = getMissionMetadata(missionId);
+    const config = readConfig(projectConfigService);
+
+    if (isRecord(metadata.executionPolicy)) {
+      const policy = resolveExecutionPolicy({
+        missionMetadata: metadata.executionPolicy as Partial<MissionExecutionPolicy>
+      });
+      return deriveRuntimeProfileFromPolicy(policy, config);
+    }
+
+    if (typeof metadata.missionDepth === "string") {
+      const tier = metadata.missionDepth as MissionDepthTier;
+      if (tier === "light" || tier === "standard" || tier === "deep") {
+        return deriveRuntimeProfileFromDepthConfig(resolveMissionDepthConfig(tier), config);
+      }
+    }
+
+    if (config.defaultExecutionPolicy) {
+      const policy = resolveExecutionPolicy({
+        projectConfig: config.defaultExecutionPolicy
+      });
+      return deriveRuntimeProfileFromPolicy(policy, config);
+    }
+
+    if (config.defaultDepthTier !== "standard") {
+      return deriveRuntimeProfileFromDepthConfig(resolveMissionDepthConfig(config.defaultDepthTier), config);
+    }
+
+    return deriveRuntimeProfileFromPolicy(DEFAULT_EXECUTION_POLICY, config);
   };
 
   const getSteeringContext = (missionId: string): string => {
@@ -2365,8 +2526,8 @@ export function createAiOrchestratorService(args: {
     const planStep = isRecord(stepMeta.planStep) ? stepMeta.planStep : null;
     const explicitStepTimeout = Number(stepMeta.timeoutMs);
     const planStepTimeout = Number(planStep?.timeoutMs ?? NaN);
-    const depthConfig = runDepthConfigs.get(args.runId) ?? resolveActiveDepthConfig(args.missionId);
-    const fallback = depthConfig.execution.stepTimeoutMs;
+    const runtimeProfile = runRuntimeProfiles.get(args.runId) ?? resolveActiveRuntimeProfile(args.missionId);
+    const fallback = runtimeProfile.execution.stepTimeoutMs;
     const raw =
       Number.isFinite(explicitStepTimeout) && explicitStepTimeout > 0
         ? explicitStepTimeout
@@ -3166,10 +3327,10 @@ export function createAiOrchestratorService(args: {
           });
         }
 
-        // Evaluation loop: evaluate step if depth config requires it
+        // Evaluation loop: evaluate step based on active runtime profile.
         const step = graph.steps.find((s) => s.id === attempt.stepId);
         if (step && aiIntegrationService) {
-          const depthConfig = runDepthConfigs.get(attempt.runId) ?? resolveActiveDepthConfig(graph.run.missionId);
+          const runtimeProfile = runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(graph.run.missionId);
           const isFinalStep = graph.steps.every(
             (s) => s.id === step.id || s.status === "succeeded" || s.status === "failed" || s.status === "skipped"
           );
@@ -3177,7 +3338,7 @@ export function createAiOrchestratorService(args: {
           const completionCriteria = typeof stepMeta.completionCriteria === "string" ? stepMeta.completionCriteria : "";
           const hasCriteria = completionCriteria.length > 0 && completionCriteria !== "step_done";
 
-          if (hasCriteria && (depthConfig.evaluation.evaluateEveryStep || isFinalStep)) {
+          if (hasCriteria && (runtimeProfile.evaluation.evaluateEveryStep || isFinalStep)) {
             evaluateWorkerPlan({
               attemptId: attempt.id,
               workerPlan: {
@@ -3301,8 +3462,8 @@ export function createAiOrchestratorService(args: {
             });
 
             if (aiIntegrationService) {
-              const depthConfig = runDepthConfigs.get(attempt.runId) ?? resolveActiveDepthConfig(graph.run.missionId);
-              if (depthConfig.evaluation.autoResolveInterventions) {
+              const runtimeProfile = runRuntimeProfiles.get(attempt.runId) ?? resolveActiveRuntimeProfile(graph.run.missionId);
+              if (runtimeProfile.evaluation.autoResolveInterventions) {
                 handleInterventionWithAI({
                   missionId: graph.run.missionId,
                   interventionId: intervention.id,
@@ -3549,14 +3710,14 @@ export function createAiOrchestratorService(args: {
    * the AI inference itself — it only orchestrates prompt assembly and result
    * integration into the mission's step list.
    *
-   * For the "light" depth tier the AI planner is skipped entirely — the
-   * caller checks `depthConfig.planning.useAiPlanner` and returns early
-   * before invoking this function (see `startMissionRun`).
+   * AI planning is policy-driven — callers decide whether to invoke this
+   * based on the active mission execution policy/runtime profile.
    */
   const planWithAI = async (args: {
     missionId: string;
     provider: "claude" | "codex";
     model?: string;
+    policy?: MissionExecutionPolicy;
   }): Promise<void> => {
     const mission = missionService.get(args.missionId);
     if (!mission) {
@@ -3584,7 +3745,8 @@ export function createAiOrchestratorService(args: {
         plannerEngine,
         projectRoot,
         aiIntegrationService,
-        logger
+        logger,
+        policy: args.policy
       });
 
       const plannedSteps = plannerPlanToMissionSteps({
@@ -3594,7 +3756,8 @@ export function createAiOrchestratorService(args: {
         executorPolicy: "both",
         degraded: planning.run.degraded,
         reasonCode: planning.run.reasonCode,
-        validationErrors: planning.run.validationErrors
+        validationErrors: planning.run.validationErrors,
+        policy: args.policy
       });
 
       // Get project_id from missions table for DB operations
@@ -3736,14 +3899,20 @@ export function createAiOrchestratorService(args: {
         required: ["approved", "feedback", "suggestedAction"]
       };
 
-      // Resolve reasoning effort based on the depth tier of the active run
-      const depthTier = (() => {
-        for (const [, config] of runDepthConfigs) {
-          return config.tier;
-        }
-        return "standard" as MissionDepthTier;
-      })();
-      const evaluationReasoningEffort = depthTier === "deep" ? "high" : "medium";
+      const runIdForAttempt = db.get<{ run_id: string | null }>(
+        `
+          select run_id
+          from orchestrator_attempts
+          where id = ?
+          limit 1
+        `,
+        [args.attemptId]
+      )?.run_id ?? null;
+      const missionIdForAttempt = runIdForAttempt ? getMissionIdForRun(runIdForAttempt) : null;
+      const runtimeProfile =
+        (runIdForAttempt ? runRuntimeProfiles.get(runIdForAttempt) : null)
+        ?? (missionIdForAttempt ? resolveActiveRuntimeProfile(missionIdForAttempt) : null);
+      const evaluationReasoningEffort = runtimeProfile?.evaluation.evaluationReasoningEffort ?? "medium";
 
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
@@ -3833,9 +4002,9 @@ export function createAiOrchestratorService(args: {
       required: ["reasoning", "adjustments"]
     };
 
-    // Resolve reasoning effort based on the depth tier of the run
-    const adjustDepthConfig = runDepthConfigs.get(adjustArgs.runId);
-    const adjustReasoningEffort = adjustDepthConfig?.tier === "deep" ? "high" : "medium";
+    const missionId = graph.run.missionId;
+    const runtimeProfile = runRuntimeProfiles.get(adjustArgs.runId) ?? resolveActiveRuntimeProfile(missionId);
+    const adjustReasoningEffort = runtimeProfile.evaluation.evaluationReasoningEffort;
 
     const result = await aiIntegrationService.executeTask({
       feature: "orchestrator",
@@ -3946,7 +4115,9 @@ export function createAiOrchestratorService(args: {
 
       // Tier 2 — AI evaluation for complex scenarios
       const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+      const runtimeProfile = runRuntimeProfiles.get(args.runId) ?? resolveActiveRuntimeProfile(graph.run.missionId);
       const shouldTriggerAiAdjustment =
+        runtimeProfile.evaluation.autoAdjustPlan &&
         aiIntegrationService &&
         projectRoot &&
         (
@@ -4017,8 +4188,8 @@ export function createAiOrchestratorService(args: {
         runContext = `Run ${activeRun.id.slice(0, 8)}: ${done} done, ${failed} failed, ${remaining} remaining of ${graph.steps.length} total steps.`;
       }
 
-      const depthConfig = resolveActiveDepthConfig(args.missionId);
-      const confidenceThreshold = depthConfig.evaluation.interventionConfidenceThreshold;
+      const runtimeProfile = resolveActiveRuntimeProfile(args.missionId);
+      const confidenceThreshold = runtimeProfile.evaluation.interventionConfidenceThreshold;
       const steeringContext = getSteeringContext(args.missionId);
       const prompt = [
         PM_SYSTEM_PREAMBLE,
@@ -4056,14 +4227,13 @@ export function createAiOrchestratorService(args: {
         required: ["autoResolvable", "confidence", "suggestedAction", "reasoning"]
       };
 
-      // Interventions are important decisions — always use high reasoning effort
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
         prompt,
         cwd: projectRoot,
         provider: args.provider,
-        reasoningEffort: "high",
+        reasoningEffort: runtimeProfile.evaluation.interventionReasoningEffort,
         jsonSchema: interventionSchema,
         permissionMode: "read-only",
         oneShot: true,
@@ -4499,35 +4669,34 @@ export function createAiOrchestratorService(args: {
     const initialMission = missionService.get(missionId);
     if (!initialMission) throw new Error(`Mission not found: ${missionId}`);
 
-    // Resolve depth config from mission metadata or args
-    const depthConfig = resolveActiveDepthConfig(missionId);
     const policy = resolveActivePolicy(missionId);
+    const runtimeProfile = resolveActiveRuntimeProfile(missionId);
     const config = readConfig(projectConfigService);
 
-    // If an AI planner provider is specified, invoke AI planning first
-    // For "light" tier, skip AI planning entirely (deterministic only)
+    // If an AI planner provider is specified, invoke AI planning first.
+    // Policy controls whether AI planning runs.
     const provider: "claude" | "codex" | null = (() => {
       if (args.plannerProvider === "claude" || args.plannerProvider === "codex") return args.plannerProvider;
       if (args.plannerProvider === "deterministic") return null;
+      if (runtimeProfile.planning.preferProvider) return runtimeProfile.planning.preferProvider;
       if (config.defaultPlannerProvider) return config.defaultPlannerProvider;
       const availability = aiIntegrationService?.getAvailability?.();
       if (availability?.claude) return "claude";
       if (availability?.codex) return "codex";
       return null;
     })();
-    const attemptedAiPlanner = depthConfig.planning.useAiPlanner && (provider === "claude" || provider === "codex");
+    const attemptedAiPlanner = runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex");
     if (attemptedAiPlanner) {
-      await planWithAI({ missionId, provider });
-    } else if (!depthConfig.planning.useAiPlanner && (provider === "claude" || provider === "codex")) {
-      logger.info("ai_orchestrator.ai_planning_skipped_by_depth", {
+      await planWithAI({ missionId, provider, policy });
+    } else if (!runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex")) {
+      logger.info("ai_orchestrator.ai_planning_skipped_by_policy", {
         missionId,
-        tier: depthConfig.tier,
-        reason: "light tier uses deterministic planning only"
+        reason: "planning mode is off"
       });
     }
 
     const bypassPlanReview = args.forcePlanReviewBypass === true;
-    const requireReview = config.requirePlanReview || depthConfig.planning.requirePlanReview;
+    const requireReview = config.requirePlanReview || runtimeProfile.planning.requirePlanReview;
     const mission = missionService.get(missionId) ?? initialMission;
     if (requireReview && !bypassPlanReview) {
       if (mission.status !== "plan_review") {
@@ -4549,31 +4718,34 @@ export function createAiOrchestratorService(args: {
 
     transitionMissionStatus(missionId, "planning");
     const plannerParallelismCap = resolveMissionParallelismCap(missionId);
-    const parallelismCap = plannerParallelismCap ?? depthConfig.execution.maxParallelWorkers;
+    const parallelismCap = plannerParallelismCap ?? runtimeProfile.execution.maxParallelWorkers;
     const started = orchestratorService.startRunFromMission({
       missionId,
       runMode: args.runMode,
       autopilotOwnerId: args.autopilotOwnerId,
       defaultExecutorKind: args.defaultExecutorKind,
-      defaultRetryLimit: args.defaultRetryLimit ?? depthConfig.execution.defaultRetryLimit,
+      defaultRetryLimit: args.defaultRetryLimit ?? runtimeProfile.execution.defaultRetryLimit,
       metadata: {
         ...(args.metadata ?? {}),
         plannerParallelismCap: parallelismCap,
-        depthTier: depthConfig.tier,
         executionPolicy: policy,
-        depthConfig: {
-          maxParallelWorkers: depthConfig.execution.maxParallelWorkers,
-          evaluateEveryStep: depthConfig.evaluation.evaluateEveryStep,
-          autoAdjustPlan: depthConfig.evaluation.autoAdjustPlan,
-          autoResolveInterventions: depthConfig.evaluation.autoResolveInterventions,
-          interventionConfidenceThreshold: depthConfig.evaluation.interventionConfidenceThreshold
+        ...(runtimeProfile.provenance.legacyDepthTier ? { depthTier: runtimeProfile.provenance.legacyDepthTier } : {}),
+        runtimeProfile: {
+          source: runtimeProfile.provenance.source,
+          maxParallelWorkers: runtimeProfile.execution.maxParallelWorkers,
+          stepTimeoutMs: runtimeProfile.execution.stepTimeoutMs,
+          evaluateEveryStep: runtimeProfile.evaluation.evaluateEveryStep,
+          autoAdjustPlan: runtimeProfile.evaluation.autoAdjustPlan,
+          autoResolveInterventions: runtimeProfile.evaluation.autoResolveInterventions,
+          interventionConfidenceThreshold: runtimeProfile.evaluation.interventionConfidenceThreshold,
+          contextProfile: runtimeProfile.context.contextProfile,
+          docsMode: runtimeProfile.context.docsMode
         }
       }
     });
 
-    // Cache depth config and policy for this run
-    runDepthConfigs.set(started.run.id, depthConfig);
-    runPolicies.set(started.run.id, policy);
+    // Cache runtime profile and policy for this run
+    runRuntimeProfiles.set(started.run.id, runtimeProfile);
 
     const plannerMeta = (() => {
       const metadata = getMissionMetadata(missionId);
@@ -4593,7 +4765,7 @@ export function createAiOrchestratorService(args: {
 
     emitOrchestratorMessage(
       missionId,
-      `Starting mission with ${started.steps.length} steps. Depth tier: ${depthConfig.tier}. ${plannerSummary}`
+      `Starting mission with ${started.steps.length} steps. Execution profile: ${runtimeProfile.provenance.source}. ${plannerSummary}`
     );
 
     transitionMissionStatus(missionId, "in_progress");
