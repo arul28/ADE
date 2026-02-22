@@ -11,7 +11,7 @@ const items = [
   { to: "/project", label: "Run", icon: Play },
   { to: "/lanes", label: "Lanes", icon: LayoutGrid },
   { to: "/files", label: "Files", icon: FileCode2 },
-  { to: "/terminals", label: "Terminals", icon: TerminalSquare },
+  { to: "/work", label: "Work", icon: TerminalSquare },
   { to: "/conflicts", label: "Conflicts", icon: Bug },
   { to: "/graph", label: "Graph", icon: Network },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
@@ -67,7 +67,7 @@ export function TabNav() {
                     isActive ? "text-accent" : "group-hover:text-fg/70"
                   )}
                 />
-                {it.to === "/terminals" && terminalAttention.indicator !== "none" ? (
+                {it.to === "/work" && terminalAttention.indicator !== "none" ? (
                   <span
                     title={
                       terminalAttention.indicator === "running-needs-attention"

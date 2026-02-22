@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/types";
 import { createOrchestratorService } from "./orchestratorService";
@@ -13,6 +14,15 @@ function createLogger() {
     warn: () => {},
     error: () => {}
   } as any;
+}
+
+function runGit(cwd: string, args: string[]) {
+  const result = spawnSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8"
+  });
+  if (result.status === 0) return;
+  const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
+  throw new Error(`git ${args.join(" ")} failed (${result.status}): ${stderr}`);
 }
 
 function buildExport(packKey: string, packType: PackType, level: "lite" | "standard" | "deep"): PackExport {
@@ -295,6 +305,78 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("keeps cancellation and resume deterministic when claim conflicts are active", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "lane-lock-a",
+            title: "Lane Lock A",
+            stepIndex: 0,
+            policy: {
+              claimScopes: [{ scopeKind: "lane", scopeValue: `lane:${fixture.laneId}`, ttlMs: 60_000 }]
+            }
+          },
+          {
+            stepKey: "lane-lock-b",
+            title: "Lane Lock B",
+            stepIndex: 1,
+            policy: {
+              claimScopes: [{ scopeKind: "lane", scopeValue: `lane:${fixture.laneId}`, ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const [firstStep, secondStep] = fixture.service.listSteps(started.run.id);
+      if (!firstStep || !secondStep) throw new Error("Missing steps");
+
+      const runningAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: firstStep.id,
+        ownerId: "owner-running"
+      });
+      expect(runningAttempt.status).toBe("running");
+
+      const blockedAttempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: secondStep.id,
+        ownerId: "owner-blocked"
+      });
+      expect(blockedAttempt.status).toBe("blocked");
+      expect(blockedAttempt.errorClass).toBe("claim_conflict");
+
+      fixture.service.cancelRun({
+        runId: started.run.id,
+        reason: "operator_cancel_conflict"
+      });
+
+      const canceledGraph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 50 });
+      expect(canceledGraph.run.status).toBe("canceled");
+      expect(canceledGraph.steps.every((step) => step.status === "canceled")).toBe(true);
+      expect(canceledGraph.attempts.some((attempt) => attempt.status === "canceled")).toBe(true);
+
+      const activeClaims = fixture.service.listClaims({ runId: started.run.id, state: "active" });
+      expect(activeClaims).toHaveLength(0);
+
+      const resumed = fixture.service.resumeRun({ runId: started.run.id });
+      expect(resumed.status).toBe("canceled");
+
+      const runtimeEvents = fixture.service.listRuntimeEvents({
+        runId: started.run.id,
+        eventTypes: ["claim_conflict"],
+        limit: 20
+      });
+      expect(runtimeEvents.length).toBeGreaterThan(0);
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline.some((entry) => entry.eventType === "run_canceled")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("persists runtime bus events idempotently and replays them from run graph", async () => {
     const fixture = await createFixture();
     try {
@@ -561,6 +643,76 @@ describe("orchestratorService", () => {
       expect((completed.metadata?.fileReservationTouchedPaths as string[])).toContain("docs/legacy.ts");
       expect((completed.metadata?.fileReservationViolations as string[])).toContain("docs/legacy.ts");
       expect((completed.metadata?.fileReservationViolations as string[])).not.toContain("src/legacy.ts");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("uses git status fallback for staged and unstaged touched-file reservation checks", async () => {
+    const fixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                fileReservationGuardMode: "block"
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      runGit(fixture.projectRoot, ["init"]);
+      runGit(fixture.projectRoot, ["config", "user.email", "test@example.com"]);
+      runGit(fixture.projectRoot, ["config", "user.name", "ADE Test"]);
+
+      fs.mkdirSync(path.join(fixture.projectRoot, "src"), { recursive: true });
+      fs.writeFileSync(path.join(fixture.projectRoot, "src", "in-scope.ts"), "export const value = 1;\n", "utf8");
+      runGit(fixture.projectRoot, ["add", "-A"]);
+      runGit(fixture.projectRoot, ["commit", "-m", "baseline"]);
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "git-fallback",
+            title: "Git Fallback",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            policy: {
+              claimScopes: [{ scopeKind: "file", scopeValue: "glob:src/**", ttlMs: 60_000 }]
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner-git-fallback"
+      });
+
+      fs.writeFileSync(path.join(fixture.projectRoot, "src", "in-scope.ts"), "export const value = 2;\n", "utf8");
+      fs.mkdirSync(path.join(fixture.projectRoot, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(fixture.projectRoot, "docs", "out-of-scope.md"), "changed\n", "utf8");
+      runGit(fixture.projectRoot, ["add", "src/in-scope.ts"]);
+
+      const completed = fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        metadata: {}
+      });
+
+      expect(completed.status).toBe("blocked");
+      expect(completed.errorClass).toBe("policy");
+      expect(completed.errorMessage ?? "").toContain("File reservation violation");
+      expect((completed.metadata?.fileReservationTouchedPaths as string[])).toContain("src/in-scope.ts");
+      expect((completed.metadata?.fileReservationTouchedPaths as string[])).toContain("docs/out-of-scope.md");
+      expect((completed.metadata?.fileReservationViolations as string[])).toContain("docs/out-of-scope.md");
+      expect((completed.metadata?.fileReservationViolations as string[])).not.toContain("src/in-scope.ts");
     } finally {
       fixture.dispose();
     }
@@ -856,6 +1008,69 @@ describe("orchestratorService", () => {
 
       const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
       expect(run?.status).toBe("succeeded");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("applies dynamic autopilot parallel cap reductions from deterministic gate pressure", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "autopilot-owner",
+            parallelismCap: 4
+          }
+        },
+        steps: [
+          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "codex" },
+          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "codex" },
+          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "codex" }
+        ]
+      });
+
+      const gateReport = {
+        id: "gate-fail-1",
+        generatedAt: new Date().toISOString(),
+        generatedBy: "deterministic_kernel",
+        overallStatus: "fail",
+        gates: [],
+        notes: ["forced gate fail for test"]
+      };
+      fixture.db.run(
+        `
+          insert into orchestrator_gate_reports(
+            id,
+            project_id,
+            generated_at,
+            report_json
+          ) values (?, ?, ?, ?)
+        `,
+        [gateReport.id, fixture.projectId, gateReport.generatedAt, JSON.stringify(gateReport)]
+      );
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "test_dynamic_cap"
+      });
+      expect(startedAttempts).toBe(1);
+
+      const runningAttempts = fixture.service
+        .listAttempts({ runId: started.run.id })
+        .filter((attempt) => attempt.status === "running");
+      expect(runningAttempts).toHaveLength(1);
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      const capEvent = timeline.find((entry) => entry.eventType === "autopilot_parallelism_cap_adjusted");
+      expect(capEvent).toBeTruthy();
+      const reasons = Array.isArray((capEvent?.detail as Record<string, unknown> | null)?.reasons)
+        ? ((capEvent?.detail as Record<string, unknown>).reasons as unknown[]).map((entry) => String(entry))
+        : [];
+      expect(reasons).toContain("gate_fail");
     } finally {
       fixture.dispose();
     }

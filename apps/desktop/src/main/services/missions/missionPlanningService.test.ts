@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { plannerPlanToMissionSteps, validateAndCanonicalizePlannerPlan } from "./missionPlanningService";
+import { describe, expect, it, vi } from "vitest";
+import { planMissionOnce, plannerPlanToMissionSteps, validateAndCanonicalizePlannerPlan } from "./missionPlanningService";
+import { buildDeterministicMissionPlan } from "./missionPlanner";
+import type { MissionExecutionPolicy } from "../../../shared/types";
 
 describe("missionPlanningService planner contract", () => {
   it("accepts valid plans and canonicalizes step order", () => {
@@ -340,5 +342,225 @@ describe("missionPlanningService planner contract", () => {
     });
     const policy = steps[0]?.metadata?.policy as { claimScopes?: unknown[] } | undefined;
     expect(policy?.claimScopes ?? []).toHaveLength(0);
+  });
+
+  it("falls back deterministically when AI planner returns malformed JSON", async () => {
+    const aiIntegrationService = {
+      getAvailability: () => ({ claude: true, codex: false }),
+      getMode: () => "ready",
+      planMission: vi.fn().mockResolvedValue({
+        text: "{ invalid_json: true, }",
+        structuredOutput: null
+      })
+    };
+
+    const result = await planMissionOnce({
+      title: "Malformed plan",
+      prompt: "Plan a deterministic migration rollout.",
+      laneId: null,
+      plannerEngine: "auto",
+      projectRoot: "/Users/arul/ADE/apps/desktop",
+      aiIntegrationService: aiIntegrationService as never
+    });
+
+    expect(result.run.status).toBe("fallback");
+    expect(result.run.degraded).toBe(true);
+    expect(result.run.resolvedEngine).toBe("deterministic_fallback");
+    expect(result.run.reasonCode).toBe("planner_parse_error");
+    expect(result.run.attempts).toHaveLength(1);
+    expect(result.run.attempts[0]?.reasonCode).toBe("planner_parse_error");
+    expect(result.plan.steps.length).toBeGreaterThan(0);
+  });
+
+  it("falls back with planner_unavailable when no planner adapter is available", async () => {
+    const result = await planMissionOnce({
+      title: "Unavailable planner",
+      prompt: "Create rollout plan.",
+      laneId: null,
+      plannerEngine: "auto",
+      projectRoot: "/Users/arul/ADE/apps/desktop",
+      aiIntegrationService: {
+        getAvailability: () => ({ claude: false, codex: false }),
+        getMode: () => "ready"
+      } as never
+    });
+
+    expect(result.run.status).toBe("fallback");
+    expect(result.run.degraded).toBe(true);
+    expect(result.run.resolvedEngine).toBe("deterministic_fallback");
+    expect(result.run.reasonCode).toBe("planner_unavailable");
+    expect(result.run.reasonDetail).toContain("unavailable");
+    expect(result.run.attempts).toHaveLength(0);
+  });
+});
+
+describe("policy-driven planner DAG", () => {
+  const BASE_POLICY: MissionExecutionPolicy = {
+    planning: { mode: "auto", model: "codex" },
+    implementation: { model: "codex" },
+    testing: { mode: "post_implementation", model: "codex" },
+    validation: { mode: "optional" },
+    codeReview: { mode: "off" },
+    testReview: { mode: "off" },
+    integration: { mode: "auto", model: "codex" },
+    merge: { mode: "off" },
+    completion: { allowCompletionWithRisk: true }
+  };
+
+  it("testing.mode=none omits validation step", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, testing: { mode: "none" } }
+    });
+    const kinds = plan.steps.map((s) => s.kind);
+    expect(kinds).not.toContain("validation");
+    expect(kinds).toContain("implementation");
+  });
+
+  it("testing.mode=tdd emits test step before implementation", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, testing: { mode: "tdd" } }
+    });
+    const steps = plan.steps;
+    // TDD test step has kind=validation with stepType/taskType=test
+    const tddStep = steps.find((s) => s.kind === "validation" && s.metadata?.taskType === "test");
+    const implStep = steps.find((s) => s.kind === "implementation");
+    expect(tddStep).toBeTruthy();
+    expect(implStep).toBeTruthy();
+    // TDD test step index must be less than implementation step index
+    expect(tddStep!.index).toBeLessThan(implStep!.index);
+    // Implementation must depend on TDD step
+    const implDeps = implStep!.metadata?.dependencyIndices as number[] ?? [];
+    expect(implDeps).toContain(tddStep!.index);
+  });
+
+  it("testing.mode=post_implementation has implementation before validation", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, testing: { mode: "post_implementation" } }
+    });
+    const steps = plan.steps;
+    const implStep = steps.find((s) => s.kind === "implementation");
+    const valStep = steps.find((s) => s.kind === "validation");
+    expect(implStep).toBeTruthy();
+    expect(valStep).toBeTruthy();
+    expect(implStep!.index).toBeLessThan(valStep!.index);
+  });
+
+  it("codeReview.mode=required emits review step", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, codeReview: { mode: "required", model: "claude" } }
+    });
+    const reviewStep = plan.steps.find((s) => s.metadata?.taskType === "review");
+    expect(reviewStep).toBeTruthy();
+    expect(reviewStep!.metadata?.executorKind).toBe("claude");
+  });
+
+  it("codeReview.mode=off does not emit review step", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, codeReview: { mode: "off" } }
+    });
+    const reviewStep = plan.steps.find((s) => s.metadata?.taskType === "review");
+    expect(reviewStep).toBeUndefined();
+  });
+
+  it("merge.mode=manual emits manual merge step with blockedSticky", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, merge: { mode: "manual" } }
+    });
+    const mergeStep = plan.steps.find((s) => s.kind === "merge");
+    expect(mergeStep).toBeTruthy();
+    expect(mergeStep!.title).toContain("awaiting approval");
+    expect(mergeStep!.metadata?.mergeMode).toBe("manual");
+    expect(mergeStep!.metadata?.blockedSticky).toBe(true);
+    expect(mergeStep!.metadata?.executorKind).toBe("manual");
+  });
+
+  it("merge.mode=auto_if_green emits auto merge step", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, merge: { mode: "auto_if_green" } }
+    });
+    const mergeStep = plan.steps.find((s) => s.kind === "merge");
+    expect(mergeStep).toBeTruthy();
+    expect(mergeStep!.title).toContain("Auto-merge");
+    expect(mergeStep!.metadata?.mergeMode).toBe("auto_if_green");
+    expect(mergeStep!.metadata?.blockedSticky).toBeUndefined();
+  });
+
+  it("merge.mode=off does not emit merge step", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: { ...BASE_POLICY, merge: { mode: "off" } }
+    });
+    const mergeStep = plan.steps.find((s) => s.kind === "merge");
+    expect(mergeStep).toBeUndefined();
+  });
+
+  it("integration.mode=off skips integration step even with parallel branches", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "1. Add API endpoint\n2. Add database migration\n3. Update documentation",
+      policy: { ...BASE_POLICY, integration: { mode: "off" } }
+    });
+    const integrationStep = plan.steps.find((s) => s.kind === "integration");
+    expect(integrationStep).toBeUndefined();
+  });
+
+  it("executor assignment matches policy model preferences", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Add a new API endpoint for users",
+      policy: {
+        ...BASE_POLICY,
+        implementation: { model: "claude" },
+        testing: { mode: "post_implementation", model: "claude" }
+      }
+    });
+    const implStep = plan.steps.find((s) => s.kind === "implementation");
+    const valStep = plan.steps.find((s) => s.kind === "validation");
+    expect(implStep?.metadata?.executorKind).toBe("claude");
+    expect(valStep?.metadata?.executorKind).toBe("claude");
+  });
+
+  it("DAG is acyclic for all testing modes", () => {
+    for (const testingMode of ["none", "tdd", "post_implementation"] as const) {
+      const plan = buildDeterministicMissionPlan({
+        prompt: "Add a new API endpoint",
+        policy: { ...BASE_POLICY, testing: { mode: testingMode } }
+      });
+      // Verify no cycles by topological sort
+      const stepsByIndex = new Map(plan.steps.map((s) => [s.index, s]));
+      const visited = new Set<number>();
+      const inStack = new Set<number>();
+      function hasCycle(index: number): boolean {
+        if (inStack.has(index)) return true;
+        if (visited.has(index)) return false;
+        visited.add(index);
+        inStack.add(index);
+        const deps = (stepsByIndex.get(index)?.metadata?.dependencyIndices as number[]) ?? [];
+        for (const dep of deps) {
+          if (hasCycle(dep)) return true;
+        }
+        inStack.delete(index);
+        return false;
+      }
+      for (const step of plan.steps) {
+        expect(hasCycle(step.index)).toBe(false);
+      }
+    }
+  });
+
+  it("slash commands are detected and emitted as steps", () => {
+    const plan = buildDeterministicMissionPlan({
+      prompt: "Fix the login bug\n/commit\n/deploy staging",
+      policy: BASE_POLICY
+    });
+    const commandSteps = plan.steps.filter((s) => s.metadata?.stepType === "command");
+    expect(commandSteps.length).toBe(2);
+    expect(commandSteps[0]!.metadata?.startupCommand).toBe("/commit");
+    expect(commandSteps[1]!.metadata?.startupCommand).toBe("/deploy staging");
   });
 });

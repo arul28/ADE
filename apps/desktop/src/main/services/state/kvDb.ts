@@ -1333,6 +1333,298 @@ function migrate(db: Database) {
     "orchestrator_gate_reports",
     ["project_id", "generated_at"]
   );
+
+  // Big-bang orchestrator overhaul: threaded chat, digest/checkpoint, lane decisions, and mission metrics.
+  db.run(`
+    create table if not exists orchestrator_chat_threads (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      thread_type text not null,
+      title text not null,
+      run_id text,
+      step_id text,
+      step_key text,
+      attempt_id text,
+      session_id text,
+      lane_id text,
+      status text not null default 'active',
+      unread_count integer not null default 0,
+      metadata_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_mission_updated on orchestrator_chat_threads(mission_id, updated_at)",
+    "orchestrator_chat_threads",
+    ["mission_id", "updated_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_project_mission on orchestrator_chat_threads(project_id, mission_id)",
+    "orchestrator_chat_threads",
+    ["project_id", "mission_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_mission_type on orchestrator_chat_threads(mission_id, thread_type)",
+    "orchestrator_chat_threads",
+    ["mission_id", "thread_type"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_threads_lane on orchestrator_chat_threads(lane_id)",
+    "orchestrator_chat_threads",
+    ["lane_id"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_chat_messages (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      thread_id text not null,
+      role text not null,
+      content text not null,
+      timestamp text not null,
+      step_key text,
+      target_json text,
+      visibility text not null default 'full',
+      delivery_state text not null default 'delivered',
+      source_session_id text,
+      attempt_id text,
+      lane_id text,
+      run_id text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(thread_id) references orchestrator_chat_threads(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(lane_id) references lanes(id),
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_thread_ts on orchestrator_chat_messages(thread_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["thread_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_mission_ts on orchestrator_chat_messages(mission_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["mission_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_attempt_ts on orchestrator_chat_messages(attempt_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["attempt_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_lane_ts on orchestrator_chat_messages(lane_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["lane_id", "timestamp"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_chat_messages_delivery_queue on orchestrator_chat_messages(delivery_state, role, mission_id, thread_id, timestamp)",
+    "orchestrator_chat_messages",
+    ["delivery_state", "role", "mission_id", "thread_id", "timestamp"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_worker_digests (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text not null,
+      step_id text not null,
+      step_key text,
+      attempt_id text not null,
+      lane_id text,
+      session_id text,
+      status text not null,
+      summary text not null,
+      files_changed_json text not null,
+      tests_run_json text not null,
+      warnings_json text not null,
+      tokens_json text,
+      cost_usd real,
+      suggested_next_actions_json text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_mission_created on orchestrator_worker_digests(mission_id, created_at)",
+    "orchestrator_worker_digests",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_run_created on orchestrator_worker_digests(run_id, created_at)",
+    "orchestrator_worker_digests",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_attempt on orchestrator_worker_digests(attempt_id)",
+    "orchestrator_worker_digests",
+    ["attempt_id"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_worker_digests_lane_created on orchestrator_worker_digests(lane_id, created_at)",
+    "orchestrator_worker_digests",
+    ["lane_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_context_checkpoints (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      trigger text not null,
+      summary text not null,
+      source_json text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_context_checkpoints_mission_created on orchestrator_context_checkpoints(mission_id, created_at)",
+    "orchestrator_context_checkpoints",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_context_checkpoints_run_created on orchestrator_context_checkpoints(run_id, created_at)",
+    "orchestrator_context_checkpoints",
+    ["run_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_lane_decisions (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      step_id text,
+      step_key text,
+      lane_id text,
+      decision_type text not null,
+      validator_outcome text not null,
+      rule_hits_json text not null,
+      rationale text not null,
+      metadata_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_mission_created on orchestrator_lane_decisions(mission_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_run_created on orchestrator_lane_decisions(run_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_step_created on orchestrator_lane_decisions(step_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_lane_decisions_lane_created on orchestrator_lane_decisions(lane_id, created_at)",
+    "orchestrator_lane_decisions",
+    ["lane_id", "created_at"]
+  );
+
+  db.run(`
+    create table if not exists mission_metrics_config (
+      mission_id text primary key,
+      project_id text not null,
+      toggles_json text not null,
+      updated_at text not null,
+      foreign key(mission_id) references missions(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_mission_metrics_config_project_updated on mission_metrics_config(project_id, updated_at)",
+    "mission_metrics_config",
+    ["project_id", "updated_at"]
+  );
+
+  db.run(`
+    create table if not exists orchestrator_metrics_samples (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      attempt_id text,
+      metric text not null,
+      value real not null,
+      unit text,
+      metadata_json text,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_metrics_samples_mission_created on orchestrator_metrics_samples(mission_id, created_at)",
+    "orchestrator_metrics_samples",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_metrics_samples_run_created on orchestrator_metrics_samples(run_id, created_at)",
+    "orchestrator_metrics_samples",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_metrics_samples_metric_created on orchestrator_metrics_samples(metric, created_at)",
+    "orchestrator_metrics_samples",
+    ["metric", "created_at"]
+  );
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {

@@ -1,10 +1,11 @@
 import fs from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   MissionDetail,
   MissionStep,
   MissionDepthTier,
   MissionDepthConfig,
+  MissionExecutionPolicy,
   MissionPlannerEngine,
   MissionStepStatus,
   MissionStatus,
@@ -16,6 +17,7 @@ import type {
   OrchestratorWorkerState,
   OrchestratorWorkerStatus,
   OrchestratorPlannerProvider,
+  OrchestratorRuntimeQuestionLink,
   TerminalRuntimeState,
   SteerMissionArgs,
   SteerMissionResult,
@@ -23,9 +25,32 @@ import type {
   GetModelCapabilitiesResult,
   UserSteeringDirective,
   OrchestratorChatMessage,
+  OrchestratorChatThread,
+  OrchestratorChatThreadType,
+  OrchestratorChatTarget,
+  OrchestratorChatVisibilityMode,
+  OrchestratorChatDeliveryState,
   SendOrchestratorChatArgs,
-  GetOrchestratorChatArgs
+  GetOrchestratorChatArgs,
+  ListOrchestratorChatThreadsArgs,
+  GetOrchestratorThreadMessagesArgs,
+  SendOrchestratorThreadMessageArgs,
+  OrchestratorWorkerDigest,
+  ListOrchestratorWorkerDigestsArgs,
+  GetOrchestratorWorkerDigestArgs,
+  OrchestratorContextCheckpoint,
+  GetOrchestratorContextCheckpointArgs,
+  OrchestratorLaneDecision,
+  ListOrchestratorLaneDecisionsArgs,
+  MissionMetricsConfig,
+  MissionMetricSample,
+  MissionMetricToggle,
+  GetMissionMetricsArgs,
+  SetMissionMetricsConfigArgs,
+  OrchestratorThreadEvent,
+  AgentChatEventEnvelope
 } from "../../../shared/types";
+import { resolveExecutionPolicy, depthTierToPolicy, DEFAULT_EXECUTION_POLICY } from "./executionPolicy";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
@@ -33,6 +58,7 @@ import type { createOrchestratorService } from "./orchestratorService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createLaneService } from "../lanes/laneService";
+import type { createAgentChatService } from "../chat/agentChatService";
 import { planMissionOnce, plannerPlanToMissionSteps } from "../missions/missionPlanningService";
 
 type MissionRunStartArgs = {
@@ -80,6 +106,36 @@ const MAX_STEERING_CONTEXT_CHARS = 1_600;
 const MAX_STEERING_DIRECTIVES_PER_STEP = 24;
 const ATTEMPT_RUNTIME_PERSIST_INTERVAL_MS = 2_000;
 const MAX_RUNTIME_SIGNAL_PREVIEW_CHARS = 320;
+const DEFAULT_METRIC_TOGGLES: MissionMetricToggle[] = [
+  "planning",
+  "implementation",
+  "testing",
+  "validation",
+  "code_review",
+  "test_review",
+  "integration",
+  "merge",
+  "cost",
+  "tokens",
+  "retries",
+  "claims",
+  "context_pressure",
+  "interventions"
+];
+const KNOWN_METRIC_TOGGLES = new Set<MissionMetricToggle>(DEFAULT_METRIC_TOGGLES);
+const DEFAULT_CHAT_VISIBILITY: OrchestratorChatVisibilityMode = "full";
+const DEFAULT_CHAT_DELIVERY: OrchestratorChatDeliveryState = "delivered";
+const DEFAULT_WORKER_CHAT_VISIBILITY: OrchestratorChatVisibilityMode = "digest_only";
+const DEFAULT_THREAD_STATUS = "active";
+const DEFAULT_CHAT_THREAD_TITLE = "Mission Coordinator";
+const MAX_THREAD_PAGE_SIZE = 200;
+const CONTEXT_CHECKPOINT_CHAT_THRESHOLD = 120;
+const WORKER_MESSAGE_RETRY_BUDGET = 4;
+const WORKER_MESSAGE_RETRY_BACKOFF_BASE_MS = 5_000;
+const WORKER_MESSAGE_RETRY_BACKOFF_MAX_MS = 90_000;
+const WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS = 90_000;
+const WORKER_MESSAGE_INFLIGHT_LEASE_MS = 45_000;
+const WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS = 180_000;
 
 type SessionRuntimeSignal = {
   laneId: string;
@@ -96,6 +152,8 @@ type AttemptRuntimeTracker = {
   lastWaitingInterventionAtMs: number;
   lastEventHeartbeatAtMs: number;
   lastWaitingNotifiedAtMs: number;
+  lastQuestionThreadId: string | null;
+  lastQuestionMessageId: string | null;
   lastPersistedAtMs: number;
 };
 
@@ -103,6 +161,33 @@ type OrchestratorChatSessionState = {
   provider: "claude" | "codex";
   sessionId: string;
   updatedAt: string;
+};
+
+type AgentChatSessionSummaryEntry = Awaited<
+  ReturnType<ReturnType<typeof createAgentChatService>["listSessions"]>
+>[number];
+
+type WorkerDeliveryContext = {
+  missionId: string;
+  threadId: string;
+  target: Extract<OrchestratorChatTarget, { kind: "worker" }>;
+  runId: string | null;
+  stepId: string | null;
+  stepKey: string | null;
+  attemptId: string | null;
+  laneId: string | null;
+  sessionId: string | null;
+  sessionStatus: string | null;
+  sessionToolType: string | null;
+  executorKind: OrchestratorExecutorKind | null;
+};
+
+type WorkerDeliverySessionResolution = {
+  sessionId: string | null;
+  source: "sticky" | "mapped" | "lane_fallback";
+  providerHint: "codex" | "claude" | null;
+  summary: AgentChatSessionSummaryEntry | null;
+  error: string | null;
 };
 
 function nowIso(): string {
@@ -134,7 +219,68 @@ function parseSteeringDirective(value: unknown, missionId: string): UserSteering
   };
 }
 
-function parseChatMessage(value: unknown, missionId: string): OrchestratorChatMessage | null {
+function parseChatVisibility(value: unknown): OrchestratorChatVisibilityMode | null {
+  if (value === "full" || value === "digest_only" || value === "metadata_only") return value;
+  return null;
+}
+
+function parseChatDeliveryState(value: unknown): OrchestratorChatDeliveryState | null {
+  if (value === "queued" || value === "delivered" || value === "failed") return value;
+  return null;
+}
+
+function parseChatTarget(value: unknown): OrchestratorChatTarget | null {
+  if (!isRecord(value)) return null;
+  const kind = value.kind === "coordinator" || value.kind === "worker" || value.kind === "workers" ? value.kind : null;
+  if (!kind) return null;
+  if (kind === "coordinator") {
+    return {
+      kind: "coordinator",
+      runId: typeof value.runId === "string" ? value.runId : null
+    };
+  }
+  if (kind === "workers") {
+    return {
+      kind: "workers",
+      runId: typeof value.runId === "string" ? value.runId : null,
+      laneId: typeof value.laneId === "string" ? value.laneId : null,
+      includeClosed: value.includeClosed === true
+    };
+  }
+  return {
+    kind: "worker",
+    runId: typeof value.runId === "string" ? value.runId : null,
+    stepId: typeof value.stepId === "string" ? value.stepId : null,
+    stepKey: typeof value.stepKey === "string" ? value.stepKey : null,
+    attemptId: typeof value.attemptId === "string" ? value.attemptId : null,
+    sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
+    laneId: typeof value.laneId === "string" ? value.laneId : null
+  };
+}
+
+function parseThreadType(value: unknown): OrchestratorChatThreadType | null {
+  if (value === "mission" || value === "worker") return value;
+  return null;
+}
+
+function fallbackLegacyChatMessageId(value: Record<string, unknown>, missionId: string, ordinalHint: number): string {
+  const normalizedOrdinal = Number.isFinite(ordinalHint) ? Math.max(0, Math.floor(ordinalHint)) : 0;
+  const rawTarget = isRecord(value.target) ? JSON.stringify(value.target) : "";
+  const seed = [
+    missionId,
+    typeof value.role === "string" ? value.role : "",
+    typeof value.content === "string" ? value.content : "",
+    typeof value.timestamp === "string" ? value.timestamp : "",
+    typeof value.threadId === "string" ? value.threadId : "",
+    typeof value.stepKey === "string" ? value.stepKey : "",
+    rawTarget,
+    String(normalizedOrdinal)
+  ].join("|");
+  const digest = createHash("sha256").update(seed).digest("hex").slice(0, 32);
+  return `legacy:${digest}`;
+}
+
+function parseChatMessage(value: unknown, missionId: string, ordinalHint = 0): OrchestratorChatMessage | null {
   if (!isRecord(value)) return null;
   const role = value.role === "user" || value.role === "orchestrator" || value.role === "worker"
     ? value.role
@@ -143,12 +289,23 @@ function parseChatMessage(value: unknown, missionId: string): OrchestratorChatMe
   const timestamp = typeof value.timestamp === "string" ? value.timestamp : nowIso();
   if (!role || !content.length) return null;
   return {
-    id: typeof value.id === "string" && value.id.trim().length ? value.id : randomUUID(),
+    id:
+      typeof value.id === "string" && value.id.trim().length
+        ? value.id
+        : fallbackLegacyChatMessageId(value, missionId, ordinalHint),
     missionId,
     role,
     content,
     timestamp,
     stepKey: typeof value.stepKey === "string" ? value.stepKey : null,
+    threadId: typeof value.threadId === "string" ? value.threadId : null,
+    target: parseChatTarget(value.target),
+    visibility: parseChatVisibility(value.visibility) ?? DEFAULT_CHAT_VISIBILITY,
+    deliveryState: parseChatDeliveryState(value.deliveryState) ?? DEFAULT_CHAT_DELIVERY,
+    sourceSessionId: typeof value.sourceSessionId === "string" ? value.sourceSessionId : null,
+    attemptId: typeof value.attemptId === "string" ? value.attemptId : null,
+    laneId: typeof value.laneId === "string" ? value.laneId : null,
+    runId: typeof value.runId === "string" ? value.runId : null,
     metadata: isRecord(value.metadata) ? value.metadata : null
   };
 }
@@ -181,6 +338,49 @@ function digestSignalText(value: string | null | undefined): string | null {
     hash = ((hash << 5) - hash + normalized.charCodeAt(i)) | 0;
   }
   return String(hash);
+}
+
+function buildQuestionThreadLink(args: {
+  attemptId: string;
+  occurredAt: string;
+  preview: string | null | undefined;
+}): OrchestratorRuntimeQuestionLink {
+  const attemptId = String(args.attemptId ?? "").trim();
+  const threadId = `question:${attemptId}`;
+  const digest = digestSignalText(args.preview) ?? "none";
+  const secondBucket = Math.max(0, Math.floor(Date.parse(args.occurredAt) / 1000) || 0);
+  return {
+    threadId,
+    messageId: `question_msg:${attemptId}:${digest}:${secondBucket}`,
+    replyTo: null
+  };
+}
+
+function buildQuestionReplyLink(args: {
+  threadId: string;
+  replyTo: string;
+  interventionId: string;
+  directive: string;
+}): OrchestratorRuntimeQuestionLink {
+  const digest = digestSignalText(args.directive) ?? "none";
+  return {
+    threadId: args.threadId,
+    messageId: `question_reply:${args.interventionId}:${digest}`,
+    replyTo: args.replyTo
+  };
+}
+
+function parseQuestionLink(value: unknown): OrchestratorRuntimeQuestionLink | null {
+  if (!isRecord(value)) return null;
+  const threadId = typeof value.threadId === "string" ? value.threadId.trim() : "";
+  const messageId = typeof value.messageId === "string" ? value.messageId.trim() : "";
+  const replyToRaw = typeof value.replyTo === "string" ? value.replyTo.trim() : "";
+  if (!threadId.length || !messageId.length) return null;
+  return {
+    threadId,
+    messageId,
+    replyTo: replyToRaw.length > 0 ? replyToRaw : null
+  };
 }
 
 function detectWaitingInputSignal(text: string | null | undefined): boolean {
@@ -223,6 +423,109 @@ function parseJsonRecord(raw: string | null | undefined): Record<string, unknown
   }
 }
 
+function parseJsonArray(raw: string | null | undefined): unknown[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function missionThreadId(missionId: string): string {
+  return `mission:${missionId}`;
+}
+
+function clampLimit(rawLimit: number | null | undefined, fallback: number, max = MAX_THREAD_PAGE_SIZE): number {
+  const numeric = Number(rawLimit);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(numeric)));
+}
+
+function normalizeChatVisibility(value: unknown, fallback: OrchestratorChatVisibilityMode = DEFAULT_CHAT_VISIBILITY): OrchestratorChatVisibilityMode {
+  return parseChatVisibility(value) ?? fallback;
+}
+
+function normalizeChatDeliveryState(value: unknown, fallback: OrchestratorChatDeliveryState = DEFAULT_CHAT_DELIVERY): OrchestratorChatDeliveryState {
+  return parseChatDeliveryState(value) ?? fallback;
+}
+
+function normalizeThreadType(value: unknown, fallback: OrchestratorChatThreadType = "mission"): OrchestratorChatThreadType {
+  return parseThreadType(value) ?? fallback;
+}
+
+function toOptionalString(value: unknown): string | null {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return raw.length > 0 ? raw : null;
+}
+
+function sanitizeChatTarget(target: OrchestratorChatTarget | null | undefined): OrchestratorChatTarget | null {
+  if (!target) return null;
+  if (target.kind === "coordinator") {
+    return {
+      kind: "coordinator",
+      runId: toOptionalString(target.runId)
+    };
+  }
+  if (target.kind === "workers") {
+    return {
+      kind: "workers",
+      runId: toOptionalString(target.runId),
+      laneId: toOptionalString(target.laneId),
+      includeClosed: target.includeClosed === true
+    };
+  }
+  const sanitized: OrchestratorChatTarget = {
+    kind: "worker",
+    runId: toOptionalString(target.runId),
+    stepId: toOptionalString(target.stepId),
+    stepKey: toOptionalString(target.stepKey),
+    attemptId: toOptionalString(target.attemptId),
+    sessionId: toOptionalString(target.sessionId),
+    laneId: toOptionalString(target.laneId)
+  };
+  return sanitized;
+}
+
+function parseWorkerProviderHint(raw: unknown): "codex" | "claude" | null {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!value.length) return null;
+  if (value.includes("claude")) return "claude";
+  if (value.includes("codex")) return "codex";
+  return null;
+}
+
+function workerThreadIdentity(target: OrchestratorChatTarget | null | undefined): string | null {
+  if (!target || target.kind !== "worker") return null;
+  const options = [target.attemptId, target.sessionId, target.stepId, target.stepKey, target.laneId];
+  for (const value of options) {
+    const normalized = toOptionalString(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function deriveThreadTitle(args: {
+  threadType: OrchestratorChatThreadType;
+  target: OrchestratorChatTarget | null;
+  fallback?: string | null;
+}): string {
+  if (args.threadType === "mission") {
+    return toOptionalString(args.fallback) ?? DEFAULT_CHAT_THREAD_TITLE;
+  }
+  const target = args.target && args.target.kind === "worker" ? args.target : null;
+  if (!target) return "Worker Chat";
+  const suffix =
+    toOptionalString(target.stepKey)
+    ?? toOptionalString(target.stepId)
+    ?? toOptionalString(target.attemptId)
+    ?? toOptionalString(target.sessionId)
+    ?? toOptionalString(target.laneId)
+    ?? "worker";
+  return `Worker ${suffix}`;
+}
+
 function readConfig(projectConfigService: ReturnType<typeof createProjectConfigService> | null | undefined): ResolvedOrchestratorConfig {
   const snapshot = projectConfigService?.get();
   const ai = snapshot?.effective?.ai;
@@ -258,6 +561,7 @@ function mapOrchestratorStepStatus(status: OrchestratorStepStatus): MissionStepS
 
 function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission: MissionDetail): MissionStatus {
   if (graph.run.status === "succeeded") return "completed";
+  if (graph.run.status === "succeeded_with_risk") return "completed";
   if (graph.run.status === "failed") return mission.openInterventions > 0 ? "intervention_required" : "failed";
   if (graph.run.status === "canceled") return "canceled";
   if (graph.run.status === "paused") return "intervention_required";
@@ -271,7 +575,11 @@ function buildOutcomeSummary(graph: OrchestratorRunGraph): string {
   const failed = graph.steps.filter((step) => step.status === "failed").length;
   const blocked = graph.steps.filter((step) => step.status === "blocked").length;
   const attempts = graph.attempts.length;
-  return `Run ${graph.run.id.slice(0, 8)} finished: ${succeeded}/${total} steps succeeded, ${failed} failed, ${blocked} blocked across ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
+  let summary = `Run ${graph.run.id.slice(0, 8)} finished: ${succeeded}/${total} steps succeeded, ${failed} failed, ${blocked} blocked across ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
+  if (graph.completionEvaluation?.riskFactors?.length) {
+    summary += ` Risk factors: ${graph.completionEvaluation.riskFactors.join(", ")}.`;
+  }
+  return summary;
 }
 
 // ─────────────────────────────────────────────────────
@@ -533,16 +841,30 @@ export function createAiOrchestratorService(args: {
   logger: Logger;
   missionService: ReturnType<typeof createMissionService>;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
+  agentChatService?: ReturnType<typeof createAgentChatService> | null;
   laneService?: ReturnType<typeof createLaneService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   projectRoot?: string;
+  onThreadEvent?: (event: OrchestratorThreadEvent) => void;
 }) {
-  const { db, logger, missionService, orchestratorService, laneService, projectConfigService, aiIntegrationService, projectRoot } = args;
+  const {
+    db,
+    logger,
+    missionService,
+    orchestratorService,
+    agentChatService,
+    laneService,
+    projectConfigService,
+    aiIntegrationService,
+    projectRoot,
+    onThreadEvent
+  } = args;
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
   const activeSteeringDirectives = new Map<string, UserSteeringDirective[]>();
   const runDepthConfigs = new Map<string, MissionDepthConfig>();
+  const runPolicies = new Map<string, MissionExecutionPolicy>();
   const chatMessages = new Map<string, OrchestratorChatMessage[]>();
   const activeChatSessions = new Map<string, OrchestratorChatSessionState>();
   const chatTurnQueues = new Map<string, Promise<void>>();
@@ -550,7 +872,28 @@ export function createAiOrchestratorService(args: {
   const sessionRuntimeSignals = new Map<string, SessionRuntimeSignal>();
   const attemptRuntimeTrackers = new Map<string, AttemptRuntimeTracker>();
   const sessionSignalQueues = new Map<string, Promise<void>>();
+  const workerDeliveryThreadQueues = new Map<string, Promise<void>>();
+  const workerDeliveryInterventionCooldowns = new Map<string, number>();
   let healthSweepTimer: NodeJS.Timeout | null = null;
+  let disposed = false;
+
+  const emitThreadEvent = (event: Omit<OrchestratorThreadEvent, "at">) => {
+    if (disposed) return;
+    try {
+      onThreadEvent?.({
+        ...event,
+        at: nowIso()
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.thread_event_emit_failed", {
+        type: event.type,
+        missionId: event.missionId,
+        threadId: event.threadId ?? null,
+        messageId: event.messageId ?? null,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
 
   const getMissionMetadata = (missionId: string): Record<string, unknown> => {
     const row = db.get<{ metadata_json: string | null }>(
@@ -572,6 +915,264 @@ export function createAiOrchestratorService(args: {
       `update missions set metadata_json = ?, updated_at = ? where id = ?`,
       [JSON.stringify(metadata), nowIso(), missionId]
     );
+  };
+
+  const getMissionIdentity = (missionId: string): { projectId: string; laneId: string | null } | null => {
+    const row = db.get<{ project_id: string; lane_id: string | null }>(
+      `select project_id, lane_id from missions where id = ? limit 1`,
+      [missionId]
+    );
+    if (!row?.project_id) return null;
+    return {
+      projectId: row.project_id,
+      laneId: row.lane_id ?? null
+    };
+  };
+
+  const getMissionIdForRun = (runId: string): string | null => {
+    const row = db.get<{ mission_id: string | null }>(
+      `select mission_id from orchestrator_runs where id = ? limit 1`,
+      [runId]
+    );
+    return toOptionalString(row?.mission_id);
+  };
+
+  const parseThreadRow = (row: {
+    id: string;
+    mission_id: string;
+    thread_type: string;
+    title: string;
+    run_id: string | null;
+    step_id: string | null;
+    step_key: string | null;
+    attempt_id: string | null;
+    session_id: string | null;
+    lane_id: string | null;
+    status: string;
+    unread_count: number | null;
+    metadata_json: string | null;
+    created_at: string;
+    updated_at: string;
+  }): OrchestratorChatThread => {
+    return {
+      id: row.id,
+      missionId: row.mission_id,
+      threadType: normalizeThreadType(row.thread_type),
+      title: String(row.title ?? DEFAULT_CHAT_THREAD_TITLE),
+      runId: row.run_id ?? null,
+      stepId: row.step_id ?? null,
+      stepKey: row.step_key ?? null,
+      attemptId: row.attempt_id ?? null,
+      sessionId: row.session_id ?? null,
+      laneId: row.lane_id ?? null,
+      status: row.status === "closed" ? "closed" : "active",
+      unreadCount: Number.isFinite(Number(row.unread_count)) ? Math.max(0, Math.floor(Number(row.unread_count))) : 0,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      metadata: parseJsonRecord(row.metadata_json)
+    };
+  };
+
+  const getThreadById = (missionId: string, threadId: string): OrchestratorChatThread | null => {
+    const row = db.get<{
+      id: string;
+      mission_id: string;
+      thread_type: string;
+      title: string;
+      run_id: string | null;
+      step_id: string | null;
+      step_key: string | null;
+      attempt_id: string | null;
+      session_id: string | null;
+      lane_id: string | null;
+      status: string;
+      unread_count: number | null;
+      metadata_json: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          thread_type,
+          title,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          session_id,
+          lane_id,
+          status,
+          unread_count,
+          metadata_json,
+          created_at,
+          updated_at
+        from orchestrator_chat_threads
+        where mission_id = ?
+          and id = ?
+        limit 1
+      `,
+      [missionId, threadId]
+    );
+    if (!row) return null;
+    return parseThreadRow(row);
+  };
+
+  const upsertThread = (args: {
+    missionId: string;
+    threadId: string;
+    threadType: OrchestratorChatThreadType;
+    title: string;
+    target: OrchestratorChatTarget | null;
+    status?: "active" | "closed";
+    metadata?: Record<string, unknown> | null;
+  }): OrchestratorChatThread => {
+    const missionIdentity = getMissionIdentity(args.missionId);
+    if (!missionIdentity) {
+      throw new Error(`Mission not found: ${args.missionId}`);
+    }
+    const target = sanitizeChatTarget(args.target);
+    const now = nowIso();
+    db.run(
+      `
+        insert into orchestrator_chat_threads(
+          id,
+          project_id,
+          mission_id,
+          thread_type,
+          title,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          session_id,
+          lane_id,
+          status,
+          unread_count,
+          metadata_json,
+          created_at,
+          updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+        on conflict(id) do update set
+          thread_type = excluded.thread_type,
+          title = excluded.title,
+          run_id = excluded.run_id,
+          step_id = excluded.step_id,
+          step_key = excluded.step_key,
+          attempt_id = excluded.attempt_id,
+          session_id = excluded.session_id,
+          lane_id = excluded.lane_id,
+          status = excluded.status,
+          metadata_json = excluded.metadata_json,
+          updated_at = excluded.updated_at
+      `,
+      [
+        args.threadId,
+        missionIdentity.projectId,
+        args.missionId,
+        args.threadType,
+        args.title,
+        target?.runId ?? null,
+        target?.kind === "worker" ? target.stepId ?? null : null,
+        target?.kind === "worker" ? target.stepKey ?? null : null,
+        target?.kind === "worker" ? target.attemptId ?? null : null,
+        target?.kind === "worker" ? target.sessionId ?? null : null,
+        target?.kind === "worker" ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId,
+        args.status ?? DEFAULT_THREAD_STATUS,
+        args.metadata ? JSON.stringify(args.metadata) : null,
+        now,
+        now
+      ]
+    );
+    const nextThread = getThreadById(args.missionId, args.threadId) ?? {
+      id: args.threadId,
+      missionId: args.missionId,
+      threadType: args.threadType,
+      title: args.title,
+      runId: target?.runId ?? null,
+      stepId: target?.kind === "worker" ? target.stepId ?? null : null,
+      stepKey: target?.kind === "worker" ? target.stepKey ?? null : null,
+      attemptId: target?.kind === "worker" ? target.attemptId ?? null : null,
+      sessionId: target?.kind === "worker" ? target.sessionId ?? null : null,
+      laneId: target?.kind === "worker" ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId,
+      status: args.status ?? "active",
+      unreadCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      metadata: args.metadata ?? null
+    };
+    emitThreadEvent({
+      type: "thread_updated",
+      missionId: args.missionId,
+      threadId: nextThread.id,
+      runId: nextThread.runId ?? null,
+      reason: "upsert_thread"
+    });
+    return nextThread;
+  };
+
+  const ensureMissionThread = (missionId: string): OrchestratorChatThread => {
+    const id = missionThreadId(missionId);
+    const existing = getThreadById(missionId, id);
+    if (existing) return existing;
+    return upsertThread({
+      missionId,
+      threadId: id,
+      threadType: "mission",
+      title: DEFAULT_CHAT_THREAD_TITLE,
+      target: {
+        kind: "coordinator",
+        runId: null
+      }
+    });
+  };
+
+  const ensureThreadForTarget = (args: {
+    missionId: string;
+    threadId?: string | null;
+    target?: OrchestratorChatTarget | null;
+    fallbackTitle?: string | null;
+  }): OrchestratorChatThread => {
+    const missionId = args.missionId;
+    const requestedThreadId = toOptionalString(args.threadId);
+    if (requestedThreadId) {
+      const existing = getThreadById(missionId, requestedThreadId);
+      if (existing) return existing;
+      const target = sanitizeChatTarget(args.target);
+      const threadType: OrchestratorChatThreadType = target?.kind === "worker" ? "worker" : "mission";
+      return upsertThread({
+        missionId,
+        threadId: requestedThreadId,
+        threadType,
+        title: deriveThreadTitle({
+          threadType,
+          target,
+          fallback: args.fallbackTitle
+        }),
+        target
+      });
+    }
+
+    const target = sanitizeChatTarget(args.target);
+    if (!target || target.kind === "coordinator" || target.kind === "workers") {
+      return ensureMissionThread(missionId);
+    }
+    const identity = workerThreadIdentity(target);
+    const fallbackId = `worker:${missionId}:${identity ?? randomUUID()}`;
+    const existing = getThreadById(missionId, fallbackId);
+    if (existing) return existing;
+    return upsertThread({
+      missionId,
+      threadId: fallbackId,
+      threadType: "worker",
+      title: deriveThreadTitle({
+        threadType: "worker",
+        target,
+        fallback: args.fallbackTitle
+      }),
+      target
+    });
   };
 
   const loadSteeringDirectivesFromMetadata = (missionId: string): UserSteeringDirective[] => {
@@ -601,13 +1202,254 @@ export function createAiOrchestratorService(args: {
       ? metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[]
       : [];
     const parsed = stored
-      .map((entry) => parseChatMessage(entry, missionId))
+      .map((entry, index) => parseChatMessage(entry, missionId, index))
       .filter((entry): entry is OrchestratorChatMessage => !!entry)
       .slice(-MAX_PERSISTED_CHAT_MESSAGES);
     if (parsed.length > 0) {
       chatMessages.set(missionId, parsed);
     }
     return parsed;
+  };
+
+  const parseChatMessageRow = (row: {
+    id: string;
+    mission_id: string;
+    role: string;
+    content: string;
+    timestamp: string;
+    step_key: string | null;
+    thread_id: string | null;
+    target_json: string | null;
+    visibility: string | null;
+    delivery_state: string | null;
+    source_session_id: string | null;
+    attempt_id: string | null;
+    lane_id: string | null;
+    run_id: string | null;
+    metadata_json: string | null;
+  }): OrchestratorChatMessage | null => {
+    const role = row.role === "user" || row.role === "worker" || row.role === "orchestrator" ? row.role : null;
+    if (!role) return null;
+    return {
+      id: row.id,
+      missionId: row.mission_id,
+      role,
+      content: row.content,
+      timestamp: row.timestamp,
+      stepKey: row.step_key ?? null,
+      threadId: row.thread_id ?? null,
+      target: parseChatTarget(parseJsonRecord(row.target_json)),
+      visibility: normalizeChatVisibility(row.visibility),
+      deliveryState: normalizeChatDeliveryState(row.delivery_state),
+      sourceSessionId: row.source_session_id ?? null,
+      attemptId: row.attempt_id ?? null,
+      laneId: row.lane_id ?? null,
+      runId: row.run_id ?? null,
+      metadata: parseJsonRecord(row.metadata_json)
+    };
+  };
+
+  const getChatMessageById = (messageId: string): OrchestratorChatMessage | null => {
+    const row = db.get<{
+      id: string;
+      mission_id: string;
+      role: string;
+      content: string;
+      timestamp: string;
+      step_key: string | null;
+      thread_id: string | null;
+      target_json: string | null;
+      visibility: string | null;
+      delivery_state: string | null;
+      source_session_id: string | null;
+      attempt_id: string | null;
+      lane_id: string | null;
+      run_id: string | null;
+      metadata_json: string | null;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          role,
+          content,
+          timestamp,
+          step_key,
+          thread_id,
+          target_json,
+          visibility,
+          delivery_state,
+          source_session_id,
+          attempt_id,
+          lane_id,
+          run_id,
+          metadata_json
+        from orchestrator_chat_messages
+        where id = ?
+        limit 1
+      `,
+      [messageId]
+    );
+    return row ? parseChatMessageRow(row) : null;
+  };
+
+  const persistUpdatedChatMessage = (next: OrchestratorChatMessage): OrchestratorChatMessage => {
+    const normalized: OrchestratorChatMessage = {
+      ...next,
+      target: sanitizeChatTarget(next.target ?? null),
+      visibility: normalizeChatVisibility(next.visibility),
+      deliveryState: normalizeChatDeliveryState(next.deliveryState),
+      metadata: isRecord(next.metadata) ? next.metadata : null
+    };
+    db.run(
+      `
+        update orchestrator_chat_messages
+        set
+          thread_id = ?,
+          step_key = ?,
+          target_json = ?,
+          visibility = ?,
+          delivery_state = ?,
+          source_session_id = ?,
+          attempt_id = ?,
+          lane_id = ?,
+          run_id = ?,
+          metadata_json = ?
+        where id = ?
+      `,
+      [
+        normalized.threadId ?? missionThreadId(normalized.missionId),
+        normalized.stepKey ?? null,
+        normalized.target ? JSON.stringify(normalized.target) : null,
+        normalizeChatVisibility(normalized.visibility),
+        normalizeChatDeliveryState(normalized.deliveryState),
+        normalized.sourceSessionId ?? null,
+        normalized.attemptId ?? null,
+        normalized.laneId ?? null,
+        normalized.runId ?? null,
+        normalized.metadata ? JSON.stringify(normalized.metadata) : null,
+        normalized.id
+      ]
+    );
+
+    const current = chatMessages.get(normalized.missionId);
+    if (current?.length) {
+      const nextMessages = current.map((entry) => (entry.id === normalized.id ? normalized : entry));
+      chatMessages.set(normalized.missionId, nextMessages);
+    }
+
+    try {
+      updateMissionMetadata(normalized.missionId, (metadata) => {
+        const existing = Array.isArray(metadata[ORCHESTRATOR_CHAT_METADATA_KEY])
+          ? (metadata[ORCHESTRATOR_CHAT_METADATA_KEY] as unknown[])
+          : [];
+        metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = existing.map((entry, index) => {
+          const parsed = parseChatMessage(entry, normalized.missionId, index);
+          return parsed?.id === normalized.id ? normalized : entry;
+        });
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.chat_metadata_message_update_failed", {
+        missionId: normalized.missionId,
+        messageId: normalized.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    emitThreadEvent({
+      type: "message_updated",
+      missionId: normalized.missionId,
+      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
+      messageId: normalized.id,
+      runId: normalized.runId ?? null,
+      reason: "message_update"
+    });
+    emitThreadEvent({
+      type: "thread_updated",
+      missionId: normalized.missionId,
+      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
+      runId: normalized.runId ?? null,
+      reason: "message_update"
+    });
+
+    return normalized;
+  };
+
+  const updateChatMessage = (
+    messageId: string,
+    updater: (current: OrchestratorChatMessage) => OrchestratorChatMessage
+  ): OrchestratorChatMessage | null => {
+    const current = getChatMessageById(messageId);
+    if (!current) return null;
+    const next = updater(current);
+    if (next.id !== current.id || next.missionId !== current.missionId) {
+      throw new Error("Chat message identity cannot change during update.");
+    }
+    return persistUpdatedChatMessage(next);
+  };
+
+  const loadChatMessagesFromDb = (args: {
+    missionId: string;
+    threadId?: string | null;
+    limit?: number;
+    before?: string | null;
+  }): OrchestratorChatMessage[] => {
+    const limit = clampLimit(args.limit, MAX_PERSISTED_CHAT_MESSAGES, 500);
+    const rows = db.all<{
+      id: string;
+      mission_id: string;
+      role: string;
+      content: string;
+      timestamp: string;
+      step_key: string | null;
+      thread_id: string | null;
+      target_json: string | null;
+      visibility: string | null;
+      delivery_state: string | null;
+      source_session_id: string | null;
+      attempt_id: string | null;
+      lane_id: string | null;
+      run_id: string | null;
+      metadata_json: string | null;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          role,
+          content,
+          timestamp,
+          step_key,
+          thread_id,
+          target_json,
+          visibility,
+          delivery_state,
+          source_session_id,
+          attempt_id,
+          lane_id,
+          run_id,
+          metadata_json
+        from orchestrator_chat_messages
+        where mission_id = ?
+          and (? is null or thread_id = ?)
+          and (? is null or timestamp < ?)
+        order by timestamp desc
+        limit ?
+      `,
+      [
+        args.missionId,
+        args.threadId ?? null,
+        args.threadId ?? null,
+        args.before ?? null,
+        args.before ?? null,
+        limit
+      ]
+    );
+    if (!rows.length) return [];
+    return rows
+      .map((row) => parseChatMessageRow(row))
+      .filter((entry): entry is OrchestratorChatMessage => !!entry)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
   };
 
   const loadChatSessionStateFromMetadata = (missionId: string): OrchestratorChatSessionState | null => {
@@ -637,22 +1479,120 @@ export function createAiOrchestratorService(args: {
     }
   };
 
-  const appendChatMessage = (message: OrchestratorChatMessage) => {
-    const existing = chatMessages.has(message.missionId)
-      ? chatMessages.get(message.missionId) ?? []
-      : loadChatMessagesFromMetadata(message.missionId);
-    const next = [...existing, message].slice(-MAX_PERSISTED_CHAT_MESSAGES);
+  const appendChatMessage = (message: OrchestratorChatMessage): OrchestratorChatMessage => {
+    if (disposed) {
+      return {
+        ...message,
+        target: sanitizeChatTarget(message.target ?? null),
+        visibility: normalizeChatVisibility(message.visibility),
+        deliveryState: normalizeChatDeliveryState(message.deliveryState),
+        metadata: isRecord(message.metadata) ? message.metadata : null
+      };
+    }
+    const thread = ensureThreadForTarget({
+      missionId: message.missionId,
+      threadId: message.threadId ?? null,
+      target: message.target ?? null
+    });
+    const normalized: OrchestratorChatMessage = {
+      ...message,
+      threadId: thread.id,
+      visibility: normalizeChatVisibility(message.visibility),
+      deliveryState: normalizeChatDeliveryState(message.deliveryState),
+      target: sanitizeChatTarget(message.target ?? null),
+      metadata: isRecord(message.metadata) ? message.metadata : null
+    };
+    const existing = chatMessages.has(normalized.missionId)
+      ? chatMessages.get(normalized.missionId) ?? []
+      : loadChatMessagesFromMetadata(normalized.missionId);
+    const next = [...existing, normalized].slice(-MAX_PERSISTED_CHAT_MESSAGES);
     chatMessages.set(message.missionId, next);
     try {
-      updateMissionMetadata(message.missionId, (metadata) => {
+      updateMissionMetadata(normalized.missionId, (metadata) => {
         metadata[ORCHESTRATOR_CHAT_METADATA_KEY] = next;
       });
     } catch (error) {
       logger.debug("ai_orchestrator.chat_persist_failed", {
-        missionId: message.missionId,
+        missionId: normalized.missionId,
         error: error instanceof Error ? error.message : String(error)
       });
     }
+    const missionIdentity = getMissionIdentity(normalized.missionId);
+    if (missionIdentity) {
+      const createdAt = nowIso();
+      db.run(
+        `
+          insert into orchestrator_chat_messages(
+            id,
+            project_id,
+            mission_id,
+            thread_id,
+            role,
+            content,
+            timestamp,
+            step_key,
+            target_json,
+            visibility,
+            delivery_state,
+            source_session_id,
+            attempt_id,
+            lane_id,
+            run_id,
+            metadata_json,
+            created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          normalized.id,
+          missionIdentity.projectId,
+          normalized.missionId,
+          normalized.threadId ?? missionThreadId(normalized.missionId),
+          normalized.role,
+          normalized.content,
+          normalized.timestamp,
+          normalized.stepKey ?? null,
+          normalized.target ? JSON.stringify(normalized.target) : null,
+          normalizeChatVisibility(normalized.visibility),
+          normalizeChatDeliveryState(normalized.deliveryState),
+          normalized.sourceSessionId ?? null,
+          normalized.attemptId ?? null,
+          normalized.laneId ?? null,
+          normalized.runId ?? null,
+          normalized.metadata ? JSON.stringify(normalized.metadata) : null,
+          createdAt
+        ]
+      );
+      const unreadIncrement = normalized.role === "user" ? 0 : 1;
+      db.run(
+        `
+          update orchestrator_chat_threads
+          set updated_at = ?,
+              unread_count = case when ? > 0 then unread_count + ? else unread_count end
+          where id = ?
+        `,
+        [normalized.timestamp, unreadIncrement, unreadIncrement, normalized.threadId ?? missionThreadId(normalized.missionId)]
+      );
+    }
+    emitThreadEvent({
+      type: "message_appended",
+      missionId: normalized.missionId,
+      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
+      messageId: normalized.id,
+      runId: normalized.runId ?? null,
+      reason: "append_message",
+      metadata: {
+        role: normalized.role,
+        deliveryState: normalized.deliveryState ?? null
+      }
+    });
+    emitThreadEvent({
+      type: "thread_updated",
+      missionId: normalized.missionId,
+      threadId: normalized.threadId ?? missionThreadId(normalized.missionId),
+      runId: normalized.runId ?? null,
+      reason: "append_message"
+    });
+    return normalized;
   };
 
   const emitOrchestratorMessage = (
@@ -670,8 +1610,7 @@ export function createAiOrchestratorService(args: {
       stepKey: stepKey ?? null,
       metadata: metadata ?? null
     };
-    appendChatMessage(msg);
-    return msg;
+    return appendChatMessage(msg);
   };
 
   const recordRuntimeEvent = (args: {
@@ -728,6 +1667,46 @@ export function createAiOrchestratorService(args: {
     }
     const config = readConfig(projectConfigService);
     return resolveMissionDepthConfig(config.defaultDepthTier);
+  };
+
+  const resolveActivePolicy = (missionId: string): MissionExecutionPolicy => {
+    const metadata = getMissionMetadata(missionId);
+
+    // 1. Check mission metadata for explicit executionPolicy
+    if (isRecord(metadata.executionPolicy)) {
+      return resolveExecutionPolicy({
+        missionMetadata: metadata.executionPolicy as Partial<MissionExecutionPolicy>
+      });
+    }
+
+    // 2. Check mission metadata for missionDepth → convert via depthTierToPolicy
+    if (typeof metadata.missionDepth === "string") {
+      const tier = metadata.missionDepth as MissionDepthTier;
+      if (tier === "light" || tier === "standard" || tier === "deep") {
+        return depthTierToPolicy(tier);
+      }
+    }
+
+    // 3. Check project config for defaultExecutionPolicy
+    const snapshot = projectConfigService?.get();
+    const ai = snapshot?.effective?.ai;
+    const orchestratorConfig = isRecord(ai) && isRecord((ai as Record<string, unknown>).orchestrator)
+      ? ((ai as Record<string, unknown>).orchestrator as Record<string, unknown>)
+      : null;
+    if (orchestratorConfig && isRecord(orchestratorConfig.defaultExecutionPolicy)) {
+      return resolveExecutionPolicy({
+        projectConfig: orchestratorConfig.defaultExecutionPolicy as Partial<MissionExecutionPolicy>
+      });
+    }
+
+    // 4. Check project config for defaultDepthTier → convert
+    const config = readConfig(projectConfigService);
+    if (config.defaultDepthTier !== "standard") {
+      return depthTierToPolicy(config.defaultDepthTier);
+    }
+
+    // 5. Fall back to DEFAULT_EXECUTION_POLICY
+    return DEFAULT_EXECUTION_POLICY;
   };
 
   const getSteeringContext = (missionId: string): string => {
@@ -867,6 +1846,8 @@ export function createAiOrchestratorService(args: {
       lastWaitingInterventionAtMs: 0,
       lastEventHeartbeatAtMs: 0,
       lastWaitingNotifiedAtMs: 0,
+      lastQuestionThreadId: null,
+      lastQuestionMessageId: null,
       lastPersistedAtMs: 0
     };
     attemptRuntimeTrackers.set(attemptId, next);
@@ -1025,6 +2006,8 @@ export function createAiOrchestratorService(args: {
         lastWaitingNotifiedAtMs: Number.isFinite(Number(row.last_waiting_notified_at_ms))
           ? Math.max(0, Math.floor(Number(row.last_waiting_notified_at_ms)))
           : 0,
+        lastQuestionThreadId: null,
+        lastQuestionMessageId: null,
         lastPersistedAtMs: nowMs
       };
       attemptRuntimeTrackers.set(attemptId, tracker);
@@ -1118,8 +2101,103 @@ export function createAiOrchestratorService(args: {
       }
       if (event.eventType === "question") {
         tracker.lastWaitingInterventionAtMs = Math.max(tracker.lastWaitingInterventionAtMs, Math.floor(eventMs));
+        const questionLink = event.questionLink ?? parseQuestionLink(event.payload);
+        if (questionLink) {
+          tracker.lastQuestionThreadId = questionLink.threadId;
+          tracker.lastQuestionMessageId = questionLink.messageId;
+        }
+      } else if (event.eventType === "progress") {
+        const payload = isRecord(event.payload) ? event.payload : null;
+        const transition = typeof payload?.transition === "string" ? payload.transition.trim() : "";
+        if (transition === "question_answered_resume") {
+          const questionLink = event.questionLink ?? parseQuestionLink(event.payload);
+          if (questionLink) {
+            tracker.lastQuestionThreadId = questionLink.threadId;
+            tracker.lastQuestionMessageId = questionLink.messageId;
+          }
+        }
       }
       tracker.lastPersistedAtMs = Math.max(tracker.lastPersistedAtMs, Math.floor(eventMs));
+    }
+  };
+
+  const replayOpenQuestionsFromEventBus = () => {
+    const runs = orchestratorService
+      .listRuns({ limit: 1_000 })
+      .filter((run) => run.status === "queued" || run.status === "running" || run.status === "paused");
+    for (const run of runs) {
+      let graph: OrchestratorRunGraph;
+      try {
+        graph = orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
+      } catch {
+        continue;
+      }
+      const mission = missionService.get(graph.run.missionId);
+      if (!mission) continue;
+      let events: ReturnType<typeof orchestratorService.listRuntimeEvents>;
+      try {
+        events = orchestratorService.listRuntimeEvents({
+          runId: run.id,
+          eventTypes: ["question", "intervention_resolved", "progress"],
+          limit: 5_000
+        });
+      } catch {
+        continue;
+      }
+      if (!events.length) continue;
+
+      const stepById = new Map(graph.steps.map((step) => [step.id, step] as const));
+      const attemptById = new Map(graph.attempts.map((attempt) => [attempt.id, attempt] as const));
+      const latestByAttempt = new Map<string, (typeof events)[number]>();
+      for (const event of events) {
+        const attemptId = typeof event.attemptId === "string" ? event.attemptId.trim() : "";
+        if (!attemptId.length || latestByAttempt.has(attemptId)) continue;
+        if (event.eventType === "progress") {
+          const payload = isRecord(event.payload) ? event.payload : null;
+          const transition = typeof payload?.transition === "string" ? payload.transition.trim() : "";
+          if (transition !== "question_answered_resume") continue;
+        }
+        latestByAttempt.set(attemptId, event);
+      }
+
+      for (const [attemptId, event] of latestByAttempt.entries()) {
+        if (event.eventType !== "question") continue;
+        const attempt = attemptById.get(attemptId);
+        if (!attempt || attempt.status !== "running") continue;
+        const step = stepById.get(attempt.stepId);
+        if (!step) continue;
+        const payload = isRecord(event.payload) ? event.payload : null;
+        const questionLink =
+          parseQuestionLink(payload) ??
+          buildQuestionThreadLink({
+            attemptId,
+            occurredAt: event.occurredAt,
+            preview: typeof payload?.preview === "string" ? payload.preview : null
+          });
+        const tracker = ensureAttemptRuntimeTracker(attemptId);
+        tracker.lastQuestionThreadId = questionLink.threadId;
+        tracker.lastQuestionMessageId = questionLink.messageId;
+        upsertWorkerState(attemptId, {
+          runId: run.id,
+          stepId: step.id,
+          sessionId: event.sessionId ?? attempt.executorSessionId ?? null,
+          executorKind: attempt.executorKind,
+          state: "waiting_input"
+        });
+        ensureManualInputIntervention({
+          missionId: graph.run.missionId,
+          runId: run.id,
+          stepId: step.id,
+          stepKey: step.stepKey,
+          stepTitle: stepTitleForMessage(step),
+          laneId: step.laneId ?? null,
+          attemptId,
+          sessionId: event.sessionId ?? attempt.executorSessionId ?? "session-unknown",
+          preview: typeof payload?.preview === "string" ? payload.preview : null,
+          questionLink,
+          reason: "health_sweep"
+        });
+      }
     }
   };
 
@@ -1174,6 +2252,7 @@ export function createAiOrchestratorService(args: {
     attemptId: string;
     sessionId: string;
     preview: string | null;
+    questionLink: OrchestratorRuntimeQuestionLink;
     reason: "runtime_signal" | "health_sweep";
   }) => {
     const mission = missionService.get(args.missionId);
@@ -1208,6 +2287,9 @@ export function createAiOrchestratorService(args: {
         stepId: args.stepId,
         runId: args.runId,
         sessionId: args.sessionId,
+        threadId: args.questionLink.threadId,
+        messageId: args.questionLink.messageId,
+        replyTo: args.questionLink.replyTo,
         reason: args.reason
       }
     });
@@ -1222,6 +2304,9 @@ export function createAiOrchestratorService(args: {
         interventionId: intervention.id,
         interventionType: intervention.interventionType,
         reason: args.reason,
+        threadId: args.questionLink.threadId,
+        messageId: args.questionLink.messageId,
+        replyTo: args.questionLink.replyTo,
         preview
       }
     });
@@ -1481,17 +2566,27 @@ export function createAiOrchestratorService(args: {
       });
 
       if (waitingForInput) {
+        const questionLink = buildQuestionThreadLink({
+          attemptId: attempt.attemptId,
+          occurredAt: signal.at,
+          preview: signal.lastOutputPreview
+        });
+        tracker.lastQuestionThreadId = questionLink.threadId;
+        tracker.lastQuestionMessageId = questionLink.messageId;
         recordRuntimeEvent({
           runId: attempt.runId,
           stepId: attempt.stepId,
           attemptId: attempt.attemptId,
           sessionId,
           eventType: "question",
-          eventKey: `question:${attempt.attemptId}:${digestSignalText(signal.lastOutputPreview) ?? "none"}:${Math.floor(Date.parse(signal.at) / 1000)}`,
+          eventKey: questionLink.messageId,
           occurredAt: signal.at,
           payload: {
             preview: signal.lastOutputPreview,
-            runtimeState: signal.runtimeState
+            runtimeState: signal.runtimeState,
+            threadId: questionLink.threadId,
+            messageId: questionLink.messageId,
+            replyTo: questionLink.replyTo
           }
         });
         if (Date.now() - tracker.lastWaitingNotifiedAtMs >= 30_000) {
@@ -1512,6 +2607,7 @@ export function createAiOrchestratorService(args: {
           attemptId: attempt.attemptId,
           sessionId,
           preview: signal.lastOutputPreview,
+          questionLink,
           reason: "runtime_signal"
         });
       } else if (signal.lastOutputPreview && signal.lastOutputPreview.trim().length > 0) {
@@ -1630,6 +2726,7 @@ export function createAiOrchestratorService(args: {
   };
 
   const runHealthSweep = async (reason: string): Promise<{ sweeps: number; staleRecovered: number }> => {
+    if (disposed) return { sweeps: 0, staleRecovered: 0 };
     pruneSessionRuntimeSignals();
     const runs = orchestratorService
       .listRuns({ limit: 1_000 })
@@ -1638,6 +2735,7 @@ export function createAiOrchestratorService(args: {
     let staleRecovered = 0;
 
     for (const run of runs) {
+      if (disposed) break;
       if (activeHealthSweepRuns.has(run.id)) {
         // Interval/startup sweeps are opportunistic; manual/chat/status sweeps should wait briefly
         // so explicit health checks don't get dropped due to an in-flight background sweep.
@@ -1650,6 +2748,7 @@ export function createAiOrchestratorService(args: {
       }
       activeHealthSweepRuns.add(run.id);
       try {
+        if (disposed) break;
         sweeps += 1;
         orchestratorService.tick({ runId: run.id });
         const graph = orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 0 });
@@ -1742,19 +2841,29 @@ export function createAiOrchestratorService(args: {
           });
 
           if (waitingForInput && sessionId.length > 0) {
+            const questionLink = buildQuestionThreadLink({
+              attemptId: attempt.id,
+              occurredAt: sessionSignal?.at ?? nowIso(),
+              preview: effectivePreview
+            });
+            const tracker = ensureAttemptRuntimeTracker(attempt.id);
+            tracker.lastQuestionThreadId = questionLink.threadId;
+            tracker.lastQuestionMessageId = questionLink.messageId;
             recordRuntimeEvent({
               runId: run.id,
               stepId: step.id,
               attemptId: attempt.id,
               sessionId,
               eventType: "question",
-              eventKey: `sweep_question:${attempt.id}:${digestSignalText(effectivePreview) ?? "none"}:${Math.floor(Date.now() / 10_000)}`,
+              eventKey: questionLink.messageId,
               payload: {
                 source: "health_sweep",
-                preview: effectivePreview
+                preview: effectivePreview,
+                threadId: questionLink.threadId,
+                messageId: questionLink.messageId,
+                replyTo: questionLink.replyTo
               }
             });
-            const tracker = ensureAttemptRuntimeTracker(attempt.id);
             const now = Date.now();
             if (now - tracker.lastWaitingNotifiedAtMs >= 30_000) {
               tracker.lastWaitingNotifiedAtMs = now;
@@ -1774,6 +2883,7 @@ export function createAiOrchestratorService(args: {
               attemptId: attempt.id,
               sessionId,
               preview: effectivePreview,
+              questionLink,
               reason: "health_sweep"
             });
             persistAttemptRuntimeState({
@@ -1890,7 +3000,88 @@ export function createAiOrchestratorService(args: {
       }
     }
 
+    await replayQueuedWorkerMessages({
+      reason: `health_sweep:${reason}`
+    });
+
     return { sweeps, staleRecovered };
+  };
+
+  const buildWorkerDigestFromAttempt = (args: {
+    graph: OrchestratorRunGraph;
+    attempt: OrchestratorRunGraph["attempts"][number];
+  }): OrchestratorWorkerDigest => {
+    const step = args.graph.steps.find((entry) => entry.id === args.attempt.stepId);
+    const envelope = args.attempt.resultEnvelope;
+    const outputs = envelope?.outputs ?? null;
+    const filesChangedRaw = outputs?.filesChanged ?? outputs?.files_changed ?? [];
+    const filesChanged = Array.isArray(filesChangedRaw)
+      ? filesChangedRaw.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+      : [];
+    const testsRun = {
+      passed: Math.max(0, Math.floor(Number(outputs?.testsPassed ?? outputs?.tests_passed) || 0)),
+      failed: Math.max(0, Math.floor(Number(outputs?.testsFailed ?? outputs?.tests_failed) || 0)),
+      skipped: Math.max(0, Math.floor(Number(outputs?.testsSkipped ?? outputs?.tests_skipped) || 0)),
+      summary: typeof outputs?.testsSummary === "string"
+        ? outputs.testsSummary
+        : typeof outputs?.tests_summary === "string"
+          ? outputs.tests_summary
+          : null
+    };
+    const tokensInput = Number(outputs?.inputTokens ?? outputs?.input_tokens ?? outputs?.tokensInput ?? outputs?.tokens_input);
+    const tokensOutput = Number(outputs?.outputTokens ?? outputs?.output_tokens ?? outputs?.tokensOutput ?? outputs?.tokens_output);
+    const tokensTotal = Number(outputs?.totalTokens ?? outputs?.total_tokens ?? outputs?.tokensTotal ?? outputs?.tokens_total);
+    const tokens =
+      Number.isFinite(tokensInput) || Number.isFinite(tokensOutput) || Number.isFinite(tokensTotal)
+        ? {
+            input: Number.isFinite(tokensInput) ? Math.max(0, Math.floor(tokensInput)) : undefined,
+            output: Number.isFinite(tokensOutput) ? Math.max(0, Math.floor(tokensOutput)) : undefined,
+            total: Number.isFinite(tokensTotal) ? Math.max(0, Math.floor(tokensTotal)) : undefined
+          }
+        : null;
+    const costUsdRaw = Number(outputs?.costUsd ?? outputs?.cost_usd ?? outputs?.usdCost ?? outputs?.usd_cost);
+    const costUsd = Number.isFinite(costUsdRaw) ? costUsdRaw : null;
+    const status =
+      args.attempt.status === "running"
+      || args.attempt.status === "succeeded"
+      || args.attempt.status === "failed"
+      || args.attempt.status === "blocked"
+      || args.attempt.status === "queued"
+        ? args.attempt.status
+        : "queued";
+    const summary =
+      typeof envelope?.summary === "string" && envelope.summary.trim().length
+        ? envelope.summary.trim()
+        : args.attempt.status === "running"
+          ? `Worker started on ${step ? stepTitleForMessage(step) : args.attempt.stepId}.`
+          : args.attempt.errorMessage ?? `Step ${step?.stepKey ?? args.attempt.stepId} finished with status ${args.attempt.status}.`;
+    const warnings = Array.isArray(envelope?.warnings)
+      ? envelope.warnings.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+      : [];
+    return {
+      id: randomUUID(),
+      missionId: args.graph.run.missionId,
+      runId: args.attempt.runId,
+      stepId: args.attempt.stepId,
+      stepKey: step?.stepKey ?? null,
+      attemptId: args.attempt.id,
+      laneId: step?.laneId ?? null,
+      sessionId: args.attempt.executorSessionId ?? null,
+      status,
+      summary,
+      filesChanged,
+      testsRun,
+      warnings,
+      tokens,
+      costUsd,
+      suggestedNextActions:
+        args.attempt.status === "failed"
+          ? ["Investigate failure", "Review logs", "Retry with guidance"]
+          : args.attempt.status === "running"
+            ? ["Monitor progress"]
+            : [],
+      createdAt: nowIso()
+    };
   };
 
   const updateWorkerStateFromEvent = (event: OrchestratorRuntimeEvent) => {
@@ -1921,11 +3112,25 @@ export function createAiOrchestratorService(args: {
             `Worker started on step "${stepTitle}" using ${attempt.executorKind}.`,
             stepKey
           );
+          emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
         }
+        recordMissionMetricSample({
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          attemptId: attempt.id,
+          metric: "implementation",
+          value: 1,
+          unit: "attempt",
+          metadata: {
+            status: attempt.status,
+            executorKind: attempt.executorKind
+          }
+        });
       } else if (attempt.status === "succeeded") {
         attemptRuntimeTrackers.delete(attempt.id);
         deletePersistedAttemptRuntimeState(attempt.id);
         const outcomeTags = extractOutcomeTags(attempt);
+        const digest = emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
         upsertWorkerState(attempt.id, {
           stepId: attempt.stepId,
           runId: attempt.runId,
@@ -1940,6 +3145,26 @@ export function createAiOrchestratorService(args: {
           `Step "${stepTitle}" completed successfully.`,
           stepKey
         );
+        if (digest.tokens?.total != null) {
+          recordMissionMetricSample({
+            missionId: graph.run.missionId,
+            runId: attempt.runId,
+            attemptId: attempt.id,
+            metric: "tokens",
+            value: digest.tokens.total,
+            unit: "tokens"
+          });
+        }
+        if (digest.costUsd != null) {
+          recordMissionMetricSample({
+            missionId: graph.run.missionId,
+            runId: attempt.runId,
+            attemptId: attempt.id,
+            metric: "cost",
+            value: digest.costUsd,
+            unit: "usd"
+          });
+        }
 
         // Evaluation loop: evaluate step if depth config requires it
         const step = graph.steps.find((s) => s.id === attempt.stepId);
@@ -1997,6 +3222,7 @@ export function createAiOrchestratorService(args: {
         attemptRuntimeTrackers.delete(attempt.id);
         deletePersistedAttemptRuntimeState(attempt.id);
         const outcomeTags = extractOutcomeTags(attempt);
+        const digest = emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
         upsertWorkerState(attempt.id, {
           stepId: attempt.stepId,
           runId: attempt.runId,
@@ -2020,6 +3246,37 @@ export function createAiOrchestratorService(args: {
           }`,
           stepKey
         );
+        recordMissionMetricSample({
+          missionId: graph.run.missionId,
+          runId: attempt.runId,
+          attemptId: attempt.id,
+          metric: "retries",
+          value: step?.retryCount ?? 0,
+          unit: "count",
+          metadata: {
+            retryLimit: step?.retryLimit ?? null
+          }
+        });
+        if (digest.tokens?.total != null) {
+          recordMissionMetricSample({
+            missionId: graph.run.missionId,
+            runId: attempt.runId,
+            attemptId: attempt.id,
+            metric: "tokens",
+            value: digest.tokens.total,
+            unit: "tokens"
+          });
+        }
+        if (digest.costUsd != null) {
+          recordMissionMetricSample({
+            missionId: graph.run.missionId,
+            runId: attempt.runId,
+            attemptId: attempt.id,
+            metric: "cost",
+            value: digest.costUsd,
+            unit: "usd"
+          });
+        }
         if (step && step.status === "failed" && step.retryCount >= step.retryLimit) {
           try {
             const intervention = missionService.addIntervention({
@@ -3200,6 +4457,20 @@ export function createAiOrchestratorService(args: {
         [nextLaneId, nowIso(), step.id, args.missionId]
       );
       assignedSteps += 1;
+      recordLaneDecision({
+        missionId: args.missionId,
+        stepId: step.id,
+        stepKey: step.stepKey,
+        laneId: nextLaneId,
+        decisionType: "validated",
+        validatorOutcome: "pass",
+        ruleHits: ["parallel_lane_provisioning", step.dependencyStepKeys.length > 0 ? "dependency_inheritance" : "root_split"],
+        rationale: `Assigned step ${step.stepKey} to lane ${nextLaneId} (from ${currentLaneId}).`,
+        metadata: {
+          previousLaneId: currentLaneId,
+          dependencyStepKeys: step.dependencyStepKeys
+        }
+      });
     }
 
     if (createdLaneIds.length > 0 || assignedSteps > 0) {
@@ -3230,6 +4501,7 @@ export function createAiOrchestratorService(args: {
 
     // Resolve depth config from mission metadata or args
     const depthConfig = resolveActiveDepthConfig(missionId);
+    const policy = resolveActivePolicy(missionId);
     const config = readConfig(projectConfigService);
 
     // If an AI planner provider is specified, invoke AI planning first
@@ -3288,6 +4560,7 @@ export function createAiOrchestratorService(args: {
         ...(args.metadata ?? {}),
         plannerParallelismCap: parallelismCap,
         depthTier: depthConfig.tier,
+        executionPolicy: policy,
         depthConfig: {
           maxParallelWorkers: depthConfig.execution.maxParallelWorkers,
           evaluateEveryStep: depthConfig.evaluation.evaluateEveryStep,
@@ -3298,8 +4571,9 @@ export function createAiOrchestratorService(args: {
       }
     });
 
-    // Cache depth config for this run
+    // Cache depth config and policy for this run
     runDepthConfigs.set(started.run.id, depthConfig);
+    runPolicies.set(started.run.id, policy);
 
     const plannerMeta = (() => {
       const metadata = getMissionMetadata(missionId);
@@ -3424,6 +4698,7 @@ export function createAiOrchestratorService(args: {
     const projectedStepCount = projectSteeringDirectiveToActiveSteps(directive);
 
     const resolvedInterventions: string[] = [];
+    const resumedRunIds = new Set<string>();
     const refreshedMission = missionService.get(missionId);
     const openManualInput = refreshedMission?.interventions.filter((entry) => entry.status === "open" && entry.interventionType === "manual_input") ?? [];
     for (const intervention of openManualInput) {
@@ -3438,20 +4713,75 @@ export function createAiOrchestratorService(args: {
         const meta = isRecord(intervention.metadata) ? intervention.metadata : null;
         const runId = typeof meta?.runId === "string" ? meta.runId : "";
         if (runId.length > 0) {
+          const threadId = typeof meta?.threadId === "string" ? meta.threadId.trim() : "";
+          const replyTo = typeof meta?.messageId === "string" ? meta.messageId.trim() : "";
+          const questionReplyLink =
+            threadId.length > 0 && replyTo.length > 0
+              ? buildQuestionReplyLink({
+                  threadId,
+                  replyTo,
+                  interventionId: intervention.id,
+                  directive: directive.directive
+                })
+              : null;
           recordRuntimeEvent({
             runId,
             stepId: typeof meta?.stepId === "string" ? meta.stepId : null,
             attemptId: typeof meta?.attemptId === "string" ? meta.attemptId : null,
             sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
             eventType: "intervention_resolved",
-            eventKey: `intervention_resolved:${intervention.id}:${directive.priority}`,
+            eventKey: questionReplyLink?.messageId ?? `intervention_resolved:${intervention.id}:${directive.priority}`,
             payload: {
               interventionId: intervention.id,
               reason: "steering_directive",
               priority: directive.priority,
-              directive: clipTextForContext(directive.directive, 220)
+              directive: clipTextForContext(directive.directive, 220),
+              threadId: questionReplyLink?.threadId ?? null,
+              messageId: questionReplyLink?.messageId ?? null,
+              replyTo: questionReplyLink?.replyTo ?? null
             }
           });
+          if (questionReplyLink) {
+            recordRuntimeEvent({
+              runId,
+              stepId: typeof meta?.stepId === "string" ? meta.stepId : null,
+              attemptId: typeof meta?.attemptId === "string" ? meta.attemptId : null,
+              sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
+              eventType: "progress",
+              eventKey: `question_resumed:${questionReplyLink.messageId}`,
+              payload: {
+                transition: "question_answered_resume",
+                source: "steering_directive",
+                threadId: questionReplyLink.threadId,
+                messageId: questionReplyLink.messageId,
+                replyTo: questionReplyLink.replyTo
+              }
+            });
+          }
+          const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
+          const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
+          if (attemptId.length > 0 && stepId.length > 0) {
+            const existingWorker = workerStates.get(attemptId);
+            const executorKindRaw = typeof meta?.executorKind === "string" ? meta.executorKind : null;
+            const executorKind: OrchestratorExecutorKind =
+              existingWorker?.executorKind
+                ?? (executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
+                  ? executorKindRaw
+                  : "manual");
+            upsertWorkerState(attemptId, {
+              runId,
+              stepId,
+              sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
+              executorKind,
+              state: "working"
+            });
+            const tracker = ensureAttemptRuntimeTracker(attemptId);
+            if (questionReplyLink) {
+              tracker.lastQuestionThreadId = questionReplyLink.threadId;
+              tracker.lastQuestionMessageId = questionReplyLink.messageId;
+            }
+          }
+          resumedRunIds.add(runId);
         }
       } catch (error) {
         logger.debug("ai_orchestrator.steer_resolve_intervention_failed", {
@@ -3462,6 +4792,12 @@ export function createAiOrchestratorService(args: {
       }
     }
     if (resolvedInterventions.length > 0) {
+      for (const runId of resumedRunIds) {
+        void orchestratorService.startReadyAutopilotAttempts({
+          runId,
+          reason: "question_answered_resume"
+        }).catch(() => {});
+      }
       emitOrchestratorMessage(
         missionId,
         `Applied steering and resolved ${resolvedInterventions.length} waiting-input intervention${resolvedInterventions.length === 1 ? "" : "s"}.`,
@@ -3484,69 +4820,2247 @@ export function createAiOrchestratorService(args: {
     return resolveMissionDepthConfig(depthArgs.tier);
   };
 
-  const sendChat = (chatArgs: SendOrchestratorChatArgs): OrchestratorChatMessage => {
-    const msg: OrchestratorChatMessage = {
+  const createContextCheckpoint = (args: {
+    missionId: string;
+    runId?: string | null;
+    trigger: OrchestratorContextCheckpoint["trigger"];
+    summary: string;
+    source: OrchestratorContextCheckpoint["source"];
+  }): OrchestratorContextCheckpoint | null => {
+    const missionIdentity = getMissionIdentity(args.missionId);
+    if (!missionIdentity) return null;
+    const checkpoint: OrchestratorContextCheckpoint = {
       id: randomUUID(),
-      missionId: chatArgs.missionId,
-      role: "user",
-      content: chatArgs.content,
-      timestamp: new Date().toISOString(),
-      stepKey: null,
-      metadata: null
+      missionId: args.missionId,
+      runId: args.runId ?? null,
+      trigger: args.trigger,
+      summary: args.summary,
+      source: {
+        digestCount: Math.max(0, Math.floor(Number(args.source.digestCount) || 0)),
+        chatMessageCount: Math.max(0, Math.floor(Number(args.source.chatMessageCount) || 0)),
+        compressedMessageCount: Math.max(0, Math.floor(Number(args.source.compressedMessageCount) || 0))
+      },
+      createdAt: nowIso()
     };
-    appendChatMessage(msg);
-    const recentChatContext = formatRecentChatContext(chatMessages.get(chatArgs.missionId) ?? [msg]);
-    const statusIntent = /\b(status|progress|stuck|heartbeat|worker|lane)\b/i.test(chatArgs.content);
+    db.run(
+      `
+        insert into orchestrator_context_checkpoints(
+          id,
+          project_id,
+          mission_id,
+          run_id,
+          trigger,
+          summary,
+          source_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        checkpoint.id,
+        missionIdentity.projectId,
+        checkpoint.missionId,
+        checkpoint.runId,
+        checkpoint.trigger,
+        checkpoint.summary,
+        JSON.stringify(checkpoint.source),
+        checkpoint.createdAt
+      ]
+    );
+    return checkpoint;
+  };
+
+  const recordLaneDecision = (args: {
+    missionId: string;
+    runId?: string | null;
+    stepId?: string | null;
+    stepKey?: string | null;
+    laneId?: string | null;
+    decisionType: OrchestratorLaneDecision["decisionType"];
+    validatorOutcome: OrchestratorLaneDecision["validatorOutcome"];
+    ruleHits?: string[];
+    rationale: string;
+    metadata?: Record<string, unknown> | null;
+  }): OrchestratorLaneDecision | null => {
+    const missionIdentity = getMissionIdentity(args.missionId);
+    if (!missionIdentity) return null;
+    const decision: OrchestratorLaneDecision = {
+      id: randomUUID(),
+      missionId: args.missionId,
+      runId: args.runId ?? null,
+      stepId: args.stepId ?? null,
+      stepKey: args.stepKey ?? null,
+      laneId: args.laneId ?? null,
+      decisionType: args.decisionType,
+      validatorOutcome: args.validatorOutcome,
+      ruleHits: Array.isArray(args.ruleHits) ? args.ruleHits.slice(0, 64) : [],
+      rationale: args.rationale,
+      metadata: args.metadata ?? null,
+      createdAt: nowIso()
+    };
+    db.run(
+      `
+        insert into orchestrator_lane_decisions(
+          id,
+          project_id,
+          mission_id,
+          run_id,
+          step_id,
+          step_key,
+          lane_id,
+          decision_type,
+          validator_outcome,
+          rule_hits_json,
+          rationale,
+          metadata_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        decision.id,
+        missionIdentity.projectId,
+        decision.missionId,
+        decision.runId,
+        decision.stepId,
+        decision.stepKey,
+        decision.laneId,
+        decision.decisionType,
+        decision.validatorOutcome,
+        JSON.stringify(decision.ruleHits),
+        decision.rationale,
+        decision.metadata ? JSON.stringify(decision.metadata) : null,
+        decision.createdAt
+      ]
+    );
+    return decision;
+  };
+
+  const recordMissionMetricSample = (args: {
+    missionId: string;
+    runId?: string | null;
+    attemptId?: string | null;
+    metric: MissionMetricToggle | string;
+    value: number;
+    unit?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): MissionMetricSample | null => {
+    const missionIdentity = getMissionIdentity(args.missionId);
+    if (!missionIdentity) return null;
+    const numericValue = Number(args.value);
+    if (!Number.isFinite(numericValue)) return null;
+    const sample: MissionMetricSample = {
+      id: randomUUID(),
+      missionId: args.missionId,
+      runId: args.runId ?? null,
+      attemptId: args.attemptId ?? null,
+      metric: args.metric,
+      value: numericValue,
+      unit: args.unit ?? null,
+      metadata: args.metadata ?? null,
+      createdAt: nowIso()
+    };
+    db.run(
+      `
+        insert into orchestrator_metrics_samples(
+          id,
+          project_id,
+          mission_id,
+          run_id,
+          attempt_id,
+          metric,
+          value,
+          unit,
+          metadata_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        sample.id,
+        missionIdentity.projectId,
+        sample.missionId,
+        sample.runId,
+        sample.attemptId,
+        sample.metric,
+        sample.value,
+        sample.unit,
+        sample.metadata ? JSON.stringify(sample.metadata) : null,
+        sample.createdAt
+      ]
+    );
+    emitThreadEvent({
+      type: "metrics_updated",
+      missionId: sample.missionId,
+      runId: sample.runId ?? null,
+      reason: "metric_sample",
+      metadata: {
+        metric: sample.metric,
+        sampleId: sample.id
+      }
+    });
+    return sample;
+  };
+
+  const normalizeDeliveryError = (error: unknown): string => {
+    if (error instanceof Error && error.message.trim().length > 0) return error.message.trim();
+    return String(error ?? "Unknown delivery failure");
+  };
+
+  const isBusyDeliveryError = (errorMessage: string): boolean => {
+    const normalized = errorMessage.toLowerCase();
+    return normalized.includes("turn is already active")
+      || normalized.includes("already active")
+      || normalized.includes("busy");
+  };
+
+  const isNoActiveTurnError = (errorMessage: string): boolean => {
+    return /\bno active turn\b/i.test(errorMessage);
+  };
+
+  const computeWorkerRetryBackoffMs = (retryCount: number): number => {
+    const exponent = Math.max(0, retryCount - 1);
+    return Math.min(
+      WORKER_MESSAGE_RETRY_BACKOFF_MAX_MS,
+      WORKER_MESSAGE_RETRY_BACKOFF_BASE_MS * (2 ** exponent)
+    );
+  };
+
+  const readWorkerDeliveryMetadata = (message: OrchestratorChatMessage): {
+    metadata: Record<string, unknown>;
+    workerDelivery: Record<string, unknown>;
+    retries: number;
+    maxRetries: number;
+    nextRetryAtMs: number | null;
+    interventionId: string | null;
+    agentSessionId: string | null;
+    inFlightAttemptId: string | null;
+    inFlightAtMs: number | null;
+    inFlightSessionId: string | null;
+  } => {
+    const metadata = isRecord(message.metadata) ? { ...message.metadata } : {};
+    const workerDelivery = isRecord(metadata.workerDelivery) ? { ...(metadata.workerDelivery as Record<string, unknown>) } : {};
+    const retries = Number.isFinite(Number(workerDelivery.retries))
+      ? Math.max(0, Math.floor(Number(workerDelivery.retries)))
+      : 0;
+    const maxRetries = Number.isFinite(Number(workerDelivery.maxRetries))
+      ? Math.max(1, Math.floor(Number(workerDelivery.maxRetries)))
+      : WORKER_MESSAGE_RETRY_BUDGET;
+    const nextRetryAtRaw = typeof workerDelivery.nextRetryAt === "string" ? workerDelivery.nextRetryAt : "";
+    const parsedNextRetryAt = nextRetryAtRaw ? Date.parse(nextRetryAtRaw) : Number.NaN;
+    const interventionId = typeof workerDelivery.interventionId === "string" && workerDelivery.interventionId.trim().length > 0
+      ? workerDelivery.interventionId.trim()
+      : null;
+    const agentSessionId = typeof workerDelivery.agentSessionId === "string" && workerDelivery.agentSessionId.trim().length > 0
+      ? workerDelivery.agentSessionId.trim()
+      : null;
+    const inFlightAttemptId = typeof workerDelivery.inFlightAttemptId === "string" && workerDelivery.inFlightAttemptId.trim().length > 0
+      ? workerDelivery.inFlightAttemptId.trim()
+      : null;
+    const inFlightAtRaw = typeof workerDelivery.inFlightAt === "string" ? workerDelivery.inFlightAt : "";
+    const parsedInFlightAt = inFlightAtRaw ? Date.parse(inFlightAtRaw) : Number.NaN;
+    const inFlightSessionId = typeof workerDelivery.inFlightSessionId === "string" && workerDelivery.inFlightSessionId.trim().length > 0
+      ? workerDelivery.inFlightSessionId.trim()
+      : null;
+    return {
+      metadata,
+      workerDelivery,
+      retries,
+      maxRetries,
+      nextRetryAtMs: Number.isFinite(parsedNextRetryAt) ? parsedNextRetryAt : null,
+      interventionId,
+      agentSessionId,
+      inFlightAttemptId,
+      inFlightAtMs: Number.isFinite(parsedInFlightAt) ? parsedInFlightAt : null,
+      inFlightSessionId
+    };
+  };
+
+  const selectAttemptDeliveryContext = (whereClause: string, params: Array<string | null>): {
+    attempt_id: string;
+    run_id: string;
+    step_id: string;
+    step_key: string | null;
+    lane_id: string | null;
+    session_id: string | null;
+    session_status: string | null;
+    session_tool_type: string | null;
+    executor_kind: string | null;
+  } | null => {
+    return db.get<{
+      attempt_id: string;
+      run_id: string;
+      step_id: string;
+      step_key: string | null;
+      lane_id: string | null;
+      session_id: string | null;
+      session_status: string | null;
+      session_tool_type: string | null;
+      executor_kind: string | null;
+    }>(
+      `
+        select
+          a.id as attempt_id,
+          a.run_id as run_id,
+          a.step_id as step_id,
+          s.step_key as step_key,
+          s.lane_id as lane_id,
+          a.executor_session_id as session_id,
+          ts.status as session_status,
+          ts.tool_type as session_tool_type,
+          a.executor_kind as executor_kind
+        from orchestrator_attempts a
+        left join orchestrator_steps s on s.id = a.step_id
+        left join terminal_sessions ts on ts.id = a.executor_session_id
+        where ${whereClause}
+        order by
+          case a.status
+            when 'running' then 0
+            when 'queued' then 1
+            when 'blocked' then 2
+            else 3
+          end,
+          a.attempt_number desc,
+          a.created_at desc
+        limit 1
+      `,
+      params
+    );
+  };
+
+  const resolveWorkerDeliveryContext = (message: OrchestratorChatMessage): WorkerDeliveryContext | null => {
+    const thread = message.threadId ? getThreadById(message.missionId, message.threadId) : null;
+    const baseTarget = message.target?.kind === "worker"
+      ? message.target
+      : thread?.threadType === "worker"
+        ? {
+            kind: "worker" as const,
+            runId: thread.runId ?? null,
+            stepId: thread.stepId ?? null,
+            stepKey: thread.stepKey ?? null,
+            attemptId: thread.attemptId ?? null,
+            sessionId: thread.sessionId ?? null,
+            laneId: thread.laneId ?? null
+          }
+        : null;
+    if (!baseTarget) return null;
+
+    const attemptCandidates = [
+      toOptionalString(baseTarget.attemptId),
+      toOptionalString(message.attemptId),
+      toOptionalString(thread?.attemptId)
+    ].filter((value): value is string => !!value);
+    let attemptContext: ReturnType<typeof selectAttemptDeliveryContext> = null;
+    for (const attemptId of attemptCandidates) {
+      attemptContext = selectAttemptDeliveryContext(`a.id = ?`, [attemptId]);
+      if (attemptContext) break;
+    }
+
+    const sessionCandidates = [
+      toOptionalString(baseTarget.sessionId),
+      toOptionalString(message.sourceSessionId),
+      toOptionalString(thread?.sessionId)
+    ].filter((value): value is string => !!value);
+    if (!attemptContext) {
+      for (const sessionId of sessionCandidates) {
+        attemptContext = selectAttemptDeliveryContext(`a.executor_session_id = ?`, [sessionId]);
+        if (attemptContext) break;
+      }
+    }
+    if (!attemptContext) {
+      const runId = toOptionalString(baseTarget.runId) ?? toOptionalString(thread?.runId) ?? toOptionalString(message.runId);
+      const stepId = toOptionalString(baseTarget.stepId) ?? toOptionalString(thread?.stepId);
+      if (runId && stepId) {
+        attemptContext = selectAttemptDeliveryContext(`a.run_id = ? and a.step_id = ?`, [runId, stepId]);
+      }
+      if (!attemptContext && runId) {
+        const stepKey = toOptionalString(baseTarget.stepKey) ?? toOptionalString(thread?.stepKey) ?? toOptionalString(message.stepKey);
+        if (stepKey) {
+          attemptContext = selectAttemptDeliveryContext(`a.run_id = ? and s.step_key = ?`, [runId, stepKey]);
+        }
+      }
+    }
+    if (!attemptContext) {
+      const laneId = toOptionalString(baseTarget.laneId) ?? toOptionalString(thread?.laneId) ?? toOptionalString(message.laneId);
+      if (laneId) {
+        attemptContext = selectAttemptDeliveryContext(`s.lane_id = ? and a.executor_session_id is not null`, [laneId]);
+      }
+    }
+
+    const runId =
+      toOptionalString(baseTarget.runId)
+      ?? toOptionalString(thread?.runId)
+      ?? toOptionalString(message.runId)
+      ?? toOptionalString(attemptContext?.run_id)
+      ?? null;
+    const stepId =
+      toOptionalString(baseTarget.stepId)
+      ?? toOptionalString(thread?.stepId)
+      ?? toOptionalString(attemptContext?.step_id)
+      ?? null;
+    const stepKey =
+      toOptionalString(baseTarget.stepKey)
+      ?? toOptionalString(thread?.stepKey)
+      ?? toOptionalString(message.stepKey)
+      ?? toOptionalString(attemptContext?.step_key)
+      ?? null;
+    const attemptId =
+      toOptionalString(baseTarget.attemptId)
+      ?? toOptionalString(message.attemptId)
+      ?? toOptionalString(thread?.attemptId)
+      ?? toOptionalString(attemptContext?.attempt_id)
+      ?? null;
+    const laneId =
+      toOptionalString(baseTarget.laneId)
+      ?? toOptionalString(thread?.laneId)
+      ?? toOptionalString(message.laneId)
+      ?? toOptionalString(attemptContext?.lane_id)
+      ?? null;
+    const sessionId =
+      toOptionalString(baseTarget.sessionId)
+      ?? toOptionalString(message.sourceSessionId)
+      ?? toOptionalString(thread?.sessionId)
+      ?? toOptionalString(attemptContext?.session_id)
+      ?? null;
+    const sessionStatusFromDb = toOptionalString(attemptContext?.session_status)?.toLowerCase() ?? null;
+    const trackedSessionStatus = sessionId
+      ? toOptionalString(getTrackedSessionState(sessionId)?.status)?.toLowerCase() ?? null
+      : null;
+    const sessionStatus = sessionStatusFromDb ?? trackedSessionStatus;
+    const sessionToolType = toOptionalString(attemptContext?.session_tool_type) ?? null;
+    const executorKindRaw = toOptionalString(attemptContext?.executor_kind);
+    const executorKind: OrchestratorExecutorKind | null =
+      executorKindRaw === "claude" || executorKindRaw === "codex" || executorKindRaw === "shell" || executorKindRaw === "manual"
+        ? executorKindRaw
+        : null;
+    const resolvedTarget: Extract<OrchestratorChatTarget, { kind: "worker" }> = {
+      kind: "worker",
+      runId,
+      stepId,
+      stepKey,
+      attemptId,
+      sessionId,
+      laneId
+    };
+    return {
+      missionId: message.missionId,
+      threadId: message.threadId ?? missionThreadId(message.missionId),
+      target: resolvedTarget,
+      runId,
+      stepId,
+      stepKey,
+      attemptId,
+      laneId,
+      sessionId,
+      sessionStatus,
+      sessionToolType,
+      executorKind
+    };
+  };
+
+  const persistThreadWorkerLinks = (context: WorkerDeliveryContext) => {
+    db.run(
+      `
+        update orchestrator_chat_threads
+        set
+          run_id = coalesce(?, run_id),
+          step_id = coalesce(?, step_id),
+          step_key = coalesce(?, step_key),
+          attempt_id = coalesce(?, attempt_id),
+          session_id = coalesce(?, session_id),
+          lane_id = coalesce(?, lane_id),
+          updated_at = ?
+        where mission_id = ?
+          and id = ?
+      `,
+      [
+        context.runId,
+        context.stepId,
+        context.stepKey,
+        context.attemptId,
+        context.sessionId,
+        context.laneId,
+        nowIso(),
+        context.missionId,
+        context.threadId
+      ]
+    );
+  };
+
+  const upsertWorkerDeliveryIntervention = (args: {
+    message: OrchestratorChatMessage;
+    context: WorkerDeliveryContext | null;
+    retries: number;
+    error: string;
+  }): string | null => {
+    const cooldownKey = args.message.id;
+    const nowMs = Date.now();
+    const lastMs = workerDeliveryInterventionCooldowns.get(cooldownKey) ?? 0;
+    if (nowMs - lastMs < WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS) {
+      return null;
+    }
+    const mission = missionService.get(args.message.missionId);
+    if (!mission) return null;
+    if (mission.status === "queued") {
+      try {
+        missionService.update({
+          missionId: args.message.missionId,
+          status: "in_progress"
+        });
+      } catch (error) {
+        logger.debug("ai_orchestrator.worker_delivery_promote_mission_failed", {
+          missionId: args.message.missionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    const existing = mission.interventions.find((entry) => {
+      if (entry.status !== "open") return false;
+      if (!isRecord(entry.metadata)) return false;
+      return entry.metadata.sourceMessageId === args.message.id;
+    });
+    if (existing) {
+      workerDeliveryInterventionCooldowns.set(cooldownKey, nowMs);
+      return existing.id;
+    }
+
+    const workerLabel =
+      toOptionalString(args.context?.stepKey)
+      ?? toOptionalString(args.context?.attemptId)
+      ?? toOptionalString(args.context?.sessionId)
+      ?? "worker";
+    const intervention = missionService.addIntervention({
+      missionId: args.message.missionId,
+      interventionType: "manual_input",
+      title: `Worker delivery blocked: ${workerLabel}`,
+      body: `Could not deliver operator guidance to ${workerLabel} after ${args.retries} retries. Latest error: ${args.error}`,
+      requestedAction: "Open the worker thread and resend guidance once the worker session is available.",
+      laneId: args.context?.laneId ?? args.message.laneId ?? null,
+      metadata: {
+        sourceMessageId: args.message.id,
+        threadId: args.message.threadId ?? null,
+        attemptId: args.context?.attemptId ?? args.message.attemptId ?? null,
+        sessionId: args.context?.sessionId ?? args.message.sourceSessionId ?? null,
+        runId: args.context?.runId ?? args.message.runId ?? null,
+        workerDeliveryFailure: true
+      }
+    });
+    workerDeliveryInterventionCooldowns.set(cooldownKey, nowMs);
+    if (args.context?.runId) {
+      recordRuntimeEvent({
+        runId: args.context.runId,
+        stepId: args.context.stepId,
+        attemptId: args.context.attemptId,
+        sessionId: args.context.sessionId,
+        eventType: "intervention_opened",
+        eventKey: `worker_delivery_intervention:${intervention.id}`,
+        payload: {
+          interventionId: intervention.id,
+          sourceMessageId: args.message.id,
+          retries: args.retries,
+          error: args.error
+        }
+      });
+    }
+    emitOrchestratorMessage(
+      args.message.missionId,
+      `Worker guidance could not be delivered after ${args.retries} retries. I opened intervention "${intervention.title}" so you can recover it deterministically.`,
+      args.context?.stepKey ?? args.message.stepKey ?? null,
+      {
+        sourceMessageId: args.message.id,
+        interventionId: intervention.id,
+        retries: args.retries
+      }
+    );
+    return intervention.id;
+  };
+
+  const updateWorkerDeliveryState = (args: {
+    message: OrchestratorChatMessage;
+    context: WorkerDeliveryContext | null;
+    state: OrchestratorChatDeliveryState;
+    retries: number;
+    maxRetries: number;
+    error: string | null;
+    method: "send" | "steer" | "queued" | "failed";
+    nextRetryAt: string | null;
+    interventionId?: string | null;
+    deliverySessionId?: string | null;
+  }): OrchestratorChatMessage => {
+    const updated = updateChatMessage(args.message.id, (current) => {
+      const deliveryMeta = readWorkerDeliveryMetadata(current);
+      const metadata = deliveryMeta.metadata;
+      metadata.workerDelivery = {
+        ...(deliveryMeta.workerDelivery ?? {}),
+        retries: args.retries,
+        maxRetries: args.maxRetries,
+        lastAttemptAt: nowIso(),
+        lastMethod: args.method,
+        lastError: args.error,
+        nextRetryAt: args.nextRetryAt,
+        deliveredAt: args.state === "delivered" ? nowIso() : null,
+        interventionId: args.interventionId ?? deliveryMeta.interventionId ?? null,
+        agentSessionId: args.deliverySessionId ?? deliveryMeta.agentSessionId ?? null,
+        inFlightAttemptId: null,
+        inFlightAt: null,
+        inFlightSessionId: null
+      };
+      const contextTarget = args.context?.target ?? (current.target?.kind === "worker" ? current.target : null);
+      const target =
+        contextTarget && contextTarget.kind === "worker"
+          ? {
+              ...contextTarget,
+              sessionId: args.deliverySessionId ?? contextTarget.sessionId ?? null
+            }
+          : contextTarget;
+      return {
+        ...current,
+        target,
+        deliveryState: args.state,
+        sourceSessionId: args.deliverySessionId ?? args.context?.sessionId ?? current.sourceSessionId ?? null,
+        attemptId: args.context?.attemptId ?? current.attemptId ?? null,
+        laneId: args.context?.laneId ?? current.laneId ?? null,
+        runId: args.context?.runId ?? current.runId ?? null,
+        stepKey: args.context?.stepKey ?? current.stepKey ?? null,
+        metadata
+      };
+    });
+    return updated ?? args.message;
+  };
+
+  const markWorkerDeliveryInFlight = (args: {
+    message: OrchestratorChatMessage;
+    context: WorkerDeliveryContext | null;
+    retries: number;
+    maxRetries: number;
+    deliverySessionId: string;
+  }): OrchestratorChatMessage => {
+    const inFlightAttemptId = `${args.message.id}:attempt:${args.retries + 1}`;
+    const updated = updateChatMessage(args.message.id, (current) => {
+      const deliveryMeta = readWorkerDeliveryMetadata(current);
+      const metadata = deliveryMeta.metadata;
+      metadata.workerDelivery = {
+        ...(deliveryMeta.workerDelivery ?? {}),
+        retries: args.retries,
+        maxRetries: args.maxRetries,
+        lastAttemptAt: nowIso(),
+        lastMethod: "attempt",
+        lastError: null,
+        nextRetryAt: null,
+        deliveredAt: null,
+        interventionId: deliveryMeta.interventionId ?? null,
+        agentSessionId: args.deliverySessionId,
+        inFlightAttemptId,
+        inFlightAt: nowIso(),
+        inFlightSessionId: args.deliverySessionId
+      };
+      const contextTarget = args.context?.target ?? (current.target?.kind === "worker" ? current.target : null);
+      const target =
+        contextTarget && contextTarget.kind === "worker"
+          ? {
+              ...contextTarget,
+              sessionId: args.deliverySessionId
+            }
+          : contextTarget;
+      return {
+        ...current,
+        target,
+        deliveryState: "queued",
+        sourceSessionId: args.deliverySessionId,
+        attemptId: args.context?.attemptId ?? current.attemptId ?? null,
+        laneId: args.context?.laneId ?? current.laneId ?? null,
+        runId: args.context?.runId ?? current.runId ?? null,
+        stepKey: args.context?.stepKey ?? current.stepKey ?? null,
+        metadata
+      };
+    });
+    return updated ?? args.message;
+  };
+
+  const failWorkerDeliveryStaleInFlight = (args: {
+    message: OrchestratorChatMessage;
+    context: WorkerDeliveryContext | null;
+    retries: number;
+    maxRetries: number;
+    ageMs: number;
+  }): OrchestratorChatMessage => {
+    const ageSeconds = Math.max(1, Math.floor(args.ageMs / 1_000));
+    const error = `Delivery attempt remained in-flight for ${ageSeconds}s without confirmation; marking failed to avoid duplicate worker injection.`;
+    const interventionId = upsertWorkerDeliveryIntervention({
+      message: args.message,
+      context: args.context,
+      retries: Math.max(args.retries, args.maxRetries),
+      error
+    });
+    const failed = updateWorkerDeliveryState({
+      message: args.message,
+      context: args.context,
+      state: "failed",
+      retries: Math.max(args.retries, args.maxRetries),
+      maxRetries: args.maxRetries,
+      error,
+      method: "failed",
+      nextRetryAt: null,
+      interventionId
+    });
+    emitThreadEvent({
+      type: "worker_replay",
+      missionId: failed.missionId,
+      threadId: failed.threadId ?? missionThreadId(failed.missionId),
+      messageId: failed.id,
+      runId: failed.runId ?? null,
+      reason: "stale_inflight_failed"
+    });
+    return failed;
+  };
+
+  const resolveWorkerDeliverySession = async (args: {
+    message: OrchestratorChatMessage;
+    context: WorkerDeliveryContext | null;
+    deliveryMeta: ReturnType<typeof readWorkerDeliveryMetadata>;
+  }): Promise<WorkerDeliverySessionResolution> => {
+    const providerHint =
+      parseWorkerProviderHint(args.context?.executorKind)
+      ?? parseWorkerProviderHint(args.context?.sessionToolType)
+      ?? parseWorkerProviderHint(args.message.target?.kind === "worker" ? args.message.target.sessionId : null)
+      ?? parseWorkerProviderHint(args.message.sourceSessionId)
+      ?? null;
+    if (!agentChatService) {
+      return {
+        sessionId: null,
+        source: "mapped",
+        providerHint,
+        summary: null,
+        error: "Agent chat service unavailable."
+      };
+    }
+    const laneId = toOptionalString(args.context?.laneId) ?? toOptionalString(args.message.laneId);
+    const sessions = await agentChatService.listSessions(laneId ?? undefined);
+    const byId = new Map<string, AgentChatSessionSummaryEntry>();
+    for (const summary of sessions) {
+      const sessionId = toOptionalString(summary.sessionId);
+      if (!sessionId) continue;
+      byId.set(sessionId, summary);
+    }
+
+    const stickySessionId = toOptionalString(args.deliveryMeta.agentSessionId);
+    if (stickySessionId) {
+      const sticky = byId.get(stickySessionId);
+      if (sticky) {
+        return {
+          sessionId: sticky.sessionId,
+          source: "sticky",
+          providerHint: parseWorkerProviderHint(sticky.provider) ?? providerHint,
+          summary: sticky,
+          error: null
+        };
+      }
+    }
+
+    const directCandidates = [
+      toOptionalString(args.context?.sessionId),
+      toOptionalString(args.message.sourceSessionId)
+    ].filter((value): value is string => !!value);
+    for (const candidate of directCandidates) {
+      const summary = byId.get(candidate);
+      if (!summary) continue;
+      return {
+        sessionId: summary.sessionId,
+        source: "mapped",
+        providerHint: parseWorkerProviderHint(summary.provider) ?? providerHint,
+        summary,
+        error: null
+      };
+    }
+
+    if (!laneId) {
+      return {
+        sessionId: null,
+        source: "lane_fallback",
+        providerHint,
+        summary: null,
+        error: "No lane is mapped for this worker thread, so fallback delivery cannot choose a safe chat session."
+      };
+    }
+
+    const providerScoped = providerHint
+      ? sessions.filter((entry) => entry.provider === providerHint)
+      : sessions;
+    const activeProviderScoped = providerScoped.filter((entry) => entry.status !== "ended");
+    if (activeProviderScoped.length === 1) {
+      return {
+        sessionId: activeProviderScoped[0].sessionId,
+        source: "lane_fallback",
+        providerHint,
+        summary: activeProviderScoped[0],
+        error: null
+      };
+    }
+    if (activeProviderScoped.length > 1) {
+      return {
+        sessionId: null,
+        source: "lane_fallback",
+        providerHint,
+        summary: null,
+        error: "Multiple active worker chat sessions are available for this lane; specify a worker session target to avoid misdelivery."
+      };
+    }
+    if (providerScoped.length === 1) {
+      return {
+        sessionId: providerScoped[0].sessionId,
+        source: "lane_fallback",
+        providerHint,
+        summary: providerScoped[0],
+        error: null
+      };
+    }
+    if (providerScoped.length > 1) {
+      return {
+        sessionId: null,
+        source: "lane_fallback",
+        providerHint,
+        summary: null,
+        error: "Multiple worker chat sessions were found, but none are active. Resume a specific session or target one directly."
+      };
+    }
+
+    return {
+      sessionId: null,
+      source: "lane_fallback",
+      providerHint,
+      summary: null,
+      error: "No worker agent-chat session is currently mapped to this thread."
+    };
+  };
+
+  const sendWorkerMessageToSession = async (sessionId: string, text: string): Promise<"send" | "steer"> => {
+    if (!agentChatService) {
+      throw new Error("Agent chat service unavailable.");
+    }
+    try {
+      await agentChatService.sendMessage({
+        sessionId,
+        text
+      });
+      return "send";
+    } catch (error) {
+      const sendError = normalizeDeliveryError(error);
+      if (!isBusyDeliveryError(sendError)) {
+        throw error;
+      }
+      try {
+        await agentChatService.steer({
+          sessionId,
+          text
+        });
+        return "steer";
+      } catch (steerError) {
+        const steerText = normalizeDeliveryError(steerError);
+        if (isNoActiveTurnError(steerText)) {
+          await agentChatService.sendMessage({
+            sessionId,
+            text
+          });
+          return "send";
+        }
+        throw steerError;
+      }
+    }
+  };
+
+  const deliverWorkerMessage = async (
+    message: OrchestratorChatMessage,
+    options?: { ignoreBackoff?: boolean }
+  ): Promise<OrchestratorChatMessage> => {
+    if (disposed) return message;
+    const contextBase = resolveWorkerDeliveryContext(message);
+    if (contextBase) {
+      persistThreadWorkerLinks(contextBase);
+    }
+    const deliveryMeta = readWorkerDeliveryMetadata(message);
+    if (!options?.ignoreBackoff && deliveryMeta.nextRetryAtMs != null && Date.now() < deliveryMeta.nextRetryAtMs) {
+      return message;
+    }
+    if (deliveryMeta.inFlightAttemptId && deliveryMeta.inFlightAtMs != null) {
+      const inFlightAgeMs = Date.now() - deliveryMeta.inFlightAtMs;
+      if (inFlightAgeMs < WORKER_MESSAGE_INFLIGHT_LEASE_MS) {
+        return message;
+      }
+      if (inFlightAgeMs >= WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS) {
+        return failWorkerDeliveryStaleInFlight({
+          message,
+          context: contextBase,
+          retries: Math.max(deliveryMeta.retries + 1, deliveryMeta.maxRetries),
+          maxRetries: deliveryMeta.maxRetries,
+          ageMs: inFlightAgeMs
+        });
+      }
+    }
+
+    if (!agentChatService) {
+      return updateWorkerDeliveryState({
+        message,
+        context: contextBase,
+        state: "queued",
+        retries: deliveryMeta.retries,
+        maxRetries: deliveryMeta.maxRetries,
+        error: "Agent chat service is unavailable.",
+        method: "queued",
+        nextRetryAt: null
+      });
+    }
+
+    let context: WorkerDeliveryContext | null = contextBase;
+    let workingMessage = message;
+    try {
+      const sessionResolution = await resolveWorkerDeliverySession({
+        message,
+        context: contextBase,
+        deliveryMeta
+      });
+      const resolvedSessionId = toOptionalString(sessionResolution.sessionId);
+      context =
+        contextBase && resolvedSessionId
+          ? {
+              ...contextBase,
+              sessionId: resolvedSessionId,
+              target: {
+                ...contextBase.target,
+                sessionId: resolvedSessionId
+              }
+            }
+          : contextBase;
+
+      if (contextBase && resolvedSessionId && contextBase.sessionId !== resolvedSessionId && context) {
+        persistThreadWorkerLinks(context);
+      }
+      if (resolvedSessionId && sessionResolution.summary?.status === "ended") {
+        try {
+          await agentChatService.resumeSession({ sessionId: resolvedSessionId });
+        } catch {
+          // Best-effort resume path; final delivery attempt below determines state.
+        }
+      }
+
+      const sessionId = resolvedSessionId;
+      if (!sessionId) {
+        throw new Error(sessionResolution.error ?? "No worker session is currently mapped to this thread.");
+      }
+      workingMessage = markWorkerDeliveryInFlight({
+        message,
+        context,
+        retries: deliveryMeta.retries,
+        maxRetries: deliveryMeta.maxRetries,
+        deliverySessionId: sessionId
+      });
+      const deliveryMethod = await sendWorkerMessageToSession(sessionId, message.content);
+      const delivered = updateWorkerDeliveryState({
+        message: workingMessage,
+        context,
+        state: "delivered",
+        retries: deliveryMeta.retries,
+        maxRetries: deliveryMeta.maxRetries,
+        error: null,
+        method: deliveryMethod,
+        nextRetryAt: null,
+        deliverySessionId: sessionId
+      });
+      if (message.deliveryState === "queued" && delivered.deliveryState === "delivered") {
+        const workerLabel =
+          toOptionalString(context?.stepKey)
+          ?? toOptionalString(context?.attemptId)
+          ?? toOptionalString(context?.sessionId)
+          ?? "worker";
+        emitOrchestratorMessage(
+          delivered.missionId,
+          `Delivered queued worker guidance to ${workerLabel}.`,
+          context?.stepKey ?? delivered.stepKey ?? null,
+          {
+            sourceMessageId: delivered.id,
+            threadId: delivered.threadId ?? null,
+            deliveryMethod
+          }
+        );
+      }
+      return delivered;
+    } catch (error) {
+      const failure = normalizeDeliveryError(error);
+      const nextRetries = deliveryMeta.retries + 1;
+      const exhausted = nextRetries >= deliveryMeta.maxRetries;
+      if (exhausted) {
+        const interventionId = upsertWorkerDeliveryIntervention({
+          message: workingMessage,
+          context,
+          retries: nextRetries,
+          error: failure
+        });
+        return updateWorkerDeliveryState({
+          message: workingMessage,
+          context,
+          state: "failed",
+          retries: nextRetries,
+          maxRetries: deliveryMeta.maxRetries,
+          error: failure,
+          method: "failed",
+          nextRetryAt: null,
+          interventionId
+        });
+      }
+      const nextRetryAt = new Date(Date.now() + computeWorkerRetryBackoffMs(nextRetries)).toISOString();
+      return updateWorkerDeliveryState({
+        message: workingMessage,
+        context,
+        state: "queued",
+        retries: nextRetries,
+        maxRetries: deliveryMeta.maxRetries,
+        error: failure,
+        method: "queued",
+        nextRetryAt
+      });
+    }
+  };
+
+  const replayQueuedWorkerMessages = async (args: {
+    reason: string;
+    missionId?: string | null;
+    threadId?: string | null;
+    sessionId?: string | null;
+  }): Promise<{ delivered: number; failed: number; queued: number }> => {
+    if (disposed) return { delivered: 0, failed: 0, queued: 0 };
+    const rows = db.all<{
+      id: string;
+      mission_id: string;
+      role: string;
+      content: string;
+      timestamp: string;
+      step_key: string | null;
+      thread_id: string | null;
+      thread_type: string | null;
+      target_json: string | null;
+      visibility: string | null;
+      delivery_state: string | null;
+      source_session_id: string | null;
+      attempt_id: string | null;
+      lane_id: string | null;
+      run_id: string | null;
+      metadata_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select
+          m.id as id,
+          m.mission_id as mission_id,
+          m.role as role,
+          m.content as content,
+          m.timestamp as timestamp,
+          m.step_key as step_key,
+          m.thread_id as thread_id,
+          t.thread_type as thread_type,
+          m.target_json as target_json,
+          m.visibility as visibility,
+          m.delivery_state as delivery_state,
+          m.source_session_id as source_session_id,
+          m.attempt_id as attempt_id,
+          m.lane_id as lane_id,
+          m.run_id as run_id,
+          m.metadata_json as metadata_json,
+          m.created_at as created_at
+        from orchestrator_chat_messages m
+        left join orchestrator_chat_threads t on t.id = m.thread_id
+        where m.role = 'user'
+          and m.delivery_state = 'queued'
+          and (? is null or m.mission_id = ?)
+          and (? is null or m.thread_id = ?)
+        order by m.timestamp asc, m.created_at asc, m.id asc
+      `,
+      [
+        args.missionId ?? null,
+        args.missionId ?? null,
+        args.threadId ?? null,
+        args.threadId ?? null
+      ]
+    );
+
+    const grouped = new Map<string, OrchestratorChatMessage[]>();
+    for (const row of rows) {
+      const parsed = parseChatMessageRow(row);
+      if (!parsed) continue;
+      const isWorkerThread = row.thread_type === "worker";
+      if (parsed.target?.kind !== "worker" && !isWorkerThread) continue;
+      const key = parsed.threadId ?? missionThreadId(parsed.missionId);
+      const bucket = grouped.get(key) ?? [];
+      bucket.push(parsed);
+      grouped.set(key, bucket);
+    }
+
+    let delivered = 0;
+    let failed = 0;
+    let queued = 0;
+
+    for (const [threadId, messages] of grouped.entries()) {
+      const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
+      const previous = workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
+      const next = previous
+        .catch(() => undefined)
+        .then(async () => {
+          if (disposed) return;
+          for (const candidate of messages) {
+            if (disposed) return;
+            const fresh = getChatMessageById(candidate.id);
+            if (!fresh || fresh.deliveryState !== "queued") continue;
+            const context = resolveWorkerDeliveryContext(fresh);
+            if (args.sessionId) {
+              const signalSessionId = args.sessionId.trim();
+              if (signalSessionId.length > 0) {
+                const mapped = toOptionalString(context?.sessionId) ?? toOptionalString(fresh.sourceSessionId);
+                if (!mapped || mapped !== signalSessionId) continue;
+              }
+            }
+            const updated = await deliverWorkerMessage(fresh, {
+              ignoreBackoff
+            });
+            if (updated.deliveryState === "delivered") {
+              delivered += 1;
+              continue;
+            }
+            if (updated.deliveryState === "failed") {
+              failed += 1;
+              continue;
+            }
+            queued += 1;
+            break;
+          }
+        })
+        .catch((error) => {
+          logger.debug("ai_orchestrator.worker_delivery_replay_failed", {
+            reason: args.reason,
+            threadId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        })
+        .finally(() => {
+          if (workerDeliveryThreadQueues.get(threadId) === next) {
+            workerDeliveryThreadQueues.delete(threadId);
+          }
+        });
+      workerDeliveryThreadQueues.set(threadId, next);
+      await next;
+    }
+
+    if ((delivered > 0 || failed > 0 || queued > 0) && args.missionId) {
+      emitThreadEvent({
+        type: "worker_replay",
+        missionId: args.missionId,
+        threadId: args.threadId ?? null,
+        runId: null,
+        reason: args.reason,
+        metadata: {
+          delivered,
+          failed,
+          queued,
+          sessionId: args.sessionId ?? null
+        }
+      });
+    }
+
+    return { delivered, failed, queued };
+  };
+
+  const routeMessageToCoordinator = (message: OrchestratorChatMessage) => {
+    const chatArgs: SendOrchestratorChatArgs = {
+      missionId: message.missionId,
+      content: message.content,
+      threadId: message.threadId ?? missionThreadId(message.missionId),
+      target: {
+        kind: "coordinator",
+        runId: message.runId ?? null
+      },
+      visibilityMode: message.visibility ?? DEFAULT_CHAT_VISIBILITY,
+      metadata: message.metadata ?? null
+    };
+    const recentChatContext = formatRecentChatContext(chatMessages.get(message.missionId) ?? [message]);
+    const statusIntent = /\b(status|progress|stuck|heartbeat|worker|lane)\b/i.test(message.content);
     if (statusIntent) {
       void (async () => {
+        if (disposed) return;
         try {
           const sweep = await runHealthSweep("chat_status");
-          const summary = summarizeRunForChat(chatArgs.missionId);
+          if (disposed) return;
+          const summary = summarizeRunForChat(message.missionId);
           const recoveryNote =
             sweep.staleRecovered > 0
               ? ` Recovered ${sweep.staleRecovered} stale attempt${sweep.staleRecovered === 1 ? "" : "s"} during health sweep.`
               : "";
-          emitOrchestratorMessage(chatArgs.missionId, `${summary}${recoveryNote}`.trim());
+          emitOrchestratorMessage(message.missionId, `${summary}${recoveryNote}`.trim());
         } catch {
-          emitOrchestratorMessage(chatArgs.missionId, summarizeRunForChat(chatArgs.missionId));
+          if (disposed) return;
+          emitOrchestratorMessage(message.missionId, summarizeRunForChat(message.missionId));
         }
       })();
     }
 
-    // Also store as a steering directive (preserves existing behavior)
     try {
       steerMission({
-        missionId: chatArgs.missionId,
-        directive: chatArgs.content,
-        priority: "instruction"
+        missionId: message.missionId,
+        directive: message.content,
+        priority: "instruction",
+        targetStepKey: message.target?.kind === "worker" ? message.target.stepKey ?? null : null
       });
-    } catch { /* ignore if mission not found */ }
+    } catch {
+      // Ignore missing mission / invalid status transitions and preserve chat UX.
+    }
 
     if (aiIntegrationService && projectRoot) {
       enqueueChatResponse(chatArgs, recentChatContext);
     } else if (!statusIntent) {
       emitOrchestratorMessage(
-        chatArgs.missionId,
+        message.missionId,
         "Directive received. I will apply it at the next planning/evaluation decision point."
       );
     }
+  };
 
+  const routeMessageToWorker = (message: OrchestratorChatMessage) => {
+    const target = message.target && message.target.kind === "worker" ? message.target : null;
+    const workerLabel =
+      toOptionalString(target?.stepKey)
+      ?? toOptionalString(target?.stepId)
+      ?? toOptionalString(target?.attemptId)
+      ?? toOptionalString(target?.sessionId)
+      ?? "worker";
+    const coordinatorDigest =
+      message.visibility === "full"
+        ? `User sent worker guidance to ${workerLabel}: ${clipTextForContext(message.content, 300)}`
+        : `User sent worker guidance to ${workerLabel}.`;
+    emitOrchestratorMessage(
+      message.missionId,
+      coordinatorDigest,
+      target?.stepKey ?? null,
+      {
+        threadId: message.threadId ?? null,
+        sourceMessageId: message.id,
+        visibility: message.visibility ?? DEFAULT_WORKER_CHAT_VISIBILITY,
+        deliveryState: message.deliveryState ?? "queued",
+        target
+      }
+    );
+    if (message.deliveryState === "queued") {
+      emitOrchestratorMessage(
+        message.missionId,
+        `Worker message queued for ${workerLabel}; delivery will resume once the worker session is available.`,
+        target?.stepKey ?? null
+      );
+    } else if (message.deliveryState === "failed") {
+      emitOrchestratorMessage(
+        message.missionId,
+        `Worker message to ${workerLabel} failed delivery and needs intervention.`,
+        target?.stepKey ?? null
+      );
+    }
+  };
+
+  const listChatThreads = (threadArgs: ListOrchestratorChatThreadsArgs): OrchestratorChatThread[] => {
+    ensureMissionThread(threadArgs.missionId);
+    const rows = db.all<{
+      id: string;
+      mission_id: string;
+      thread_type: string;
+      title: string;
+      run_id: string | null;
+      step_id: string | null;
+      step_key: string | null;
+      attempt_id: string | null;
+      session_id: string | null;
+      lane_id: string | null;
+      status: string;
+      unread_count: number | null;
+      metadata_json: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          thread_type,
+          title,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          session_id,
+          lane_id,
+          status,
+          unread_count,
+          metadata_json,
+          created_at,
+          updated_at
+        from orchestrator_chat_threads
+        where mission_id = ?
+          and (? = 1 or status != 'closed')
+        order by updated_at desc, created_at desc
+      `,
+      [threadArgs.missionId, threadArgs.includeClosed === true ? 1 : 0]
+    );
+    return rows.map((row) => parseThreadRow(row));
+  };
+
+  const getThreadMessages = (threadArgs: GetOrchestratorThreadMessagesArgs): OrchestratorChatMessage[] => {
+    const thread = ensureThreadForTarget({
+      missionId: threadArgs.missionId,
+      threadId: threadArgs.threadId
+    });
+    if (!threadArgs.before) {
+      db.run(
+        `
+          update orchestrator_chat_threads
+          set unread_count = 0
+          where mission_id = ?
+            and id = ?
+        `,
+        [threadArgs.missionId, thread.id]
+      );
+      if (thread.unreadCount > 0) {
+        emitThreadEvent({
+          type: "thread_updated",
+          missionId: threadArgs.missionId,
+          threadId: thread.id,
+          runId: thread.runId ?? null,
+          reason: "thread_read"
+        });
+      }
+    }
+    const messages = loadChatMessagesFromDb({
+      missionId: threadArgs.missionId,
+      threadId: thread.id,
+      limit: threadArgs.limit ?? MAX_PERSISTED_CHAT_MESSAGES,
+      before: threadArgs.before ?? null
+    });
+    if (messages.length > 0) return messages;
+    if (thread.threadType === "mission") {
+      return (chatMessages.get(threadArgs.missionId) ?? loadChatMessagesFromMetadata(threadArgs.missionId))
+        .filter((entry) => (entry.threadId ?? missionThreadId(threadArgs.missionId)) === thread.id)
+        .slice(-clampLimit(threadArgs.limit, MAX_PERSISTED_CHAT_MESSAGES, 500));
+    }
+    return [];
+  };
+
+  const sendWorkersBroadcastMessage = (threadArgs: SendOrchestratorThreadMessageArgs, target: Extract<OrchestratorChatTarget, { kind: "workers" }>): OrchestratorChatMessage => {
+    const missionThread = ensureMissionThread(threadArgs.missionId);
+    const metadata = isRecord(threadArgs.metadata) ? threadArgs.metadata : null;
+    const broadcastMessage = appendChatMessage({
+      id: randomUUID(),
+      missionId: threadArgs.missionId,
+      role: "user",
+      content: threadArgs.content,
+      timestamp: nowIso(),
+      threadId: missionThread.id,
+      target,
+      visibility: normalizeChatVisibility(threadArgs.visibilityMode, DEFAULT_CHAT_VISIBILITY),
+      deliveryState: "delivered",
+      sourceSessionId: null,
+      attemptId: null,
+      laneId: target.laneId ?? null,
+      runId: target.runId ?? null,
+      stepKey: null,
+      metadata
+    });
+
+    const candidates = listChatThreads({
+      missionId: threadArgs.missionId,
+      includeClosed: target.includeClosed === true
+    })
+      .filter((thread) => thread.threadType === "worker")
+      .filter((thread) => !target.runId || thread.runId === target.runId)
+      .filter((thread) => !target.laneId || thread.laneId === target.laneId)
+      .sort((a, b) => {
+        const left = Date.parse(a.createdAt);
+        const right = Date.parse(b.createdAt);
+        if (left !== right) return left - right;
+        return a.id.localeCompare(b.id);
+      });
+
+    if (!candidates.length) {
+      emitOrchestratorMessage(
+        threadArgs.missionId,
+        "Worker broadcast queued no deliveries because no matching worker threads are currently available.",
+        null,
+        {
+          sourceMessageId: broadcastMessage.id,
+          target
+        }
+      );
+      return broadcastMessage;
+    }
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      const thread = candidates[index]!;
+      const workerTarget: OrchestratorChatTarget = {
+        kind: "worker",
+        runId: thread.runId ?? target.runId ?? null,
+        stepId: thread.stepId ?? null,
+        stepKey: thread.stepKey ?? null,
+        attemptId: thread.attemptId ?? null,
+        sessionId: thread.sessionId ?? null,
+        laneId: thread.laneId ?? target.laneId ?? null
+      };
+      const nextMetadata: Record<string, unknown> = {
+        ...(metadata ?? {}),
+        workerBroadcast: {
+          sourceMessageId: broadcastMessage.id,
+          fanoutIndex: index + 1,
+          fanoutTotal: candidates.length
+        }
+      };
+      sendThreadMessage({
+        missionId: threadArgs.missionId,
+        threadId: thread.id,
+        content: threadArgs.content,
+        target: workerTarget,
+        visibilityMode: normalizeChatVisibility(threadArgs.visibilityMode, DEFAULT_WORKER_CHAT_VISIBILITY),
+        metadata: nextMetadata
+      });
+    }
+
+    emitOrchestratorMessage(
+      threadArgs.missionId,
+      `Broadcast worker guidance to ${candidates.length} worker thread${candidates.length === 1 ? "" : "s"}.`,
+      null,
+      {
+        sourceMessageId: broadcastMessage.id,
+        target,
+        deliveredThreads: candidates.map((thread) => thread.id)
+      }
+    );
+    return broadcastMessage;
+  };
+
+  const sendThreadMessage = (threadArgs: SendOrchestratorThreadMessageArgs): OrchestratorChatMessage => {
+    const target = sanitizeChatTarget(threadArgs.target);
+    if (target?.kind === "workers") {
+      return sendWorkersBroadcastMessage(threadArgs, target);
+    }
+    const thread = ensureThreadForTarget({
+      missionId: threadArgs.missionId,
+      threadId: threadArgs.threadId ?? null,
+      target
+    });
+    const visibilityFallback = target?.kind === "worker" ? DEFAULT_WORKER_CHAT_VISIBILITY : DEFAULT_CHAT_VISIBILITY;
+    const visibility = normalizeChatVisibility(threadArgs.visibilityMode, visibilityFallback);
+    const deliveryState: OrchestratorChatDeliveryState =
+      target?.kind === "worker" ? "queued" : DEFAULT_CHAT_DELIVERY;
+    const msg = appendChatMessage({
+      id: randomUUID(),
+      missionId: threadArgs.missionId,
+      role: "user",
+      content: threadArgs.content,
+      timestamp: nowIso(),
+      threadId: thread.id,
+      target: target ?? (thread.threadType === "mission" ? { kind: "coordinator", runId: thread.runId ?? null } : null),
+      visibility,
+      deliveryState,
+      sourceSessionId: target?.kind === "worker" ? target.sessionId ?? null : null,
+      attemptId: target?.kind === "worker" ? target.attemptId ?? null : null,
+      laneId: target?.kind === "worker" ? target.laneId ?? null : null,
+      runId: target?.runId ?? thread.runId ?? null,
+      stepKey: target?.kind === "worker" ? target.stepKey ?? null : null,
+      metadata: threadArgs.metadata ?? null
+    });
+    if ((chatMessages.get(threadArgs.missionId)?.length ?? 0) >= CONTEXT_CHECKPOINT_CHAT_THRESHOLD) {
+      const total = chatMessages.get(threadArgs.missionId)?.length ?? 0;
+      if (total % CONTEXT_CHECKPOINT_CHAT_THRESHOLD === 0) {
+        createContextCheckpoint({
+          missionId: threadArgs.missionId,
+          runId: msg.runId ?? null,
+          trigger: "step_threshold",
+          summary: `Compressed mission chat context at ${total} messages.`,
+          source: {
+            digestCount: listWorkerDigests({ missionId: threadArgs.missionId, limit: 1_000 }).length,
+            chatMessageCount: total,
+            compressedMessageCount: Math.floor(total / 2)
+          }
+        });
+      }
+    }
+    if (msg.target?.kind === "worker") {
+      routeMessageToWorker(msg);
+      void replayQueuedWorkerMessages({
+        reason: "send_thread_message",
+        missionId: threadArgs.missionId,
+        threadId: msg.threadId ?? null,
+        sessionId: msg.target.sessionId ?? null
+      }).catch((error) => {
+        logger.debug("ai_orchestrator.worker_delivery_replay_enqueue_failed", {
+          missionId: threadArgs.missionId,
+          threadId: msg.threadId ?? null,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    } else {
+      routeMessageToCoordinator(msg);
+    }
     return msg;
   };
 
+  const sendChat = (chatArgs: SendOrchestratorChatArgs): OrchestratorChatMessage => {
+    return sendThreadMessage({
+      missionId: chatArgs.missionId,
+      content: chatArgs.content,
+      threadId: chatArgs.threadId ?? missionThreadId(chatArgs.missionId),
+      target: chatArgs.target ?? { kind: "coordinator", runId: null },
+      visibilityMode: chatArgs.visibilityMode ?? DEFAULT_CHAT_VISIBILITY,
+      metadata: chatArgs.metadata ?? null
+    });
+  };
+
   const getChat = (chatArgs: GetOrchestratorChatArgs): OrchestratorChatMessage[] => {
-    return chatMessages.get(chatArgs.missionId) ?? loadChatMessagesFromMetadata(chatArgs.missionId);
+    return getThreadMessages({
+      missionId: chatArgs.missionId,
+      threadId: missionThreadId(chatArgs.missionId),
+      limit: MAX_PERSISTED_CHAT_MESSAGES
+    });
+  };
+
+  const parseWorkerDigestRow = (row: {
+    id: string;
+    mission_id: string;
+    run_id: string;
+    step_id: string;
+    step_key: string | null;
+    attempt_id: string;
+    lane_id: string | null;
+    session_id: string | null;
+    status: string;
+    summary: string;
+    files_changed_json: string | null;
+    tests_run_json: string | null;
+    warnings_json: string | null;
+    tokens_json: string | null;
+    cost_usd: number | null;
+    suggested_next_actions_json: string | null;
+    created_at: string;
+  }): OrchestratorWorkerDigest => {
+    const filesChanged = parseJsonArray(row.files_changed_json).map((value) => String(value ?? "")).filter(Boolean);
+    const warnings = parseJsonArray(row.warnings_json).map((value) => String(value ?? "")).filter(Boolean);
+    const suggestions = parseJsonArray(row.suggested_next_actions_json).map((value) => String(value ?? "")).filter(Boolean);
+    const testsParsed = parseJsonRecord(row.tests_run_json);
+    const testsRun = {
+      passed: Math.max(0, Math.floor(Number(testsParsed?.passed) || 0)),
+      failed: Math.max(0, Math.floor(Number(testsParsed?.failed) || 0)),
+      skipped: Math.max(0, Math.floor(Number(testsParsed?.skipped) || 0)),
+      summary: typeof testsParsed?.summary === "string" ? testsParsed.summary : null
+    };
+    const tokensParsed = parseJsonRecord(row.tokens_json);
+    const tokens = tokensParsed
+      ? {
+          input: Number.isFinite(Number(tokensParsed.input)) ? Number(tokensParsed.input) : undefined,
+          output: Number.isFinite(Number(tokensParsed.output)) ? Number(tokensParsed.output) : undefined,
+          total: Number.isFinite(Number(tokensParsed.total)) ? Number(tokensParsed.total) : undefined
+        }
+      : null;
+    const status =
+      row.status === "succeeded" || row.status === "failed" || row.status === "blocked" || row.status === "running" || row.status === "queued"
+        ? row.status
+        : "queued";
+    return {
+      id: row.id,
+      missionId: row.mission_id,
+      runId: row.run_id,
+      stepId: row.step_id,
+      stepKey: row.step_key ?? null,
+      attemptId: row.attempt_id,
+      laneId: row.lane_id ?? null,
+      sessionId: row.session_id ?? null,
+      status,
+      summary: row.summary,
+      filesChanged,
+      testsRun,
+      warnings,
+      tokens,
+      costUsd: Number.isFinite(Number(row.cost_usd)) ? Number(row.cost_usd) : null,
+      suggestedNextActions: suggestions,
+      createdAt: row.created_at
+    };
+  };
+
+  const emitWorkerDigest = (digest: OrchestratorWorkerDigest): OrchestratorWorkerDigest => {
+    const missionIdentity = getMissionIdentity(digest.missionId);
+    if (!missionIdentity) return digest;
+    db.run(
+      `
+        insert into orchestrator_worker_digests(
+          id,
+          project_id,
+          mission_id,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          lane_id,
+          session_id,
+          status,
+          summary,
+          files_changed_json,
+          tests_run_json,
+          warnings_json,
+          tokens_json,
+          cost_usd,
+          suggested_next_actions_json,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        digest.id,
+        missionIdentity.projectId,
+        digest.missionId,
+        digest.runId,
+        digest.stepId,
+        digest.stepKey,
+        digest.attemptId,
+        digest.laneId,
+        digest.sessionId,
+        digest.status,
+        digest.summary,
+        JSON.stringify(digest.filesChanged ?? []),
+        JSON.stringify(digest.testsRun ?? { passed: 0, failed: 0, skipped: 0 }),
+        JSON.stringify(digest.warnings ?? []),
+        digest.tokens ? JSON.stringify(digest.tokens) : null,
+        digest.costUsd ?? null,
+        JSON.stringify(digest.suggestedNextActions ?? []),
+        digest.createdAt
+      ]
+    );
+    emitThreadEvent({
+      type: "worker_digest_updated",
+      missionId: digest.missionId,
+      runId: digest.runId,
+      threadId: null,
+      reason: "worker_digest",
+      metadata: {
+        digestId: digest.id,
+        attemptId: digest.attemptId,
+        stepId: digest.stepId
+      }
+    });
+    return digest;
+  };
+
+  const listWorkerDigests = (digestArgs: ListOrchestratorWorkerDigestsArgs): OrchestratorWorkerDigest[] => {
+    const limit = clampLimit(digestArgs.limit, 100, 500);
+    const rows = db.all<{
+      id: string;
+      mission_id: string;
+      run_id: string;
+      step_id: string;
+      step_key: string | null;
+      attempt_id: string;
+      lane_id: string | null;
+      session_id: string | null;
+      status: string;
+      summary: string;
+      files_changed_json: string | null;
+      tests_run_json: string | null;
+      warnings_json: string | null;
+      tokens_json: string | null;
+      cost_usd: number | null;
+      suggested_next_actions_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          lane_id,
+          session_id,
+          status,
+          summary,
+          files_changed_json,
+          tests_run_json,
+          warnings_json,
+          tokens_json,
+          cost_usd,
+          suggested_next_actions_json,
+          created_at
+        from orchestrator_worker_digests
+        where mission_id = ?
+          and (? is null or run_id = ?)
+          and (? is null or step_id = ?)
+          and (? is null or attempt_id = ?)
+          and (? is null or lane_id = ?)
+        order by created_at desc
+        limit ?
+      `,
+      [
+        digestArgs.missionId,
+        digestArgs.runId ?? null,
+        digestArgs.runId ?? null,
+        digestArgs.stepId ?? null,
+        digestArgs.stepId ?? null,
+        digestArgs.attemptId ?? null,
+        digestArgs.attemptId ?? null,
+        digestArgs.laneId ?? null,
+        digestArgs.laneId ?? null,
+        limit
+      ]
+    );
+    return rows.map((row) => parseWorkerDigestRow(row));
+  };
+
+  const getWorkerDigest = (digestArgs: GetOrchestratorWorkerDigestArgs): OrchestratorWorkerDigest | null => {
+    const row = db.get<{
+      id: string;
+      mission_id: string;
+      run_id: string;
+      step_id: string;
+      step_key: string | null;
+      attempt_id: string;
+      lane_id: string | null;
+      session_id: string | null;
+      status: string;
+      summary: string;
+      files_changed_json: string | null;
+      tests_run_json: string | null;
+      warnings_json: string | null;
+      tokens_json: string | null;
+      cost_usd: number | null;
+      suggested_next_actions_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          lane_id,
+          session_id,
+          status,
+          summary,
+          files_changed_json,
+          tests_run_json,
+          warnings_json,
+          tokens_json,
+          cost_usd,
+          suggested_next_actions_json,
+          created_at
+        from orchestrator_worker_digests
+        where mission_id = ?
+          and id = ?
+        limit 1
+      `,
+      [digestArgs.missionId, digestArgs.digestId]
+    );
+    return row ? parseWorkerDigestRow(row) : null;
+  };
+
+  const getContextCheckpoint = (checkpointArgs: GetOrchestratorContextCheckpointArgs): OrchestratorContextCheckpoint | null => {
+    const row = db.get<{
+      id: string;
+      mission_id: string;
+      run_id: string | null;
+      trigger: string;
+      summary: string;
+      source_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          run_id,
+          trigger,
+          summary,
+          source_json,
+          created_at
+        from orchestrator_context_checkpoints
+        where mission_id = ?
+          and (? is null or id = ?)
+        order by created_at desc
+        limit 1
+      `,
+      [checkpointArgs.missionId, checkpointArgs.checkpointId ?? null, checkpointArgs.checkpointId ?? null]
+    );
+    if (!row) return null;
+    const trigger =
+      row.trigger === "step_threshold"
+      || row.trigger === "pressure_soft"
+      || row.trigger === "pressure_hard"
+      || row.trigger === "status_request"
+      || row.trigger === "manual"
+        ? row.trigger
+        : "manual";
+    const source = parseJsonRecord(row.source_json);
+    return {
+      id: row.id,
+      missionId: row.mission_id,
+      runId: row.run_id ?? null,
+      trigger,
+      summary: row.summary,
+      source: {
+        digestCount: Math.max(0, Math.floor(Number(source?.digestCount) || 0)),
+        chatMessageCount: Math.max(0, Math.floor(Number(source?.chatMessageCount) || 0)),
+        compressedMessageCount: Math.max(0, Math.floor(Number(source?.compressedMessageCount) || 0))
+      },
+      createdAt: row.created_at
+    };
+  };
+
+  const listLaneDecisions = (laneArgs: ListOrchestratorLaneDecisionsArgs): OrchestratorLaneDecision[] => {
+    const limit = clampLimit(laneArgs.limit, 100, 500);
+    const rows = db.all<{
+      id: string;
+      mission_id: string;
+      run_id: string | null;
+      step_id: string | null;
+      step_key: string | null;
+      lane_id: string | null;
+      decision_type: string;
+      validator_outcome: string;
+      rule_hits_json: string | null;
+      rationale: string;
+      metadata_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          run_id,
+          step_id,
+          step_key,
+          lane_id,
+          decision_type,
+          validator_outcome,
+          rule_hits_json,
+          rationale,
+          metadata_json,
+          created_at
+        from orchestrator_lane_decisions
+        where mission_id = ?
+          and (? is null or run_id = ?)
+          and (? is null or step_id = ?)
+        order by created_at desc
+        limit ?
+      `,
+      [
+        laneArgs.missionId,
+        laneArgs.runId ?? null,
+        laneArgs.runId ?? null,
+        laneArgs.stepId ?? null,
+        laneArgs.stepId ?? null,
+        limit
+      ]
+    );
+    return rows.map((row) => {
+      const decisionType =
+        row.decision_type === "proposal" || row.decision_type === "validated" || row.decision_type === "override" || row.decision_type === "replan"
+          ? row.decision_type
+          : "proposal";
+      const validatorOutcome =
+        row.validator_outcome === "pass" || row.validator_outcome === "fail" || row.validator_outcome === "warn"
+          ? row.validator_outcome
+          : "warn";
+      return {
+        id: row.id,
+        missionId: row.mission_id,
+        runId: row.run_id ?? null,
+        stepId: row.step_id ?? null,
+        stepKey: row.step_key ?? null,
+        laneId: row.lane_id ?? null,
+        decisionType,
+        validatorOutcome,
+        ruleHits: parseJsonArray(row.rule_hits_json).map((entry) => String(entry ?? "")).filter(Boolean),
+        rationale: row.rationale,
+        metadata: parseJsonRecord(row.metadata_json),
+        createdAt: row.created_at
+      };
+    });
+  };
+
+  const setMissionMetricsConfig = (configArgs: SetMissionMetricsConfigArgs): MissionMetricsConfig => {
+    const missionIdentity = getMissionIdentity(configArgs.missionId);
+    if (!missionIdentity) throw new Error(`Mission not found: ${configArgs.missionId}`);
+    const deduped: MissionMetricToggle[] = [];
+    const seen = new Set<string>();
+    for (const toggle of configArgs.toggles ?? []) {
+      const normalized = String(toggle ?? "").trim();
+      if (!normalized.length || seen.has(normalized)) continue;
+      if (!KNOWN_METRIC_TOGGLES.has(normalized as MissionMetricToggle)) continue;
+      seen.add(normalized);
+      deduped.push(normalized as MissionMetricToggle);
+    }
+    const toggles = deduped.length > 0 ? deduped : [...DEFAULT_METRIC_TOGGLES];
+    const config: MissionMetricsConfig = {
+      missionId: configArgs.missionId,
+      toggles,
+      updatedAt: nowIso()
+    };
+    db.run(
+      `
+        insert into mission_metrics_config(
+          mission_id,
+          project_id,
+          toggles_json,
+          updated_at
+        ) values (?, ?, ?, ?)
+        on conflict(mission_id) do update set
+          toggles_json = excluded.toggles_json,
+          updated_at = excluded.updated_at
+      `,
+      [config.missionId, missionIdentity.projectId, JSON.stringify(config.toggles), config.updatedAt]
+    );
+    emitThreadEvent({
+      type: "metrics_updated",
+      missionId: config.missionId,
+      runId: null,
+      reason: "metrics_config",
+      metadata: {
+        toggles: config.toggles
+      }
+    });
+    return config;
+  };
+
+  const getMissionMetrics = (metricArgs: GetMissionMetricsArgs): {
+    config: MissionMetricsConfig | null;
+    samples: MissionMetricSample[];
+  } => {
+    const configRow = db.get<{ toggles_json: string | null; updated_at: string | null }>(
+      `
+        select toggles_json, updated_at
+        from mission_metrics_config
+        where mission_id = ?
+        limit 1
+      `,
+      [metricArgs.missionId]
+    );
+    const config: MissionMetricsConfig | null = configRow
+      ? {
+          missionId: metricArgs.missionId,
+          toggles: parseJsonArray(configRow.toggles_json)
+            .map((entry) => String(entry ?? ""))
+            .filter((entry): entry is MissionMetricToggle => KNOWN_METRIC_TOGGLES.has(entry as MissionMetricToggle)),
+          updatedAt: configRow.updated_at ?? nowIso()
+        }
+      : null;
+    const limit = clampLimit(metricArgs.limit, 200, 1_000);
+    const sampleRows = db.all<{
+      id: string;
+      mission_id: string;
+      run_id: string | null;
+      attempt_id: string | null;
+      metric: string;
+      value: number;
+      unit: string | null;
+      metadata_json: string | null;
+      created_at: string;
+    }>(
+      `
+        select
+          id,
+          mission_id,
+          run_id,
+          attempt_id,
+          metric,
+          value,
+          unit,
+          metadata_json,
+          created_at
+        from orchestrator_metrics_samples
+        where mission_id = ?
+          and (? is null or run_id = ?)
+        order by created_at desc
+        limit ?
+      `,
+      [metricArgs.missionId, metricArgs.runId ?? null, metricArgs.runId ?? null, limit]
+    );
+    const samples: MissionMetricSample[] = sampleRows.map((row) => ({
+      id: row.id,
+      missionId: row.mission_id,
+      runId: row.run_id ?? null,
+      attemptId: row.attempt_id ?? null,
+      metric: row.metric,
+      value: Number(row.value ?? 0),
+      unit: row.unit ?? null,
+      metadata: parseJsonRecord(row.metadata_json),
+      createdAt: row.created_at
+    }));
+    return {
+      config,
+      samples
+    };
+  };
+
+  const backfillLegacyThreadMessages = (missionId: string): number => {
+    const missionIdentity = getMissionIdentity(missionId);
+    if (!missionIdentity) return 0;
+    const legacy = loadChatMessagesFromMetadata(missionId);
+    if (!legacy.length) return 0;
+    const existingIds = new Set(
+      db.all<{ id: string }>(
+        `
+          select id
+          from orchestrator_chat_messages
+          where mission_id = ?
+        `,
+        [missionId]
+      ).map((entry) => String(entry.id))
+    );
+    let inserted = 0;
+    for (const message of legacy) {
+      if (existingIds.has(message.id)) continue;
+      const thread = ensureThreadForTarget({
+        missionId,
+        threadId: message.threadId ?? null,
+        target: message.target ?? null
+      });
+      db.run(
+        `
+          insert into orchestrator_chat_messages(
+            id,
+            project_id,
+            mission_id,
+            thread_id,
+            role,
+            content,
+            timestamp,
+            step_key,
+            target_json,
+            visibility,
+            delivery_state,
+            source_session_id,
+            attempt_id,
+            lane_id,
+            run_id,
+            metadata_json,
+            created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          message.id,
+          missionIdentity.projectId,
+          missionId,
+          thread.id,
+          message.role,
+          message.content,
+          message.timestamp,
+          message.stepKey ?? null,
+          message.target ? JSON.stringify(message.target) : null,
+          normalizeChatVisibility(message.visibility),
+          normalizeChatDeliveryState(message.deliveryState),
+          message.sourceSessionId ?? null,
+          message.attemptId ?? null,
+          message.laneId ?? null,
+          message.runId ?? null,
+          message.metadata ? JSON.stringify(message.metadata) : null,
+          message.timestamp
+        ]
+      );
+      existingIds.add(message.id);
+      inserted += 1;
+    }
+    return inserted;
+  };
+
+  const reconcileMissingThreadRows = (missionId: string): number => {
+    const orphans = db.all<{
+      thread_id: string;
+      target_json: string | null;
+    }>(
+      `
+        select distinct
+          m.thread_id as thread_id,
+          m.target_json as target_json
+        from orchestrator_chat_messages m
+        left join orchestrator_chat_threads t on t.id = m.thread_id
+        where m.mission_id = ?
+          and t.id is null
+      `,
+      [missionId]
+    );
+    let repaired = 0;
+    for (const orphan of orphans) {
+      const threadId = toOptionalString(orphan.thread_id);
+      if (!threadId) continue;
+      ensureThreadForTarget({
+        missionId,
+        threadId,
+        target: parseChatTarget(parseJsonRecord(orphan.target_json))
+      });
+      repaired += 1;
+    }
+    return repaired;
+  };
+
+  const reconcileWorkerThreadLinks = (missionId: string): number => {
+    const rows = db.all<{
+      id: string;
+      run_id: string | null;
+      step_id: string | null;
+      step_key: string | null;
+      attempt_id: string | null;
+      session_id: string | null;
+      lane_id: string | null;
+    }>(
+      `
+        select
+          id,
+          run_id,
+          step_id,
+          step_key,
+          attempt_id,
+          session_id,
+          lane_id
+        from orchestrator_chat_threads
+        where mission_id = ?
+          and thread_type = 'worker'
+      `,
+      [missionId]
+    );
+    let repaired = 0;
+    for (const row of rows) {
+      const latestMessage = loadChatMessagesFromDb({
+        missionId,
+        threadId: row.id,
+        limit: 1
+      })[0] ?? null;
+      const synthetic: OrchestratorChatMessage = latestMessage ?? {
+        id: `reconcile:${row.id}`,
+        missionId,
+        role: "orchestrator",
+        content: "Thread link reconciliation",
+        timestamp: nowIso(),
+        threadId: row.id,
+        target: {
+          kind: "worker",
+          runId: row.run_id ?? null,
+          stepId: row.step_id ?? null,
+          stepKey: row.step_key ?? null,
+          attemptId: row.attempt_id ?? null,
+          sessionId: row.session_id ?? null,
+          laneId: row.lane_id ?? null
+        },
+        visibility: "metadata_only",
+        deliveryState: "queued",
+        sourceSessionId: row.session_id ?? null,
+        attemptId: row.attempt_id ?? null,
+        laneId: row.lane_id ?? null,
+        runId: row.run_id ?? null,
+        stepKey: row.step_key ?? null,
+        metadata: null
+      };
+      const context = resolveWorkerDeliveryContext(synthetic);
+      if (!context) continue;
+      persistThreadWorkerLinks(context);
+      repaired += 1;
+    }
+    return repaired;
+  };
+
+  const reconcileUnreadSanity = (missionId: string): number => {
+    const threads = db.all<{ id: string; unread_count: number | null }>(
+      `
+        select id, unread_count
+        from orchestrator_chat_threads
+        where mission_id = ?
+      `,
+      [missionId]
+    );
+    let updated = 0;
+    for (const thread of threads) {
+      const totalNonUser = db.get<{ count: number }>(
+        `
+          select count(1) as count
+          from orchestrator_chat_messages
+          where thread_id = ?
+            and role != 'user'
+        `,
+        [thread.id]
+      );
+      const total = Math.max(0, Math.floor(Number(totalNonUser?.count) || 0));
+      const current = Number.isFinite(Number(thread.unread_count))
+        ? Math.floor(Number(thread.unread_count))
+        : total;
+      const normalized = Math.min(total, Math.max(0, current));
+      if (normalized === current) continue;
+      db.run(
+        `
+          update orchestrator_chat_threads
+          set unread_count = ?
+          where mission_id = ?
+            and id = ?
+        `,
+        [normalized, missionId, thread.id]
+      );
+      updated += 1;
+    }
+    return updated;
+  };
+
+  const reconcileThreadedMessagingState = async (): Promise<void> => {
+    if (disposed) return;
+    const missions = db.all<{ id: string }>(
+      `
+        select id
+        from missions
+        order by created_at asc
+      `
+    );
+    let legacyBackfilled = 0;
+    let missingThreadsRepaired = 0;
+    let linksRepaired = 0;
+    let unreadNormalized = 0;
+
+    for (const mission of missions) {
+      if (disposed) return;
+      const missionId = toOptionalString(mission.id);
+      if (!missionId) continue;
+      ensureMissionThread(missionId);
+      legacyBackfilled += backfillLegacyThreadMessages(missionId);
+      missingThreadsRepaired += reconcileMissingThreadRows(missionId);
+      linksRepaired += reconcileWorkerThreadLinks(missionId);
+      unreadNormalized += reconcileUnreadSanity(missionId);
+    }
+
+    if (legacyBackfilled > 0 || missingThreadsRepaired > 0 || linksRepaired > 0 || unreadNormalized > 0) {
+      logger.info("ai_orchestrator.chat_reconciliation_complete", {
+        missions: missions.length,
+        legacyBackfilled,
+        missingThreadsRepaired,
+        linksRepaired,
+        unreadNormalized
+      });
+    }
+
+    await replayQueuedWorkerMessages({
+      reason: "startup"
+    });
   };
 
   const startHealthSweepLoop = () => {
-    if (healthSweepTimer) return;
+    if (disposed || healthSweepTimer) return;
     healthSweepTimer = setInterval(() => {
-      void runHealthSweep("interval");
+      if (disposed) return;
+      void runHealthSweep("interval").catch((error) => {
+        logger.debug("ai_orchestrator.health_sweep_interval_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
     }, HEALTH_SWEEP_INTERVAL_MS);
-    void runHealthSweep("startup");
+    if (!disposed) {
+      void runHealthSweep("startup").catch((error) => {
+        logger.debug("ai_orchestrator.health_sweep_startup_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
   };
 
   const onSessionRuntimeSignal = (signal: SessionRuntimeSignal): void => {
+    if (disposed) return;
     const sessionId = String(signal.sessionId ?? "").trim();
     if (!sessionId.length) return;
     const runtimeState = parseTerminalRuntimeState(signal.runtimeState) ?? "running";
@@ -3568,7 +7082,13 @@ export function createAiOrchestratorService(args: {
     const next = previous
       .catch(() => undefined)
       .then(async () => {
+        if (disposed) return;
         await processSessionRuntimeSignal(normalizedSignal);
+        if (disposed) return;
+        await replayQueuedWorkerMessages({
+          reason: "runtime_signal",
+          sessionId
+        });
       })
       .catch((error) => {
         logger.debug("ai_orchestrator.runtime_signal_process_failed", {
@@ -3585,9 +7105,58 @@ export function createAiOrchestratorService(args: {
     sessionSignalQueues.set(sessionId, next);
   };
 
+  const onAgentChatEvent = (envelope: AgentChatEventEnvelope): void => {
+    if (disposed) return;
+    const sessionId = String(envelope.sessionId ?? "").trim();
+    if (!sessionId.length) return;
+    const event = envelope.event;
+    const shouldReplay =
+      (event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed"))
+      || event.type === "done"
+      || event.type === "error";
+    if (!shouldReplay) return;
+
+    const previous = sessionSignalQueues.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        if (disposed) return;
+        await replayQueuedWorkerMessages({
+          reason: `agent_chat:${event.type}`,
+          sessionId
+        });
+      })
+      .catch((error) => {
+        logger.debug("ai_orchestrator.agent_chat_replay_failed", {
+          sessionId,
+          eventType: event.type,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      })
+      .finally(() => {
+        if (sessionSignalQueues.get(sessionId) === next) {
+          sessionSignalQueues.delete(sessionId);
+        }
+      });
+    sessionSignalQueues.set(sessionId, next);
+  };
+
   hydratePersistedAttemptRuntimeState();
   hydrateRuntimeSignalsFromEventBus();
-  startHealthSweepLoop();
+  replayOpenQuestionsFromEventBus();
+  void (async () => {
+    try {
+      await reconcileThreadedMessagingState();
+    } catch (error) {
+      logger.debug("ai_orchestrator.chat_reconciliation_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      if (!disposed) {
+        startHealthSweepLoop();
+      }
+    }
+  })();
 
   return {
     startMissionRun,
@@ -3595,12 +7164,26 @@ export function createAiOrchestratorService(args: {
     approveMissionPlan,
 
     onOrchestratorRuntimeEvent(event: OrchestratorRuntimeEvent) {
+      if (disposed) return;
       if (!event.runId) return;
       updateWorkerStateFromEvent(event);
       syncMissionFromRun(event.runId, event.reason);
+      const missionId = getMissionIdForRun(event.runId);
+      if (!missionId) return;
+      void replayQueuedWorkerMessages({
+        reason: `runtime_event:${event.reason}`,
+        missionId
+      }).catch((error) => {
+        logger.debug("ai_orchestrator.worker_delivery_runtime_event_replay_failed", {
+          runId: event.runId,
+          reason: event.reason,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
     },
 
     onSessionRuntimeSignal,
+    onAgentChatEvent,
 
     syncMissionFromRun,
 
@@ -3613,10 +7196,21 @@ export function createAiOrchestratorService(args: {
     getDepthConfig,
     getModelCapabilities: () => getModelCapabilities(),
     resolveMissionDepthConfig: (tier: MissionDepthTier) => resolveMissionDepthConfig(tier),
+    resolveActivePolicy,
     sendChat,
     getChat,
+    listChatThreads,
+    getThreadMessages,
+    sendThreadMessage,
+    getWorkerDigest,
+    listWorkerDigests,
+    getContextCheckpoint,
+    listLaneDecisions,
+    getMissionMetrics,
+    setMissionMetricsConfig,
     runHealthSweep: (reason = "manual") => runHealthSweep(reason),
     dispose: () => {
+      disposed = true;
       if (healthSweepTimer) {
         clearInterval(healthSweepTimer);
         healthSweepTimer = null;

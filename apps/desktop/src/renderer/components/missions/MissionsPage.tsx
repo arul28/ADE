@@ -27,16 +27,24 @@ import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react"
 import type {
   MissionDepthTier,
   MissionDetail,
+  MissionExecutionPolicy,
   MissionPriority,
   MissionStatus,
   MissionStepStatus,
   MissionSummary,
   OrchestratorAttempt,
   OrchestratorChatMessage,
+  OrchestratorChatTarget,
+  OrchestratorChatThread,
   OrchestratorClaim,
+  OrchestratorWorkerDigest,
+  OrchestratorWorkerState,
   OrchestratorExecutorKind,
   OrchestratorRunGraph,
   OrchestratorStep,
+  MissionMetricToggle,
+  MissionMetricsConfig,
+  MissionMetricSample,
   ProjectConfigSnapshot,
   StartOrchestratorRunFromMissionArgs,
   SteerMissionResult
@@ -47,6 +55,10 @@ import { cn } from "../ui/cn";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
 import { WorkerTranscriptPane } from "./WorkerTranscriptPane";
+import { PolicyEditor, PRESET_STANDARD } from "./PolicyEditor";
+import { CompletionBanner } from "./CompletionBanner";
+import { PhaseProgressBar } from "./PhaseProgressBar";
+import { MissionPolicyBadge } from "./MissionPolicyBadge";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 
@@ -132,6 +144,7 @@ type PlannerProvider = "auto" | "claude" | "codex";
 
 type MissionSettingsDraft = {
   defaultDepthTier: MissionDepthTier;
+  defaultExecutionPolicy: MissionExecutionPolicy;
   defaultPlannerProvider: PlannerProvider;
   requirePlanReview: boolean;
   claudePermissionMode: string;
@@ -143,6 +156,7 @@ type MissionSettingsDraft = {
 
 const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultDepthTier: "standard",
+  defaultExecutionPolicy: PRESET_STANDARD,
   defaultPlannerProvider: "auto",
   requirePlanReview: false,
   claudePermissionMode: "acceptEdits",
@@ -389,95 +403,584 @@ function narrativeSummary(
 
 /* ════════════════════ MISSION CHAT ════════════════════ */
 
-function MissionChat({ missionId }: { missionId: string }) {
+const METRIC_TOGGLE_ORDER: MissionMetricToggle[] = [
+  "planning",
+  "implementation",
+  "testing",
+  "validation",
+  "code_review",
+  "test_review",
+  "integration",
+  "merge",
+  "cost",
+  "tokens",
+  "retries",
+  "claims",
+  "context_pressure",
+  "interventions"
+];
+
+const METRIC_TOGGLE_LABELS: Record<MissionMetricToggle, string> = {
+  planning: "Planning",
+  implementation: "Implementation",
+  testing: "Testing",
+  validation: "Validation",
+  code_review: "Code Review",
+  test_review: "Test Review",
+  integration: "Integration",
+  merge: "Merge",
+  cost: "Cost",
+  tokens: "Tokens",
+  retries: "Retries",
+  claims: "Claims",
+  context_pressure: "Context Pressure",
+  interventions: "Interventions"
+};
+
+const WORKER_STATUS_CLASSES: Record<string, string> = {
+  spawned: "bg-blue-500/20 text-blue-300 border-blue-500/30",
+  initializing: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
+  working: "bg-violet-500/20 text-violet-300 border-violet-500/30",
+  waiting_input: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+  idle: "bg-sky-500/20 text-sky-300 border-sky-500/30",
+  completed: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+  failed: "bg-red-500/20 text-red-300 border-red-500/30",
+  disposed: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30"
+};
+
+function workerThreadMatchesTarget(thread: OrchestratorChatThread, target: OrchestratorChatTarget | null | undefined): boolean {
+  if (thread.threadType !== "worker" || !target || target.kind !== "worker") return false;
+  if (target.runId && thread.runId !== target.runId) return false;
+  const candidates = [
+    [target.attemptId, thread.attemptId],
+    [target.sessionId, thread.sessionId],
+    [target.stepId, thread.stepId],
+    [target.stepKey, thread.stepKey],
+    [target.laneId, thread.laneId]
+  ];
+  return candidates.some(([left, right]) => typeof left === "string" && left.length > 0 && left === right);
+}
+
+export function resolveMissionChatSelection(args: {
+  threads: OrchestratorChatThread[];
+  selectedThreadId: string | null;
+  jumpTarget?: OrchestratorChatTarget | null;
+}): string | null {
+  if (!args.threads.length) return null;
+  if (args.jumpTarget?.kind === "coordinator") {
+    const missionThread = args.threads.find((thread) => thread.threadType === "mission");
+    if (missionThread) return missionThread.id;
+  }
+  if (args.jumpTarget?.kind === "worker") {
+    const matched = args.threads.find((thread) => workerThreadMatchesTarget(thread, args.jumpTarget));
+    if (matched) return matched.id;
+  }
+  if (args.selectedThreadId && args.threads.some((thread) => thread.id === args.selectedThreadId)) {
+    return args.selectedThreadId;
+  }
+  const missionThread = args.threads.find((thread) => thread.threadType === "mission");
+  return missionThread?.id ?? args.threads[0]?.id ?? null;
+}
+
+function formatMetricSample(sample: MissionMetricSample): string {
+  const rounded = Number.isFinite(sample.value) ? sample.value.toFixed(sample.value >= 100 ? 0 : 2) : "0";
+  if (sample.unit && sample.unit.trim().length) return `${rounded} ${sample.unit}`;
+  return rounded;
+}
+
+function MissionChat({
+  missionId,
+  runId,
+  jumpTarget,
+  onJumpHandled
+}: {
+  missionId: string;
+  runId: string | null;
+  jumpTarget: OrchestratorChatTarget | null;
+  onJumpHandled: () => void;
+}) {
+  const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<OrchestratorChatMessage[]>([]);
+  const [workerStates, setWorkerStates] = useState<OrchestratorWorkerState[]>([]);
+  const [workerDigests, setWorkerDigests] = useState<OrchestratorWorkerDigest[]>([]);
+  const [metricsConfig, setMetricsConfig] = useState<MissionMetricsConfig | null>(null);
+  const [metricSamples, setMetricSamples] = useState<MissionMetricSample[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [savingMetrics, setSavingMetrics] = useState(false);
+  const selectedThreadIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Poll for messages every 2 seconds
   useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      try {
-        const msgs = await window.ade.orchestrator.getChat({ missionId });
-        if (active) setMessages(msgs);
-      } catch { /* ignore */ }
-    };
-    void poll();
-    const interval = setInterval(() => void poll(), 2000);
-    return () => { active = false; clearInterval(interval); };
+    selectedThreadIdRef.current = selectedThreadId;
+  }, [selectedThreadId]);
+
+  const refreshThreads = useCallback(async () => {
+    try {
+      const nextThreads = await window.ade.orchestrator.listChatThreads({ missionId });
+      setThreads(nextThreads);
+      const resolved = resolveMissionChatSelection({
+        threads: nextThreads,
+        selectedThreadId: selectedThreadIdRef.current
+      });
+      if (resolved !== selectedThreadIdRef.current) {
+        selectedThreadIdRef.current = resolved;
+        setSelectedThreadId(resolved);
+      }
+    } catch {
+      // ignore refresh failures; next event/poll will retry
+    }
   }, [missionId]);
 
-  // Auto-scroll
+  useEffect(() => {
+    if (!jumpTarget) return;
+    if (jumpTarget.kind === "worker") {
+      const matched = threads.find((thread) => workerThreadMatchesTarget(thread, jumpTarget));
+      if (!matched) return;
+      if (matched.id !== selectedThreadId) {
+        setSelectedThreadId(matched.id);
+      }
+      onJumpHandled();
+      return;
+    }
+    const missionThread = threads.find((thread) => thread.threadType === "mission");
+    if (!missionThread) return;
+    if (missionThread.id !== selectedThreadId) {
+      setSelectedThreadId(missionThread.id);
+    }
+    onJumpHandled();
+  }, [jumpTarget, onJumpHandled, selectedThreadId, threads]);
+
+  const refreshMessages = useCallback(async (threadIdOverride?: string | null) => {
+    const resolvedThreadId = threadIdOverride ?? selectedThreadIdRef.current;
+    if (!resolvedThreadId) {
+      setMessages([]);
+      return;
+    }
+    try {
+      const nextMessages = await window.ade.orchestrator.getThreadMessages({
+        missionId,
+        threadId: resolvedThreadId,
+        limit: 200
+      });
+      if (selectedThreadIdRef.current === resolvedThreadId) {
+        setMessages(nextMessages);
+      }
+    } catch {
+      // ignore refresh failures; next event/poll will retry
+    }
+  }, [missionId]);
+
+  const refreshWorkerRail = useCallback(async () => {
+    try {
+      const [metrics, states, digests] = await Promise.all([
+        window.ade.orchestrator.getMissionMetrics({
+          missionId,
+          runId: runId ?? undefined,
+          limit: 240
+        }),
+        runId
+          ? window.ade.orchestrator.getWorkerStates({ runId })
+          : Promise.resolve([] as OrchestratorWorkerState[]),
+        window.ade.orchestrator.listWorkerDigests({
+          missionId,
+          runId: runId ?? undefined,
+          limit: 120
+        })
+      ]);
+      setMetricsConfig(metrics.config);
+      setMetricSamples(metrics.samples);
+      setWorkerStates(states);
+      setWorkerDigests(digests);
+    } catch {
+      // ignore refresh failures; next event/poll will retry
+    }
+  }, [missionId, runId]);
+
+  useEffect(() => {
+    void refreshThreads();
+    void refreshWorkerRail();
+    const interval = setInterval(() => {
+      void refreshThreads();
+      void refreshWorkerRail();
+    }, 12_000);
+    return () => clearInterval(interval);
+  }, [refreshThreads, refreshWorkerRail]);
+
+  useEffect(() => {
+    void refreshMessages(selectedThreadId);
+    const interval = setInterval(() => void refreshMessages(selectedThreadIdRef.current), 8_000);
+    return () => clearInterval(interval);
+  }, [refreshMessages, selectedThreadId]);
+
+  useEffect(() => {
+    const unsubThreadEvents = window.ade.orchestrator.onThreadEvent((event) => {
+      if (event.missionId !== missionId) return;
+      if (event.reason === "thread_read" && event.threadId === selectedThreadIdRef.current) return;
+      if (event.type === "thread_updated" || event.type === "message_appended" || event.type === "message_updated" || event.type === "worker_replay") {
+        void refreshThreads();
+        const currentThreadId = selectedThreadIdRef.current;
+        if (currentThreadId && (!event.threadId || event.threadId === currentThreadId)) {
+          void refreshMessages(currentThreadId);
+        }
+      }
+      if (event.type === "metrics_updated" || event.type === "worker_digest_updated" || event.type === "worker_replay") {
+        void refreshWorkerRail();
+      }
+    });
+    const unsubRuntimeEvents = window.ade.orchestrator.onEvent((event) => {
+      if (runId && event.runId === runId) {
+        void refreshWorkerRail();
+      }
+    });
+    return () => {
+      unsubThreadEvents();
+      unsubRuntimeEvents();
+    };
+  }, [missionId, refreshMessages, refreshThreads, refreshWorkerRail, runId]);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages.length]);
+  }, [messages.length, selectedThreadId]);
 
-  const handleSend = async () => {
-    if (!input.trim() || sending) return;
+  const selectedThread = useMemo(
+    () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
+    [threads, selectedThreadId]
+  );
+
+  const enabledMetricSet = useMemo(() => {
+    const toggles = metricsConfig?.toggles?.length ? metricsConfig.toggles : METRIC_TOGGLE_ORDER;
+    return new Set(toggles);
+  }, [metricsConfig]);
+
+  const latestMetricByKey = useMemo(() => {
+    const latest = new Map<string, MissionMetricSample>();
+    for (const sample of metricSamples) {
+      if (!latest.has(sample.metric)) {
+        latest.set(sample.metric, sample);
+      }
+    }
+    return latest;
+  }, [metricSamples]);
+
+  const workerStateByAttempt = useMemo(() => {
+    const map = new Map<string, OrchestratorWorkerState>();
+    for (const state of workerStates) {
+      map.set(state.attemptId, state);
+    }
+    return map;
+  }, [workerStates]);
+
+  const latestDigestByAttempt = useMemo(() => {
+    const map = new Map<string, OrchestratorWorkerDigest>();
+    for (const digest of workerDigests) {
+      if (!map.has(digest.attemptId)) {
+        map.set(digest.attemptId, digest);
+      }
+    }
+    return map;
+  }, [workerDigests]);
+
+  const workerThreadCards = useMemo(() => {
+    return threads
+      .filter((thread) => thread.threadType === "worker")
+      .map((thread) => {
+        const digest = thread.attemptId ? latestDigestByAttempt.get(thread.attemptId) : undefined;
+        const state = thread.attemptId ? workerStateByAttempt.get(thread.attemptId) : undefined;
+        return {
+          thread,
+          digest,
+          state
+        };
+      })
+      .sort((a, b) => Date.parse(b.thread.updatedAt) - Date.parse(a.thread.updatedAt));
+  }, [latestDigestByAttempt, threads, workerStateByAttempt]);
+
+  const handleToggleMetric = useCallback(async (toggle: MissionMetricToggle) => {
+    if (savingMetrics) return;
+    const current = metricsConfig?.toggles?.length ? metricsConfig.toggles : METRIC_TOGGLE_ORDER;
+    const exists = current.includes(toggle);
+    if (exists && current.length <= 1) return;
+    const next = exists ? current.filter((entry) => entry !== toggle) : [...current, toggle];
+    setSavingMetrics(true);
+    try {
+      const updated = await window.ade.orchestrator.setMissionMetricsConfig({
+        missionId,
+        toggles: next
+      });
+      setMetricsConfig(updated);
+    } finally {
+      setSavingMetrics(false);
+    }
+  }, [metricsConfig, missionId, savingMetrics]);
+
+  const handleSend = useCallback(async () => {
+    if (!selectedThread || !input.trim() || sending) return;
+    const trimmed = input.trim();
     setSending(true);
     try {
-      await window.ade.orchestrator.sendChat({ missionId, content: input.trim() });
+      const target: OrchestratorChatTarget = selectedThread.threadType === "worker"
+        ? {
+            kind: "worker",
+            runId: selectedThread.runId ?? runId ?? null,
+            stepId: selectedThread.stepId ?? null,
+            stepKey: selectedThread.stepKey ?? null,
+            attemptId: selectedThread.attemptId ?? null,
+            sessionId: selectedThread.sessionId ?? null,
+            laneId: selectedThread.laneId ?? null
+          }
+        : {
+            kind: "coordinator",
+            runId: selectedThread.runId ?? runId ?? null
+          };
+      await window.ade.orchestrator.sendThreadMessage({
+        missionId,
+        threadId: selectedThread.id,
+        content: trimmed,
+        target
+      });
       setInput("");
-      // Immediate refresh
-      const msgs = await window.ade.orchestrator.getChat({ missionId });
-      setMessages(msgs);
-    } catch { /* ignore */ }
-    setSending(false);
-  };
+      const [nextMessages, nextThreads] = await Promise.all([
+        window.ade.orchestrator.getThreadMessages({
+          missionId,
+          threadId: selectedThread.id,
+          limit: 200
+        }),
+        window.ade.orchestrator.listChatThreads({ missionId })
+      ]);
+      setMessages(nextMessages);
+      setThreads(nextThreads);
+    } finally {
+      setSending(false);
+    }
+  }, [input, missionId, runId, selectedThread, sending]);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Message list */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.length === 0 && (
-          <div className="text-center text-neutral-500 text-sm py-8">
-            No messages yet. The orchestrator will report its decisions here as the mission progresses.
-          </div>
-        )}
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-              msg.role === "user"
-                ? "bg-violet-600 text-white"
-                : msg.role === "worker"
-                  ? "bg-neutral-700 text-neutral-200 border border-neutral-600"
-                  : "bg-neutral-800 text-neutral-200 border border-neutral-700"
-            }`}>
-              {msg.role !== "user" && (
-                <div className="text-xs text-neutral-400 mb-1 flex items-center gap-1">
-                  {msg.role === "orchestrator" ? <Bot size={12} /> : <Terminal size={12} />}
-                  {msg.role === "orchestrator" ? "Orchestrator" : "Worker"}
-                  {msg.stepKey && <span className="text-neutral-500">{"\u2022"} {msg.stepKey}</span>}
+    <div className="flex h-full min-h-0 flex-col lg:flex-row">
+      <aside className="w-full shrink-0 border-b border-border/20 bg-zinc-900/45 lg:w-[230px] lg:border-b-0 lg:border-r">
+        <div className="flex items-center justify-between border-b border-border/20 px-3 py-2">
+          <div className="text-[11px] font-semibold text-fg">Threads</div>
+          <div className="text-[10px] text-muted-fg">{threads.length}</div>
+        </div>
+        <div className="max-h-[180px] overflow-y-auto p-2 lg:max-h-none lg:h-full">
+          {threads.length === 0 && (
+            <div className="rounded border border-border/20 bg-zinc-800/35 px-2 py-3 text-center text-[10px] text-muted-fg">
+              No threads yet
+            </div>
+          )}
+          <div className="space-y-1">
+            {threads.map((thread) => (
+              <button
+                key={thread.id}
+                onClick={() => setSelectedThreadId(thread.id)}
+                className={cn(
+                  "w-full rounded border px-2 py-2 text-left transition-colors",
+                  selectedThreadId === thread.id
+                    ? "border-accent/45 bg-accent/10"
+                    : "border-border/20 bg-zinc-800/35 hover:bg-zinc-800/60"
+                )}
+              >
+                <div className="flex items-center justify-between gap-1">
+                  <div className="truncate text-[11px] font-medium text-fg">{thread.title}</div>
+                  {thread.unreadCount > 0 && (
+                    <span className="rounded bg-accent px-1.5 py-0.5 text-[9px] font-semibold text-accent-fg">
+                      {thread.unreadCount}
+                    </span>
+                  )}
                 </div>
-              )}
-              <div className="whitespace-pre-wrap">{msg.content}</div>
-              <div className="text-xs text-neutral-500 mt-1 text-right">
-                {new Date(msg.timestamp).toLocaleTimeString()}
+                <div className="mt-1 flex items-center gap-1.5 text-[9px] text-muted-fg">
+                  <span className={cn(
+                    "rounded px-1 py-0.5 border",
+                    thread.threadType === "mission"
+                      ? "bg-sky-500/15 text-sky-300 border-sky-500/30"
+                      : "bg-violet-500/15 text-violet-300 border-violet-500/30"
+                  )}>
+                    {thread.threadType === "mission" ? "Mission" : "Worker"}
+                  </span>
+                  <span>{relativeWhen(thread.updatedAt)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-border/20 lg:border-b-0 lg:border-r lg:border-border/20">
+        <div className="border-b border-border/20 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="h-3.5 w-3.5 text-accent" />
+            <div className="text-[11px] font-semibold text-fg">
+              {selectedThread?.title ?? "Select a thread"}
+            </div>
+            {selectedThread && (
+              <span className="rounded border border-border/30 bg-zinc-800/60 px-1.5 py-0.5 text-[9px] text-muted-fg">
+                {selectedThread.threadType}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
+          {!selectedThread && (
+            <div className="rounded border border-border/20 bg-zinc-800/35 px-3 py-6 text-center text-[11px] text-muted-fg">
+              Pick a mission or worker thread to inspect and send guidance.
+            </div>
+          )}
+          {selectedThread && messages.length === 0 && (
+            <div className="rounded border border-border/20 bg-zinc-800/35 px-3 py-6 text-center text-[11px] text-muted-fg">
+              No messages yet in this thread.
+            </div>
+          )}
+          {messages.map((msg) => (
+            <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+              <div className={cn(
+                "max-w-[85%] rounded-lg border px-2.5 py-2 text-[11px]",
+                msg.role === "user"
+                  ? "border-accent/40 bg-accent/15 text-fg"
+                  : msg.role === "worker"
+                    ? "border-violet-500/35 bg-violet-500/10 text-violet-100"
+                    : "border-border/30 bg-zinc-800/70 text-zinc-100"
+              )}>
+                {msg.role !== "user" && (
+                  <div className="mb-1 flex items-center gap-1 text-[9px] text-muted-fg">
+                    {msg.role === "orchestrator" ? <Bot className="h-3 w-3" /> : <Terminal className="h-3 w-3" />}
+                    <span>{msg.role === "orchestrator" ? "Orchestrator" : "Worker"}</span>
+                    {msg.stepKey ? <span>{"\u2022"} {msg.stepKey}</span> : null}
+                  </div>
+                )}
+                <div className="whitespace-pre-wrap">{msg.content}</div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-muted-fg">
+                  <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                  {msg.role === "user" && selectedThread?.threadType === "worker" ? (
+                    <span className={cn(
+                      "rounded border px-1 py-0.5",
+                      msg.deliveryState === "delivered"
+                        ? "border-emerald-500/35 text-emerald-300"
+                        : msg.deliveryState === "failed"
+                          ? "border-red-500/35 text-red-300"
+                          : "border-amber-500/35 text-amber-300"
+                    )}>
+                      {msg.deliveryState}
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </div>
+          ))}
+        </div>
+
+        <div className="border-t border-border/20 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleSend();
+                }
+              }}
+              disabled={!selectedThread}
+              placeholder={
+                selectedThread?.threadType === "worker"
+                  ? "Send guidance directly to this worker..."
+                  : "Message the mission coordinator..."
+              }
+              className="h-8 flex-1 rounded border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 disabled:opacity-50"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void handleSend()}
+              disabled={!selectedThread || !input.trim() || sending}
+            >
+              {sending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              Send
+            </Button>
           </div>
-        ))}
+        </div>
       </div>
 
-      {/* Input bar */}
-      <div className="border-t border-neutral-700 p-3 flex items-center gap-2">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSend(); } }}
-          placeholder="Message the orchestrator..."
-          className="flex-1 bg-neutral-800 border border-neutral-600 rounded-lg px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 outline-none focus:border-violet-500"
-        />
-        <button
-          onClick={() => void handleSend()}
-          disabled={!input.trim() || sending}
-          className="p-2 rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Send size={16} />
-        </button>
-      </div>
+      <aside className="hidden w-[300px] shrink-0 xl:flex xl:flex-col">
+        <div className="border-b border-border/20 px-3 py-2">
+          <div className="text-[11px] font-semibold text-fg">Worker Status</div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-2">
+          {workerThreadCards.length === 0 && (
+            <div className="rounded border border-border/20 bg-zinc-800/35 px-2 py-3 text-center text-[10px] text-muted-fg">
+              No worker threads yet.
+            </div>
+          )}
+          {workerThreadCards.map(({ thread, state, digest }) => (
+            <button
+              key={thread.id}
+              onClick={() => setSelectedThreadId(thread.id)}
+              className={cn(
+                "w-full rounded border px-2 py-2 text-left transition-colors",
+                selectedThreadId === thread.id
+                  ? "border-accent/45 bg-accent/10"
+                  : "border-border/20 bg-zinc-800/35 hover:bg-zinc-800/55"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="truncate text-[11px] font-medium text-fg">{thread.title}</div>
+                <span className={cn(
+                  "rounded border px-1 py-0.5 text-[9px] capitalize",
+                  WORKER_STATUS_CLASSES[state?.state ?? digest?.status ?? "idle"] ?? "border-border/30 text-muted-fg"
+                )}>
+                  {(state?.state ?? digest?.status ?? "idle").replace("_", " ")}
+                </span>
+              </div>
+              <div className="mt-1 text-[9px] text-muted-fg">
+                heartbeat {relativeWhen(state?.lastHeartbeatAt ?? thread.updatedAt)}
+              </div>
+              <div className="mt-1 text-[10px] text-fg/80 leading-snug">
+                {compactText(digest?.summary ?? "No worker digest yet.", 140)}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div className="border-t border-border/20 px-3 py-2">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-semibold text-fg">Mission Metrics</div>
+            {savingMetrics ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-fg" /> : null}
+          </div>
+        </div>
+        <div className="max-h-[44%] overflow-y-auto p-2">
+          <div className="space-y-1.5">
+            {METRIC_TOGGLE_ORDER.map((toggle) => (
+              <label key={toggle} className="flex items-center justify-between rounded border border-border/20 bg-zinc-800/35 px-2 py-1.5 text-[10px]">
+                <span className="text-fg">{METRIC_TOGGLE_LABELS[toggle]}</span>
+                <input
+                  type="checkbox"
+                  checked={enabledMetricSet.has(toggle)}
+                  onChange={() => void handleToggleMetric(toggle)}
+                  disabled={savingMetrics}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="mt-2 rounded border border-border/20 bg-zinc-900/55 p-2">
+            <div className="text-[10px] font-medium text-muted-fg">Latest Samples</div>
+            <div className="mt-1 space-y-1">
+              {METRIC_TOGGLE_ORDER.filter((toggle) => latestMetricByKey.has(toggle)).slice(0, 8).map((toggle) => {
+                const sample = latestMetricByKey.get(toggle)!;
+                return (
+                  <div key={`${toggle}-${sample.id}`} className="flex items-center justify-between text-[10px]">
+                    <span className="text-muted-fg">{METRIC_TOGGLE_LABELS[toggle]}</span>
+                    <span className="text-fg">{formatMetricSample(sample)}</span>
+                  </div>
+                );
+              })}
+              {latestMetricByKey.size === 0 && (
+                <div className="text-[10px] text-muted-fg">No samples captured yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }
@@ -490,6 +993,7 @@ type CreateDraft = {
   laneId: string;
   priority: MissionPriority;
   depthTier: MissionDepthTier;
+  executionPolicy: MissionExecutionPolicy;
 };
 
 function CreateMissionDialog({
@@ -512,7 +1016,8 @@ function CreateMissionDialog({
     prompt: "",
     laneId: "",
     priority: "normal",
-    depthTier: defaultDepthTier
+    depthTier: defaultDepthTier,
+    executionPolicy: PRESET_STANDARD
   });
 
   useEffect(() => {
@@ -522,7 +1027,8 @@ function CreateMissionDialog({
       prompt: "",
       laneId: "",
       priority: "normal",
-      depthTier: defaultDepthTier
+      depthTier: defaultDepthTier,
+      executionPolicy: PRESET_STANDARD
     });
   }, [open, defaultDepthTier]);
 
@@ -606,30 +1112,15 @@ function CreateMissionDialog({
               </select>
             </label>
 
-            {/* Depth Tier */}
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-fg">Depth</span>
-              <select
-                value={draft.depthTier}
-                onChange={(e) => setDraft((p) => ({ ...p, depthTier: e.target.value as MissionDepthTier }))}
-                className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
-              >
-                <option value="light">Light</option>
-                <option value="standard">Standard</option>
-                <option value="deep">Deep</option>
-              </select>
-            </label>
           </div>
 
-          {/* Depth description */}
-          <div className="rounded-lg border border-border/20 bg-zinc-800/60 px-3 py-2">
-            <div className="flex items-center justify-between">
-              <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium border", DEPTH_TIER_COLORS[draft.depthTier])}>
-                {DEPTH_DESCRIPTIONS[draft.depthTier].label}
-              </span>
-              <span className="text-[10px] text-muted-fg">{DEPTH_DESCRIPTIONS[draft.depthTier].budget}</span>
-            </div>
-            <p className="mt-1 text-[10px] text-muted-fg/80">{DEPTH_DESCRIPTIONS[draft.depthTier].desc}</p>
+          {/* Execution Policy */}
+          <div className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-fg">Execution Policy</span>
+            <PolicyEditor
+              value={draft.executionPolicy}
+              onChange={(p) => setDraft((prev) => ({ ...prev, executionPolicy: p }))}
+            />
           </div>
         </div>
 
@@ -697,19 +1188,17 @@ function MissionSettingsDialog({
 
           <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-3">
             <div className="text-xs font-semibold text-fg">Mission Defaults</div>
-            <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
-              <label className="text-xs">
-                <div className="text-muted-fg">Default depth tier</div>
-                <select
-                  className={inputClass}
-                  value={draft.defaultDepthTier}
-                  onChange={(e) => onDraftChange({ defaultDepthTier: e.target.value as MissionDepthTier })}
-                >
-                  <option value="light">Light</option>
-                  <option value="standard">Standard</option>
-                  <option value="deep">Deep</option>
-                </select>
-              </label>
+            <div className="mt-3 space-y-3">
+              <div>
+                <div className="text-[11px] text-muted-fg mb-1">Default Execution Policy</div>
+                <PolicyEditor
+                  value={draft.defaultExecutionPolicy}
+                  onChange={(p) => onDraftChange({ defaultExecutionPolicy: p })}
+                  compact
+                />
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="text-xs">
                 <div className="text-muted-fg">Default planner provider</div>
                 <select
@@ -845,6 +1334,7 @@ export default function MissionsPage() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("board");
   const [searchFilter, setSearchFilter] = useState("");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const [chatJumpTarget, setChatJumpTarget] = useState<OrchestratorChatTarget | null>(null);
 
   /* ── Steering state ── */
   const [steerInput, setSteerInput] = useState("");
@@ -925,7 +1415,8 @@ export default function MissionsPage() {
       codexApprovalMode: toCodexApprovalMode(
         readString(localCodex.approvalMode, effectiveCodex.approvalMode, "full-auto")
       ),
-      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, "")
+      codexConfigPath: readString(localCodex.configPath, effectiveCodex.configPath, ""),
+      defaultExecutionPolicy: PRESET_STANDARD
     });
   }, []);
 
@@ -1078,9 +1569,11 @@ export default function MissionsPage() {
       setSelectedMission(null);
       setRunGraph(null);
       setSteeringLog([]);
+      setChatJumpTarget(null);
       return;
     }
     setSteeringLog([]);
+    setChatJumpTarget(null);
     void loadMissionDetail(selectedMissionId);
     void loadOrchestratorGraph(selectedMissionId);
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
@@ -1145,7 +1638,7 @@ export default function MissionsPage() {
         prompt,
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
-        missionDepth: draft.depthTier,
+        executionPolicy: draft.executionPolicy,
         autostart: true,
         launchMode: "autopilot",
         autopilotExecutor: "codex"
@@ -1440,6 +1933,12 @@ export default function MissionsPage() {
                         {selectedMission.priority}
                       </span>
                     )}
+                    {runGraph?.run?.metadata && (
+                      <MissionPolicyBadge
+                        policy={(runGraph.run.metadata as Record<string, unknown>).executionPolicy as MissionExecutionPolicy | undefined}
+                        depthTier={(runGraph.run.metadata as Record<string, unknown>).depthTier as string | undefined}
+                      />
+                    )}
                   </div>
                   <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted-fg">
                     <span><Clock3 className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null)}</span>
@@ -1517,6 +2016,17 @@ export default function MissionsPage() {
                 ))}
               </div>
 
+              {/* ── Completion Banner + Phase Progress ── */}
+              {runGraph && (
+                <div className="px-4 pt-3 space-y-2">
+                  <CompletionBanner
+                    status={runGraph.run.status}
+                    evaluation={runGraph.completionEvaluation}
+                  />
+                  <PhaseProgressBar steps={runGraph.steps} />
+                </div>
+              )}
+
               {/* ── Tab Content ── */}
               <div className={cn("flex-1 min-h-0", activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
                 {activeTab === "board" && (
@@ -1535,6 +2045,10 @@ export default function MissionsPage() {
                       allSteps={runGraph?.steps ?? []}
                       claims={runGraph?.claims ?? []}
                       onOpenTranscript={() => setActiveTab("transcript")}
+                      onOpenWorkerThread={(target) => {
+                        setChatJumpTarget(target);
+                        setActiveTab("chat");
+                      }}
                     />
                   </div>
                 )}
@@ -1554,6 +2068,10 @@ export default function MissionsPage() {
                       allSteps={runGraph?.steps ?? []}
                       claims={runGraph?.claims ?? []}
                       onOpenTranscript={() => setActiveTab("transcript")}
+                      onOpenWorkerThread={(target) => {
+                        setChatJumpTarget(target);
+                        setActiveTab("chat");
+                      }}
                     />
                   </div>
                 )}
@@ -1579,7 +2097,12 @@ export default function MissionsPage() {
                 )}
 
                 {activeTab === "chat" && selectedMissionId && (
-                  <MissionChat missionId={selectedMissionId} />
+                  <MissionChat
+                    missionId={selectedMissionId}
+                    runId={runGraph?.run.id ?? null}
+                    jumpTarget={chatJumpTarget}
+                    onJumpHandled={() => setChatJumpTarget(null)}
+                  />
                 )}
               </div>
 
@@ -1810,13 +2333,15 @@ function StepDetailPanel({
   attempts,
   allSteps,
   claims,
-  onOpenTranscript
+  onOpenTranscript,
+  onOpenWorkerThread
 }: {
   step: OrchestratorStep | null;
   attempts: OrchestratorAttempt[];
   allSteps: OrchestratorStep[];
   claims: OrchestratorClaim[];
   onOpenTranscript: () => void;
+  onOpenWorkerThread: (target: OrchestratorChatTarget) => void;
 }) {
   if (!step) {
     return (
@@ -1944,6 +2469,22 @@ function StepDetailPanel({
       >
         Open Worker Transcript
       </button>
+      {latestAttempt && (
+        <button
+          onClick={() => onOpenWorkerThread({
+            kind: "worker",
+            runId: step.runId,
+            stepId: step.id,
+            stepKey: step.stepKey,
+            attemptId: latestAttempt.id,
+            sessionId: latestAttempt.executorSessionId ?? null,
+            laneId: step.laneId ?? null
+          })}
+          className="mt-2 w-full rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent/20"
+        >
+          Jump To Worker Thread
+        </button>
+      )}
     </aside>
   );
 }

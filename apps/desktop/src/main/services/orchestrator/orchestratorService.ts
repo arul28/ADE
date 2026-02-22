@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  CompletionDiagnostic,
   ConflictProposal,
   ConflictProposalPreview,
   ExternalConflictResolverProvider,
+  MissionExecutionPolicy,
   MissionStepHandoff,
   OrchestratorAttempt,
   OrchestratorAttemptResultEnvelope,
@@ -35,9 +38,11 @@ import type {
   PackExport,
   PrepareResolverSessionArgs,
   PtyCreateArgs,
+  RunCompletionEvaluation,
   StartOrchestratorRunArgs,
   StartOrchestratorRunStepInput
 } from "../../../shared/types";
+import { evaluateRunCompletion } from "./executionPolicy";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
@@ -300,7 +305,7 @@ const CONTEXT_PROFILES: Record<OrchestratorContextProfileId, OrchestratorContext
 };
 
 const TERMINAL_STEP_STATUSES = new Set<OrchestratorStepStatus>(["succeeded", "failed", "skipped", "canceled"]);
-const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "failed", "canceled"]);
+const TERMINAL_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "succeeded_with_risk", "failed", "canceled"]);
 const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "transient",
   "executor_failure",
@@ -382,6 +387,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function isExecutionPolicyRecord(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rec = value as Record<string, unknown>;
+  return "planning" in rec && "implementation" in rec && "completion" in rec;
+}
+
 function asBool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -410,6 +421,7 @@ function normalizeRunStatus(value: string): OrchestratorRunStatus {
     value === "running" ||
     value === "paused" ||
     value === "succeeded" ||
+    value === "succeeded_with_risk" ||
     value === "failed" ||
     value === "canceled"
   ) {
@@ -769,6 +781,18 @@ function toTimelineEvent(row: TimelineRow): OrchestratorTimelineEvent {
 }
 
 function toRuntimeEvent(row: RuntimeEventRow): OrchestratorRuntimeBusEvent {
+  const payload = parseRecord(row.payload_json);
+  const threadId = typeof payload?.threadId === "string" ? payload.threadId.trim() : "";
+  const messageId = typeof payload?.messageId === "string" ? payload.messageId.trim() : "";
+  const replyToRaw = typeof payload?.replyTo === "string" ? payload.replyTo.trim() : "";
+  const questionLink =
+    threadId.length > 0 && messageId.length > 0
+      ? {
+          threadId,
+          messageId,
+          replyTo: replyToRaw.length > 0 ? replyToRaw : null
+        }
+      : null;
   return {
     id: row.id,
     runId: row.run_id,
@@ -778,7 +802,8 @@ function toRuntimeEvent(row: RuntimeEventRow): OrchestratorRuntimeBusEvent {
     eventType: normalizeRuntimeEventType(row.event_type),
     eventKey: row.event_key,
     occurredAt: row.occurred_at,
-    payload: parseRecord(row.payload_json),
+    payload,
+    questionLink,
     createdAt: row.created_at
   };
 }
@@ -2014,6 +2039,7 @@ export function createOrchestratorService({
   };
 
   const collectTouchedRepoPaths = (args: {
+    laneId?: string | null;
     result?: Partial<OrchestratorAttemptResultEnvelope> | null;
     metadata?: Record<string, unknown> | null;
   }): { touchedPaths: string[]; rawPaths: string[] } => {
@@ -2062,6 +2088,60 @@ export function createOrchestratorService({
     parsePathArray(args.metadata?.changedFiles ?? args.metadata?.changed_files);
     parsePathArray(args.metadata?.modifiedFiles ?? args.metadata?.modified_files);
     parsePathArray(args.metadata?.renamedFiles ?? args.metadata?.renamed_files);
+
+    const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+    if (laneId.length > 0) {
+      const laneRow = db.get<{ worktree_path: string | null }>(
+        `
+          select worktree_path
+          from lanes
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [laneId, projectId]
+      );
+      const laneRoot = typeof laneRow?.worktree_path === "string" && laneRow.worktree_path.trim().length
+        ? laneRow.worktree_path.trim()
+        : projectRoot;
+      try {
+        const status = spawnSync("git", ["-C", laneRoot, "status", "--porcelain=v1", "--untracked-files=all"], {
+          encoding: "utf8"
+        });
+        if (status.status === 0 && typeof status.stdout === "string" && status.stdout.trim().length > 0) {
+          const normalizePorcelainPath = (value: string): string => {
+            const trimmed = value.trim();
+            if (!trimmed.startsWith("\"") || !trimmed.endsWith("\"")) return trimmed;
+            return trimmed
+              .slice(1, -1)
+              .replace(/\\\"/g, "\"")
+              .replace(/\\\\/g, "\\");
+          };
+          for (const line of status.stdout.split(/\r?\n/)) {
+            if (line.length < 4) continue;
+            const payload = line.slice(3).trim();
+            if (!payload.length) continue;
+            if (payload.includes(" -> ")) {
+              const [left, right] = payload.split(/\s+->\s+/, 2);
+              for (const entry of [left, right]) {
+                if (!entry) continue;
+                const normalizedToken = normalizePorcelainPath(entry);
+                rawPaths.push(normalizedToken);
+                const normalizedPath = normalizeRepoRelativePath(projectRoot, normalizedToken);
+                if (normalizedPath) touched.add(normalizedPath);
+              }
+              continue;
+            }
+            const normalizedToken = normalizePorcelainPath(payload);
+            rawPaths.push(normalizedToken);
+            const normalizedPath = normalizeRepoRelativePath(projectRoot, normalizedToken);
+            if (normalizedPath) touched.add(normalizedPath);
+          }
+        }
+      } catch {
+        // Best-effort only; runtime metadata remains the primary source.
+      }
+    }
     return {
       touchedPaths: [...touched].sort((a, b) => a.localeCompare(b)),
       rawPaths
@@ -2092,6 +2172,7 @@ export function createOrchestratorService({
       };
     }
     const touched = collectTouchedRepoPaths({
+      laneId: args.step.laneId,
       result: args.result,
       metadata: args.metadata
     });
@@ -2251,6 +2332,46 @@ export function createOrchestratorService({
     if (statuses.some((status) => status === "ready" || status === "pending")) return "running";
     if (statuses.some((status) => status === "blocked")) return "paused";
     return "running";
+  };
+
+  /**
+   * Policy-aware run status evaluation.
+   * Resolves the execution policy from run metadata and delegates to
+   * `evaluateRunCompletion`. When the evaluation yields a terminal status,
+   * the diagnostics are persisted into the run's metadata so they can be
+   * surfaced by `getRunGraph` and downstream consumers.
+   */
+  const evaluateRunStatusWithPolicy = (runId: string): OrchestratorRunStatus => {
+    const steps = listStepRows(runId).map(toStep);
+    const runRow = getRunRow(runId);
+    const runMetadata = runRow ? parseRecord(runRow.metadata_json) : null;
+    const executionPolicy = runMetadata && isExecutionPolicyRecord(runMetadata.executionPolicy)
+      ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+      : null;
+    const evaluation = evaluateRunCompletion(steps, executionPolicy);
+
+    // When the evaluation yields a terminal status, persist completion diagnostics
+    // into run metadata so they are available via getRunGraph and other consumers.
+    if (evaluation.completionReady && TERMINAL_RUN_STATUSES.has(evaluation.status)) {
+      const existingMetadata = runMetadata ?? {};
+      const updatedMetadata = {
+        ...existingMetadata,
+        completionDiagnostics: evaluation.diagnostics,
+        completionRiskFactors: evaluation.riskFactors
+      };
+      db.run(
+        `
+          update orchestrator_runs
+          set metadata_json = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(updatedMetadata), nowIso(), runId, projectId]
+      );
+    }
+
+    return evaluation.status;
   };
 
   const createContextSnapshotForAttempt = async (args: {
@@ -3345,15 +3466,23 @@ export function createOrchestratorService({
     getRunGraph(args: { runId: string; timelineLimit?: number }): OrchestratorRunGraph {
       const runRow = getRunRow(args.runId);
       if (!runRow) throw new Error(`Run not found: ${args.runId}`);
+      const run = toRun(runRow);
+      const steps = listStepRows(args.runId).map(toStep);
+      const runMetadata = run.metadata ?? {};
+      const executionPolicy = isExecutionPolicyRecord(runMetadata.executionPolicy)
+        ? (runMetadata.executionPolicy as MissionExecutionPolicy)
+        : null;
+      const completion = evaluateRunCompletion(steps, executionPolicy);
       return {
-        run: toRun(runRow),
-        steps: listStepRows(args.runId).map(toStep),
+        run,
+        steps,
         attempts: listAttemptRows(args.runId).map(toAttempt),
         claims: this.listClaims({ runId: args.runId, limit: 1_000 }),
         contextSnapshots: this.listContextSnapshots({ runId: args.runId, limit: 1_000 }),
         handoffs: this.listHandoffs({ runId: args.runId, limit: 1_000 }),
         timeline: this.listTimeline({ runId: args.runId, limit: args.timelineLimit ?? 300 }),
-        runtimeEvents: this.listRuntimeEvents({ runId: args.runId, limit: 1_000 })
+        runtimeEvents: this.listRuntimeEvents({ runId: args.runId, limit: 1_000 }),
+        completionEvaluation: completion
       };
     },
 
@@ -3665,16 +3794,117 @@ export function createOrchestratorService({
         const autopilot = parseAutopilotConfig(run.metadata);
         if (!autopilot.enabled) return 0;
         const parallelismCap = Math.max(1, autopilot.parallelismCap);
+        const computeEffectiveParallelismCap = (): {
+          cap: number;
+          reasons: string[];
+          pressure: {
+            gateStatus: "pass" | "warn" | "fail" | "unknown";
+            activeClaimConflicts: number;
+            contextPressure: number | null;
+            resourcePressure: number | null;
+          };
+        } => {
+          let cap = parallelismCap;
+          const reasons: string[] = [];
+          let gateStatus: "pass" | "warn" | "fail" | "unknown" = "unknown";
+          try {
+            const gateReport = this.getLatestGateReport();
+            gateStatus = gateReport.overallStatus;
+            if (gateReport.overallStatus === "fail") {
+              cap = Math.min(cap, 1);
+              reasons.push("gate_fail");
+            } else if (gateReport.overallStatus === "warn") {
+              cap = Math.min(cap, 2);
+              reasons.push("gate_warn");
+            }
+          } catch {
+            // Ignore gate-report lookup failures; base cap still applies.
+          }
+
+          const latestRunRow = getRunRow(runId);
+          let activeClaimConflicts = 0;
+          let contextPressure: number | null = null;
+          let resourcePressure: number | null = null;
+          if (latestRunRow) {
+            const runtimeCursor = (() => {
+              if (!latestRunRow.runtime_cursor_json) return null;
+              try {
+                const parsed = JSON.parse(latestRunRow.runtime_cursor_json) as Record<string, unknown>;
+                return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+              } catch {
+                return null;
+              }
+            })();
+            const controlPack = runtimeCursor?.controlPackV2;
+            if (controlPack && typeof controlPack === "object" && !Array.isArray(controlPack)) {
+              const rawConflicts = Number((controlPack as Record<string, unknown>).activeClaimConflicts);
+              if (Number.isFinite(rawConflicts) && rawConflicts > 0) {
+                activeClaimConflicts = Math.floor(rawConflicts);
+              }
+            }
+            const docsConsumed = Number(runtimeCursor?.docsConsumedBytes ?? Number.NaN);
+            const docsBudget = Number(runtimeCursor?.docsBudgetBytes ?? Number.NaN);
+            if (Number.isFinite(docsConsumed) && Number.isFinite(docsBudget) && docsBudget > 0) {
+              contextPressure = docsConsumed / docsBudget;
+            }
+            const runMeta = parseRecord(latestRunRow.metadata_json);
+            const rawResourcePressure = Number(runMeta?.resourcePressure ?? Number.NaN);
+            if (Number.isFinite(rawResourcePressure)) {
+              resourcePressure = Math.max(0, Math.min(1, rawResourcePressure));
+            }
+          }
+
+          if (activeClaimConflicts > 0) {
+            cap = Math.min(cap, Math.max(1, parallelismCap - Math.min(parallelismCap - 1, activeClaimConflicts)));
+            reasons.push("claim_conflicts");
+          }
+          if (contextPressure != null && contextPressure >= 0.85) {
+            cap = Math.min(cap, 2);
+            reasons.push("context_pressure");
+          }
+          if (resourcePressure != null && resourcePressure >= 0.7) {
+            cap = Math.min(cap, 2);
+            reasons.push("resource_pressure");
+          }
+          return {
+            cap: Math.max(1, cap),
+            reasons,
+            pressure: {
+              gateStatus,
+              activeClaimConflicts,
+              contextPressure,
+              resourcePressure
+            }
+          };
+        };
+        let lastCapSignature = "";
 
         let startedAttempts = 0;
         let loops = 0;
         while (loops < 12) {
           loops += 1;
           this.tick({ runId });
+          const effectiveCapState = computeEffectiveParallelismCap();
+          const effectiveCap = effectiveCapState.cap;
+          const capSignature = `${effectiveCap}:${effectiveCapState.reasons.join(",")}`;
+          if (capSignature !== lastCapSignature) {
+            lastCapSignature = capSignature;
+            appendTimelineEvent({
+              runId,
+              eventType: "autopilot_parallelism_cap_adjusted",
+              reason: "dynamic_cap",
+              detail: {
+                configuredCap: parallelismCap,
+                effectiveCap,
+                reasons: effectiveCapState.reasons,
+                pressure: effectiveCapState.pressure
+              }
+            });
+          }
           let runningAttemptCount = listAttemptRows(runId)
             .map(toAttempt)
             .filter((attempt) => attempt.status === "running").length;
-          if (runningAttemptCount >= parallelismCap) break;
+          if (runningAttemptCount >= effectiveCap) break;
 
           const runSteps = listStepRows(runId).map(toStep);
           const depthById = buildStepDepthMap(runSteps);
@@ -3690,7 +3920,7 @@ export function createOrchestratorService({
 
           let startedInLoop = 0;
           for (const step of readySteps) {
-            if (runningAttemptCount >= parallelismCap) break;
+            if (runningAttemptCount >= effectiveCap) break;
             const fresh = getStepRow(step.id);
             if (!fresh) continue;
             if (toStep(fresh).status !== "ready") continue;
@@ -3727,7 +3957,7 @@ export function createOrchestratorService({
             detail: {
               startedAttempts,
               executorKind: autopilot.executorKind,
-              parallelismCap
+              parallelismCap: parallelismCap
             }
           });
         }
@@ -4393,7 +4623,7 @@ export function createOrchestratorService({
       expireClaims();
       refreshStepReadiness(args.runId);
 
-      const next = deriveRunStatusFromSteps(args.runId);
+      const next = evaluateRunStatusWithPolicy(args.runId);
       const current = normalizeRunStatus(run.status);
       if (next !== current) {
         updateRunStatus(args.runId, next);
@@ -5887,8 +6117,8 @@ export function createOrchestratorService({
       // Re-evaluate downstream steps that may now be unblocked
       refreshStepReadiness(runId);
 
-      // Re-derive run status
-      const nextRunStatus = deriveRunStatusFromSteps(runId);
+      // Re-derive run status using policy-aware evaluation
+      const nextRunStatus = evaluateRunStatusWithPolicy(runId);
       const currentRunStatus = normalizeRunStatus(runRow.status);
       if (nextRunStatus !== currentRunStatus) {
         updateRunStatus(runId, nextRunStatus);

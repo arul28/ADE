@@ -16,6 +16,9 @@ const EVENT_CONFIG: Record<string, { icon: string; color: string; label: string 
   integration_chain_started: { icon: "\u2295", color: "text-emerald-400", label: "Merge" },
   context_pressure_warning: { icon: "\u26A0", color: "text-red-400", label: "Pressure" },
   run_status_changed: { icon: "\u25C9", color: "text-green-400", label: "Run" },
+  phase_transition: { icon: "\u25B8", color: "text-indigo-400", label: "Phase" },
+  completion_diagnostic: { icon: "\u2611", color: "text-emerald-400", label: "Completion" },
+  completion_risk: { icon: "\u26A0", color: "text-amber-400", label: "Risk" },
 };
 
 const DEFAULT_CONFIG = { icon: "\u25CB", color: "text-muted-fg", label: "Event" };

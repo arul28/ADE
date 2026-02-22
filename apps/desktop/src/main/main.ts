@@ -423,7 +423,10 @@ app.whenReady().then(async () => {
       projectConfigService,
       logger,
       appVersion: app.getVersion(),
-      onEvent: (event) => broadcast(IPC.agentChatEvent, event),
+      onEvent: (event) => {
+        aiOrchestratorServiceRef?.onAgentChatEvent(event);
+        broadcast(IPC.agentChatEvent, event);
+      },
       onSessionEnded: onTrackedSessionEnded
     });
 
@@ -495,10 +498,12 @@ app.whenReady().then(async () => {
       logger,
       missionService,
       orchestratorService,
+      agentChatService,
       laneService,
       projectConfigService,
       aiIntegrationService,
-      projectRoot
+      projectRoot,
+      onThreadEvent: (event) => broadcast(IPC.orchestratorThreadEvent, event)
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
     orchestratorService.registerExecutorAdapter(createClaudeOrchestratorAdapter());

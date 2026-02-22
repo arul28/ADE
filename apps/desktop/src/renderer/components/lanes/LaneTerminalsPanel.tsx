@@ -419,7 +419,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
             className="h-7 px-2 text-[11px]"
             title="Open in Terminals tab"
             onClick={() => {
-              navigate(`/terminals?laneId=${encodeURIComponent(laneId)}&status=running`);
+              navigate(`/work?laneId=${encodeURIComponent(laneId)}&status=running`);
             }}
           >
             <ExternalLink className="h-3.5 w-3.5" />

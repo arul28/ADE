@@ -218,6 +218,7 @@ import type {
   OrchestratorAttempt,
   OrchestratorGateReport,
   OrchestratorRuntimeEvent,
+  OrchestratorThreadEvent,
   OrchestratorRun,
   OrchestratorRunGraph,
   OrchestratorStep,
@@ -254,8 +255,23 @@ import type {
   MissionDepthConfig,
   GetModelCapabilitiesResult,
   OrchestratorChatMessage,
+  OrchestratorChatThread,
+  OrchestratorWorkerDigest,
+  OrchestratorContextCheckpoint,
+  OrchestratorLaneDecision,
+  MissionMetricsConfig,
+  MissionMetricSample,
   SendOrchestratorChatArgs,
-  GetOrchestratorChatArgs
+  GetOrchestratorChatArgs,
+  ListOrchestratorChatThreadsArgs,
+  GetOrchestratorThreadMessagesArgs,
+  SendOrchestratorThreadMessageArgs,
+  GetOrchestratorWorkerDigestArgs,
+  ListOrchestratorWorkerDigestsArgs,
+  GetOrchestratorContextCheckpointArgs,
+  ListOrchestratorLaneDecisionsArgs,
+  GetMissionMetricsArgs,
+  SetMissionMetricsConfigArgs
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -401,10 +417,33 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorSendChat, args),
     getChat: async (args: GetOrchestratorChatArgs): Promise<OrchestratorChatMessage[]> =>
       ipcRenderer.invoke(IPC.orchestratorGetChat, args),
+    listChatThreads: async (args: ListOrchestratorChatThreadsArgs): Promise<OrchestratorChatThread[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListChatThreads, args),
+    getThreadMessages: async (args: GetOrchestratorThreadMessagesArgs): Promise<OrchestratorChatMessage[]> =>
+      ipcRenderer.invoke(IPC.orchestratorGetThreadMessages, args),
+    sendThreadMessage: async (args: SendOrchestratorThreadMessageArgs): Promise<OrchestratorChatMessage> =>
+      ipcRenderer.invoke(IPC.orchestratorSendThreadMessage, args),
+    getWorkerDigest: async (args: GetOrchestratorWorkerDigestArgs): Promise<OrchestratorWorkerDigest | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetWorkerDigest, args),
+    listWorkerDigests: async (args: ListOrchestratorWorkerDigestsArgs): Promise<OrchestratorWorkerDigest[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListWorkerDigests, args),
+    getContextCheckpoint: async (args: GetOrchestratorContextCheckpointArgs): Promise<OrchestratorContextCheckpoint | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetContextCheckpoint, args),
+    listLaneDecisions: async (args: ListOrchestratorLaneDecisionsArgs): Promise<OrchestratorLaneDecision[]> =>
+      ipcRenderer.invoke(IPC.orchestratorListLaneDecisions, args),
+    getMissionMetrics: async (args: GetMissionMetricsArgs): Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }> =>
+      ipcRenderer.invoke(IPC.orchestratorGetMissionMetrics, args),
+    setMissionMetricsConfig: async (args: SetMissionMetricsConfigArgs): Promise<MissionMetricsConfig> =>
+      ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
     onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => cb(payload);
       ipcRenderer.on(IPC.orchestratorEvent, listener);
       return () => ipcRenderer.removeListener(IPC.orchestratorEvent, listener);
+    },
+    onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorThreadEvent) => cb(payload);
+      ipcRenderer.on(IPC.orchestratorThreadEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.orchestratorThreadEvent, listener);
     }
   },
   lanes: {

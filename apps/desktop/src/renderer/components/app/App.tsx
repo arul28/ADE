@@ -43,7 +43,8 @@ export function App() {
             <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/lanes" element={<LanesPage />} />
             <Route path="/files" element={<FilesPage />} />
-            <Route path="/terminals" element={<TerminalsPage />} />
+            <Route path="/terminals" element={<Navigate to="/work" replace />} />
+            <Route path="/work" element={<TerminalsPage />} />
             <Route path="/conflicts" element={<ConflictsPage />} />
             <Route path="/context" element={<Navigate to="/settings" replace />} />
             <Route path="/graph" element={<WorkspaceGraphPage />} />

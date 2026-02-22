@@ -172,6 +172,57 @@ describe("claudeOrchestratorAdapter", () => {
     expect(command).toContain("Step B added");
   });
 
+  it("injects steering directives into worker prompt", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: {
+          instructions: "Follow operator guidance",
+          steeringDirectives: [
+            {
+              directive: "Prioritize failing auth tests before refactors.",
+              priority: "instruction",
+              targetStepKey: "implement"
+            }
+          ]
+        }
+      }
+    });
+    const result = await adapter.start(args);
+    if (result.status !== "accepted") throw new Error("Expected accepted");
+    expect(result.metadata?.steeringDirectiveCount).toBe(1);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("Active operator steering directives");
+    expect(command).toContain("Prioritize failing auth tests before refactors");
+  });
+
+  it("derives file ownership fence from claim scope metadata when filePatterns are absent", async () => {
+    const adapter = createClaudeOrchestratorAdapter();
+    const args = buildMockArgs({
+      step: {
+        ...buildMockArgs().step,
+        metadata: {
+          instructions: "Scope from claim policy only",
+          policy: {
+            claimScopes: [
+              { scopeKind: "file", scopeValue: "glob:src/auth/**" },
+              { scopeKind: "env", scopeValue: "NODE_ENV" }
+            ]
+          }
+        }
+      }
+    });
+    await adapter.start(args);
+
+    const createSession = args.createTrackedSession as ReturnType<typeof vi.fn>;
+    const command = createSession.mock.calls[0][0].startupCommand as string;
+    expect(command).toContain("src/auth/**");
+    expect(command).toContain("Do not modify files outside this scope");
+  });
+
   it("uses default model and permission mode when not specified", async () => {
     const adapter = createClaudeOrchestratorAdapter();
     const args = buildMockArgs({

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type {
+  MissionExecutionPolicy,
   MissionExecutorPolicy,
   MissionPlannerAttempt,
   MissionPlannerEngine,
@@ -18,6 +19,7 @@ import type {
   PlannerTaskType
 } from "../../../shared/types";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
+import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 
 type MissionPlanningLogger = {
@@ -47,6 +49,7 @@ export type MissionPlanningRequest = {
   contextBundle?: MissionPlanningContextBundle;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   logger?: MissionPlanningLogger;
+  policy?: MissionExecutionPolicy;
 };
 
 export type MissionPlanStepDraft = {
@@ -295,6 +298,7 @@ function buildPlannerPrompt(args: {
   laneId: string | null;
   allowPlanningQuestions: boolean;
   contextBundle?: MissionPlanningContextBundle;
+  policy?: MissionExecutionPolicy;
 }): string {
   const docs = (args.contextBundle?.docsDigest ?? [])
     .slice(0, 20)
@@ -313,7 +317,7 @@ function buildPlannerPrompt(args: {
       : "Do not ask follow-up questions. Fill assumptions conservatively and continue."
   ];
 
-  return [
+  const lines = [
     "You are ADE mission planner.",
     "Generate a deterministic mission plan object that matches the provided JSON schema exactly.",
     "",
@@ -331,9 +335,24 @@ function buildPlannerPrompt(args: {
     "",
     "Additional context bundle (JSON):",
     stableStringify(args.contextBundle ?? {}),
-    "",
-    "Output: one JSON object only."
-  ].join("\n");
+    ""
+  ];
+
+  if (args.policy) {
+    const p = args.policy;
+    lines.push(
+      "Execution policy constraints:",
+      `- Testing mode: ${p.testing.mode}.`,
+      `- Code review: ${p.codeReview.mode}.`,
+      `- Integration: ${p.integration.mode}.`,
+      `- Merge: ${p.merge.mode}.`,
+      `- Executor preferences: planning=${p.planning.model ?? "codex"}, implementation=${p.implementation.model ?? "codex"}, testing=${p.testing.model ?? "codex"}, integration=${p.integration.model ?? "codex"}.`,
+      ""
+    );
+  }
+
+  lines.push("Output: one JSON object only.");
+  return lines.join("\n");
 }
 
 function normalizePlannerStep(step: unknown, index: number): PlannerStepPlan {
@@ -562,10 +581,12 @@ export function buildDeterministicPlannerPlan(args: {
   title: string;
   prompt: string;
   laneId: string | null;
+  policy?: MissionExecutionPolicy;
 }): PlannerPlan {
   const legacy = buildDeterministicMissionPlan({
     prompt: args.prompt,
-    laneId: args.laneId
+    laneId: args.laneId,
+    policy: args.policy
   });
   const idByIndex = legacy.steps.map((_, index) => `plan-${String(index + 1).padStart(3, "0")}`);
   const steps: PlannerStepPlan[] = legacy.steps.map((step, index) => {
@@ -741,6 +762,7 @@ export function plannerPlanToMissionSteps(args: {
   degraded: boolean;
   reasonCode: MissionPlannerReasonCode | null;
   validationErrors: string[];
+  policy?: MissionExecutionPolicy;
 }): MissionPlanStepDraft[] {
   const indexByStepId = new Map<string, number>();
   args.plan.steps.forEach((step, index) => indexByStepId.set(step.stepId, index));
@@ -750,6 +772,89 @@ export function plannerPlanToMissionSteps(args: {
     const dependencyIndices = step.dependencies
       .map((dep) => indexByStepId.get(dep))
       .filter((value): value is number => typeof value === "number");
+
+    // Resolve executor kind — policy overrides take precedence
+    let executorKind: OrchestratorExecutorKind;
+    if (args.policy) {
+      const taskType = step.taskType;
+      if (taskType === "analysis") {
+        executorKind = phaseModelToExecutorKind(args.policy.planning.model);
+      } else if (taskType === "code") {
+        executorKind = phaseModelToExecutorKind(args.policy.implementation.model);
+      } else if (taskType === "test") {
+        executorKind = phaseModelToExecutorKind(args.policy.testing.model);
+      } else if (taskType === "review") {
+        executorKind = phaseModelToExecutorKind(args.policy.codeReview.model);
+      } else if (taskType === "integration" || taskType === "merge") {
+        executorKind = phaseModelToExecutorKind(args.policy.integration.model);
+      } else {
+        executorKind = mapHintToExecutor({
+          hint: step.executorHint,
+          taskType: step.taskType,
+          executorPolicy: args.executorPolicy
+        });
+      }
+    } else {
+      executorKind = mapHintToExecutor({
+        hint: step.executorHint,
+        taskType: step.taskType,
+        executorPolicy: args.executorPolicy
+      });
+    }
+
+    // Resolve reasoning effort from policy
+    let reasoningEffort: string | undefined;
+    if (args.policy) {
+      const taskType = step.taskType;
+      if (taskType === "analysis") {
+        reasoningEffort = args.policy.planning.reasoningEffort;
+      } else if (taskType === "code") {
+        reasoningEffort = args.policy.implementation.reasoningEffort;
+      } else if (taskType === "test") {
+        reasoningEffort = args.policy.testing.reasoningEffort;
+      } else if (taskType === "review") {
+        reasoningEffort = args.policy.codeReview.reasoningEffort;
+      } else if (taskType === "integration" || taskType === "merge") {
+        reasoningEffort = args.policy.integration.reasoningEffort;
+      }
+    }
+
+    const metadata: Record<string, unknown> = {
+      stepKey: step.stepId,
+      stepType: step.taskType,
+      dependencyStepKeys: step.dependencies,
+      dependencyIndices,
+      joinPolicy: step.joinPolicy ?? "all_success",
+      quorumCount: step.joinQuorum ?? null,
+      retryLimit,
+      executorKind,
+      doneCriteria: step.outputContract.completionCriteria,
+      expectedSignals: step.outputContract.expectedSignals,
+      artifactHints: step.artifactHints,
+      laneHints: step.claimPolicy.lanes,
+      planner: {
+        version: "ade.missionPlanner.v2",
+        schemaVersion: args.plan.schemaVersion,
+        missionStrategy: args.plan.missionSummary.strategy,
+        requestedEngine: args.requestedEngine,
+        resolvedEngine: args.resolvedEngine,
+        degraded: args.degraded,
+        reasonCode: args.reasonCode,
+        validationErrors: args.validationErrors
+      },
+      policy: {
+        includeNarrative: requiresNarrative,
+        includeFullDocs: step.taskType === "analysis" || step.taskType === "integration" || step.taskType === "review",
+        docsMaxBytes: requiresNarrative ? 220_000 : 120_000,
+        claimScopes: toClaimScopes(step)
+      },
+      planStep: step
+    };
+
+    if (reasoningEffort) {
+      metadata.reasoningEffort = reasoningEffort;
+    }
+
     return {
       index,
       title: step.name,
@@ -764,41 +869,7 @@ export function plannerPlanToMissionSteps(args: {
               : step.taskType === "review" || step.taskType === "docs"
                 ? "summary"
                 : "implementation",
-      metadata: {
-        stepKey: step.stepId,
-        stepType: step.taskType,
-        dependencyStepKeys: step.dependencies,
-        dependencyIndices,
-        joinPolicy: step.joinPolicy ?? "all_success",
-        quorumCount: step.joinQuorum ?? null,
-        retryLimit,
-        executorKind: mapHintToExecutor({
-          hint: step.executorHint,
-          taskType: step.taskType,
-          executorPolicy: args.executorPolicy
-        }),
-        doneCriteria: step.outputContract.completionCriteria,
-        expectedSignals: step.outputContract.expectedSignals,
-        artifactHints: step.artifactHints,
-        laneHints: step.claimPolicy.lanes,
-        planner: {
-          version: "ade.missionPlanner.v2",
-          schemaVersion: args.plan.schemaVersion,
-          missionStrategy: args.plan.missionSummary.strategy,
-          requestedEngine: args.requestedEngine,
-          resolvedEngine: args.resolvedEngine,
-          degraded: args.degraded,
-          reasonCode: args.reasonCode,
-          validationErrors: args.validationErrors
-        },
-        policy: {
-          includeNarrative: requiresNarrative,
-          includeFullDocs: step.taskType === "analysis" || step.taskType === "integration" || step.taskType === "review",
-          docsMaxBytes: requiresNarrative ? 220_000 : 120_000,
-          claimScopes: toClaimScopes(step)
-        },
-        planStep: step
-      }
+      metadata
     };
   });
 }
@@ -820,7 +891,8 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     const plan = buildDeterministicPlannerPlan({
       title: args.title,
       prompt: args.prompt,
-      laneId: args.laneId
+      laneId: args.laneId,
+      policy: args.policy
     });
     const normalizedPlanHash = sha256(stableStringify(plan));
     const run: MissionPlannerRun = {
@@ -855,7 +927,8 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     title: args.title,
     laneId: args.laneId,
     allowPlanningQuestions: args.allowPlanningQuestions === true,
-    contextBundle: args.contextBundle
+    contextBundle: args.contextBundle,
+    policy: args.policy
   });
 
   const runtimeErrors: PlannerRuntimeError[] = [];

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { OrchestratorAttempt, OrchestratorClaim, OrchestratorStep } from "../../../shared/types";
-import { resolveStepHeartbeatAt } from "./MissionsPage";
+import type { OrchestratorAttempt, OrchestratorClaim, OrchestratorChatTarget, OrchestratorChatThread, OrchestratorStep } from "../../../shared/types";
+import { resolveMissionChatSelection, resolveStepHeartbeatAt } from "./MissionsPage";
 
 function makeStep(overrides: Partial<OrchestratorStep> = {}): OrchestratorStep {
   return {
@@ -71,6 +71,27 @@ function makeClaim(overrides: Partial<OrchestratorClaim> = {}): OrchestratorClai
   };
 }
 
+function makeThread(overrides: Partial<OrchestratorChatThread> = {}): OrchestratorChatThread {
+  return {
+    id: "mission:mission-1",
+    missionId: "mission-1",
+    threadType: "mission",
+    title: "Mission Coordinator",
+    runId: "run-1",
+    stepId: null,
+    stepKey: null,
+    attemptId: null,
+    sessionId: null,
+    laneId: "lane-1",
+    status: "active",
+    unreadCount: 0,
+    createdAt: "2026-02-21T00:00:00.000Z",
+    updatedAt: "2026-02-21T00:00:00.000Z",
+    metadata: null,
+    ...overrides
+  };
+}
+
 describe("resolveStepHeartbeatAt", () => {
   it("prefers heartbeat from the latest attempt when present", () => {
     const step = makeStep();
@@ -125,5 +146,141 @@ describe("resolveStepHeartbeatAt", () => {
     });
 
     expect(heartbeatAt).toBeNull();
+  });
+});
+
+describe("resolveMissionChatSelection", () => {
+  it("keeps the selected thread when it still exists", () => {
+    const threads = [
+      makeThread(),
+      makeThread({
+        id: "worker:1",
+        threadType: "worker",
+        title: "Worker step-auth",
+        stepKey: "step-auth",
+        attemptId: "attempt-auth"
+      })
+    ];
+
+    const selected = resolveMissionChatSelection({
+      threads,
+      selectedThreadId: "worker:1"
+    });
+
+    expect(selected).toBe("worker:1");
+  });
+
+  it("jumps to the matching worker thread when given a worker target", () => {
+    const threads = [
+      makeThread(),
+      makeThread({
+        id: "worker:auth",
+        threadType: "worker",
+        title: "Worker step-auth",
+        stepKey: "step-auth",
+        attemptId: "attempt-auth",
+        sessionId: "session-auth"
+      }),
+      makeThread({
+        id: "worker:billing",
+        threadType: "worker",
+        title: "Worker step-billing",
+        stepKey: "step-billing",
+        attemptId: "attempt-billing",
+        sessionId: "session-billing"
+      })
+    ];
+    const jumpTarget: OrchestratorChatTarget = {
+      kind: "worker",
+      stepKey: "step-billing",
+      attemptId: "attempt-billing"
+    };
+
+    const selected = resolveMissionChatSelection({
+      threads,
+      selectedThreadId: "mission:mission-1",
+      jumpTarget
+    });
+
+    expect(selected).toBe("worker:billing");
+  });
+
+  it("does not jump to a worker thread from a different run", () => {
+    const threads = [
+      makeThread(),
+      makeThread({
+        id: "worker:run-1",
+        threadType: "worker",
+        title: "Worker run 1",
+        runId: "run-1",
+        stepKey: "step-shared",
+        attemptId: "attempt-run-1"
+      }),
+      makeThread({
+        id: "worker:run-2",
+        threadType: "worker",
+        title: "Worker run 2",
+        runId: "run-2",
+        stepKey: "step-shared",
+        attemptId: "attempt-run-2"
+      })
+    ];
+    const jumpTarget: OrchestratorChatTarget = {
+      kind: "worker",
+      runId: "run-2",
+      stepKey: "step-shared"
+    };
+
+    const selected = resolveMissionChatSelection({
+      threads,
+      selectedThreadId: "worker:run-1",
+      jumpTarget
+    });
+
+    expect(selected).toBe("worker:run-2");
+  });
+
+  it("ignores broadcast worker targets for direct thread jumps and keeps current selection", () => {
+    const threads = [
+      makeThread(),
+      makeThread({
+        id: "worker:run-1",
+        threadType: "worker",
+        title: "Worker run 1",
+        runId: "run-1",
+        stepKey: "step-shared",
+        attemptId: "attempt-run-1"
+      })
+    ];
+    const jumpTarget: OrchestratorChatTarget = {
+      kind: "workers",
+      runId: "run-1"
+    };
+
+    const selected = resolveMissionChatSelection({
+      threads,
+      selectedThreadId: "worker:run-1",
+      jumpTarget
+    });
+
+    expect(selected).toBe("worker:run-1");
+  });
+
+  it("falls back to mission thread when selected thread no longer exists", () => {
+    const threads = [
+      makeThread(),
+      makeThread({
+        id: "worker:1",
+        threadType: "worker",
+        title: "Worker one"
+      })
+    ];
+
+    const selected = resolveMissionChatSelection({
+      threads,
+      selectedThreadId: "worker:missing"
+    });
+
+    expect(selected).toBe("mission:mission-1");
   });
 });

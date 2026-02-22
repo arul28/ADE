@@ -29,6 +29,35 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
       }
 
       try {
+        // 0. Check for startup command override from policy
+        const startupCommandOverride =
+          typeof step.metadata?.startupCommand === "string" && step.metadata.startupCommand.trim().length
+            ? step.metadata.startupCommand.trim()
+            : null;
+
+        if (startupCommandOverride) {
+          // Use the startup command directly as the prompt
+          const session = await args.createTrackedSession({
+            laneId: step.laneId,
+            toolType: "codex-orchestrated",
+            title: `[Orchestrator] ${step.title}`,
+            startupCommand: `exec codex exec ${shellEscapeArg(startupCommandOverride)}`,
+            cols: 120,
+            rows: 40
+          });
+
+          return {
+            status: "accepted",
+            sessionId: session.sessionId,
+            metadata: {
+              adapterKind: "codex",
+              startupCommandOverride: true,
+              promptLength: startupCommandOverride.length,
+              startupCommandPreview: startupCommandOverride.slice(0, 320)
+            }
+          };
+        }
+
         // 1. Build system prompt
         const systemParts: string[] = [];
 
@@ -205,7 +234,13 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
           rows: 40
         });
 
-        // 6. Return accepted
+        // 6. Resolve reasoning effort from step metadata
+        const reasoningEffort =
+          typeof step.metadata?.reasoningEffort === "string" && step.metadata.reasoningEffort.trim().length
+            ? step.metadata.reasoningEffort.trim()
+            : undefined;
+
+        // 7. Return accepted
         return {
           status: "accepted",
           sessionId: session.sessionId,
@@ -215,6 +250,7 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
             approvalMode,
             approvalPolicy,
             sandboxMode,
+            reasoningEffort,
             filePatterns: filePatterns.length ? filePatterns : undefined,
             steeringDirectiveCount: steeringDirectives.length,
             promptLength: prompt.length,

@@ -1,14 +1,16 @@
 import type {
+  MissionExecutionPolicy,
   OrchestratorExecutorKind,
   OrchestratorJoinPolicy,
   OrchestratorClaimScope,
   StartOrchestratorRunStepPolicy
 } from "../../../shared/types";
+import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 
 type RawPlanStep = {
   title: string;
   detail: string;
-  kind: "analysis" | "implementation" | "validation" | "integration" | "summary";
+  kind: "analysis" | "implementation" | "validation" | "integration" | "merge" | "summary";
   dependencyIndices: number[];
   joinPolicy: OrchestratorJoinPolicy;
   quorumCount: number | null;
@@ -18,6 +20,7 @@ type RawPlanStep = {
   doneCriteria: string;
   splitReason: string;
   policy: StartOrchestratorRunStepPolicy;
+  extraMetadata?: Record<string, unknown>;
 };
 
 export type DeterministicMissionPlannerStep = {
@@ -218,7 +221,7 @@ function buildPolicy(args: {
   parallelBranch: boolean;
 }): StartOrchestratorRunStepPolicy {
   const claimScopes: Array<{ scopeKind: OrchestratorClaimScope; scopeValue: string; ttlMs?: number }> = [];
-  if (args.laneId && (args.kind === "integration" || args.kind === "validation")) {
+  if (args.laneId && (args.kind === "integration" || args.kind === "merge" || args.kind === "validation")) {
     claimScopes.push({
       scopeKind: "lane",
       scopeValue: `lane:${args.laneId}`,
@@ -260,6 +263,11 @@ function toPlannerStep(step: RawPlanStep, index: number, strategy: string, keywo
   if (Number.isFinite(step.timeoutMs ?? NaN) && (step.timeoutMs ?? 0) > 0) {
     metadata.timeoutMs = Math.floor(step.timeoutMs as number);
   }
+  if (step.extraMetadata) {
+    for (const [key, value] of Object.entries(step.extraMetadata)) {
+      metadata[key] = value;
+    }
+  }
 
   return {
     index,
@@ -270,8 +278,17 @@ function toPlannerStep(step: RawPlanStep, index: number, strategy: string, keywo
   };
 }
 
-export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: string | null }): DeterministicMissionPlan {
+function detectSlashCommands(prompt: string): string[] {
+  return prompt
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^\/[a-zA-Z]/.test(line))
+    .map((line) => line);
+}
+
+export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: string | null; policy?: MissionExecutionPolicy }): DeterministicMissionPlan {
   const prompt = normalizePrompt(args.prompt);
+  const policy = args.policy;
   const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : null;
   const taskCandidates = extractTaskCandidates(prompt);
   const lowerPrompt = prompt.toLowerCase();
@@ -306,6 +323,13 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         ? "single_branch_with_explicit_integration_gate"
         : "single_branch_default";
 
+  // Policy-driven executor kind helpers
+  const analysisExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.planning.model) : "codex";
+  const implExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.implementation.model) : "codex";
+  const testExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.testing.model) : "codex";
+  const reviewExecutor: OrchestratorExecutorKind = policy?.codeReview.model ? phaseModelToExecutorKind(policy.codeReview.model) : "codex";
+  const integrationExecutor: OrchestratorExecutorKind = policy ? phaseModelToExecutorKind(policy.integration.model) : "codex";
+
   const rawSteps: RawPlanStep[] = [];
   let previousIndex = -1;
   let analysisIndex = -1;
@@ -325,7 +349,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
       quorumCount: null,
       timeoutMs: 180_000,
       retryLimit: 0,
-      executorKind: "codex",
+      executorKind: analysisExecutor,
       doneCriteria: "Context baseline and explicit success criteria are recorded for downstream steps.",
       splitReason: "Mission prompt requires up-front deterministic scoping.",
       policy: buildPolicy({
@@ -333,7 +357,8 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         laneId,
         title: "analysis",
         parallelBranch: false
-      })
+      }),
+      extraMetadata: policy?.planning.reasoningEffort ? { reasoningEffort: policy.planning.reasoningEffort } : undefined
     });
     previousIndex = index;
   }
@@ -343,44 +368,137 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   const fanOutDependencies = analysisIndex >= 0 ? [analysisIndex] : [];
   const workIndexes: number[] = [];
 
+  // TDD mode: emit test steps before each implementation step
+  const isTdd = policy?.testing.mode === "tdd";
+
   for (const workTask of parallelBranches) {
-    const index = rawSteps.length;
-    workIndexes.push(index);
-    const dependencyIndices =
+    const implDependencyIndices =
       parallelBranches.length > 1
-        ? fanOutDependencies
+        ? [...fanOutDependencies]
         : analysisIndex >= 0
           ? [analysisIndex]
           : previousIndex >= 0
             ? [previousIndex]
             : [];
+
+    // TDD: emit a test-writing step BEFORE the implementation step
+    if (isTdd) {
+      const testIndex = rawSteps.length;
+      rawSteps.push({
+        title: `Write tests for: ${workTask}`,
+        detail: "Write test cases before implementation (TDD).",
+        kind: "validation",
+        dependencyIndices: [...implDependencyIndices],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 300_000,
+        retryLimit: 1,
+        executorKind: testExecutor,
+        doneCriteria: "Test cases are written and ready for implementation to satisfy.",
+        splitReason: "TDD policy requires test-first workflow.",
+        policy: buildPolicy({
+          kind: "validation",
+          laneId,
+          title: `tdd-test-${slugify(workTask)}`,
+          parallelBranch: parallelBranches.length > 1
+        }),
+        extraMetadata: {
+          stepType: "test",
+          taskType: "test",
+          ...(policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : {})
+        }
+      });
+      // Implementation depends on its TDD test step
+      const implIndex = rawSteps.length;
+      workIndexes.push(implIndex);
+      rawSteps.push({
+        title: workTask,
+        detail: "Execute this branch and keep outputs isolated for deterministic integration.",
+        kind: "implementation",
+        dependencyIndices: [testIndex],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 420_000,
+        retryLimit: 1,
+        executorKind: implExecutor,
+        doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
+        splitReason:
+          parallelBranches.length > 1
+            ? "Prompt included multiple executable units that can run concurrently."
+            : "Prompt maps to a single executable workstream.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: workTask,
+          parallelBranch: parallelBranches.length > 1
+        }),
+        extraMetadata: policy?.implementation.reasoningEffort ? { reasoningEffort: policy.implementation.reasoningEffort } : undefined
+      });
+      previousIndex = implIndex;
+    } else {
+      const index = rawSteps.length;
+      workIndexes.push(index);
+      rawSteps.push({
+        title: workTask,
+        detail: "Execute this branch and keep outputs isolated for deterministic integration.",
+        kind: "implementation",
+        dependencyIndices: [...implDependencyIndices],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 420_000,
+        retryLimit: 1,
+        executorKind: implExecutor,
+        doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
+        splitReason:
+          parallelBranches.length > 1
+            ? "Prompt included multiple executable units that can run concurrently."
+            : "Prompt maps to a single executable workstream.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: workTask,
+          parallelBranch: parallelBranches.length > 1
+        }),
+        extraMetadata: policy?.implementation.reasoningEffort ? { reasoningEffort: policy.implementation.reasoningEffort } : undefined
+      });
+      previousIndex = index;
+    }
+  }
+
+  // Code review gate (policy-driven)
+  if (policy && policy.codeReview.mode !== "off") {
+    const index = rawSteps.length;
     rawSteps.push({
-      title: workTask,
-      detail: "Execute this branch and keep outputs isolated for deterministic integration.",
-      kind: "implementation",
-      dependencyIndices: [...dependencyIndices],
+      title: "Code review gate",
+      detail: "Review implementation outputs for quality, correctness, and adherence to standards.",
+      kind: "validation",
+      dependencyIndices: workIndexes.length ? [...workIndexes] : previousIndex >= 0 ? [previousIndex] : [],
       joinPolicy: "all_success",
       quorumCount: null,
-      timeoutMs: 420_000,
-      retryLimit: 1,
-      executorKind: "codex",
-      doneCriteria: "Code changes are produced in lane scope and recorded as attempt outputs.",
-      splitReason:
-        parallelBranches.length > 1
-          ? "Prompt included multiple executable units that can run concurrently."
-          : "Prompt maps to a single executable workstream.",
+      timeoutMs: 600_000,
+      retryLimit: 0,
+      executorKind: reviewExecutor,
+      doneCriteria: "Review feedback is recorded and blocking issues are flagged.",
+      splitReason: "Execution policy requires code review before validation/summary.",
       policy: buildPolicy({
-        kind: "implementation",
+        kind: "validation",
         laneId,
-        title: workTask,
-        parallelBranch: parallelBranches.length > 1
-      })
+        title: "code-review",
+        parallelBranch: false
+      }),
+      extraMetadata: {
+        taskType: "review",
+        stepType: "review",
+        ...(policy.codeReview.reasoningEffort ? { reasoningEffort: policy.codeReview.reasoningEffort } : {})
+      }
     });
     previousIndex = index;
   }
 
+  // Integration step (skip if policy.integration.mode === "off")
   const hasParallelJoin = workIndexes.length > 1 || explicitIntegration;
-  if (hasParallelJoin) {
+  const skipIntegration = policy?.integration.mode === "off";
+  if (hasParallelJoin && !skipIntegration) {
     const joinConfig = deriveJoinPolicy(prompt, workIndexes.length || 1);
     const index = rawSteps.length;
     rawSteps.push({
@@ -392,7 +510,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
       quorumCount: joinConfig.quorumCount,
       timeoutMs: 900_000,
       retryLimit: 1,
-      executorKind: "codex",
+      executorKind: integrationExecutor,
       doneCriteria: "Cross-branch contracts are validated and integration outputs are summarized for downstream gates.",
       splitReason: "Parallel branches require a compatibility gate before validation.",
       policy: buildPolicy({
@@ -400,13 +518,17 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         laneId,
         title: "integration",
         parallelBranch: false
-      })
+      }),
+      extraMetadata: policy?.integration.reasoningEffort ? { reasoningEffort: policy.integration.reasoningEffort } : undefined
     });
     previousIndex = index;
   }
 
-  const needsValidation = true;
-  if (needsValidation) {
+  // Validation step — skip when policy.testing.mode === "none"
+  // When testing mode is "tdd", TDD test steps were already emitted above;
+  // the post-implementation validation is still useful as a verification gate.
+  const skipValidation = policy?.testing.mode === "none";
+  if (!skipValidation) {
     const validationTitle = validationCandidates[0] ?? "Run deterministic verification checks";
     const index = rawSteps.length;
     rawSteps.push({
@@ -418,7 +540,7 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
       quorumCount: null,
       timeoutMs: 600_000,
       retryLimit: 1,
-      executorKind: "codex",
+      executorKind: testExecutor,
       doneCriteria: "Required checks complete and outcomes are attached to mission artifacts/handoffs.",
       splitReason: "Validation gate ensures deterministic completion criteria.",
       policy: buildPolicy({
@@ -426,9 +548,47 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
         laneId,
         title: validationTitle,
         parallelBranch: false
-      })
+      }),
+      extraMetadata: policy?.testing.reasoningEffort ? { reasoningEffort: policy.testing.reasoningEffort } : undefined
     });
     previousIndex = index;
+  }
+
+  // Merge step — injected when policy.merge.mode !== "off"
+  if (policy && policy.merge.mode !== "off") {
+    const mergeIndex = rawSteps.length;
+    const isManual = policy.merge.mode === "manual";
+    rawSteps.push({
+      title: isManual ? "Merge ready — awaiting approval" : "Auto-merge to target",
+      detail: isManual
+        ? "All gates passed. Merge is blocked pending operator approval."
+        : "All gates passed. Automatically merging work into the target branch.",
+      kind: "merge",
+      dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
+      joinPolicy: "all_success",
+      quorumCount: null,
+      timeoutMs: isManual ? null : 600_000,
+      retryLimit: 0,
+      executorKind: isManual ? "manual" : "codex",
+      doneCriteria: isManual
+        ? "Operator approves the merge and the step is manually resolved."
+        : "Work is merged to target branch and merge commit verified.",
+      splitReason: "Policy requires an explicit merge phase for completion.",
+      policy: buildPolicy({
+        kind: "merge",
+        laneId,
+        title: isManual ? "merge_gate" : "auto_merge",
+        parallelBranch: false
+      }),
+      extraMetadata: {
+        stepType: "merge",
+        taskType: "merge",
+        mergeMode: policy.merge.mode,
+        ...(isManual ? { blockedSticky: true, blockedErrorClass: "policy" } : {}),
+        ...(hasParallelJoin && !skipIntegration ? { integrationFlow: true, requiresConflictResolver: true } : {})
+      }
+    });
+    previousIndex = mergeIndex;
   }
 
   const summaryTitle = summaryCandidates[0] ?? "Record mission outcomes and handoff artifacts";
@@ -451,6 +611,35 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
       parallelBranch: false
     })
   });
+
+  // Slash command steps — each detected /command becomes a step after all preceding steps
+  const slashCommands = detectSlashCommands(args.prompt);
+  for (const cmd of slashCommands) {
+    const depIndex = rawSteps.length - 1;
+    rawSteps.push({
+      title: cmd,
+      detail: `Execute slash command: ${cmd}`,
+      kind: "implementation",
+      dependencyIndices: depIndex >= 0 ? [depIndex] : [],
+      joinPolicy: "all_success",
+      quorumCount: null,
+      timeoutMs: 300_000,
+      retryLimit: 0,
+      executorKind: "claude",
+      doneCriteria: "Slash command execution completed.",
+      splitReason: "Slash command detected in prompt.",
+      policy: buildPolicy({
+        kind: "implementation",
+        laneId,
+        title: cmd,
+        parallelBranch: false
+      }),
+      extraMetadata: {
+        startupCommand: cmd,
+        stepType: "command"
+      }
+    });
+  }
 
   return {
     plannerVersion: "ade.missionPlanner.v1",

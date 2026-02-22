@@ -2640,6 +2640,7 @@ export type CreateMissionArgs = {
   launchMode?: "autopilot" | "manual";
   autopilotExecutor?: OrchestratorExecutorKind;
   missionDepth?: MissionDepthTier;
+  executionPolicy?: Partial<MissionExecutionPolicy>;
 };
 
 export type PlanMissionArgs = {
@@ -2738,6 +2739,7 @@ export type OrchestratorRunStatus =
   | "running"
   | "paused"
   | "succeeded"
+  | "succeeded_with_risk"
   | "failed"
   | "canceled";
 
@@ -2859,6 +2861,7 @@ export type OrchestratorRun = {
   completedAt: string | null;
   lastError: string | null;
   metadata: Record<string, unknown> | null;
+  completionDiagnostics?: CompletionDiagnostic[];
 };
 
 export type OrchestratorStep = {
@@ -2980,6 +2983,12 @@ export type OrchestratorRuntimeEventType =
   | "intervention_opened"
   | "intervention_resolved";
 
+export type OrchestratorRuntimeQuestionLink = {
+  threadId: string;
+  messageId: string;
+  replyTo: string | null;
+};
+
 export type OrchestratorRuntimeBusEvent = {
   id: string;
   runId: string;
@@ -2990,6 +2999,7 @@ export type OrchestratorRuntimeBusEvent = {
   eventKey: string;
   occurredAt: string;
   payload: Record<string, unknown> | null;
+  questionLink?: OrchestratorRuntimeQuestionLink | null;
   createdAt: string;
 };
 
@@ -3016,6 +3026,7 @@ export type OrchestratorRunGraph = {
   handoffs: MissionStepHandoff[];
   timeline: OrchestratorTimelineEvent[];
   runtimeEvents?: OrchestratorRuntimeBusEvent[];
+  completionEvaluation?: RunCompletionEvaluation;
 };
 
 export type OrchestratorGateStatus = "pass" | "warn" | "fail";
@@ -3666,8 +3677,10 @@ export type StartMissionRunWithAIResult = {
 // PM Intelligence, and User Steering
 // ─────────────────────────────────────────────────────
 
+/** @deprecated Use MissionExecutionPolicy instead */
 export type MissionDepthTier = "light" | "standard" | "deep";
 
+/** @deprecated Use MissionExecutionPolicy instead */
 export type MissionDepthConfig = {
   tier: MissionDepthTier;
   planning: {
@@ -3697,6 +3710,48 @@ export type MissionDepthConfig = {
   };
 };
 
+// ─────────────────────────────────────────────────────
+// Mission Execution Policy (replaces MissionDepthTier)
+// ─────────────────────────────────────────────────────
+
+export type PlanningPhaseMode = "off" | "auto" | "manual_review";
+export type TestingPhaseMode = "none" | "post_implementation" | "tdd";
+export type GatePhaseMode = "required" | "optional" | "off";
+export type IntegrationPhaseMode = "off" | "auto";
+export type MergePhaseMode = "off" | "manual" | "auto_if_green";
+export type PhaseModelChoice = "claude" | "codex";
+
+export type MissionExecutionPolicy = {
+  planning: { mode: PlanningPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  implementation: { model?: PhaseModelChoice; reasoningEffort?: string };
+  testing: { mode: TestingPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  validation: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  codeReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  testReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  integration: { mode: IntegrationPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
+  merge: { mode: MergePhaseMode };
+  completion: { allowCompletionWithRisk: boolean };
+};
+
+export type CompletionDiagnostic = {
+  phase: string;
+  code:
+    | "phase_required_missing"
+    | "phase_skipped_by_policy"
+    | "phase_in_progress"
+    | "phase_failed"
+    | "phase_succeeded";
+  message: string;
+  blocking: boolean;
+};
+
+export type RunCompletionEvaluation = {
+  status: OrchestratorRunStatus;
+  diagnostics: CompletionDiagnostic[];
+  riskFactors: string[];
+  completionReady: boolean;
+};
+
 export type ModelCapabilityProfile = {
   provider: "claude" | "codex";
   modelId: string;
@@ -3724,6 +3779,7 @@ export type SteerMissionResult = {
   response?: string;
 };
 
+/** @deprecated Use MissionExecutionPolicy instead */
 export type GetMissionDepthConfigArgs = {
   tier: MissionDepthTier;
 };
@@ -3739,14 +3795,240 @@ export type OrchestratorChatMessage = {
   content: string;
   timestamp: string;
   stepKey?: string | null;
+  threadId?: string | null;
+  target?: OrchestratorChatTarget | null;
+  visibility?: OrchestratorChatVisibilityMode;
+  deliveryState?: OrchestratorChatDeliveryState;
+  sourceSessionId?: string | null;
+  attemptId?: string | null;
+  laneId?: string | null;
+  runId?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type OrchestratorChatThreadType = "mission" | "worker";
+
+export type OrchestratorChatVisibilityMode = "full" | "digest_only" | "metadata_only";
+
+export type OrchestratorChatDeliveryState = "queued" | "delivered" | "failed";
+
+export type OrchestratorChatTarget =
+  | {
+      kind: "coordinator";
+      runId?: string | null;
+    }
+  | {
+      kind: "workers";
+      runId?: string | null;
+      laneId?: string | null;
+      includeClosed?: boolean;
+    }
+  | {
+      kind: "worker";
+      runId?: string | null;
+      stepId?: string | null;
+      stepKey?: string | null;
+      attemptId?: string | null;
+      sessionId?: string | null;
+      laneId?: string | null;
+    };
+
+export type OrchestratorChatThread = {
+  id: string;
+  missionId: string;
+  threadType: OrchestratorChatThreadType;
+  title: string;
+  runId?: string | null;
+  stepId?: string | null;
+  stepKey?: string | null;
+  attemptId?: string | null;
+  sessionId?: string | null;
+  laneId?: string | null;
+  status: "active" | "closed";
+  unreadCount: number;
+  createdAt: string;
+  updatedAt: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type OrchestratorThreadEventType =
+  | "thread_updated"
+  | "message_appended"
+  | "message_updated"
+  | "metrics_updated"
+  | "worker_digest_updated"
+  | "worker_replay";
+
+export type OrchestratorThreadEvent = {
+  type: OrchestratorThreadEventType;
+  missionId: string;
+  at: string;
+  threadId?: string | null;
+  messageId?: string | null;
+  runId?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type ListOrchestratorChatThreadsArgs = {
+  missionId: string;
+  includeClosed?: boolean;
+};
+
+export type GetOrchestratorThreadMessagesArgs = {
+  missionId: string;
+  threadId: string;
+  limit?: number;
+  before?: string | null;
+};
+
+export type SendOrchestratorThreadMessageArgs = {
+  missionId: string;
+  content: string;
+  threadId?: string | null;
+  target?: OrchestratorChatTarget;
+  visibilityMode?: OrchestratorChatVisibilityMode;
   metadata?: Record<string, unknown> | null;
 };
 
 export type SendOrchestratorChatArgs = {
   missionId: string;
   content: string;
+  threadId?: string | null;
+  target?: OrchestratorChatTarget;
+  visibilityMode?: OrchestratorChatVisibilityMode;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type GetOrchestratorChatArgs = {
   missionId: string;
+};
+
+export type OrchestratorWorkerDigest = {
+  id: string;
+  missionId: string;
+  runId: string;
+  stepId: string;
+  stepKey: string | null;
+  attemptId: string;
+  laneId: string | null;
+  sessionId: string | null;
+  status: "succeeded" | "failed" | "blocked" | "running" | "queued";
+  summary: string;
+  filesChanged: string[];
+  testsRun: {
+    passed: number;
+    failed: number;
+    skipped: number;
+    summary?: string | null;
+  };
+  warnings: string[];
+  tokens?: {
+    input?: number;
+    output?: number;
+    total?: number;
+  } | null;
+  costUsd?: number | null;
+  suggestedNextActions?: string[];
+  createdAt: string;
+};
+
+export type ListOrchestratorWorkerDigestsArgs = {
+  missionId: string;
+  runId?: string | null;
+  stepId?: string | null;
+  attemptId?: string | null;
+  laneId?: string | null;
+  limit?: number;
+};
+
+export type GetOrchestratorWorkerDigestArgs = {
+  missionId: string;
+  digestId: string;
+};
+
+export type OrchestratorContextCheckpoint = {
+  id: string;
+  missionId: string;
+  runId: string | null;
+  trigger: "step_threshold" | "pressure_soft" | "pressure_hard" | "status_request" | "manual";
+  summary: string;
+  source: {
+    digestCount: number;
+    chatMessageCount: number;
+    compressedMessageCount: number;
+  };
+  createdAt: string;
+};
+
+export type GetOrchestratorContextCheckpointArgs = {
+  missionId: string;
+  checkpointId?: string;
+};
+
+export type OrchestratorLaneDecision = {
+  id: string;
+  missionId: string;
+  runId: string | null;
+  stepId: string | null;
+  stepKey: string | null;
+  laneId: string | null;
+  decisionType: "proposal" | "validated" | "override" | "replan";
+  validatorOutcome: "pass" | "fail" | "warn";
+  ruleHits: string[];
+  rationale: string;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type ListOrchestratorLaneDecisionsArgs = {
+  missionId: string;
+  runId?: string | null;
+  stepId?: string | null;
+  limit?: number;
+};
+
+export type MissionMetricToggle =
+  | "planning"
+  | "implementation"
+  | "testing"
+  | "validation"
+  | "code_review"
+  | "test_review"
+  | "integration"
+  | "merge"
+  | "cost"
+  | "tokens"
+  | "retries"
+  | "claims"
+  | "context_pressure"
+  | "interventions";
+
+export type MissionMetricsConfig = {
+  missionId: string;
+  toggles: MissionMetricToggle[];
+  updatedAt: string;
+};
+
+export type MissionMetricSample = {
+  id: string;
+  missionId: string;
+  runId: string | null;
+  attemptId: string | null;
+  metric: MissionMetricToggle | string;
+  value: number;
+  unit: string | null;
+  metadata?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type GetMissionMetricsArgs = {
+  missionId: string;
+  runId?: string | null;
+  limit?: number;
+};
+
+export type SetMissionMetricsConfigArgs = {
+  missionId: string;
+  toggles: MissionMetricToggle[];
 };

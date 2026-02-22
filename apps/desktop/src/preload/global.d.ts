@@ -195,6 +195,7 @@ import type {
   OrchestratorRun,
   OrchestratorRunGraph,
   OrchestratorRuntimeEvent,
+  OrchestratorThreadEvent,
   OrchestratorStep,
   OrchestratorTimelineEvent,
   MissionStep,
@@ -236,9 +237,24 @@ import type {
   GetMissionDepthConfigArgs,
   MissionDepthConfig,
   GetModelCapabilitiesResult,
+  GetMissionMetricsArgs,
   OrchestratorChatMessage,
+  OrchestratorChatThread,
+  OrchestratorContextCheckpoint,
+  OrchestratorLaneDecision,
+  OrchestratorWorkerDigest,
   SendOrchestratorChatArgs,
-  GetOrchestratorChatArgs
+  GetOrchestratorChatArgs,
+  ListOrchestratorChatThreadsArgs,
+  GetOrchestratorThreadMessagesArgs,
+  SendOrchestratorThreadMessageArgs,
+  GetOrchestratorWorkerDigestArgs,
+  ListOrchestratorWorkerDigestsArgs,
+  GetOrchestratorContextCheckpointArgs,
+  ListOrchestratorLaneDecisionsArgs,
+  MissionMetricsConfig,
+  MissionMetricSample,
+  SetMissionMetricsConfigArgs
 } from "../shared/types";
 
 export {};
@@ -342,7 +358,17 @@ declare global {
         getModelCapabilities: () => Promise<GetModelCapabilitiesResult>;
         sendChat: (args: SendOrchestratorChatArgs) => Promise<OrchestratorChatMessage>;
         getChat: (args: GetOrchestratorChatArgs) => Promise<OrchestratorChatMessage[]>;
+        listChatThreads: (args: ListOrchestratorChatThreadsArgs) => Promise<OrchestratorChatThread[]>;
+        getThreadMessages: (args: GetOrchestratorThreadMessagesArgs) => Promise<OrchestratorChatMessage[]>;
+        sendThreadMessage: (args: SendOrchestratorThreadMessageArgs) => Promise<OrchestratorChatMessage>;
+        getWorkerDigest: (args: GetOrchestratorWorkerDigestArgs) => Promise<OrchestratorWorkerDigest | null>;
+        listWorkerDigests: (args: ListOrchestratorWorkerDigestsArgs) => Promise<OrchestratorWorkerDigest[]>;
+        getContextCheckpoint: (args: GetOrchestratorContextCheckpointArgs) => Promise<OrchestratorContextCheckpoint | null>;
+        listLaneDecisions: (args: ListOrchestratorLaneDecisionsArgs) => Promise<OrchestratorLaneDecision[]>;
+        getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
+        setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
         onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
+        onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => () => void;
       };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;

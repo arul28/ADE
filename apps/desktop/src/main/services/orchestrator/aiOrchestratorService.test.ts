@@ -67,6 +67,80 @@ function createMockAiIntegrationService(overrides: {
   } as any;
 }
 
+function createMockAgentChatService(overrides: {
+  sendMessage?: (...args: any[]) => Promise<void>;
+  steer?: (...args: any[]) => Promise<void>;
+  resumeSession?: (...args: any[]) => Promise<any>;
+  listSessions?: (...args: any[]) => Promise<any[]>;
+} = {}) {
+  return {
+    sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue(undefined),
+    steer: overrides.steer ?? vi.fn().mockResolvedValue(undefined),
+    resumeSession: overrides.resumeSession ?? vi.fn().mockResolvedValue({}),
+    listSessions: overrides.listSessions ?? vi.fn().mockResolvedValue([])
+  } as any;
+}
+
+function clearWorkerDeliveryBackoff(db: Awaited<ReturnType<typeof openKvDb>>, messageId: string): void {
+  const row = db.get<{ metadata_json: string | null }>(
+    `
+      select metadata_json
+      from orchestrator_chat_messages
+      where id = ?
+      limit 1
+    `,
+    [messageId]
+  );
+  const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+  const workerDelivery = metadata && typeof metadata.workerDelivery === "object" && !Array.isArray(metadata.workerDelivery)
+    ? metadata.workerDelivery
+    : {};
+  metadata.workerDelivery = {
+    ...workerDelivery,
+    nextRetryAt: null
+  };
+  db.run(
+    `
+      update orchestrator_chat_messages
+      set metadata_json = ?
+      where id = ?
+    `,
+    [JSON.stringify(metadata), messageId]
+  );
+}
+
+function patchWorkerDeliveryMetadata(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  messageId: string,
+  patch: Record<string, unknown>
+): void {
+  const row = db.get<{ metadata_json: string | null }>(
+    `
+      select metadata_json
+      from orchestrator_chat_messages
+      where id = ?
+      limit 1
+    `,
+    [messageId]
+  );
+  const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+  const workerDelivery = metadata && typeof metadata.workerDelivery === "object" && !Array.isArray(metadata.workerDelivery)
+    ? metadata.workerDelivery
+    : {};
+  metadata.workerDelivery = {
+    ...workerDelivery,
+    ...patch
+  };
+  db.run(
+    `
+      update orchestrator_chat_messages
+      set metadata_json = ?
+      where id = ?
+    `,
+    [JSON.stringify(metadata), messageId]
+  );
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
@@ -81,6 +155,7 @@ async function createFixture(args: {
   requirePlanReview?: boolean;
   aiIntegrationService?: any;
   laneService?: any;
+  agentChatService?: any;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ai-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -227,6 +302,7 @@ async function createFixture(args: {
     logger: createLogger(),
     missionService,
     orchestratorService,
+    agentChatService: args.agentChatService ?? null,
     laneService,
     projectConfigService,
     aiIntegrationService,
@@ -856,6 +932,12 @@ describe("aiOrchestratorService", () => {
       });
 
       const refreshedMission = fixture.missionService.get(mission.id);
+      const waitingIntervention = refreshedMission?.interventions.find(
+        (entry) =>
+          entry.status === "open"
+          && entry.interventionType === "manual_input"
+          && String(entry.metadata?.attemptId ?? "") === attempt.id
+      );
       expect(
         refreshedMission?.interventions.some(
           (entry) =>
@@ -864,6 +946,19 @@ describe("aiOrchestratorService", () => {
             String(entry.metadata?.attemptId ?? "") === attempt.id
         )
       ).toBe(true);
+      expect(String(waitingIntervention?.metadata?.threadId ?? "")).toBe(`question:${attempt.id}`);
+      expect(String(waitingIntervention?.metadata?.messageId ?? "")).toContain(`question_msg:${attempt.id}:`);
+
+      const questionEvent = fixture.orchestratorService
+        .listRuntimeEvents({
+          attemptId: attempt.id,
+          eventTypes: ["question"],
+          limit: 5
+        })
+        .find((entry) => entry.eventType === "question");
+      expect(questionEvent?.questionLink?.threadId).toBe(`question:${attempt.id}`);
+      expect(questionEvent?.questionLink?.messageId.startsWith(`question_msg:${attempt.id}:`)).toBe(true);
+      expect(questionEvent?.questionLink?.replyTo).toBeNull();
 
       const states = fixture.aiOrchestratorService.getWorkerStates({ runId });
       const tracked = states.find((entry) => entry.attemptId === attempt.id);
@@ -960,7 +1055,7 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("rehydrates persisted runtime waiting-input state after service restart", async () => {
+  it("replays open questions after restart from runtime event bus deterministically", async () => {
     const fixture = await createFixture();
     let restartedService: ReturnType<typeof createAiOrchestratorService> | null = null;
     try {
@@ -1056,6 +1151,7 @@ describe("aiOrchestratorService", () => {
         `delete from mission_interventions where mission_id = ? and intervention_type = 'manual_input'`,
         [mission.id]
       );
+      fixture.db.run(`delete from orchestrator_attempt_runtime where attempt_id = ?`, [attempt.id]);
 
       fixture.aiOrchestratorService.dispose();
       restartedService = createAiOrchestratorService({
@@ -2018,6 +2114,112 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("records deterministic question reply linkage and resume transition after steering input", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Require operator reply when worker asks a question, then resume deterministically.",
+        laneId: fixture.laneId
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "test-owner",
+            parallelismCap: 2
+          }
+        },
+        steps: [{ stepKey: "question-step", title: "Question Step", stepIndex: 0 }]
+      });
+
+      fixture.orchestratorService.tick({ runId: started.run.id });
+      const graph = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId: started.run.id,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      const sessionId = "session-question-thread-1";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        [sessionId, attempt.id]
+      );
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "waiting-input",
+        lastOutputPreview: "Need operator input before continuing.",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const refreshed = fixture.missionService.get(mission.id);
+        return Boolean(
+          refreshed?.interventions.some(
+            (entry) =>
+              entry.status === "open"
+              && entry.interventionType === "manual_input"
+              && String(entry.metadata?.attemptId ?? "") === attempt.id
+          )
+        );
+      });
+
+      const questionEvent = fixture.orchestratorService
+        .listRuntimeEvents({ attemptId: attempt.id, eventTypes: ["question"], limit: 5 })
+        .find((entry) => entry.eventType === "question");
+      expect(questionEvent?.questionLink).toBeTruthy();
+
+      fixture.aiOrchestratorService.steerMission({
+        missionId: mission.id,
+        directive: "Proceed with option A and keep changes scoped to auth files.",
+        priority: "instruction"
+      });
+
+      await waitFor(() => {
+        const refreshed = fixture.missionService.get(mission.id);
+        return Boolean(
+          refreshed?.interventions.some(
+            (entry) =>
+              entry.interventionType === "manual_input"
+              && String(entry.metadata?.attemptId ?? "") === attempt.id
+              && entry.status === "resolved"
+          )
+        );
+      });
+
+      const runtimeEvents = fixture.orchestratorService.listRuntimeEvents({
+        attemptId: attempt.id,
+        eventTypes: ["intervention_resolved", "progress"],
+        limit: 20
+      });
+      const resolvedEvent = runtimeEvents.find((entry) => entry.eventType === "intervention_resolved");
+      const resumeEvent = runtimeEvents.find(
+        (entry) => entry.eventType === "progress" && String((entry.payload as Record<string, unknown> | null)?.transition ?? "") === "question_answered_resume"
+      );
+      expect(resolvedEvent?.questionLink?.threadId).toBe(questionEvent?.questionLink?.threadId);
+      expect(resolvedEvent?.questionLink?.replyTo).toBe(questionEvent?.questionLink?.messageId);
+      expect(resumeEvent?.questionLink?.replyTo).toBe(questionEvent?.questionLink?.messageId);
+
+      const states = fixture.aiOrchestratorService.getWorkerStates({ runId: started.run.id });
+      const worker = states.find((entry) => entry.attemptId === attempt.id);
+      expect(worker?.state).toBe("working");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("persists chat and steering directives and hydrates them after service recreation", async () => {
     const fixture = await createFixture();
     try {
@@ -2165,6 +2367,718 @@ describe("aiOrchestratorService", () => {
         provider: "claude",
         sessionId: "chat-session-1"
       });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("delivers worker thread guidance through agent chat when the worker session is available", async () => {
+    const agentChatService = createMockAgentChatService({
+      listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-1", status: "idle" }])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Deliver operator guidance directly to active worker sessions.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Prioritize the flaky test fix before refactors.",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-1",
+          stepKey: "step-fix-tests"
+        }
+      });
+
+      await waitFor(() => {
+        const updated = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return updated?.deliveryState === "delivered";
+      });
+
+      expect(agentChatService.sendMessage).toHaveBeenCalledTimes(1);
+      expect(agentChatService.sendMessage).toHaveBeenCalledWith({
+        sessionId: "worker-session-1",
+        text: "Prioritize the flaky test fix before refactors."
+      });
+      expect(agentChatService.steer).not.toHaveBeenCalled();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("bridges worker delivery to the single active lane chat session when mapped executor session is non-chat", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockResolvedValue([
+        {
+          sessionId: "worker-chat-bridge-1",
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          status: "idle",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          lastActivityAt: new Date().toISOString(),
+          lastOutputPreview: null,
+          summary: null
+        }
+      ])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Bridge delivery from orchestrated session ids to active worker chat sessions.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Use the active lane chat worker when direct session mapping is unavailable.",
+        target: {
+          kind: "worker",
+          sessionId: "legacy-orchestrated-session-42",
+          laneId: fixture.laneId,
+          stepKey: "step-bridge"
+        }
+      });
+
+      await waitFor(() => {
+        const updated = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return updated?.deliveryState === "delivered";
+      });
+
+      const updated = fixture.aiOrchestratorService
+        .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+        .find((entry) => entry.id === sent.id);
+      expect(sendMessage).toHaveBeenCalledWith({
+        sessionId: "worker-chat-bridge-1",
+        text: "Use the active lane chat worker when direct session mapping is unavailable."
+      });
+      expect(updated?.metadata).toMatchObject({
+        workerDelivery: {
+          agentSessionId: "worker-chat-bridge-1"
+        }
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps worker delivery queued when lane fallback is ambiguous across multiple active chat sessions", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockResolvedValue([
+        {
+          sessionId: "worker-chat-a",
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          status: "idle",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          lastActivityAt: new Date().toISOString(),
+          lastOutputPreview: null,
+          summary: null
+        },
+        {
+          sessionId: "worker-chat-b",
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          status: "active",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          lastActivityAt: new Date().toISOString(),
+          lastOutputPreview: null,
+          summary: null
+        }
+      ])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep queued when multiple possible worker chat sessions exist.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Do not misdeliver this directive.",
+        target: {
+          kind: "worker",
+          sessionId: "legacy-orchestrated-session-99",
+          laneId: fixture.laneId,
+          stepKey: "step-ambiguous"
+        }
+      });
+
+      await waitFor(() => {
+        const updated = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        if (!updated) return false;
+        if (updated.deliveryState !== "queued") return false;
+        const workerDelivery = ((updated.metadata ?? {}) as { workerDelivery?: { lastError?: string } }).workerDelivery;
+        return typeof workerDelivery?.lastError === "string" && workerDelivery.lastError.includes("Multiple active worker chat sessions");
+      });
+
+      expect(sendMessage).not.toHaveBeenCalled();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("falls back to steer when worker delivery hits an active-turn conflict", async () => {
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("A turn is already active. Use steer or interrupt."));
+    const steer = vi.fn().mockResolvedValue(undefined);
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      steer,
+      listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-busy", status: "idle" }])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Use steer fallback when direct worker delivery is busy.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Keep current diff, but pause on unrelated cleanup.",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-busy",
+          stepKey: "step-busy"
+        }
+      });
+
+      await waitFor(() => {
+        const updated = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return updated?.deliveryState === "delivered";
+      });
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(steer).toHaveBeenCalledTimes(1);
+      expect(steer).toHaveBeenCalledWith({
+        sessionId: "worker-session-busy",
+        text: "Keep current diff, but pause on unrelated cleanup."
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("replays queued worker guidance during startup reconciliation", async () => {
+    const fixture = await createFixture();
+    let restartedService: ReturnType<typeof createAiOrchestratorService> | null = null;
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Replay queued worker guidance after orchestrator restart.",
+        laneId: fixture.laneId
+      });
+
+      const queued = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Queue this guidance until worker runtime is ready.",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-replay",
+          stepKey: "step-replay"
+        }
+      });
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: queued.threadId ?? "" })
+          .find((entry) => entry.id === queued.id);
+        return current?.deliveryState === "queued";
+      });
+
+      fixture.aiOrchestratorService.dispose();
+      const replayAgent = createMockAgentChatService({
+        listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-replay", status: "idle" }])
+      });
+      restartedService = createAiOrchestratorService({
+        db: fixture.db,
+        logger: createLogger(),
+        missionService: fixture.missionService,
+        orchestratorService: fixture.orchestratorService,
+        agentChatService: replayAgent,
+        projectRoot: fixture.projectRoot
+      });
+
+      await waitFor(() => {
+        const current = restartedService
+          ?.getThreadMessages({ missionId: mission.id, threadId: queued.threadId ?? "" })
+          .find((entry) => entry.id === queued.id);
+        return current?.deliveryState === "delivered";
+      });
+
+      expect(replayAgent.sendMessage).toHaveBeenCalledWith({
+        sessionId: "worker-session-replay",
+        text: "Queue this guidance until worker runtime is ready."
+      });
+    } finally {
+      restartedService?.dispose();
+      fixture.dispose();
+    }
+  });
+
+  it("keeps legacy chat backfill idempotent across repeated startup reconciliation when legacy IDs are missing", async () => {
+    const fixture = await createFixture();
+    let restartedService: ReturnType<typeof createAiOrchestratorService> | null = null;
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Preserve deterministic reconciliation for legacy chat metadata.",
+        laneId: fixture.laneId
+      });
+      const legacyContent = "legacy-backfill-without-id";
+      fixture.db.run(
+        `
+          update missions
+          set metadata_json = ?
+          where id = ?
+        `,
+        [
+          JSON.stringify({
+            orchestratorChat: [
+              {
+                role: "user",
+                content: legacyContent,
+                timestamp: "2026-02-20T00:00:00.000Z",
+                target: {
+                  kind: "coordinator",
+                  runId: null
+                }
+              }
+            ]
+          }),
+          mission.id
+        ]
+      );
+
+      fixture.aiOrchestratorService.dispose();
+      const restart = () =>
+        createAiOrchestratorService({
+          db: fixture.db,
+          logger: createLogger(),
+          missionService: fixture.missionService,
+          orchestratorService: fixture.orchestratorService,
+          projectRoot: fixture.projectRoot
+        });
+
+      restartedService = restart();
+      await waitFor(() => {
+        const count = fixture.db.get<{ count: number }>(
+          `
+            select count(1) as count
+            from orchestrator_chat_messages
+            where mission_id = ?
+              and content = ?
+          `,
+          [mission.id, legacyContent]
+        );
+        return Number(count?.count ?? 0) === 1;
+      });
+      restartedService.dispose();
+
+      restartedService = restart();
+      await waitFor(() => {
+        const count = fixture.db.get<{ count: number }>(
+          `
+            select count(1) as count
+            from orchestrator_chat_messages
+            where mission_id = ?
+              and content = ?
+          `,
+          [mission.id, legacyContent]
+        );
+        return Number(count?.count ?? 0) === 1;
+      });
+
+      const finalCount = fixture.db.get<{ count: number }>(
+        `
+          select count(1) as count
+          from orchestrator_chat_messages
+          where mission_id = ?
+            and content = ?
+        `,
+        [mission.id, legacyContent]
+      );
+      expect(finalCount?.count).toBe(1);
+    } finally {
+      restartedService?.dispose();
+      fixture.dispose();
+    }
+  });
+
+  it("preserves per-thread ordering while replaying queued worker guidance on runtime signals", async () => {
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Temporary transport failure."))
+      .mockResolvedValue(undefined);
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-order", status: "idle" }])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Replay queued worker guidance deterministically in-order.",
+        laneId: fixture.laneId
+      });
+
+      const first = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "first guidance",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-order",
+          stepKey: "step-order"
+        }
+      });
+      const second = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        threadId: first.threadId,
+        content: "second guidance",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-order",
+          stepKey: "step-order"
+        }
+      });
+
+      await waitFor(() => {
+        const entries = fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: first.threadId ?? ""
+        });
+        const firstState = entries.find((entry) => entry.id === first.id)?.deliveryState;
+        const secondState = entries.find((entry) => entry.id === second.id)?.deliveryState;
+        return firstState === "queued" && secondState === "queued";
+      });
+
+      await waitFor(() => sendMessage.mock.calls.length >= 1);
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      clearWorkerDeliveryBackoff(fixture.db, first.id);
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId: "worker-session-order",
+        runtimeState: "running",
+        lastOutputPreview: "worker online",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const entries = fixture.aiOrchestratorService.getThreadMessages({
+          missionId: mission.id,
+          threadId: first.threadId ?? ""
+        });
+        const firstState = entries.find((entry) => entry.id === first.id)?.deliveryState;
+        const secondState = entries.find((entry) => entry.id === second.id)?.deliveryState;
+        return firstState === "delivered" && secondState === "delivered";
+      });
+
+      const texts = sendMessage.mock.calls.map((call) => call[0]?.text);
+      expect(texts).toEqual(["first guidance", "first guidance", "second guidance"]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("marks worker guidance as failed after retry budget and opens a recovery intervention", async () => {
+    const sendMessage = vi.fn().mockRejectedValue(new Error("Worker runtime unavailable."));
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-fail", status: "idle" }])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Fail queued guidance after bounded retries.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "This guidance should eventually fail delivery.",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-fail",
+          stepKey: "step-fail"
+        }
+      });
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return current?.deliveryState === "queued";
+      });
+
+      for (let i = 0; i < 6; i += 1) {
+        clearWorkerDeliveryBackoff(fixture.db, sent.id);
+        fixture.aiOrchestratorService.onSessionRuntimeSignal({
+          laneId: fixture.laneId,
+          sessionId: "worker-session-fail",
+          runtimeState: "running",
+          lastOutputPreview: `replay-${i}`,
+          at: new Date().toISOString()
+        });
+        const done = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id)?.deliveryState;
+        if (done === "failed") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return current?.deliveryState === "failed";
+      });
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(
+        refreshedMission?.interventions.some(
+          (entry) =>
+            entry.status === "open"
+            && entry.interventionType === "manual_input"
+            && String(entry.metadata?.sourceMessageId ?? "") === sent.id
+        )
+      ).toBe(true);
+      expect(sendMessage.mock.calls.length).toBeGreaterThanOrEqual(4);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("replays queued worker guidance when agent chat reports turn completion", async () => {
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Temporary transport failure."))
+      .mockResolvedValue(undefined);
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-agent-event", status: "idle" }])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Replay queued messages on agent-chat turn completion events.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Replay me on agent-chat completion.",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-agent-event",
+          stepKey: "step-agent-event"
+        }
+      });
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return current?.deliveryState === "queued";
+      });
+
+      clearWorkerDeliveryBackoff(fixture.db, sent.id);
+      fixture.aiOrchestratorService.onAgentChatEvent({
+        sessionId: "worker-session-agent-event",
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "status",
+          turnStatus: "completed"
+        }
+      });
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return current?.deliveryState === "delivered";
+      });
+
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("preserves delivery idempotence by holding in-flight messages then failing stale in-flight attempts", async () => {
+    const sendMessage = vi.fn().mockRejectedValue(new Error("Transport unavailable."));
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockResolvedValue([{ sessionId: "worker-session-inflight", status: "idle" }])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Guard against duplicate injection while delivery is in-flight.",
+        laneId: fixture.laneId
+      });
+
+      const sent = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "In-flight guard test guidance.",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-inflight",
+          stepKey: "step-inflight"
+        }
+      });
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return current?.deliveryState === "queued";
+      });
+
+      const initialCalls = sendMessage.mock.calls.length;
+      patchWorkerDeliveryMetadata(fixture.db, sent.id, {
+        inFlightAttemptId: `${sent.id}:attempt:1`,
+        inFlightAt: new Date().toISOString(),
+        inFlightSessionId: "worker-session-inflight",
+        nextRetryAt: null
+      });
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId: "worker-session-inflight",
+        runtimeState: "running",
+        lastOutputPreview: "still running",
+        at: new Date().toISOString()
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(sendMessage.mock.calls.length).toBe(initialCalls);
+
+      patchWorkerDeliveryMetadata(fixture.db, sent.id, {
+        inFlightAttemptId: `${sent.id}:attempt:1`,
+        inFlightAt: "2000-01-01T00:00:00.000Z",
+        inFlightSessionId: "worker-session-inflight",
+        nextRetryAt: null
+      });
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId: "worker-session-inflight",
+        runtimeState: "running",
+        lastOutputPreview: "resume",
+        at: new Date().toISOString()
+      });
+
+      await waitFor(() => {
+        const current = fixture.aiOrchestratorService
+          .getThreadMessages({ missionId: mission.id, threadId: sent.threadId ?? "" })
+          .find((entry) => entry.id === sent.id);
+        return current?.deliveryState === "failed";
+      });
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(
+        refreshedMission?.interventions.some(
+          (entry) =>
+            entry.status === "open"
+            && entry.interventionType === "manual_input"
+            && String(entry.metadata?.sourceMessageId ?? "") === sent.id
+        )
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("supports broadcast worker targeting and fans out guidance to matching worker threads", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const agentChatService = createMockAgentChatService({
+      sendMessage,
+      listSessions: vi.fn().mockImplementation(async () => [
+        { sessionId: "worker-session-a", status: "idle" },
+        { sessionId: "worker-session-b", status: "idle" }
+      ])
+    });
+    const fixture = await createFixture({ agentChatService });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Broadcast one directive to all workers.",
+        laneId: fixture.laneId
+      });
+
+      const workerA = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "bootstrap worker A",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-a",
+          stepKey: "step-a"
+        }
+      });
+      const workerB = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "bootstrap worker B",
+        target: {
+          kind: "worker",
+          sessionId: "worker-session-b",
+          stepKey: "step-b"
+        }
+      });
+
+      await waitFor(() => {
+        const messagesA = fixture.aiOrchestratorService.getThreadMessages({ missionId: mission.id, threadId: workerA.threadId ?? "" });
+        const messagesB = fixture.aiOrchestratorService.getThreadMessages({ missionId: mission.id, threadId: workerB.threadId ?? "" });
+        return messagesA.some((entry) => entry.id === workerA.id && entry.deliveryState === "delivered")
+          && messagesB.some((entry) => entry.id === workerB.id && entry.deliveryState === "delivered");
+      });
+
+      sendMessage.mockClear();
+
+      const broadcast = fixture.aiOrchestratorService.sendThreadMessage({
+        missionId: mission.id,
+        content: "Apply logging guardrails before continuing implementation.",
+        target: {
+          kind: "workers"
+        }
+      });
+
+      expect(broadcast.target?.kind).toBe("workers");
+
+      await waitFor(() => sendMessage.mock.calls.length >= 2);
+      const callTexts = sendMessage.mock.calls.map((call) => String(call[0]?.text ?? ""));
+      expect(callTexts).toEqual([
+        "Apply logging guardrails before continuing implementation.",
+        "Apply logging guardrails before continuing implementation."
+      ]);
+
+      const messagesA = fixture.aiOrchestratorService.getThreadMessages({ missionId: mission.id, threadId: workerA.threadId ?? "" });
+      const messagesB = fixture.aiOrchestratorService.getThreadMessages({ missionId: mission.id, threadId: workerB.threadId ?? "" });
+      const broadcastA = messagesA.find((entry) => entry.content.includes("Apply logging guardrails"));
+      const broadcastB = messagesB.find((entry) => entry.content.includes("Apply logging guardrails"));
+      const metadataA = (broadcastA?.metadata ?? null) as { workerBroadcast?: { sourceMessageId?: string } } | null;
+      const metadataB = (broadcastB?.metadata ?? null) as { workerBroadcast?: { sourceMessageId?: string } } | null;
+      expect(String(metadataA?.workerBroadcast?.sourceMessageId ?? "")).toBe(broadcast.id);
+      expect(String(metadataB?.workerBroadcast?.sourceMessageId ?? "")).toBe(broadcast.id);
     } finally {
       fixture.dispose();
     }

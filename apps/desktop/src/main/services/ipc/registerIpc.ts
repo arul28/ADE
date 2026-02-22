@@ -242,9 +242,24 @@ import type {
   GetMissionDepthConfigArgs,
   MissionDepthConfig,
   GetModelCapabilitiesResult,
+  GetMissionMetricsArgs,
+  GetOrchestratorContextCheckpointArgs,
   OrchestratorChatMessage,
+  OrchestratorChatThread,
+  OrchestratorContextCheckpoint,
+  OrchestratorLaneDecision,
+  OrchestratorWorkerDigest,
   SendOrchestratorChatArgs,
-  GetOrchestratorChatArgs
+  GetOrchestratorChatArgs,
+  ListOrchestratorChatThreadsArgs,
+  GetOrchestratorThreadMessagesArgs,
+  SendOrchestratorThreadMessageArgs,
+  GetOrchestratorWorkerDigestArgs,
+  ListOrchestratorWorkerDigestsArgs,
+  ListOrchestratorLaneDecisionsArgs,
+  MissionMetricsConfig,
+  MissionMetricSample,
+  SetMissionMetricsConfigArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -1597,6 +1612,78 @@ export function registerIpc({
     async (_event, arg: GetOrchestratorChatArgs): Promise<OrchestratorChatMessage[]> => {
       const ctx = getCtx();
       return ctx.aiOrchestratorService.getChat(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListChatThreads,
+    async (_event, arg: ListOrchestratorChatThreadsArgs): Promise<OrchestratorChatThread[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listChatThreads(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetThreadMessages,
+    async (_event, arg: GetOrchestratorThreadMessagesArgs): Promise<OrchestratorChatMessage[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getThreadMessages(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorSendThreadMessage,
+    async (_event, arg: SendOrchestratorThreadMessageArgs): Promise<OrchestratorChatMessage> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.sendThreadMessage(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetWorkerDigest,
+    async (_event, arg: GetOrchestratorWorkerDigestArgs): Promise<OrchestratorWorkerDigest | null> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getWorkerDigest(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListWorkerDigests,
+    async (_event, arg: ListOrchestratorWorkerDigestsArgs): Promise<OrchestratorWorkerDigest[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listWorkerDigests(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetContextCheckpoint,
+    async (_event, arg: GetOrchestratorContextCheckpointArgs): Promise<OrchestratorContextCheckpoint | null> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getContextCheckpoint(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorListLaneDecisions,
+    async (_event, arg: ListOrchestratorLaneDecisionsArgs): Promise<OrchestratorLaneDecision[]> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.listLaneDecisions(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorGetMissionMetrics,
+    async (_event, arg: GetMissionMetricsArgs): Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getMissionMetrics(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorSetMissionMetricsConfig,
+    async (_event, arg: SetMissionMetricsConfigArgs): Promise<MissionMetricsConfig> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.setMissionMetricsConfig(arg);
     }
   );
 

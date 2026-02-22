@@ -19,6 +19,26 @@ const STATUS_COLORS: Record<string, string> = {
   canceled: "#6b7280",
 };
 
+const PHASE_TINT: Record<string, string> = {
+  analysis: "rgba(59, 130, 246, 0.06)",
+  code: "rgba(139, 92, 246, 0.06)",
+  implementation: "rgba(139, 92, 246, 0.06)",
+  test: "rgba(6, 182, 212, 0.06)",
+  validation: "rgba(6, 182, 212, 0.06)",
+  review: "rgba(245, 158, 11, 0.06)",
+  integration: "rgba(16, 185, 129, 0.06)",
+  merge: "rgba(236, 72, 153, 0.06)",
+  command: "rgba(168, 85, 247, 0.06)",
+};
+
+const MERGE_NODE_KINDS = new Set(["merge", "integration"]);
+
+function getPhaseKind(step: OrchestratorStep): string {
+  const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
+  const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
+  return stepType || taskType || "";
+}
+
 const NODE_W = 160;
 const NODE_H = 60;
 const GAP_Y = 20;
@@ -211,6 +231,10 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
           const statusColor = STATUS_COLORS[node.step.status] ?? "#6b7280";
           const isRunning = node.step.status === "running";
           const isHovered = hoveredId === node.step.id;
+          const phaseKind = getPhaseKind(node.step);
+          const phaseTint = PHASE_TINT[phaseKind] ?? "transparent";
+          const isMergeNode = MERGE_NODE_KINDS.has(phaseKind);
+          const isGateNode = phaseKind === "review" || phaseKind === "validation";
 
           return (
             <g
@@ -243,16 +267,49 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 </rect>
               )}
 
-              {/* Node background */}
+              {/* Phase tint background */}
               <rect
                 width={NODE_W}
                 height={NODE_H}
                 rx={8}
-                fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
-                stroke={statusColor}
-                strokeWidth={isHovered ? 2 : 1.5}
-                opacity={0.9}
+                fill={phaseTint}
               />
+
+              {/* Node background — diamond shape for gates, regular for others */}
+              {isGateNode ? (
+                <rect
+                  x={4}
+                  y={4}
+                  width={NODE_W - 8}
+                  height={NODE_H - 8}
+                  rx={4}
+                  fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
+                  stroke={statusColor}
+                  strokeWidth={isHovered ? 2 : 1.5}
+                  strokeDasharray="4 2"
+                  opacity={0.9}
+                />
+              ) : isMergeNode ? (
+                <rect
+                  width={NODE_W}
+                  height={NODE_H}
+                  rx={NODE_H / 2}
+                  fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
+                  stroke={statusColor}
+                  strokeWidth={isHovered ? 2 : 1.5}
+                  opacity={0.9}
+                />
+              ) : (
+                <rect
+                  width={NODE_W}
+                  height={NODE_H}
+                  rx={8}
+                  fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
+                  stroke={statusColor}
+                  strokeWidth={isHovered ? 2 : 1.5}
+                  opacity={0.9}
+                />
+              )}
 
               {/* Status indicator bar at top */}
               <rect

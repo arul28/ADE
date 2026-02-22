@@ -6,7 +6,7 @@ const routeToTabBg: Record<string, string> = {
   "/project": "ade-tab-bg-project",
   "/lanes": "ade-tab-bg-lanes",
   "/files": "ade-tab-bg-files",
-  "/terminals": "ade-tab-bg-terminals",
+  "/work": "ade-tab-bg-terminals",
   "/conflicts": "ade-tab-bg-conflicts",
   "/graph": "ade-tab-bg-graph",
   "/prs": "ade-tab-bg-prs",

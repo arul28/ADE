@@ -5,6 +5,7 @@ import type {
   CreateMissionArgs,
   GetPlannerAttemptArgs,
   ListPlannerRunsArgs,
+  MissionExecutionPolicy,
   MissionExecutorPolicy,
   MissionPlannerAttempt,
   MissionPlannerRun,
@@ -30,6 +31,7 @@ import type {
   UpdateMissionArgs,
   UpdateMissionStepArgs
 } from "../../../shared/types";
+import { depthTierToPolicy, DEFAULT_EXECUTION_POLICY } from "../orchestrator/executionPolicy";
 import type { AdeDb } from "../state/kvDb";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionPlanStepDraft } from "./missionPlanningService";
@@ -259,6 +261,21 @@ function truncateForMetadata(value: string | null, maxChars = 120_000): string |
   if (!value) return null;
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}\n...<truncated>`;
+}
+
+function mergeWithDefaults(partial: Partial<MissionExecutionPolicy>): MissionExecutionPolicy {
+  const base = DEFAULT_EXECUTION_POLICY;
+  return {
+    planning: { ...base.planning, ...partial.planning },
+    implementation: { ...base.implementation, ...partial.implementation },
+    testing: { ...base.testing, ...partial.testing },
+    validation: { ...base.validation, ...partial.validation },
+    codeReview: { ...base.codeReview, ...partial.codeReview },
+    testReview: { ...base.testReview, ...partial.testReview },
+    integration: { ...base.integration, ...partial.integration },
+    merge: { ...base.merge, ...partial.merge },
+    completion: { ...base.completion, ...partial.completion }
+  };
 }
 
 function normalizeMissionExecutorPolicy(value: unknown): MissionExecutorPolicy {
@@ -970,6 +987,16 @@ export function createMissionService({
           ? missionDepthRaw
           : null;
 
+      // Resolve execution policy: explicit > converted from depth > null
+      const executionPolicyArg = args.executionPolicy && typeof args.executionPolicy === "object"
+        ? (args.executionPolicy as Partial<MissionExecutionPolicy>)
+        : null;
+      const resolvedExecutionPolicy: MissionExecutionPolicy | null = executionPolicyArg
+        ? mergeWithDefaults(executionPolicyArg)
+        : missionDepth
+          ? depthTierToPolicy(missionDepth)
+          : null;
+
       const legacyPlan = buildDeterministicMissionPlan({
         prompt,
         laneId
@@ -998,6 +1025,7 @@ export function createMissionService({
           allowPlanningQuestions
         },
         ...(missionDepth ? { missionDepth } : {}),
+        ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),
         planner: plannerRun
           ? {
               id: plannerRun.id,
