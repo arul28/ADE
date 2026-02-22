@@ -448,17 +448,95 @@ const WORKER_STATUS_CLASSES: Record<string, string> = {
   disposed: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30"
 };
 
-function workerThreadMatchesTarget(thread: OrchestratorChatThread, target: OrchestratorChatTarget | null | undefined): boolean {
-  if (thread.threadType !== "worker" || !target || target.kind !== "worker") return false;
-  if (target.runId && thread.runId !== target.runId) return false;
-  const candidates = [
-    [target.attemptId, thread.attemptId],
-    [target.sessionId, thread.sessionId],
-    [target.stepId, thread.stepId],
-    [target.stepKey, thread.stepKey],
-    [target.laneId, thread.laneId]
-  ];
-  return candidates.some(([left, right]) => typeof left === "string" && left.length > 0 && left === right);
+function asNonEmptyString(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function workerThreadMatchScore(thread: OrchestratorChatThread, target: OrchestratorChatTarget | null | undefined): number {
+  if (thread.threadType !== "worker" || !target || target.kind !== "worker") return -1;
+  const targetRunId = asNonEmptyString(target.runId);
+  const threadRunId = asNonEmptyString(thread.runId);
+  if (targetRunId && threadRunId && targetRunId !== threadRunId) return -1;
+
+  let score = 0;
+  let matchedIdentity = false;
+
+  if (targetRunId && targetRunId === threadRunId) score += 8;
+
+  const targetAttemptId = asNonEmptyString(target.attemptId);
+  const threadAttemptId = asNonEmptyString(thread.attemptId);
+  if (targetAttemptId) {
+    if (threadAttemptId && targetAttemptId !== threadAttemptId) return -1;
+    if (targetAttemptId === threadAttemptId) {
+      score += 128;
+      matchedIdentity = true;
+    }
+  }
+
+  const targetSessionId = asNonEmptyString(target.sessionId);
+  const threadSessionId = asNonEmptyString(thread.sessionId);
+  if (targetSessionId) {
+    if (threadSessionId && targetSessionId !== threadSessionId) return -1;
+    if (targetSessionId === threadSessionId) {
+      score += 96;
+      matchedIdentity = true;
+    }
+  }
+
+  const targetStepId = asNonEmptyString(target.stepId);
+  const threadStepId = asNonEmptyString(thread.stepId);
+  if (targetStepId) {
+    if (threadStepId && targetStepId !== threadStepId) return -1;
+    if (targetStepId === threadStepId) {
+      score += 64;
+      matchedIdentity = true;
+    }
+  }
+
+  const targetStepKey = asNonEmptyString(target.stepKey);
+  const threadStepKey = asNonEmptyString(thread.stepKey);
+  if (targetStepKey) {
+    if (threadStepKey && targetStepKey !== threadStepKey && !targetStepId) return -1;
+    if (targetStepKey === threadStepKey) {
+      score += 32;
+      matchedIdentity = true;
+    }
+  }
+
+  const targetLaneId = asNonEmptyString(target.laneId);
+  const threadLaneId = asNonEmptyString(thread.laneId);
+  if (targetLaneId) {
+    if (threadLaneId && targetLaneId !== threadLaneId && !targetStepId && !targetStepKey) return -1;
+    if (targetLaneId === threadLaneId) {
+      score += 8;
+      matchedIdentity = true;
+    }
+  }
+
+  return matchedIdentity ? score : -1;
+}
+
+function findBestWorkerThread(threads: OrchestratorChatThread[], target: OrchestratorChatTarget): OrchestratorChatThread | null {
+  let best: OrchestratorChatThread | null = null;
+  let bestScore = -1;
+  for (const thread of threads) {
+    const score = workerThreadMatchScore(thread, target);
+    if (score > bestScore) {
+      bestScore = score;
+      best = thread;
+      continue;
+    }
+    if (score === bestScore && score >= 0 && best) {
+      const bestUpdated = Date.parse(best.updatedAt);
+      const nextUpdated = Date.parse(thread.updatedAt);
+      if (nextUpdated > bestUpdated) {
+        best = thread;
+      }
+    }
+  }
+  return bestScore >= 0 ? best : null;
 }
 
 export function resolveMissionChatSelection(args: {
@@ -472,7 +550,7 @@ export function resolveMissionChatSelection(args: {
     if (missionThread) return missionThread.id;
   }
   if (args.jumpTarget?.kind === "worker") {
-    const matched = args.threads.find((thread) => workerThreadMatchesTarget(thread, args.jumpTarget));
+    const matched = findBestWorkerThread(args.threads, args.jumpTarget);
     if (matched) return matched.id;
   }
   if (args.selectedThreadId && args.threads.some((thread) => thread.id === args.selectedThreadId)) {
@@ -509,8 +587,13 @@ function MissionChat({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [savingMetrics, setSavingMetrics] = useState(false);
+  const [broadcastToWorkers, setBroadcastToWorkers] = useState(false);
   const selectedThreadIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const threadRefreshTimerRef = useRef<number | null>(null);
+  const workerRailRefreshTimerRef = useRef<number | null>(null);
+  const messageRefreshTimerRef = useRef<number | null>(null);
+  const queuedMessageThreadRef = useRef<string | null>(null);
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
@@ -533,10 +616,20 @@ function MissionChat({
     }
   }, [missionId]);
 
+  const scheduleThreadRefresh = useCallback((delayMs = 120) => {
+    if (threadRefreshTimerRef.current !== null) {
+      window.clearTimeout(threadRefreshTimerRef.current);
+    }
+    threadRefreshTimerRef.current = window.setTimeout(() => {
+      threadRefreshTimerRef.current = null;
+      void refreshThreads();
+    }, delayMs);
+  }, [refreshThreads]);
+
   useEffect(() => {
     if (!jumpTarget) return;
     if (jumpTarget.kind === "worker") {
-      const matched = threads.find((thread) => workerThreadMatchesTarget(thread, jumpTarget));
+      const matched = findBestWorkerThread(threads, jumpTarget);
       if (!matched) return;
       if (matched.id !== selectedThreadId) {
         setSelectedThreadId(matched.id);
@@ -572,6 +665,21 @@ function MissionChat({
     }
   }, [missionId]);
 
+  const scheduleMessageRefresh = useCallback((threadIdOverride?: string | null, delayMs = 100) => {
+    if (typeof threadIdOverride !== "undefined") {
+      queuedMessageThreadRef.current = threadIdOverride;
+    }
+    if (messageRefreshTimerRef.current !== null) {
+      window.clearTimeout(messageRefreshTimerRef.current);
+    }
+    messageRefreshTimerRef.current = window.setTimeout(() => {
+      messageRefreshTimerRef.current = null;
+      const nextThreadId = queuedMessageThreadRef.current;
+      queuedMessageThreadRef.current = null;
+      void refreshMessages(nextThreadId);
+    }, delayMs);
+  }, [refreshMessages]);
+
   const refreshWorkerRail = useCallback(async () => {
     try {
       const [metrics, states, digests] = await Promise.all([
@@ -598,6 +706,16 @@ function MissionChat({
     }
   }, [missionId, runId]);
 
+  const scheduleWorkerRailRefresh = useCallback((delayMs = 160) => {
+    if (workerRailRefreshTimerRef.current !== null) {
+      window.clearTimeout(workerRailRefreshTimerRef.current);
+    }
+    workerRailRefreshTimerRef.current = window.setTimeout(() => {
+      workerRailRefreshTimerRef.current = null;
+      void refreshWorkerRail();
+    }, delayMs);
+  }, [refreshWorkerRail]);
+
   useEffect(() => {
     void refreshThreads();
     void refreshWorkerRail();
@@ -619,26 +737,40 @@ function MissionChat({
       if (event.missionId !== missionId) return;
       if (event.reason === "thread_read" && event.threadId === selectedThreadIdRef.current) return;
       if (event.type === "thread_updated" || event.type === "message_appended" || event.type === "message_updated" || event.type === "worker_replay") {
-        void refreshThreads();
+        scheduleThreadRefresh();
         const currentThreadId = selectedThreadIdRef.current;
         if (currentThreadId && (!event.threadId || event.threadId === currentThreadId)) {
-          void refreshMessages(currentThreadId);
+          scheduleMessageRefresh(currentThreadId);
         }
       }
       if (event.type === "metrics_updated" || event.type === "worker_digest_updated" || event.type === "worker_replay") {
-        void refreshWorkerRail();
+        scheduleWorkerRailRefresh();
       }
     });
     const unsubRuntimeEvents = window.ade.orchestrator.onEvent((event) => {
       if (runId && event.runId === runId) {
-        void refreshWorkerRail();
+        scheduleWorkerRailRefresh(120);
       }
     });
     return () => {
       unsubThreadEvents();
       unsubRuntimeEvents();
     };
-  }, [missionId, refreshMessages, refreshThreads, refreshWorkerRail, runId]);
+  }, [missionId, runId, scheduleMessageRefresh, scheduleThreadRefresh, scheduleWorkerRailRefresh]);
+
+  useEffect(() => {
+    return () => {
+      if (threadRefreshTimerRef.current !== null) {
+        window.clearTimeout(threadRefreshTimerRef.current);
+      }
+      if (workerRailRefreshTimerRef.current !== null) {
+        window.clearTimeout(workerRailRefreshTimerRef.current);
+      }
+      if (messageRefreshTimerRef.current !== null) {
+        window.clearTimeout(messageRefreshTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -648,6 +780,14 @@ function MissionChat({
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
   );
+
+  useEffect(() => {
+    if (!selectedThread || selectedThread.threadType !== "mission") {
+      if (broadcastToWorkers) {
+        setBroadcastToWorkers(false);
+      }
+    }
+  }, [broadcastToWorkers, selectedThread]);
 
   const enabledMetricSet = useMemo(() => {
     const toggles = metricsConfig?.toggles?.length ? metricsConfig.toggles : METRIC_TOGGLE_ORDER;
@@ -730,6 +870,13 @@ function MissionChat({
             sessionId: selectedThread.sessionId ?? null,
             laneId: selectedThread.laneId ?? null
           }
+        : broadcastToWorkers
+          ? {
+              kind: "workers",
+              runId: selectedThread.runId ?? runId ?? null,
+              laneId: null,
+              includeClosed: false
+            }
         : {
             kind: "coordinator",
             runId: selectedThread.runId ?? runId ?? null
@@ -754,7 +901,7 @@ function MissionChat({
     } finally {
       setSending(false);
     }
-  }, [input, missionId, runId, selectedThread, sending]);
+  }, [broadcastToWorkers, input, missionId, runId, selectedThread, sending]);
 
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
@@ -885,10 +1032,22 @@ function MissionChat({
               placeholder={
                 selectedThread?.threadType === "worker"
                   ? "Send guidance directly to this worker..."
+                  : selectedThread?.threadType === "mission" && broadcastToWorkers
+                    ? "Broadcast guidance to all worker threads in this run..."
                   : "Message the mission coordinator..."
               }
               className="h-8 flex-1 rounded border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 disabled:opacity-50"
             />
+            {selectedThread?.threadType === "mission" && (
+              <label className="flex items-center gap-1 rounded border border-border/30 bg-zinc-900/70 px-2 py-1 text-[10px] text-muted-fg">
+                <input
+                  type="checkbox"
+                  checked={broadcastToWorkers}
+                  onChange={(event) => setBroadcastToWorkers(event.target.checked)}
+                />
+                Broadcast
+              </label>
+            )}
             <Button
               variant="primary"
               size="sm"
@@ -1341,6 +1500,7 @@ export default function MissionsPage() {
   const [steerBusy, setSteerBusy] = useState(false);
   const [steerAck, setSteerAck] = useState<string | null>(null);
   const [steeringLog, setSteeringLog] = useState<SteeringEntry[]>([]);
+  const graphRefreshTimerRef = useRef<number | null>(null);
 
   /* ── Elapsed time ticker ── */
   const [, setTick] = useState(0);
@@ -1556,6 +1716,16 @@ export default function MissionsPage() {
     }
   }, []);
 
+  const scheduleOrchestratorGraphRefresh = useCallback((missionId: string, delayMs = 180) => {
+    if (graphRefreshTimerRef.current !== null) {
+      window.clearTimeout(graphRefreshTimerRef.current);
+    }
+    graphRefreshTimerRef.current = window.setTimeout(() => {
+      graphRefreshTimerRef.current = null;
+      void loadOrchestratorGraph(missionId);
+    }, delayMs);
+  }, [loadOrchestratorGraph]);
+
   useEffect(() => {
     void refreshMissionList({ preserveSelection: true });
   }, [refreshMissionList]);
@@ -1566,6 +1736,10 @@ export default function MissionsPage() {
 
   useEffect(() => {
     if (!selectedMissionId) {
+      if (graphRefreshTimerRef.current !== null) {
+        window.clearTimeout(graphRefreshTimerRef.current);
+        graphRefreshTimerRef.current = null;
+      }
       setSelectedMission(null);
       setRunGraph(null);
       setSteeringLog([]);
@@ -1583,19 +1757,29 @@ export default function MissionsPage() {
       void refreshMissionList({ preserveSelection: true, silent: true });
       if (payload.missionId && payload.missionId === selectedMissionId) {
         void loadMissionDetail(payload.missionId);
-        void loadOrchestratorGraph(payload.missionId);
+        scheduleOrchestratorGraphRefresh(payload.missionId, 120);
       }
     });
     return () => unsub();
-  }, [loadMissionDetail, loadOrchestratorGraph, refreshMissionList, selectedMissionId]);
+  }, [loadMissionDetail, refreshMissionList, scheduleOrchestratorGraphRefresh, selectedMissionId]);
 
   useEffect(() => {
-    const unsub = window.ade.orchestrator.onEvent(() => {
+    const selectedRunId = runGraph?.run.id ?? null;
+    const unsub = window.ade.orchestrator.onEvent((event) => {
       if (!selectedMissionId) return;
-      void loadOrchestratorGraph(selectedMissionId);
+      if (selectedRunId && event.runId && event.runId !== selectedRunId) return;
+      scheduleOrchestratorGraphRefresh(selectedMissionId);
     });
     return () => unsub();
-  }, [loadOrchestratorGraph, selectedMissionId]);
+  }, [runGraph?.run.id, scheduleOrchestratorGraphRefresh, selectedMissionId]);
+
+  useEffect(() => {
+    return () => {
+      if (graphRefreshTimerRef.current !== null) {
+        window.clearTimeout(graphRefreshTimerRef.current);
+      }
+    };
+  }, []);
 
   /* ── Actions ── */
   const startRunForMission = useCallback(

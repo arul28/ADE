@@ -1160,8 +1160,11 @@ function migrate(db: Database) {
     "orchestrator_runtime_events",
     ["session_id", "occurred_at"]
   );
-  db.run(
-    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)"
+  createIndexIfColumnsExist(
+    db,
+    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)",
+    "orchestrator_runtime_events",
+    ["project_id", "event_key"]
   );
 
   db.run(`
@@ -1625,6 +1628,122 @@ function migrate(db: Database) {
     "orchestrator_metrics_samples",
     ["metric", "created_at"]
   );
+
+  // Legacy compatibility hardening for orchestrator tables created before recent schema expansions.
+  addColumnIfMissing(db, "orchestrator_runs", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
+  addColumnIfMissing(db, "orchestrator_runs", "scheduler_state text not null default 'queued'", "scheduler_state");
+  addColumnIfMissing(db, "orchestrator_runs", "runtime_cursor_json text", "runtime_cursor_json");
+  addColumnIfMissing(db, "orchestrator_runs", "last_error text", "last_error");
+  addColumnIfMissing(db, "orchestrator_runs", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_runs", "started_at text", "started_at");
+  addColumnIfMissing(db, "orchestrator_runs", "completed_at text", "completed_at");
+
+  addColumnIfMissing(db, "orchestrator_steps", "mission_step_id text", "mission_step_id");
+  addColumnIfMissing(db, "orchestrator_steps", "join_policy text not null default 'all_success'", "join_policy");
+  addColumnIfMissing(db, "orchestrator_steps", "quorum_count integer", "quorum_count");
+  addColumnIfMissing(db, "orchestrator_steps", "dependency_step_ids_json text not null default '[]'", "dependency_step_ids_json");
+  addColumnIfMissing(db, "orchestrator_steps", "retry_limit integer not null default 0", "retry_limit");
+  addColumnIfMissing(db, "orchestrator_steps", "retry_count integer not null default 0", "retry_count");
+  addColumnIfMissing(db, "orchestrator_steps", "last_attempt_id text", "last_attempt_id");
+  addColumnIfMissing(db, "orchestrator_steps", "policy_json text", "policy_json");
+  addColumnIfMissing(db, "orchestrator_steps", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_steps", "started_at text", "started_at");
+  addColumnIfMissing(db, "orchestrator_steps", "completed_at text", "completed_at");
+
+  addColumnIfMissing(db, "orchestrator_attempts", "executor_session_id text", "executor_session_id");
+  addColumnIfMissing(db, "orchestrator_attempts", "tracked_session_enforced integer not null default 1", "tracked_session_enforced");
+  addColumnIfMissing(db, "orchestrator_attempts", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
+  addColumnIfMissing(db, "orchestrator_attempts", "context_snapshot_id text", "context_snapshot_id");
+  addColumnIfMissing(db, "orchestrator_attempts", "error_class text not null default 'none'", "error_class");
+  addColumnIfMissing(db, "orchestrator_attempts", "error_message text", "error_message");
+  addColumnIfMissing(db, "orchestrator_attempts", "retry_backoff_ms integer not null default 0", "retry_backoff_ms");
+  addColumnIfMissing(db, "orchestrator_attempts", "result_envelope_json text", "result_envelope_json");
+  addColumnIfMissing(db, "orchestrator_attempts", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_attempts", "started_at text", "started_at");
+  addColumnIfMissing(db, "orchestrator_attempts", "completed_at text", "completed_at");
+
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "runtime_state text", "runtime_state");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_signal_at text", "last_signal_at");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_output_preview text", "last_output_preview");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_preview_digest text", "last_preview_digest");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "digest_since_ms integer not null default 0", "digest_since_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "repeat_count integer not null default 0", "repeat_count");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_waiting_intervention_at_ms integer not null default 0", "last_waiting_intervention_at_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_event_heartbeat_at_ms integer not null default 0", "last_event_heartbeat_at_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "last_waiting_notified_at_ms integer not null default 0", "last_waiting_notified_at_ms");
+  addColumnIfMissing(db, "orchestrator_attempt_runtime", "updated_at text not null default ''", "updated_at");
+
+  addColumnIfMissing(db, "orchestrator_runtime_events", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "event_key text", "event_key");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "occurred_at text", "occurred_at");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "payload_json text", "payload_json");
+  addColumnIfMissing(db, "orchestrator_runtime_events", "created_at text", "created_at");
+  createIndexIfColumnsExist(
+    db,
+    "create unique index if not exists idx_orchestrator_runtime_events_project_key on orchestrator_runtime_events(project_id, event_key)",
+    "orchestrator_runtime_events",
+    ["project_id", "event_key"]
+  );
+
+  addColumnIfMissing(db, "orchestrator_claims", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_claims", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_claims", "released_at text", "released_at");
+  addColumnIfMissing(db, "orchestrator_claims", "policy_json text", "policy_json");
+  addColumnIfMissing(db, "orchestrator_claims", "metadata_json text", "metadata_json");
+
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "context_profile text not null default 'orchestrator_deterministic_v1'", "context_profile");
+  addColumnIfMissing(db, "orchestrator_context_snapshots", "cursor_json text not null default '{}'", "cursor_json");
+
+  addColumnIfMissing(db, "orchestrator_timeline_events", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "claim_id text", "claim_id");
+  addColumnIfMissing(db, "orchestrator_timeline_events", "detail_json text", "detail_json");
+
+  addColumnIfMissing(db, "orchestrator_chat_threads", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "status text not null default 'active'", "status");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "unread_count integer not null default 0", "unread_count");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_chat_threads", "updated_at text not null default ''", "updated_at");
+
+  addColumnIfMissing(db, "orchestrator_chat_messages", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "target_json text", "target_json");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "visibility text not null default 'full'", "visibility");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "delivery_state text not null default 'delivered'", "delivery_state");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "source_session_id text", "source_session_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "orchestrator_chat_messages", "created_at text not null default ''", "created_at");
+
+  addColumnIfMissing(db, "orchestrator_worker_digests", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "session_id text", "session_id");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "tokens_json text", "tokens_json");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "cost_usd real", "cost_usd");
+  addColumnIfMissing(db, "orchestrator_worker_digests", "suggested_next_actions_json text not null default '[]'", "suggested_next_actions_json");
+
+  addColumnIfMissing(db, "orchestrator_context_checkpoints", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "step_key text", "step_key");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "lane_id text", "lane_id");
+  addColumnIfMissing(db, "orchestrator_lane_decisions", "metadata_json text", "metadata_json");
+  addColumnIfMissing(db, "mission_metrics_config", "project_id text", "project_id");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "unit text", "unit");
+  addColumnIfMissing(db, "orchestrator_metrics_samples", "metadata_json text", "metadata_json");
 }
 
 export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
@@ -1651,13 +1770,41 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
 
   const flushNow = () => {
     if (!dirty) return;
-    dirty = false;
+    let tempPath: string | null = null;
     try {
       const bytes = db.export();
       ensureParentDir(dbPath);
-      fs.writeFileSync(dbPath, bytes);
+      const dbDir = path.dirname(dbPath);
+      const dbBase = path.basename(dbPath);
+      tempPath = path.join(dbDir, `.${dbBase}.${process.pid}.${Date.now()}.tmp`);
+      fs.writeFileSync(tempPath, Buffer.from(bytes));
+      const tempFd = fs.openSync(tempPath, "r");
+      try {
+        fs.fsyncSync(tempFd);
+      } finally {
+        fs.closeSync(tempFd);
+      }
+      fs.renameSync(tempPath, dbPath);
+      try {
+        const dirFd = fs.openSync(dbDir, "r");
+        try {
+          fs.fsyncSync(dirFd);
+        } finally {
+          fs.closeSync(dirFd);
+        }
+      } catch {
+        // Best-effort directory sync; unsupported platforms/filesystems can skip.
+      }
+      dirty = false;
       logger.debug("db.flushed", { dbPath, bytes: bytes.length });
     } catch (err) {
+      if (tempPath && fs.existsSync(tempPath)) {
+        try {
+          fs.unlinkSync(tempPath);
+        } catch {
+          // best effort cleanup
+        }
+      }
       logger.error("db.flush_failed", { dbPath, err: String(err) });
     }
   };

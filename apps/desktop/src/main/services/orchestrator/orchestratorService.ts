@@ -48,6 +48,7 @@ import type { createPackService } from "../packs/packService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { createPrService } from "../prs/prService";
 
 type RunRow = {
   id: string;
@@ -356,6 +357,12 @@ function normalizeIsoTimestamp(value: unknown, fallbackIso: string): string {
   const ms = Date.parse(raw);
   if (!Number.isFinite(ms)) return fallbackIso;
   return new Date(ms).toISOString();
+}
+
+function branchNameFromRef(ref: string): string {
+  const trimmed = ref.trim();
+  if (!trimmed.length) return "";
+  return trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
 }
 
 function parseRecord(raw: string | null): Record<string, unknown> | null {
@@ -1173,6 +1180,7 @@ export function createOrchestratorService({
   packService,
   conflictService,
   ptyService,
+  prService,
   projectConfigService,
   onEvent
 }: {
@@ -1182,6 +1190,7 @@ export function createOrchestratorService({
   packService: ReturnType<typeof createPackService>;
   conflictService?: ReturnType<typeof createConflictService>;
   ptyService?: ReturnType<typeof createPtyService>;
+  prService?: ReturnType<typeof createPrService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
@@ -3102,6 +3111,399 @@ export function createOrchestratorService({
         sourceLaneIds
       }
     };
+  };
+
+  const tryRunMergePrAutomation = async (args: {
+    run: OrchestratorRun;
+    step: OrchestratorStep;
+    attempt: OrchestratorAttempt;
+  }): Promise<
+    | {
+        status: "succeeded" | "blocked" | "failed";
+        result?: OrchestratorAttemptResultEnvelope;
+        errorClass?: OrchestratorErrorClass;
+        errorMessage?: string;
+        metadata?: Record<string, unknown> | null;
+      }
+    | null
+  > => {
+    const metadata = args.step.metadata ?? {};
+    const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+    if (stepType !== "merge") return null;
+    if (metadata.prAutomationDisabled === true) return null;
+    if (!prService) return null;
+
+    const mergeModeRaw = typeof metadata.mergeMode === "string" ? metadata.mergeMode.trim() : "manual";
+    const mergeMode = mergeModeRaw === "auto_if_green" ? "auto_if_green" : "manual";
+    const mergeMethodRaw = typeof metadata.mergeMethod === "string" ? metadata.mergeMethod.trim() : "squash";
+    const mergeMethod: "merge" | "squash" | "rebase" =
+      mergeMethodRaw === "merge" || mergeMethodRaw === "squash" || mergeMethodRaw === "rebase"
+        ? mergeMethodRaw
+        : "squash";
+
+    const targetLaneId =
+      typeof metadata.targetLaneId === "string" && metadata.targetLaneId.trim().length
+        ? metadata.targetLaneId.trim()
+        : args.step.laneId ?? null;
+    const sourceLaneIds = (
+      Array.isArray(metadata.sourceLaneIds)
+        ? metadata.sourceLaneIds.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+        : args.step.laneId
+          ? [args.step.laneId]
+          : []
+    ).filter((entry, index, all) => all.indexOf(entry) === index);
+    if (!sourceLaneIds.length) {
+      return {
+        status: "blocked",
+        errorClass: "policy",
+        errorMessage: "Merge step could not resolve a source lane for PR automation.",
+        metadata: {
+          mergeMode,
+          missingSourceLane: true
+        }
+      };
+    }
+
+    const getLaneBranch = (laneId: string | null): string | null => {
+      if (!laneId) return null;
+      const lane = db.get<{ branch_ref: string | null }>(
+        `
+          select branch_ref
+          from lanes
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [laneId, projectId]
+      );
+      const branch = typeof lane?.branch_ref === "string" ? branchNameFromRef(lane.branch_ref) : "";
+      return branch.length > 0 ? branch : null;
+    };
+
+    const persistStepMergeMetadata = (patch: Record<string, unknown>): void => {
+      const row = getStepRow(args.step.id);
+      if (!row) return;
+      const next = {
+        ...(parseRecord(row.metadata_json) ?? {}),
+        ...patch
+      };
+      db.run(
+        `
+          update orchestrator_steps
+          set metadata_json = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(next), nowIso(), args.step.id, projectId]
+      );
+    };
+
+    const prTitleBase =
+      typeof metadata.prTitle === "string" && metadata.prTitle.trim().length
+        ? metadata.prTitle.trim()
+        : args.step.title.trim().length
+          ? args.step.title.trim()
+          : "Orchestrator merge";
+    const prBodyBase =
+      typeof metadata.prBody === "string" && metadata.prBody.trim().length
+        ? metadata.prBody.trim()
+        : [
+            "Automated merge step generated by ADE orchestrator.",
+            "",
+            `Run: ${args.run.id}`,
+            `Step: ${args.step.stepKey}`
+          ].join("\n");
+
+    appendTimelineEvent({
+      runId: args.run.id,
+      stepId: args.step.id,
+      attemptId: args.attempt.id,
+      eventType: "integration_chain_started",
+      reason: "merge_pr_automation_started",
+      detail: {
+        mergeMode,
+        sourceLaneIds,
+        targetLaneId
+      }
+    });
+
+    try {
+      let prSummary: ReturnType<NonNullable<typeof prService>["getForLane"]> | null = null;
+      let integrationLaneId: string | null = null;
+
+      if (sourceLaneIds.length === 1) {
+        const laneId = sourceLaneIds[0]!;
+        const existing = prService.getForLane(laneId);
+        const fresh =
+          existing
+            ? (await prService.refresh({ prId: existing.id }).then((rows) => rows[0] ?? existing).catch(() => existing))
+            : null;
+        if (fresh && (fresh.state === "open" || fresh.state === "draft")) {
+          prSummary = fresh;
+        } else if (fresh && fresh.state === "merged") {
+          prSummary = fresh;
+        } else {
+          const created = await prService.createFromLane({
+            laneId,
+            title: prTitleBase,
+            body: prBodyBase,
+            draft: false,
+            ...(getLaneBranch(targetLaneId) ? { baseBranch: getLaneBranch(targetLaneId)! } : {})
+          });
+          prSummary = created;
+          appendTimelineEvent({
+            runId: args.run.id,
+            stepId: args.step.id,
+            attemptId: args.attempt.id,
+            eventType: "integration_chain_stage",
+            reason: "merge_pr_created",
+            detail: {
+              prId: created.id,
+              laneId
+            }
+          });
+        }
+      } else {
+        const priorIntegrationLaneId =
+          typeof metadata.integrationLaneId === "string" && metadata.integrationLaneId.trim().length
+            ? metadata.integrationLaneId.trim()
+            : null;
+        if (priorIntegrationLaneId) {
+          const existing = prService.getForLane(priorIntegrationLaneId);
+          if (existing) {
+            prSummary = await prService.refresh({ prId: existing.id }).then((rows) => rows[0] ?? existing).catch(() => existing);
+            integrationLaneId = priorIntegrationLaneId;
+          }
+        }
+        if (!prSummary) {
+          const baseBranch =
+            getLaneBranch(targetLaneId)
+            ?? getLaneBranch(sourceLaneIds[0]!)
+            ?? "";
+          if (!baseBranch.length) {
+            return {
+              status: "blocked",
+              errorClass: "policy",
+              errorMessage: "Merge PR automation could not resolve a base branch for integration PR.",
+              metadata: {
+                mergeMode,
+                sourceLaneIds,
+                targetLaneId
+              }
+            };
+          }
+          const integrationLaneName =
+            typeof metadata.integrationLaneName === "string" && metadata.integrationLaneName.trim().length
+              ? metadata.integrationLaneName.trim()
+              : `orchestrator-${args.run.id.slice(0, 8)}-${args.step.stepKey.slice(0, 24)}`;
+          const created = await prService.createIntegrationPr({
+            sourceLaneIds,
+            integrationLaneName,
+            baseBranch,
+            title: prTitleBase,
+            body: prBodyBase,
+            draft: false
+          });
+          prSummary = created.pr;
+          integrationLaneId = created.integrationLaneId;
+          persistStepMergeMetadata({
+            integrationLaneId,
+            integrationPrId: created.pr.id
+          });
+          appendTimelineEvent({
+            runId: args.run.id,
+            stepId: args.step.id,
+            attemptId: args.attempt.id,
+            eventType: "integration_chain_stage",
+            reason: "integration_pr_created",
+            detail: {
+              prId: created.pr.id,
+              integrationLaneId,
+              sourceLaneIds
+            }
+          });
+        }
+      }
+
+      if (!prSummary) {
+        return {
+          status: "blocked",
+          errorClass: "policy",
+          errorMessage: "Merge PR automation did not produce a pull request.",
+          metadata: {
+            mergeMode,
+            sourceLaneIds
+          }
+        };
+      }
+
+      if (prSummary.state === "merged") {
+        return {
+          status: "succeeded",
+          result: normalizeEnvelope({
+            success: true,
+            summary: "Merge PR is already merged.",
+            outputs: {
+              prId: prSummary.id,
+              prNumber: prSummary.githubPrNumber,
+              prUrl: prSummary.githubUrl,
+              integrationLaneId
+            },
+            warnings: [],
+            trackedSession: true
+          }),
+          metadata: {
+            mergeStage: "already_merged",
+            prId: prSummary.id
+          }
+        };
+      }
+
+      if (mergeMode === "manual") {
+        return {
+          status: "blocked",
+          errorClass: "policy",
+          errorMessage: "Merge PR is ready and awaiting operator approval.",
+          result: normalizeEnvelope({
+            success: false,
+            summary: "Merge PR prepared. Operator approval required before landing.",
+            outputs: {
+              prId: prSummary.id,
+              prNumber: prSummary.githubPrNumber,
+              prUrl: prSummary.githubUrl,
+              mergeMode,
+              integrationLaneId
+            },
+            warnings: [],
+            trackedSession: true
+          }),
+          metadata: {
+            mergeStage: "awaiting_approval",
+            prId: prSummary.id,
+            integrationLaneId
+          }
+        };
+      }
+
+      const status = await prService.getStatus(prSummary.id);
+      const mergeReasons: string[] = [];
+      if (status.state !== "open" && status.state !== "draft") mergeReasons.push(`state=${status.state}`);
+      if (status.checksStatus === "failing" || status.checksStatus === "pending") mergeReasons.push(`checks=${status.checksStatus}`);
+      if (status.reviewStatus === "changes_requested") mergeReasons.push(`review=${status.reviewStatus}`);
+      if (status.mergeConflicts) mergeReasons.push("merge_conflicts=true");
+      if (status.behindBaseBy > 0) mergeReasons.push(`behind_base_by=${status.behindBaseBy}`);
+      if (!status.isMergeable) mergeReasons.push("is_mergeable=false");
+      if (mergeReasons.length > 0) {
+        appendTimelineEvent({
+          runId: args.run.id,
+          stepId: args.step.id,
+          attemptId: args.attempt.id,
+          eventType: "integration_chain_stage",
+          reason: "merge_pr_not_green",
+          detail: {
+            prId: prSummary.id,
+            reasons: mergeReasons
+          }
+        });
+        return {
+          status: "blocked",
+          errorClass: "policy",
+          errorMessage: `Merge PR is not green for auto-merge (${mergeReasons.join(", ")}).`,
+          result: normalizeEnvelope({
+            success: false,
+            summary: "Merge PR created but not merge-ready yet.",
+            outputs: {
+              prId: prSummary.id,
+              prNumber: prSummary.githubPrNumber,
+              prUrl: prSummary.githubUrl,
+              checksStatus: status.checksStatus,
+              reviewStatus: status.reviewStatus,
+              mergeConflicts: status.mergeConflicts,
+              behindBaseBy: status.behindBaseBy,
+              isMergeable: status.isMergeable,
+              integrationLaneId
+            },
+            warnings: mergeReasons,
+            trackedSession: true
+          }),
+          metadata: {
+            mergeStage: "waiting_green",
+            prId: prSummary.id
+          }
+        };
+      }
+
+      const landed = await prService.land({
+        prId: prSummary.id,
+        method: mergeMethod
+      });
+      if (!landed.success) {
+        return {
+          status: "failed",
+          errorClass: "executor_failure",
+          errorMessage: landed.error ?? "Merge API returned failure.",
+          metadata: {
+            mergeStage: "land_failed",
+            prId: prSummary.id,
+            mergeMethod
+          }
+        };
+      }
+
+      appendTimelineEvent({
+        runId: args.run.id,
+        stepId: args.step.id,
+        attemptId: args.attempt.id,
+        eventType: "integration_chain_stage",
+        reason: "merge_pr_landed",
+        detail: {
+          prId: prSummary.id,
+          mergeCommitSha: landed.mergeCommitSha,
+          mergeMethod
+        }
+      });
+      return {
+        status: "succeeded",
+        result: normalizeEnvelope({
+          success: true,
+          summary: "Merge PR landed successfully.",
+          outputs: {
+            prId: prSummary.id,
+            prNumber: prSummary.githubPrNumber,
+            prUrl: prSummary.githubUrl,
+            mergeCommitSha: landed.mergeCommitSha,
+            branchDeleted: landed.branchDeleted,
+            laneArchived: landed.laneArchived,
+            integrationLaneId
+          },
+          warnings: [],
+          trackedSession: true
+        }),
+        metadata: {
+          mergeStage: "landed",
+          prId: prSummary.id,
+          mergeMethod
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendTimelineEvent({
+        runId: args.run.id,
+        stepId: args.step.id,
+        attemptId: args.attempt.id,
+        eventType: "integration_chain_stage",
+        reason: "merge_pr_automation_failed",
+        detail: {
+          error: message
+        }
+      });
+      return {
+        status: "failed",
+        errorClass: "transient",
+        errorMessage: `Merge PR automation failed: ${message}`
+      };
+    }
   };
 
   const defaultAdapterFor = (kind: OrchestratorExecutorKind): OrchestratorExecutorAdapter | null => {
@@ -5096,6 +5498,22 @@ export function createOrchestratorService({
           errorClass: integrationResult.errorClass,
           errorMessage: integrationResult.errorMessage,
           metadata: integrationResult.metadata ?? null
+        });
+      }
+
+      const mergeResult = await tryRunMergePrAutomation({
+        run,
+        step,
+        attempt
+      });
+      if (mergeResult) {
+        return completeAndAdvance({
+          attemptId: attempt.id,
+          status: mergeResult.status,
+          result: mergeResult.result,
+          errorClass: mergeResult.errorClass,
+          errorMessage: mergeResult.errorMessage,
+          metadata: mergeResult.metadata ?? null
         });
       }
 

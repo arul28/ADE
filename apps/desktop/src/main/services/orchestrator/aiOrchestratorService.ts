@@ -5894,54 +5894,61 @@ export function createAiOrchestratorService(args: {
     let failed = 0;
     let queued = 0;
 
-    for (const [threadId, messages] of grouped.entries()) {
-      const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
-      const previous = workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
-      const next = previous
-        .catch(() => undefined)
-        .then(async () => {
-          if (disposed) return;
-          for (const candidate of messages) {
-            if (disposed) return;
-            const fresh = getChatMessageById(candidate.id);
-            if (!fresh || fresh.deliveryState !== "queued") continue;
-            const context = resolveWorkerDeliveryContext(fresh);
-            if (args.sessionId) {
-              const signalSessionId = args.sessionId.trim();
-              if (signalSessionId.length > 0) {
-                const mapped = toOptionalString(context?.sessionId) ?? toOptionalString(fresh.sourceSessionId);
-                if (!mapped || mapped !== signalSessionId) continue;
+    const threadEntries = Array.from(grouped.entries());
+    const maxParallelThreads = 8;
+    for (let batchIndex = 0; batchIndex < threadEntries.length; batchIndex += maxParallelThreads) {
+      const batch = threadEntries.slice(batchIndex, batchIndex + maxParallelThreads);
+      await Promise.all(
+        batch.map(async ([threadId, messages]) => {
+          const ignoreBackoff = args.reason.startsWith("runtime_signal") || args.reason.startsWith("agent_chat");
+          const previous = workerDeliveryThreadQueues.get(threadId) ?? Promise.resolve();
+          const next = previous
+            .catch(() => undefined)
+            .then(async () => {
+              if (disposed) return;
+              for (const candidate of messages) {
+                if (disposed) return;
+                const fresh = getChatMessageById(candidate.id);
+                if (!fresh || fresh.deliveryState !== "queued") continue;
+                const context = resolveWorkerDeliveryContext(fresh);
+                if (args.sessionId) {
+                  const signalSessionId = args.sessionId.trim();
+                  if (signalSessionId.length > 0) {
+                    const mapped = toOptionalString(context?.sessionId) ?? toOptionalString(fresh.sourceSessionId);
+                    if (!mapped || mapped !== signalSessionId) continue;
+                  }
+                }
+                const updated = await deliverWorkerMessage(fresh, {
+                  ignoreBackoff
+                });
+                if (updated.deliveryState === "delivered") {
+                  delivered += 1;
+                  continue;
+                }
+                if (updated.deliveryState === "failed") {
+                  failed += 1;
+                  continue;
+                }
+                queued += 1;
+                break;
               }
-            }
-            const updated = await deliverWorkerMessage(fresh, {
-              ignoreBackoff
+            })
+            .catch((error) => {
+              logger.debug("ai_orchestrator.worker_delivery_replay_failed", {
+                reason: args.reason,
+                threadId,
+                error: error instanceof Error ? error.message : String(error)
+              });
+            })
+            .finally(() => {
+              if (workerDeliveryThreadQueues.get(threadId) === next) {
+                workerDeliveryThreadQueues.delete(threadId);
+              }
             });
-            if (updated.deliveryState === "delivered") {
-              delivered += 1;
-              continue;
-            }
-            if (updated.deliveryState === "failed") {
-              failed += 1;
-              continue;
-            }
-            queued += 1;
-            break;
-          }
+          workerDeliveryThreadQueues.set(threadId, next);
+          await next;
         })
-        .catch((error) => {
-          logger.debug("ai_orchestrator.worker_delivery_replay_failed", {
-            reason: args.reason,
-            threadId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        })
-        .finally(() => {
-          if (workerDeliveryThreadQueues.get(threadId) === next) {
-            workerDeliveryThreadQueues.delete(threadId);
-          }
-        });
-      workerDeliveryThreadQueues.set(threadId, next);
-      await next;
+      );
     }
 
     if ((delivered > 0 || failed > 0 || queued > 0) && args.missionId) {

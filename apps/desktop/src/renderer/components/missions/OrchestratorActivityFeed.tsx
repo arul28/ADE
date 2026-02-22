@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import type { OrchestratorTimelineEvent, OrchestratorRuntimeEvent } from "../../../shared/types";
+import type { OrchestratorTimelineEvent } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 type Props = {
@@ -25,6 +25,10 @@ const DEFAULT_CONFIG = { icon: "\u25CB", color: "text-muted-fg", label: "Event" 
 
 const ALL_EVENT_TYPES = Object.keys(EVENT_CONFIG);
 
+function sortTimeline(events: OrchestratorTimelineEvent[]): OrchestratorTimelineEvent[] {
+  return [...events].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
 function relativeTime(iso: string): string {
   const delta = Math.max(0, Date.now() - Date.parse(iso));
   if (delta < 1000) return "now";
@@ -46,41 +50,83 @@ function formatTimestamp(iso: string): string {
 }
 
 export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
-  const [events, setEvents] = useState<OrchestratorTimelineEvent[]>(() =>
-    [...initialTimeline].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-  );
+  const [events, setEvents] = useState<OrchestratorTimelineEvent[]>(() => sortTimeline(initialTimeline));
   const [activeFilters, setActiveFilters] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const refreshTimerRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  const refreshTokenRef = useRef(0);
 
-  // Subscribe to live orchestrator events
-  useEffect(() => {
-    const unsub = window.ade.orchestrator.onEvent((ev: OrchestratorRuntimeEvent) => {
-      if (ev.runId !== runId) return;
-
-      const syntheticEvent: OrchestratorTimelineEvent = {
-        id: `rt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        runId: ev.runId ?? runId,
-        stepId: ev.stepId ?? null,
-        attemptId: ev.attemptId ?? null,
-        claimId: ev.claimId ?? null,
-        eventType: ev.type.replace("orchestrator-", "").replace(/-/g, "_"),
-        reason: ev.reason,
-        detail: null,
-        createdAt: ev.at,
-      };
-
-      setEvents((prev) => [syntheticEvent, ...prev]);
-    });
-    return () => unsub();
+  const refreshTimeline = useCallback(async () => {
+    if (!runId) return;
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
+    const token = refreshTokenRef.current;
+    try {
+      const latest = await window.ade.orchestrator.listTimeline({
+        runId,
+        limit: 400
+      });
+      if (token === refreshTokenRef.current) {
+        setEvents(sortTimeline(latest));
+      }
+    } catch {
+      // Ignore transient timeline refresh failures; live subscription/polling will retry.
+    } finally {
+      refreshInFlightRef.current = false;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void refreshTimeline();
+      }
+    }
   }, [runId]);
 
-  // Update initialTimeline when it changes
+  const scheduleTimelineRefresh = useCallback((delayMs = 140) => {
+    if (refreshTimerRef.current !== null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refreshTimeline();
+    }, delayMs);
+  }, [refreshTimeline]);
+
   useEffect(() => {
-    setEvents([...initialTimeline].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)));
-  }, [initialTimeline]);
+    refreshTokenRef.current += 1;
+    setEvents(sortTimeline(initialTimeline));
+    void refreshTimeline();
+  }, [initialTimeline, refreshTimeline]);
+
+  useEffect(() => {
+    const unsub = window.ade.orchestrator.onEvent((ev) => {
+      if (ev.runId !== runId) return;
+      scheduleTimelineRefresh();
+    });
+    return () => {
+      unsub();
+    };
+  }, [runId, scheduleTimelineRefresh]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshTimeline();
+    }, 12_000);
+    return () => window.clearInterval(interval);
+  }, [refreshTimeline]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+    };
+  }, []);
 
   // Auto-scroll to bottom (newest at top, so scroll to top)
   useEffect(() => {
@@ -112,11 +158,21 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
     return events.filter((ev) => activeFilters.has(ev.eventType));
   }, [events, activeFilters]);
 
+  const filterTypes = useMemo(() => {
+    const set = new Set<string>(ALL_EVENT_TYPES);
+    for (const event of events) {
+      if (event.eventType) {
+        set.add(event.eventType);
+      }
+    }
+    return Array.from(set.values()).sort((left, right) => left.localeCompare(right));
+  }, [events]);
+
   return (
     <div className="flex flex-col gap-2">
       {/* Filter bar */}
       <div className="flex flex-wrap gap-1">
-        {ALL_EVENT_TYPES.map((type) => {
+        {filterTypes.map((type) => {
           const config = EVENT_CONFIG[type] ?? DEFAULT_CONFIG;
           const isActive = activeFilters.has(type);
           return (
@@ -212,7 +268,6 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
             })}
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       <div className="text-[10px] text-muted-fg/60 text-right">

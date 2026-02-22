@@ -486,6 +486,7 @@ app.whenReady().then(async () => {
       packService,
       conflictService,
       ptyService,
+      prService,
       projectConfigService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
