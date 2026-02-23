@@ -54,11 +54,15 @@ function ConflictsPageInner() {
     // Multi-merge deep-link: ?tab=merge-multiple&sourceLaneIds=a,b,c&mode=integration
     const sourceLaneIdsParam = searchParams.get("sourceLaneIds");
     const modeParam = searchParams.get("mode");
+    const multiTargetParam = (searchParams.get("targetLaneId") ?? "").trim();
     if (sourceLaneIdsParam) {
       const ids = sourceLaneIdsParam.split(",").map((s) => s.trim()).filter((id) => laneIds.has(id));
       if (ids.length > 0) {
         dispatch({ type: "SET_ACTIVE_TAB", tab: "merge-multiple" });
         dispatch({ type: "SET_MULTI_MERGE_SOURCES", laneIds: ids });
+        if (multiTargetParam && laneIds.has(multiTargetParam)) {
+          dispatch({ type: "SET_MULTI_MERGE_TARGET", laneId: multiTargetParam });
+        }
         if (modeParam === "integration" || modeParam === "stacked") {
           dispatch({ type: "SET_MULTI_MERGE_MODE", mode: modeParam });
         }

@@ -455,6 +455,18 @@ export type PrReview = {
   submittedAt: string | null;
 };
 
+export type PrComment = {
+  id: string;
+  author: string;
+  body: string | null;
+  source: "issue" | "review";
+  url: string | null;
+  path: string | null;
+  line: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
 export type PrEventPayload =
   | {
       type: "prs-updated";
@@ -3554,6 +3566,24 @@ export type PrGroupMember = {
   laneId: string;
   position: number;
   role: PrGroupMemberRole;
+};
+
+export type PrGroupContextMember = {
+  prId: string;
+  laneId: string;
+  laneName: string;
+  prNumber: number | null;
+  position: number;
+  role: PrGroupMemberRole;
+};
+
+export type PrMergeContext = {
+  prId: string;
+  groupId: string | null;
+  groupType: PrGroupType | null;
+  sourceLaneIds: string[];
+  targetLaneId: string | null;
+  members: PrGroupContextMember[];
 };
 
 export type CreateStackedPrsArgs = {

@@ -75,6 +75,8 @@ import type {
   LinkPrToLaneArgs,
   LandResult,
   PrCheck,
+  PrComment,
+  PrMergeContext,
   PrReview,
   PrStatus,
   PrSummary,
@@ -2552,6 +2554,11 @@ export function registerIpc({
     return await ctx.prService.getChecks(arg.prId);
   });
 
+  ipcMain.handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
+    const ctx = getCtx();
+    return await ctx.prService.getComments(arg.prId);
+  });
+
   ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
     const ctx = getCtx();
     return await ctx.prService.getReviews(arg.prId);
@@ -2589,6 +2596,8 @@ export function registerIpc({
   ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg) => getCtx().prService.landStackEnhanced(arg));
 
   ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg) => getCtx().prService.getConflictAnalysis(arg));
+
+  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg));
 
   ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
 

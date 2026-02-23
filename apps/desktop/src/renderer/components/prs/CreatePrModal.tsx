@@ -4,7 +4,7 @@ import { GitPullRequest, Stack as Layers, GitMerge } from "@phosphor-icons/react
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import type { LaneSummary, MergeMethod, PrSummary } from "../../../shared/types";
+import type { LaneSummary, MergeMethod, PrSummary, RiskMatrixEntry } from "../../../shared/types";
 
 type CreateMode = "normal" | "stacked" | "integration";
 type WizardStep = "select-type" | "configure" | "execute";
@@ -82,6 +82,8 @@ export function CreatePrModal({
   const [busy, setBusy] = React.useState(false);
   const [execError, setExecError] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<PrSummary[] | null>(null);
+  const [integrationMergeResults, setIntegrationMergeResults] = React.useState<Array<{ laneId: string; success: boolean; error?: string }>>([]);
+  const [integrationRiskRows, setIntegrationRiskRows] = React.useState<Array<{ laneAId: string; laneBId: string; riskLevel: RiskMatrixEntry["riskLevel"] | "unknown" }>>([]);
 
   // Reset on close
   React.useEffect(() => {
@@ -102,6 +104,8 @@ export function CreatePrModal({
       setBusy(false);
       setExecError(null);
       setResults(null);
+      setIntegrationMergeResults([]);
+      setIntegrationRiskRows([]);
       setNormalBody("");
       setIntegrationBody("");
       setDraftModel("haiku");
@@ -110,7 +114,69 @@ export function CreatePrModal({
     return () => clearTimeout(id);
   }, [open]);
 
+  const pairKey = (laneAId: string, laneBId: string): string =>
+    laneAId < laneBId ? `${laneAId}::${laneBId}` : `${laneBId}::${laneAId}`;
+
+  const buildIntegrationPlan = async () => {
+    const uniqueSources = Array.from(new Set(integrationSources));
+    setBusy(true);
+    setExecError(null);
+    setResults(null);
+    setIntegrationMergeResults([]);
+    try {
+      const assessment = await window.ade.conflicts.getBatchAssessment().catch(() => null);
+      const matrix = assessment?.matrix ?? [];
+      const matrixByPair = new Map(matrix.map((entry) => [pairKey(entry.laneAId, entry.laneBId), entry]));
+      const rows: Array<{ laneAId: string; laneBId: string; riskLevel: RiskMatrixEntry["riskLevel"] | "unknown" }> = [];
+      for (let i = 0; i < uniqueSources.length; i++) {
+        for (let j = i + 1; j < uniqueSources.length; j++) {
+          const laneAId = uniqueSources[i]!;
+          const laneBId = uniqueSources[j]!;
+          const match = matrixByPair.get(pairKey(laneAId, laneBId));
+          rows.push({ laneAId, laneBId, riskLevel: match?.riskLevel ?? "unknown" });
+        }
+      }
+      setIntegrationRiskRows(rows);
+      setStep("execute");
+    } catch (err: any) {
+      setExecError(err?.message ?? String(err));
+      setStep("execute");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createIntegrationPrNow = async () => {
+    setBusy(true);
+    setExecError(null);
+    try {
+      const baseBranch = primaryLane?.branchRef ?? "main";
+      const result = await window.ade.prs.createIntegration({
+        sourceLaneIds: integrationSources,
+        integrationLaneName: integrationName,
+        baseBranch,
+        title: integrationTitle || `Integration: ${integrationName}`,
+        body: integrationBody,
+        draft: integrationDraft,
+      });
+      const failedMerges = result.mergeResults.filter((r) => !r.success);
+      if (failedMerges.length > 0) {
+        setExecError(failedMerges.map((r) => `${r.laneId}: ${r.error ?? "failed"}`).join("\n"));
+      }
+      setIntegrationMergeResults(result.mergeResults);
+      setResults([result.pr]);
+    } catch (err: any) {
+      setExecError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleCreate = async () => {
+    if (mode === "integration") {
+      await buildIntegrationPlan();
+      return;
+    }
     setBusy(true);
     setExecError(null);
     try {
@@ -134,21 +200,6 @@ export function CreatePrModal({
           setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
         }
         setResults(result.prs);
-      } else {
-        const baseBranch = primaryLane?.branchRef ?? "main";
-        const result = await window.ade.prs.createIntegration({
-          sourceLaneIds: integrationSources,
-          integrationLaneName: integrationName,
-          baseBranch,
-          title: integrationTitle || `Integration: ${integrationName}`,
-          body: integrationBody,
-          draft: integrationDraft,
-        });
-        const failedMerges = result.mergeResults.filter((r) => !r.success);
-        if (failedMerges.length > 0) {
-          setExecError(failedMerges.map((r) => `${r.laneId}: ${r.error ?? "failed"}`).join("\n"));
-        }
-        setResults([result.pr]);
       }
       setStep("execute");
     } catch (err: any) {
@@ -182,7 +233,7 @@ export function CreatePrModal({
           <Dialog.Description className="mt-1 text-xs text-muted-fg">
             {step === "select-type" && "Choose a PR creation mode."}
             {step === "configure" && `Configure your ${mode} PR.`}
-            {step === "execute" && "Results"}
+            {step === "execute" && (mode === "integration" && !results ? "Review integration proposal before creating the PR." : "Results")}
           </Dialog.Description>
 
           {/* Step 1: Select type */}
@@ -440,7 +491,7 @@ export function CreatePrModal({
                     }
                     onClick={() => void handleCreate()}
                   >
-                    {busy ? "Creating..." : "Create PR"}
+                    {busy ? (mode === "integration" ? "Building plan..." : "Creating...") : (mode === "integration" ? "Review Plan" : "Create PR")}
                   </Button>
                 </div>
               </div>
@@ -450,6 +501,68 @@ export function CreatePrModal({
           {/* Step 3: Execute / results */}
           {step === "execute" && (
             <div className="mt-4 space-y-3">
+              {mode === "integration" && !results ? (
+                <div className="space-y-3 rounded-lg border border-border bg-card/40 p-3">
+                  <div className="text-xs font-semibold text-fg">Integration Proposal</div>
+                  <div className="text-xs text-muted-fg">
+                    No GitHub PR has been created yet. Review conflicts first, then create the integration PR.
+                  </div>
+                  <div className="rounded border border-border/50 bg-card/40 px-2.5 py-2 text-xs space-y-1">
+                    <div className="text-muted-fg">Integration lane: <span className="text-fg">{integrationName.trim() || "integration"}</span></div>
+                    <div className="text-muted-fg">Source lanes:</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {integrationSources.map((laneId) => {
+                        const lane = nonPrimaryLanes.find((value) => value.id === laneId);
+                        return (
+                          <span key={laneId} className="rounded border border-border/40 bg-card/40 px-2 py-0.5 text-[11px] text-fg">
+                            {lane?.name ?? laneId}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {integrationRiskRows.length > 0 ? (
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-fg">Predicted Pair Risk</div>
+                      {integrationRiskRows.map((row) => {
+                        const laneA = nonPrimaryLanes.find((value) => value.id === row.laneAId);
+                        const laneB = nonPrimaryLanes.find((value) => value.id === row.laneBId);
+                        const riskClass =
+                          row.riskLevel === "high"
+                            ? "text-red-300"
+                            : row.riskLevel === "medium"
+                              ? "text-amber-300"
+                              : row.riskLevel === "low"
+                                ? "text-emerald-300"
+                                : "text-muted-fg";
+                        return (
+                          <div key={`${row.laneAId}:${row.laneBId}`} className="rounded border border-border/30 bg-card/30 px-2 py-1.5 text-xs">
+                            <span className="text-fg">{laneA?.name ?? row.laneAId}</span>
+                            <span className="px-1 text-muted-fg">{"<->"}</span>
+                            <span className="text-fg">{laneB?.name ?? row.laneBId}</span>
+                            <span className={`ml-2 capitalize ${riskClass}`}>{row.riskLevel}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="rounded border border-border/30 bg-card/30 px-2.5 py-2 text-xs text-muted-fg">
+                      No pairwise risk data was available. You can still proceed and resolve conflicts in the PR workflow.
+                    </div>
+                  )}
+
+                  <div className="flex justify-between gap-2 pt-1">
+                    <Button size="sm" variant="outline" onClick={() => setStep("configure")} disabled={busy}>
+                      Back
+                    </Button>
+                    <Button size="sm" variant="primary" onClick={() => void createIntegrationPrNow()} disabled={busy}>
+                      {busy ? "Creating..." : "Create Integration PR"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
               {results && results.length > 0 && (
                 <div className="space-y-2">
                   <div className="text-xs font-medium text-emerald-600">
@@ -472,23 +585,39 @@ export function CreatePrModal({
                 </div>
               )}
 
+              {mode === "integration" && integrationMergeResults.length > 0 ? (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-fg">Lane merge status</div>
+                  {integrationMergeResults.map((item) => (
+                    <div key={item.laneId} className="rounded border border-border/30 bg-card/30 px-2.5 py-1.5 text-xs flex items-center justify-between gap-2">
+                      <span className="text-fg">{nonPrimaryLanes.find((lane) => lane.id === item.laneId)?.name ?? item.laneId}</span>
+                      <span className={item.success ? "text-emerald-300" : "text-red-300"}>
+                        {item.success ? "merged" : "failed"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
               {execError && (
                 <div className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700 whitespace-pre-wrap">
                   {execError}
                 </div>
               )}
 
-              <div className="flex justify-end">
-                <Dialog.Close asChild>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => onCreated?.()}
-                  >
-                    Done
-                  </Button>
-                </Dialog.Close>
-              </div>
+              {results ? (
+                <div className="flex justify-end">
+                  <Dialog.Close asChild>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => onCreated?.()}
+                    >
+                      Done
+                    </Button>
+                  </Dialog.Close>
+                </div>
+              ) : null}
             </div>
           )}
         </Dialog.Content>

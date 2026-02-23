@@ -111,9 +111,11 @@ import type {
   LinkPrToLaneArgs,
   PrEventPayload,
   PrCheck,
+  PrComment,
   PrReview,
   PrStatus,
   PrSummary,
+  PrMergeContext,
   UpdatePrDescriptionArgs,
   LandPrArgs,
   LandStackArgs,
@@ -547,6 +549,7 @@ declare global {
         refresh: (args?: { prId?: string }) => Promise<PrSummary[]>;
         getStatus: (prId: string) => Promise<PrStatus>;
         getChecks: (prId: string) => Promise<PrCheck[]>;
+        getComments: (prId: string) => Promise<PrComment[]>;
         getReviews: (prId: string) => Promise<PrReview[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
         draftDescription: (laneId: string, model?: string) => Promise<{ title: string; body: string }>;
@@ -557,6 +560,7 @@ declare global {
         createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
+        getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
       };

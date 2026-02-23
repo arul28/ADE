@@ -85,6 +85,7 @@ import type {
   LinkPrToLaneArgs,
   PrEventPayload,
   PrCheck,
+  PrComment,
   PrReview,
   PrStatus,
   PrSummary,
@@ -185,6 +186,7 @@ import type {
   CreateIntegrationPrResult,
   LandStackEnhancedArgs,
   PrConflictAnalysis,
+  PrMergeContext,
   PrWithConflicts,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
@@ -736,6 +738,7 @@ contextBridge.exposeInMainWorld("ade", {
     refresh: async (args: { prId?: string } = {}): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsRefresh, args),
     getStatus: async (prId: string): Promise<PrStatus> => ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
     getChecks: async (prId: string): Promise<PrCheck[]> => ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
+    getComments: async (prId: string): Promise<PrComment[]> => ipcRenderer.invoke(IPC.prsGetComments, { prId }),
     getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateDescription, args),
     draftDescription: async (laneId: string, model?: string): Promise<{ title: string; body: string }> =>
@@ -751,6 +754,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
       ipcRenderer.invoke(IPC.prsGetConflictAnalysis, prId),
+    getMergeContext: (prId: string): Promise<PrMergeContext> =>
+      ipcRenderer.invoke(IPC.prsGetMergeContext, prId),
     listWithConflicts: (): Promise<PrWithConflicts[]> =>
       ipcRenderer.invoke(IPC.prsListWithConflicts),
     onEvent: (cb: (ev: PrEventPayload) => void) => {

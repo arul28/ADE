@@ -4,12 +4,11 @@ import { Button } from "../../ui/Button";
 import { TerminalView } from "../../terminals/TerminalView";
 import { ProviderSelector } from "../shared/ProviderSelector";
 import { PostResolutionActions } from "../shared/PostResolutionActions";
-import { useConflictsDispatch, useConflictsState } from "../state/ConflictsContext";
-import { prepareResolverSession, finalizeResolverSession } from "../state/conflictsActions";
 import type {
   ExternalConflictResolverProvider,
   PrepareResolverSessionResult,
   ResolverSessionScenario,
+  ConflictExternalResolverRunSummary,
 } from "../../../../shared/types";
 
 type ResolverModalPhase = "configure" | "preparing" | "running" | "done";
@@ -19,6 +18,12 @@ type DoneStatus = "completed" | "failed" | "cancelled";
 type ClaudePermissionMode = "bypass" | "acceptEdits" | "manual";
 // Codex approval modes
 type CodexApprovalMode = "fullAuto" | "autoEdit" | "suggest" | "manual";
+
+type PostResolutionBehavior = {
+  autoCommit: boolean;
+  autoPush: boolean;
+  commitMessage: string;
+};
 
 function buildResolverCommand(
   provider: ExternalConflictResolverProvider,
@@ -68,6 +73,38 @@ function Spinner({ className }: { className?: string }) {
   );
 }
 
+async function prepareResolverSessionDirect(args: {
+  provider: ExternalConflictResolverProvider;
+  targetLaneId: string;
+  sourceLaneIds: string[];
+  scenario: ResolverSessionScenario;
+}): Promise<{ result: PrepareResolverSessionResult | null; error: string | null }> {
+  try {
+    const result = await window.ade.conflicts.prepareResolverSession(args);
+    if (result.status === "blocked") {
+      const reason = result.contextGaps.length
+        ? result.contextGaps.map((gap) => gap.message).join(", ")
+        : "missing context";
+      return { result: null, error: `Blocked: ${reason}` };
+    }
+    return { result, error: null };
+  } catch (error) {
+    return { result: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function finalizeResolverSessionDirect(args: {
+  runId: string;
+  exitCode: number;
+}): Promise<{ summary: ConflictExternalResolverRunSummary | null; error: string | null }> {
+  try {
+    const summary = await window.ade.conflicts.finalizeResolverSession(args);
+    return { summary, error: null };
+  } catch (error) {
+    return { summary: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export function ResolverTerminalModal({
   open,
   onOpenChange,
@@ -76,6 +113,7 @@ export function ResolverTerminalModal({
   sourceLaneIds,
   cwdLaneId,
   scenario,
+  postResolutionDefaults,
   onCompleted,
 }: {
   open: boolean;
@@ -85,16 +123,25 @@ export function ResolverTerminalModal({
   sourceLaneIds?: string[];
   cwdLaneId?: string | null;
   scenario?: ResolverSessionScenario;
-  onCompleted?: () => void;
+  postResolutionDefaults?: Partial<PostResolutionBehavior>;
+  onCompleted?: (result?: {
+    status: DoneStatus;
+    laneId: string | null;
+    autoCommitted: boolean;
+    autoPushed: boolean;
+    error: string | null;
+  }) => void;
 }) {
-  const dispatch = useConflictsDispatch();
-  const { resolverModalPhase: ctxPhase } = useConflictsState();
-
   // Local state
   const [phase, setPhase] = React.useState<ResolverModalPhase>("configure");
   const [provider, setProvider] = React.useState<ExternalConflictResolverProvider>("claude");
   const [claudePermission, setClaudePermission] = React.useState<ClaudePermissionMode>("bypass");
   const [codexApproval, setCodexApproval] = React.useState<CodexApprovalMode>("fullAuto");
+  const [postResolution, setPostResolution] = React.useState<PostResolutionBehavior>(() => ({
+    autoCommit: postResolutionDefaults?.autoCommit === true,
+    autoPush: postResolutionDefaults?.autoPush === true,
+    commitMessage: (postResolutionDefaults?.commitMessage ?? "Resolve conflicts via AI").trim() || "Resolve conflicts via AI",
+  }));
 
   // Running state
   const [prepResult, setPrepResult] = React.useState<PrepareResolverSessionResult | null>(null);
@@ -106,8 +153,41 @@ export function ResolverTerminalModal({
   const [exitCode, setExitCode] = React.useState<number | null>(null);
   const [modifiedFiles, setModifiedFiles] = React.useState<string[]>([]);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+  const [postActionBusy, setPostActionBusy] = React.useState(false);
+  const [postActionInfo, setPostActionInfo] = React.useState<string | null>(null);
+  const [postActionError, setPostActionError] = React.useState<string | null>(null);
 
   const ptyIdRef = React.useRef<string | null>(null);
+
+  const runPostResolutionActions = React.useCallback(
+    async (laneId: string): Promise<{ autoCommitted: boolean; autoPushed: boolean; error: string | null }> => {
+      if (!postResolution.autoCommit) {
+        return { autoCommitted: false, autoPushed: false, error: null };
+      }
+
+      setPostActionBusy(true);
+      setPostActionInfo(null);
+      setPostActionError(null);
+      try {
+        const message = postResolution.commitMessage.trim() || "Resolve conflicts via AI";
+        await window.ade.git.commit({ laneId, message });
+        let info = "Committed resolved changes.";
+        if (postResolution.autoPush) {
+          await window.ade.git.push({ laneId });
+          info = "Committed and pushed resolved changes.";
+        }
+        setPostActionInfo(info);
+        return { autoCommitted: true, autoPushed: postResolution.autoPush, error: null };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setPostActionError(message);
+        return { autoCommitted: false, autoPushed: false, error: message };
+      } finally {
+        setPostActionBusy(false);
+      }
+    },
+    [postResolution.autoCommit, postResolution.autoPush, postResolution.commitMessage]
+  );
 
   // Reset state when modal closes
   React.useEffect(() => {
@@ -121,10 +201,18 @@ export function ResolverTerminalModal({
       setExitCode(null);
       setModifiedFiles([]);
       setErrorMsg(null);
+      setPostResolution({
+        autoCommit: postResolutionDefaults?.autoCommit === true,
+        autoPush: postResolutionDefaults?.autoPush === true,
+        commitMessage: (postResolutionDefaults?.commitMessage ?? "Resolve conflicts via AI").trim() || "Resolve conflicts via AI",
+      });
+      setPostActionBusy(false);
+      setPostActionInfo(null);
+      setPostActionError(null);
       ptyIdRef.current = null;
     }, 200);
     return () => clearTimeout(id);
-  }, [open]);
+  }, [open, postResolutionDefaults]);
 
   // Listen for PTY exit
   React.useEffect(() => {
@@ -135,28 +223,46 @@ export function ResolverTerminalModal({
       setExitCode(code);
 
       if (prepResult) {
-        // Finalize the session
-        finalizeResolverSession(dispatch, prepResult.runId, code).then((summary) => {
-          if (summary) {
-            const status: DoneStatus = code === 0 ? "completed" : "failed";
-            setDoneStatus(status);
-            if (summary.patchPath) {
-              // Parse modified files from summary
-              setModifiedFiles(summary.summary?.split("\n").filter(Boolean) ?? []);
-            }
-          } else {
-            setDoneStatus("failed");
+        finalizeResolverSessionDirect({ runId: prepResult.runId, exitCode: code }).then(async ({ summary, error }) => {
+          const status: DoneStatus = code === 0 ? "completed" : "failed";
+          setDoneStatus(status);
+
+          if (summary?.summary) {
+            setModifiedFiles(summary.summary.split("\n").map((line) => line.trim()).filter(Boolean));
           }
+          if (error) {
+            setErrorMsg(error);
+          }
+
+          const laneIdForPost = prepResult.cwdLaneId ?? null;
+          let autoCommitted = false;
+          let autoPushed = false;
+          let postError: string | null = null;
+          if (status === "completed" && laneIdForPost) {
+            const post = await runPostResolutionActions(laneIdForPost);
+            autoCommitted = post.autoCommitted;
+            autoPushed = post.autoPushed;
+            postError = post.error;
+          }
+
           setPhase("done");
-          dispatch({ type: "SET_RESOLVER_MODAL_PHASE", phase: "done" });
+          onCompleted?.({
+            status,
+            laneId: laneIdForPost,
+            autoCommitted,
+            autoPushed,
+            error: postError ?? error ?? null
+          });
         });
       } else {
-        setDoneStatus(code === 0 ? "completed" : "failed");
+        const status: DoneStatus = code === 0 ? "completed" : "failed";
+        setDoneStatus(status);
         setPhase("done");
+        onCompleted?.({ status, laneId: null, autoCommitted: false, autoPushed: false, error: null });
       }
     });
     return unsub;
-  }, [ptyId, prepResult, dispatch]);
+  }, [ptyId, prepResult, onCompleted, runPostResolutionActions]);
 
   // Run handler
   const handleRun = async () => {
@@ -164,16 +270,20 @@ export function ResolverTerminalModal({
 
     setPhase("preparing");
     setErrorMsg(null);
+    setPostActionInfo(null);
+    setPostActionError(null);
 
     const sources = sourceLaneIds ?? (sourceLaneId ? [sourceLaneId] : []);
-    const result = await prepareResolverSession(dispatch, {
+    const scenarioToUse = scenario ?? (sources.length > 1 ? "sequential-merge" : "single-merge");
+    const { result, error } = await prepareResolverSessionDirect({
       provider,
       targetLaneId,
       sourceLaneIds: sources,
-      scenario: scenario ?? (sources.length > 1 ? "sequential-merge" : "single-merge"),
+      scenario: scenarioToUse,
     });
 
     if (!result) {
+      if (error) setErrorMsg(error);
       setPhase("configure");
       return;
     }
@@ -195,7 +305,6 @@ export function ResolverTerminalModal({
       setSessionId(pty.sessionId);
       ptyIdRef.current = pty.ptyId;
       setPhase("running");
-      dispatch({ type: "SET_RESOLVER_MODAL_PHASE", phase: "running" });
 
       const cmd = buildResolverCommand(provider, {
         promptFilePath: result.promptFilePath,
@@ -223,6 +332,7 @@ export function ResolverTerminalModal({
     await disposePty();
     setDoneStatus("cancelled");
     setPhase("done");
+    onCompleted?.({ status: "cancelled", laneId: prepResult?.cwdLaneId ?? null, autoCommitted: false, autoPushed: false, error: null });
   };
 
   // Close handler with warning
@@ -275,6 +385,50 @@ export function ResolverTerminalModal({
                 codexApprovalMode={codexApproval}
                 onCodexApprovalModeChange={(m) => setCodexApproval(m as CodexApprovalMode)}
               />
+
+              <div className="rounded-lg border border-border/50 bg-card/40 p-3 space-y-2">
+                <div className="text-xs font-medium text-fg">After Resolution</div>
+                <label className="flex items-center gap-2 text-xs text-muted-fg">
+                  <input
+                    type="checkbox"
+                    checked={postResolution.autoCommit}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setPostResolution((prev) => ({
+                        ...prev,
+                        autoCommit: checked,
+                        autoPush: checked ? prev.autoPush : false
+                      }));
+                    }}
+                  />
+                  Auto-commit resolved changes
+                </label>
+                {postResolution.autoCommit ? (
+                  <>
+                    <label className="block text-xs text-muted-fg">
+                      Commit message
+                      <input
+                        type="text"
+                        value={postResolution.commitMessage}
+                        onChange={(event) =>
+                          setPostResolution((prev) => ({ ...prev, commitMessage: event.target.value }))
+                        }
+                        className="mt-1 h-8 w-full rounded border border-border/40 bg-card px-2 text-xs text-fg outline-none focus:ring-1 focus:ring-accent/30"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-muted-fg">
+                      <input
+                        type="checkbox"
+                        checked={postResolution.autoPush}
+                        onChange={(event) =>
+                          setPostResolution((prev) => ({ ...prev, autoPush: event.target.checked }))
+                        }
+                      />
+                      Auto-push after commit
+                    </label>
+                  </>
+                ) : null}
+              </div>
 
               {/* Warnings */}
               {errorMsg && (
@@ -339,7 +493,13 @@ export function ResolverTerminalModal({
                   prepResult?.cwdLaneId
                     ? () => {
                         onOpenChange(false);
-                        onCompleted?.();
+                        onCompleted?.({
+                          status: doneStatus ?? "completed",
+                          laneId: prepResult?.cwdLaneId ?? null,
+                          autoCommitted: postResolution.autoCommit,
+                          autoPushed: postResolution.autoCommit && postResolution.autoPush,
+                          error: postActionError
+                        });
                       }
                     : undefined
                 }
@@ -347,11 +507,33 @@ export function ResolverTerminalModal({
                   doneStatus === "completed"
                     ? () => {
                         onOpenChange(false);
-                        onCompleted?.();
+                        onCompleted?.({
+                          status: doneStatus,
+                          laneId: prepResult?.cwdLaneId ?? null,
+                          autoCommitted: postResolution.autoCommit,
+                          autoPushed: postResolution.autoCommit && postResolution.autoPush,
+                          error: postActionError
+                        });
                       }
                     : undefined
                 }
               />
+
+              {postActionBusy ? (
+                <div className="rounded border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-accent">
+                  Applying post-resolution actions...
+                </div>
+              ) : null}
+              {postActionInfo ? (
+                <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                  {postActionInfo}
+                </div>
+              ) : null}
+              {postActionError ? (
+                <div className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700">
+                  Post-action failed: {postActionError}
+                </div>
+              ) : null}
 
               {errorMsg && (
                 <div className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700">

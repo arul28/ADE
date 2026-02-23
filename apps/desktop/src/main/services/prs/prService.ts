@@ -15,8 +15,11 @@ import type {
   LinkPrToLaneArgs,
   MergeMethod,
   PrCheck,
+  PrComment,
   PrChecksStatus,
   PrConflictAnalysis,
+  PrGroupMemberRole,
+  PrMergeContext,
   PrReview,
   PrReviewStatus,
   PrState,
@@ -58,6 +61,21 @@ type PullRequestRow = {
   updated_at: string;
 };
 
+type PrGroupLookupRow = {
+  group_id: string;
+  group_type: "stacked" | "integration";
+};
+
+type PrGroupMemberLookupRow = {
+  group_id: string;
+  pr_id: string;
+  lane_id: string;
+  position: number;
+  role: string;
+  lane_name: string | null;
+  pr_number: number | null;
+};
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -74,6 +92,17 @@ function branchNameFromRef(ref: string): string {
   const trimmed = ref.trim();
   if (trimmed.startsWith("refs/heads/")) return trimmed.slice("refs/heads/".length);
   return trimmed;
+}
+
+function normalizeBranchName(ref: string): string {
+  const branch = branchNameFromRef(ref);
+  if (branch.startsWith("origin/")) return branch.slice("origin/".length);
+  return branch;
+}
+
+function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
+  if (raw === "source" || raw === "integration" || raw === "target") return raw;
+  return "source";
 }
 
 function toPrState(args: { state: string; draft: boolean; mergedAt: string | null }): PrState {
@@ -438,6 +467,46 @@ export function createPrService({
     }));
   };
 
+  const fetchIssueComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
+    const { data } = await githubService.apiRequest<any[]>({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`,
+      query: { per_page: 100 }
+    });
+
+    return (data ?? []).map((entry: any) => ({
+      id: `issue:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
+      author: asString(entry?.user?.login) || "unknown",
+      body: asString(entry?.body) || null,
+      source: "issue",
+      url: asString(entry?.html_url) || null,
+      path: null,
+      line: null,
+      createdAt: asString(entry?.created_at) || null,
+      updatedAt: asString(entry?.updated_at) || null
+    }));
+  };
+
+  const fetchReviewComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
+    const { data } = await githubService.apiRequest<any[]>({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`,
+      query: { per_page: 100 }
+    });
+
+    return (data ?? []).map((entry: any) => ({
+      id: `review:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
+      author: asString(entry?.user?.login) || "unknown",
+      body: asString(entry?.body) || null,
+      source: "review",
+      url: asString(entry?.html_url) || null,
+      path: asString(entry?.path) || null,
+      line: Number.isFinite(Number(entry?.line)) ? Number(entry?.line) : null,
+      createdAt: asString(entry?.created_at) || null,
+      updatedAt: asString(entry?.updated_at) || null
+    }));
+  };
+
   const fetchCombinedStatus = async (repo: GitHubRepoRef, sha: string): Promise<{
     state: string;
     statuses: Array<{ context: string; state: string; description: string | null; target_url: string | null; created_at: string | null; updated_at: string | null }>;
@@ -655,6 +724,25 @@ export function createPrService({
     if (!row) throw new Error(`PR not found: ${prId}`);
     const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
     return await fetchReviews(repo, Number(row.github_pr_number));
+  };
+
+  const getComments = async (prId: string): Promise<PrComment[]> => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    const prNumber = Number(row.github_pr_number);
+
+    const [issueComments, reviewComments] = await Promise.all([
+      fetchIssueComments(repo, prNumber).catch(() => []),
+      fetchReviewComments(repo, prNumber).catch(() => [])
+    ]);
+
+    return [...issueComments, ...reviewComments].sort((a, b) => {
+      const aTs = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
+      const bTs = b.createdAt ? Date.parse(b.createdAt) : Number.NaN;
+      if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
+      return a.id.localeCompare(b.id);
+    });
   };
 
   const updateDescription = async (args: UpdatePrDescriptionArgs): Promise<void> => {
@@ -1110,6 +1198,17 @@ export function createPrService({
       }
     }
 
+    const failedMerges = mergeResults.filter((result) => !result.success);
+    if (failedMerges.length > 0) {
+      const failedLaneNames = failedMerges
+        .map((result) => laneMap.get(result.laneId)?.name ?? result.laneId)
+        .join(", ");
+      throw new Error(
+        `Integration merge blocked. Resolve conflicts for: ${failedLaneNames}. ` +
+          `No GitHub PR was created yet; fix merges in lane '${integrationLane.name}' and try again.`
+      );
+    }
+
     const pr = await createFromLane({
       laneId: integrationLane.id,
       title: args.title,
@@ -1248,6 +1347,105 @@ export function createPrService({
     };
   };
 
+  const getMergeContext = async (prId: string): Promise<PrMergeContext> => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+
+    const lanes = await laneService.list({ includeArchived: false });
+    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const findLaneIdByBranch = (rawBranch: string): string | null => {
+      const normalized = normalizeBranchName(rawBranch);
+      if (!normalized) return null;
+      const byBranch = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalized);
+      if (byBranch) return byBranch.id;
+      const byBase = lanes.find((lane) => normalizeBranchName(lane.baseRef) === normalized);
+      return byBase?.id ?? null;
+    };
+
+    const fallbackTargetLaneId = findLaneIdByBranch(row.base_branch);
+    const fallbackSourceLaneId = row.lane_id;
+    const fallbackMembers: PrMergeContext["members"] = [
+      {
+        prId: row.id,
+        laneId: row.lane_id,
+        laneName: laneById.get(row.lane_id)?.name ?? row.lane_id,
+        prNumber: Number.isFinite(Number(row.github_pr_number)) ? Number(row.github_pr_number) : null,
+        position: 0,
+        role: "source"
+      }
+    ];
+
+    const group = db.get<PrGroupLookupRow>(
+      `
+        select
+          g.id as group_id,
+          g.group_type as group_type
+        from pr_group_members m
+        join pr_groups g on g.id = m.group_id
+        where g.project_id = ? and m.pr_id = ?
+        order by g.created_at desc
+        limit 1
+      `,
+      [projectId, prId]
+    );
+
+    if (!group) {
+      return {
+        prId,
+        groupId: null,
+        groupType: null,
+        sourceLaneIds: [fallbackSourceLaneId],
+        targetLaneId: fallbackTargetLaneId,
+        members: fallbackMembers
+      };
+    }
+
+    const members = db
+      .all<PrGroupMemberLookupRow>(
+        `
+          select
+            m.group_id as group_id,
+            m.pr_id as pr_id,
+            m.lane_id as lane_id,
+            m.position as position,
+            m.role as role,
+            l.name as lane_name,
+            p.github_pr_number as pr_number
+          from pr_group_members m
+          left join lanes l on l.id = m.lane_id and l.project_id = ?
+          left join pull_requests p on p.id = m.pr_id and p.project_id = ?
+          where m.group_id = ?
+          order by m.position asc
+        `,
+        [projectId, projectId, group.group_id]
+      )
+      .map((member) => ({
+        prId: member.pr_id,
+        laneId: member.lane_id,
+        laneName: member.lane_name ?? laneById.get(member.lane_id)?.name ?? member.lane_id,
+        prNumber: Number.isFinite(Number(member.pr_number)) ? Number(member.pr_number) : null,
+        position: Number(member.position),
+        role: normalizeGroupMemberRole(String(member.role ?? "source"))
+      }));
+
+    const groupType = group.group_type === "integration" || group.group_type === "stacked" ? group.group_type : "stacked";
+    const sourceLaneIds = members
+      .filter((member) => member.role === "source")
+      .map((member) => member.laneId);
+
+    const integrationLaneId =
+      groupType === "integration" ? (members.find((member) => member.role === "integration")?.laneId ?? null) : null;
+
+    return {
+      prId,
+      groupId: group.group_id,
+      groupType,
+      sourceLaneIds: sourceLaneIds.length > 0 ? sourceLaneIds : [fallbackSourceLaneId],
+      targetLaneId: integrationLaneId ?? fallbackTargetLaneId,
+      members: members.length > 0 ? members : fallbackMembers
+    };
+  };
+
   const listWithConflicts = async (): Promise<PrWithConflicts[]> => {
     const rows = listRows();
     const results: PrWithConflicts[] = [];
@@ -1308,6 +1506,10 @@ export function createPrService({
       return await getChecks(prId);
     },
 
+    async getComments(prId: string): Promise<PrComment[]> {
+      return await getComments(prId);
+    },
+
     async getReviews(prId: string): Promise<PrReview[]> {
       return await getReviews(prId);
     },
@@ -1348,6 +1550,10 @@ export function createPrService({
 
     async getConflictAnalysis(prId: string): Promise<PrConflictAnalysis> {
       return await getConflictAnalysis(prId);
+    },
+
+    async getMergeContext(prId: string): Promise<PrMergeContext> {
+      return await getMergeContext(prId);
     },
 
     async listWithConflicts(): Promise<PrWithConflicts[]> {
