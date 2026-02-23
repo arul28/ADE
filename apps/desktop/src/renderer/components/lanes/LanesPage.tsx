@@ -932,7 +932,7 @@ export function LanesPage() {
       </div>
 
       {/* Lane tabs */}
-      <div className="flex items-center gap-0.5 overflow-x-auto border-b border-border/15 px-2 py-1">
+      <div className="flex items-center gap-1.5 overflow-x-auto px-2 py-1.5">
         {filteredLanes.map((lane) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
@@ -951,14 +951,14 @@ export function LanesPage() {
               role="button"
               tabIndex={0}
               className={cn(
-                "group relative inline-flex h-7 max-w-[280px] shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-all duration-150",
+                "group relative inline-flex h-7 max-w-[280px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-200",
                 isSelected
-                  ? "border-accent/35 bg-bg text-fg font-semibold shadow-card ring-1 ring-accent/15"
+                  ? "border-amber-500/30 bg-card/70 text-fg font-semibold shadow-[0_0_16px_-4px_rgba(245,158,11,0.25)] ring-1 ring-amber-500/20 backdrop-blur-sm"
                   : isVisible
-                    ? "border-accent/20 bg-accent/8 text-fg"
-                    : "border-transparent text-muted-fg hover:border-border/25 hover:bg-muted/30 hover:text-fg",
-                isPrimary && !isSelected && !isVisible && "bg-emerald-500/8 border-emerald-500/15",
-                isPrimary && !isSelected && isVisible && "border-emerald-500/25 bg-emerald-500/12",
+                    ? "border-accent/20 bg-card/40 text-fg backdrop-blur-sm shadow-card hover:shadow-[0_0_12px_-4px_rgba(245,158,11,0.15)]"
+                    : "border-border/10 text-muted-fg hover:border-border/25 hover:bg-card/30 hover:text-fg hover:shadow-[0_0_12px_-4px_rgba(245,158,11,0.1)] hover:-translate-y-[0.5px]",
+                isPrimary && !isSelected && !isVisible && "bg-emerald-500/8 border-emerald-500/15 hover:shadow-[0_0_12px_-4px_rgba(16,185,129,0.15)]",
+                isPrimary && !isSelected && isVisible && "border-emerald-500/25 bg-emerald-500/12 shadow-[0_0_12px_-4px_rgba(16,185,129,0.1)]",
               )}
               onClick={(event) => {
                 handleLaneSelect(lane.id, {

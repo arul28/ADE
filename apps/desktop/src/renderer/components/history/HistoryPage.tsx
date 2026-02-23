@@ -42,6 +42,42 @@ function statusBorderColor(status: OperationRecord["status"]): string {
   return "border-l-border";
 }
 
+function statusDotGlow(status: OperationRecord["status"]): string {
+  if (status === "succeeded") return "shadow-[0_0_6px_rgba(16,185,129,0.3)]";
+  if (status === "failed") return "shadow-[0_0_6px_rgba(239,68,68,0.3)]";
+  if (status === "running") return "shadow-[0_0_6px_rgba(245,158,11,0.3)]";
+  return "";
+}
+
+type GroupedEvent = {
+  rows: OperationRecord[];
+  kind: string;
+  count: number;
+  representative: OperationRecord;
+};
+
+function groupConsecutiveEvents(events: OperationRecord[]): GroupedEvent[] {
+  const groups: GroupedEvent[] = [];
+  let i = 0;
+  while (i < events.length) {
+    const current = events[i]!;
+    const groupRows: OperationRecord[] = [current];
+    let j = i + 1;
+    while (j < events.length && events[j]!.kind === current.kind) {
+      groupRows.push(events[j]!);
+      j++;
+    }
+    groups.push({
+      rows: groupRows,
+      kind: current.kind,
+      count: groupRows.length,
+      representative: current,
+    });
+    i = j;
+  }
+  return groups;
+}
+
 function toRelativeTime(iso: string): string {
   const ts = Date.parse(iso);
   if (Number.isNaN(ts)) return iso;
@@ -92,6 +128,164 @@ function describeOperation(row: OperationRecord, meta: Record<string, unknown> |
   }
 
   return { title: humanKind(row.kind), detail: lane };
+}
+
+/* ── Timeline List Component ── */
+
+function TimelineList({
+  filtered,
+  selected,
+  onSelect,
+}: {
+  filtered: OperationRecord[];
+  selected: OperationRecord | null;
+  onSelect: (row: OperationRecord) => void;
+}) {
+  const groups = useMemo(() => groupConsecutiveEvents(filtered), [filtered]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
+
+  const selectedIdx = selected
+    ? filtered.findIndex((r) => r.id === selected.id)
+    : -1;
+
+  const toggleGroup = (groupIdx: number) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupIdx)) next.delete(groupIdx);
+      else next.add(groupIdx);
+      return next;
+    });
+  };
+
+  /* Compute a flat index counter so we can do alternating left/right and opacity */
+  let flatIdx = 0;
+
+  return (
+    <div className="relative">
+      {/* Center timeline line — gradient from amber (top/newest) to emerald (bottom/oldest) */}
+      <div className="absolute left-1/2 top-0 bottom-0 w-[2px] -translate-x-1/2 rounded-full ade-timeline-line" />
+
+      <div className="flex flex-col gap-2.5 py-2">
+        {groups.map((group, groupIdx) => {
+          const isCollapsed = group.count > 1 && !expandedGroups.has(groupIdx);
+          const itemsToRender = isCollapsed ? [group.representative] : group.rows;
+
+          const elements = itemsToRender.map((row) => {
+            const currentFlatIdx = flatIdx++;
+            const isLeft = currentFlatIdx % 2 === 0;
+            const isSelected = selected?.id === row.id;
+            const meta = parseMetadata(row.metadataJson);
+            const desc = describeOperation(row, meta);
+
+            /* Opacity dimming: events >20 items from selected get dimmed */
+            const distance = selectedIdx >= 0 ? Math.abs(currentFlatIdx - selectedIdx) : 0;
+            const dimmed = selectedIdx >= 0 && distance > 20;
+
+            const dotColor =
+              row.status === "succeeded"
+                ? "bg-emerald-400"
+                : row.status === "failed"
+                  ? "bg-red-400"
+                  : row.status === "running"
+                    ? "bg-amber-400"
+                    : "bg-muted-fg/50";
+
+            const statusDot = (
+              <div
+                className={`h-3 w-3 shrink-0 rounded-full ring-2 ring-bg ${dotColor} ${statusDotGlow(row.status)}`}
+              />
+            );
+
+            const card = (
+              <button
+                key={row.id}
+                onClick={() => onSelect(row)}
+                className={`group/entry relative w-full rounded-lg border p-3 text-left text-xs backdrop-blur-sm transition-all duration-150 ${
+                  isSelected
+                    ? "border-accent/30 bg-card/80 shadow-[0_0_16px_-4px_rgba(6,214,160,0.15)]"
+                    : "border-border/10 bg-card/60 hover:bg-card/75 hover:border-border/20 hover:shadow-card-hover hover:-translate-y-[0.5px]"
+                } ${dimmed ? "opacity-40" : ""}`}
+              >
+                {/* Status accent bar */}
+                <div className={`absolute top-0 left-3 right-3 h-[2px] rounded-b-full ${
+                  row.status === "succeeded" ? "bg-emerald-500/40" :
+                  row.status === "failed" ? "bg-red-500/40" :
+                  row.status === "running" ? "bg-amber-500/40" : "bg-border/20"
+                }`} />
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="font-semibold leading-snug text-fg">{desc.title}</span>
+                  {group.count > 1 && isCollapsed && (
+                    <span className="inline-flex h-4 min-w-[1.25rem] items-center justify-center rounded-full bg-accent/15 px-1.5 text-[10px] font-bold text-accent">
+                      x{group.count}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 truncate text-[11px] text-muted-fg">{desc.detail}</div>
+                <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-fg/70">
+                  <span>{toRelativeTime(row.startedAt)}</span>
+                  <Chip className={`text-[10px] px-1.5 py-0.5 ${statusTone(row.status)}`}>{row.status}</Chip>
+                </div>
+              </button>
+            );
+
+            return (
+              <div
+                key={row.id}
+                className={`relative flex items-start ${isLeft ? "justify-start" : "justify-end"}`}
+              >
+                {/* Dot on center line */}
+                <div className="absolute left-1/2 top-3 -translate-x-1/2 z-10">
+                  {statusDot}
+                </div>
+
+                {/* Connector line from dot to card */}
+                <div className={`absolute top-[18px] h-[1px] ${
+                  isLeft
+                    ? "left-[calc(45%-8px)] right-1/2"
+                    : "left-1/2 right-[calc(45%-8px)]"
+                } ${
+                  row.status === "succeeded" ? "bg-emerald-500/20" :
+                  row.status === "failed" ? "bg-red-500/20" :
+                  row.status === "running" ? "bg-amber-500/20" : "bg-border/15"
+                }`} />
+
+                {/* Card on left or right side */}
+                {isLeft ? (
+                  <>
+                    <div className="w-[45%] pr-5">{card}</div>
+                    <div className="w-[55%]" />
+                  </>
+                ) : (
+                  <>
+                    <div className="w-[55%]" />
+                    <div className="w-[45%] pl-5">{card}</div>
+                  </>
+                )}
+              </div>
+            );
+          });
+
+          return (
+            <React.Fragment key={groupIdx}>
+              {elements}
+              {group.count > 1 && (
+                <div className="relative flex justify-center py-1">
+                  <button
+                    onClick={() => toggleGroup(groupIdx)}
+                    className="z-10 rounded-full border border-border/15 bg-card/70 backdrop-blur-sm px-3 py-1 text-[10px] font-medium text-muted-fg transition-all hover:bg-card/90 hover:border-accent/20 hover:text-fg hover:shadow-card"
+                  >
+                    {isCollapsed
+                      ? `Show ${group.count - 1} more ${humanKind(group.kind)} events`
+                      : `Collapse ${group.count} ${humanKind(group.kind)} events`}
+                  </button>
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export function HistoryPage() {
@@ -205,11 +399,11 @@ export function HistoryPage() {
 
   const timelineContent = (
     <>
-      <div className="grid grid-cols-1 gap-3 border-b border-border/15 px-4 py-3 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 px-4 py-3 mb-3 md:grid-cols-3">
         <label className="space-y-1.5">
           <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/70">Lane</div>
           <select
-            className="h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+            className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             value={laneFilter}
             onChange={(event) => setLaneFilter(event.target.value)}
           >
@@ -224,7 +418,7 @@ export function HistoryPage() {
         <label className="space-y-1.5">
           <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/70">Kind</div>
           <select
-            className="h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+            className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             value={kindFilter}
             onChange={(event) => setKindFilter(event.target.value)}
           >
@@ -239,7 +433,7 @@ export function HistoryPage() {
         <label className="space-y-1.5">
           <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/70">Status</div>
           <select
-            className="h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+            className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value as OperationRecord["status"] | "all")}
           >
@@ -252,57 +446,28 @@ export function HistoryPage() {
         </label>
       </div>
       {exportError ? (
-        <div className="border-b border-border/15 px-4 py-2 text-xs text-red-300">{exportError}</div>
+        <div className="mb-2 px-4 py-2 text-xs text-red-300">{exportError}</div>
       ) : null}
       {exportNotice ? (
-        <div className="border-b border-border/15 px-4 py-2 text-xs text-muted-fg">{exportNotice}</div>
+        <div className="mb-2 px-4 py-2 text-xs text-muted-fg">{exportNotice}</div>
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
         {filtered.length === 0 ? (
           <EmptyState title="No history yet" description="Operations will be recorded as you work." />
         ) : (
-          <div className="relative ml-2.5">
-            {/* Vertical timeline connector line */}
-            <div className="absolute left-0 top-2 bottom-2 w-px bg-border/40" />
-            <div className="space-y-1">
-              {filtered.map((row) => (
-                <div key={row.id} className="relative pl-5">
-                  {/* Timeline dot */}
-                  <div className={`absolute left-[-3px] top-3.5 h-[7px] w-[7px] rounded-full border-2 border-card ${
-                    row.status === "succeeded" ? "bg-emerald-500" :
-                    row.status === "failed" ? "bg-red-500" :
-                    row.status === "running" ? "bg-amber-500" :
-                    "bg-muted-fg/50"
-                  }`} />
-                  <button
-                    className={`w-full rounded border-l-[3px] px-3 py-2.5 text-left transition-all duration-150 ${statusBorderColor(row.status)} ${
-                      row.id === selected?.id
-                        ? "shadow-card-hover bg-card/90 scale-[1.01] ring-1 ring-accent/15"
-                        : "shadow-card bg-card/50 hover:shadow-card-hover hover:bg-card/70 hover:scale-[1.005]"
-                    }`}
-                    onClick={() => {
-                      setSelectedOperationId(row.id);
-                      const nextParams = new URLSearchParams(params);
-                      nextParams.set("operationId", row.id);
-                      if (laneFilter !== "all") nextParams.set("laneId", laneFilter);
-                      else nextParams.delete("laneId");
-                      setParams(nextParams, { replace: true });
-                    }}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="truncate text-xs font-semibold">{describeOperation(row, parseMetadata(row.metadataJson)).title}</div>
-                      <Chip className={`shrink-0 text-[11px] ${statusTone(row.status)}`}>{row.status}</Chip>
-                    </div>
-                    <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-fg">
-                      <span className="truncate">{describeOperation(row, parseMetadata(row.metadataJson)).detail}</span>
-                      <span className="shrink-0 font-mono text-[11px] text-muted-fg">{toRelativeTime(row.startedAt)}</span>
-                    </div>
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
+          <TimelineList
+            filtered={filtered}
+            selected={selected}
+            onSelect={(row) => {
+              setSelectedOperationId(row.id);
+              const nextParams = new URLSearchParams(params);
+              nextParams.set("operationId", row.id);
+              if (laneFilter !== "all") nextParams.set("laneId", laneFilter);
+              else nextParams.delete("laneId");
+              setParams(nextParams, { replace: true });
+            }}
+          />
         )}
       </div>
     </>
@@ -313,57 +478,57 @@ export function HistoryPage() {
       {!selected ? (
         <EmptyState title="No event selected" description="Select an operation from the timeline." />
       ) : (
-        <div className="space-y-4 text-xs">
-          {/* Summary card - prominent */}
-          <div className="rounded bg-card/80 shadow-card p-4">
-            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">Summary</div>
-            <div className="mt-2 text-sm font-bold leading-snug">{described?.title ?? selected.kind}</div>
+        <div className="space-y-3 text-xs">
+          {/* Summary card - prominent with accent border */}
+          <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-4">
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg">Summary</div>
+            <div className="mt-2 text-sm font-bold leading-snug text-fg">{described?.title ?? selected.kind}</div>
             <div className="mt-1.5 text-xs leading-relaxed text-muted-fg">{described?.detail ?? (selected.laneName ?? "project")}</div>
           </div>
 
           {/* Error message with red left border accent */}
           {metaError ? (
-            <div className="rounded border-l-[3px] border-l-red-500/70 bg-red-500/8 p-3 text-xs leading-relaxed text-red-300">
+            <div className="rounded-lg border border-red-500/20 border-l-[3px] border-l-red-500/60 bg-red-500/10 p-3 text-xs leading-relaxed text-red-300">
               {metaError}
             </div>
           ) : null}
 
           {/* 2x2 info grid with icons */}
           <div className="grid grid-cols-2 gap-2">
-            <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+            <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-3">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg">
                 <Tag size={12} weight="regular" />
                 Kind
               </div>
-              <div className="mt-1.5 font-semibold">{selected.kind}</div>
+              <div className="mt-1.5 font-semibold text-fg">{selected.kind}</div>
             </div>
-            <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+            <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-3">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg">
                 <Activity size={12} weight="regular" />
                 Status
               </div>
               <div className={`mt-1.5 font-semibold ${statusTone(selected.status)}`}>{selected.status}</div>
             </div>
-            <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+            <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-3">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg">
                 <Clock size={12} weight="regular" />
                 Started
               </div>
-              <div className="mt-1.5 font-mono text-[11px] text-muted-fg">{new Date(selected.startedAt).toLocaleString()}</div>
+              <div className="mt-1.5 font-mono text-[11px] text-fg/80">{new Date(selected.startedAt).toLocaleString()}</div>
             </div>
-            <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+            <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-3">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg">
                 <Calendar size={12} weight="regular" />
                 Ended
               </div>
-              <div className="mt-1.5 font-mono text-[11px] text-muted-fg">{selected.endedAt ? new Date(selected.endedAt).toLocaleString() : <span className="text-amber-400">running</span>}</div>
+              <div className="mt-1.5 font-mono text-[11px] text-fg/80">{selected.endedAt ? new Date(selected.endedAt).toLocaleString() : <span className="text-amber-400">running</span>}</div>
             </div>
           </div>
 
           {/* Lane section */}
-          <div className="rounded bg-card/60 shadow-card p-3">
-            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">Lane</div>
-            <div className="mt-1.5 font-semibold">{selected.laneName ?? "project"}</div>
+          <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-3">
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg">Lane</div>
+            <div className="mt-1.5 font-semibold text-fg">{selected.laneName ?? "project"}</div>
             {selected.laneId ? (
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button
@@ -387,31 +552,31 @@ export function HistoryPage() {
           </div>
 
           {/* SHA Transition with code block before -> after visual */}
-          <div className="rounded bg-card/60 shadow-card p-3">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+          <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card p-3">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg">
               <Hash size={12} weight="regular" />
               SHA Transition
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <div className="min-w-0 flex-1 rounded-lg bg-muted/30 px-2.5 py-1.5">
-                <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/50">Before</div>
-                <div className="mt-0.5 truncate font-mono text-xs">{selected.preHeadSha ?? "(none)"}</div>
+              <div className="min-w-0 flex-1 rounded-lg border border-border/10 bg-surface-recessed px-2.5 py-2">
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg">Before</div>
+                <div className="mt-0.5 truncate font-mono text-xs text-fg/80">{selected.preHeadSha ?? "(none)"}</div>
               </div>
-              <ArrowRight size={16} weight="regular" className="shrink-0 text-muted-fg/40" />
-              <div className="min-w-0 flex-1 rounded-lg bg-muted/30 px-2.5 py-1.5">
-                <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/50">After</div>
-                <div className="mt-0.5 truncate font-mono text-xs">{selected.postHeadSha ?? "(none)"}</div>
+              <ArrowRight size={16} weight="regular" className="shrink-0 text-accent/50" />
+              <div className="min-w-0 flex-1 rounded-lg border border-border/10 bg-surface-recessed px-2.5 py-2">
+                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg">After</div>
+                <div className="mt-0.5 truncate font-mono text-xs text-fg/80">{selected.postHeadSha ?? "(none)"}</div>
               </div>
             </div>
           </div>
 
           {/* Metadata (raw) with better summary styling */}
-          <details className="group rounded bg-card/60 shadow-card">
-            <summary className="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60 transition-colors hover:text-muted-fg">
+          <details className="group rounded-lg border border-border/10 bg-card backdrop-blur-sm shadow-card">
+            <summary className="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg transition-colors hover:text-fg">
               Metadata (raw)
             </summary>
-            <div className="border-t border-border/20 px-3 pb-3 pt-2">
-              <pre className="overflow-auto rounded-lg bg-muted/20 p-2.5 font-mono text-xs leading-relaxed">
+            <div className="border-t border-border/10 px-3 pb-3 pt-2">
+              <pre className="overflow-auto rounded-lg border border-border/10 bg-surface-recessed p-2.5 font-mono text-xs leading-relaxed text-fg/80">
                 {metadata ? JSON.stringify(metadata, null, 2) : "(none)"}
               </pre>
             </div>

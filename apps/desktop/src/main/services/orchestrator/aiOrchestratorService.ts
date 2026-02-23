@@ -150,6 +150,7 @@ const ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
 const MAX_PERSISTED_STEERING_DIRECTIVES = 200;
 const MAX_PERSISTED_CHAT_MESSAGES = 200;
 const HEALTH_SWEEP_INTERVAL_MS = 15_000;
+const HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT = 200;
 const STALE_ATTEMPT_GRACE_MS = 10_000;
 const WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS = 120_000;
 const WORKER_STAGNATION_MIN_MS = 120_000;
@@ -2937,7 +2938,7 @@ export function createAiOrchestratorService(args: {
     if (disposed) return { sweeps: 0, staleRecovered: 0 };
     pruneSessionRuntimeSignals();
     const runs = orchestratorService
-      .listRuns({ limit: 1_000 })
+      .listRuns({ limit: HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT })
       .filter((run) => run.status === "queued" || run.status === "running");
     let sweeps = 0;
     let staleRecovered = 0;
@@ -4651,6 +4652,23 @@ export function createAiOrchestratorService(args: {
         runStatus: graph.run.status,
         missionStatus: nextMissionStatus
       });
+      const runCompleted =
+        graph.run.status === "succeeded" ||
+        graph.run.status === "succeeded_with_risk" ||
+        graph.run.status === "failed" ||
+        graph.run.status === "canceled";
+      if (runCompleted) {
+        runRuntimeProfiles.delete(runId);
+        runTeamManifests.delete(runId);
+        runRecoveryLoopStates.delete(runId);
+        activeHealthSweepRuns.delete(runId);
+        for (const [attemptId, state] of workerStates.entries()) {
+          if (state.runId !== runId) continue;
+          workerStates.delete(attemptId);
+          attemptRuntimeTrackers.delete(attemptId);
+          deletePersistedAttemptRuntimeState(attemptId);
+        }
+      }
     } catch (error) {
       logger.warn("ai_orchestrator.sync_failed", {
         runId,
@@ -8457,6 +8475,21 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         clearInterval(healthSweepTimer);
         healthSweepTimer = null;
       }
+      syncLocks.clear();
+      workerStates.clear();
+      activeSteeringDirectives.clear();
+      runRuntimeProfiles.clear();
+      chatMessages.clear();
+      activeChatSessions.clear();
+      chatTurnQueues.clear();
+      activeHealthSweepRuns.clear();
+      sessionRuntimeSignals.clear();
+      attemptRuntimeTrackers.clear();
+      sessionSignalQueues.clear();
+      workerDeliveryThreadQueues.clear();
+      workerDeliveryInterventionCooldowns.clear();
+      runTeamManifests.clear();
+      runRecoveryLoopStates.clear();
     }
   };
 }

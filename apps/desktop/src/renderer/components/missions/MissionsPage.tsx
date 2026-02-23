@@ -23,7 +23,9 @@ import {
   CircleHalf,
   GearSix,
   Hash,
-  CaretDown
+  CaretDown,
+  List,
+  Kanban
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
@@ -133,6 +135,16 @@ const EXECUTOR_BADGE_CLASSES: Record<string, string> = {
 };
 
 type WorkspaceTab = "board" | "dag" | "channels" | "activity" | "usage";
+type MissionListViewMode = "list" | "board";
+
+const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; color: string }> = [
+  { key: "queued", label: "Queued", color: "text-neutral-400" },
+  { key: "planning", label: "Planning", color: "text-blue-400" },
+  { key: "plan_review", label: "Review", color: "text-cyan-400" },
+  { key: "in_progress", label: "Running", color: "text-green-400" },
+  { key: "completed", label: "Done", color: "text-emerald-400" },
+  { key: "failed", label: "Failed", color: "text-red-400" },
+];
 type PlannerProvider = "auto" | "claude" | "codex";
 
 type MissionSettingsDraft = {
@@ -476,7 +488,7 @@ const WORKER_STATUS_CLASSES: Record<string, string> = {
   idle: "bg-sky-500/20 text-sky-300 border-sky-500/30",
   completed: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
   failed: "bg-red-500/20 text-red-300 border-red-500/30",
-  disposed: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30"
+  disposed: "bg-muted/30 text-muted-fg border-border/30"
 };
 
 function asNonEmptyString(value: string | null | undefined): string | null {
@@ -936,14 +948,14 @@ function MissionChat({
 
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      <aside className="w-full shrink-0 border-b border-border/20 bg-zinc-900/45 lg:w-[230px] lg:border-b-0 lg:border-r">
-        <div className="flex items-center justify-between border-b border-border/20 px-3 py-2">
+      <aside className="w-full shrink-0 border-b border-border/10 bg-card/40 lg:w-[230px] lg:border-b-0 lg:border-r">
+        <div className="flex items-center justify-between border-b border-border/10 px-3 py-2">
           <div className="text-[11px] font-semibold text-fg">Threads</div>
           <div className="text-[10px] text-muted-fg">{threads.length}</div>
         </div>
         <div className="max-h-[180px] overflow-y-auto p-2 lg:max-h-none lg:h-full">
           {threads.length === 0 && (
-            <div className="rounded border border-border/20 bg-zinc-800/35 px-2 py-3 text-center text-[10px] text-muted-fg">
+            <div className="rounded border border-border/15 bg-card/60 px-2 py-3 text-center text-[10px] text-muted-fg">
               No threads yet
             </div>
           )}
@@ -956,7 +968,7 @@ function MissionChat({
                   "w-full rounded border px-2 py-2 text-left transition-colors",
                   selectedThreadId === thread.id
                     ? "border-accent/45 bg-accent/10"
-                    : "border-border/20 bg-zinc-800/35 hover:bg-zinc-800/60"
+                    : "border-border/15 bg-card/60 hover:bg-card/80"
                 )}
               >
                 <div className="flex items-center justify-between gap-1">
@@ -984,15 +996,15 @@ function MissionChat({
         </div>
       </aside>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-border/20 lg:border-b-0 lg:border-r lg:border-border/20">
-        <div className="border-b border-border/20 px-3 py-2">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-border/10 lg:border-b-0 lg:border-r lg:border-border/20">
+        <div className="border-b border-border/10 px-3 py-2">
           <div className="flex items-center gap-2">
             <ChatCircle size={14} weight="regular" className="text-accent" />
             <div className="text-[11px] font-semibold text-fg">
               {selectedThread?.title ?? "Select a thread"}
             </div>
             {selectedThread && (
-              <span className="rounded border border-border/30 bg-zinc-800/60 px-1.5 py-0.5 text-[9px] text-muted-fg">
+              <span className="rounded border border-border/20 bg-card/80 px-1.5 py-0.5 text-[9px] text-muted-fg">
                 {selectedThread.threadType}
               </span>
             )}
@@ -1001,12 +1013,12 @@ function MissionChat({
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
           {!selectedThread && (
-            <div className="rounded border border-border/20 bg-zinc-800/35 px-3 py-6 text-center text-[11px] text-muted-fg">
+            <div className="rounded border border-border/15 bg-card/60 px-3 py-6 text-center text-[11px] text-muted-fg">
               Pick a mission or worker thread to inspect and send guidance.
             </div>
           )}
           {selectedThread && messages.length === 0 && (
-            <div className="rounded border border-border/20 bg-zinc-800/35 px-3 py-6 text-center text-[11px] text-muted-fg">
+            <div className="rounded border border-border/15 bg-card/60 px-3 py-6 text-center text-[11px] text-muted-fg">
               No messages yet in this thread.
             </div>
           )}
@@ -1018,7 +1030,7 @@ function MissionChat({
                   ? "border-accent/40 bg-accent/15 text-fg"
                   : msg.role === "worker"
                     ? "border-violet-500/35 bg-violet-500/10 text-violet-100"
-                    : "border-border/30 bg-zinc-800/70 text-zinc-100"
+                    : "border-border/20 bg-card/80 text-fg"
               )}>
                 {msg.role !== "user" && (
                   <div className="mb-1 flex items-center gap-1 text-[9px] text-muted-fg">
@@ -1048,7 +1060,7 @@ function MissionChat({
           ))}
         </div>
 
-        <div className="border-t border-border/20 px-3 py-2">
+        <div className="border-t border-border/10 px-3 py-2">
           <div className="flex items-center gap-2">
             <input
               value={input}
@@ -1067,10 +1079,10 @@ function MissionChat({
                     ? "Broadcast guidance to all worker threads in this run..."
                   : "Message the mission coordinator..."
               }
-              className="h-8 flex-1 rounded border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 disabled:opacity-50"
+              className="h-8 flex-1 rounded border border-border/15 bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 disabled:opacity-50"
             />
             {selectedThread?.threadType === "mission" && (
-              <label className="flex items-center gap-1 rounded border border-border/30 bg-zinc-900/70 px-2 py-1 text-[10px] text-muted-fg">
+              <label className="flex items-center gap-1 rounded border border-border/15 bg-card/60 px-2 py-1 text-[10px] text-muted-fg">
                 <input
                   type="checkbox"
                   checked={broadcastToWorkers}
@@ -1093,12 +1105,12 @@ function MissionChat({
       </div>
 
       <aside className="hidden w-[300px] shrink-0 xl:flex xl:flex-col">
-        <div className="border-b border-border/20 px-3 py-2">
+        <div className="border-b border-border/10 px-3 py-2">
           <div className="text-[11px] font-semibold text-fg">Worker Status</div>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
           {workerThreadCards.length === 0 && (
-            <div className="rounded border border-border/20 bg-zinc-800/35 px-2 py-3 text-center text-[10px] text-muted-fg">
+            <div className="rounded border border-border/15 bg-card/60 px-2 py-3 text-center text-[10px] text-muted-fg">
               No worker threads yet.
             </div>
           )}
@@ -1110,7 +1122,7 @@ function MissionChat({
                 "w-full rounded border px-2 py-2 text-left transition-colors",
                 selectedThreadId === thread.id
                   ? "border-accent/45 bg-accent/10"
-                  : "border-border/20 bg-zinc-800/35 hover:bg-zinc-800/55"
+                  : "border-border/15 bg-card/60 hover:bg-card/80"
               )}
             >
               <div className="flex items-center justify-between gap-2">
@@ -1132,7 +1144,7 @@ function MissionChat({
           ))}
         </div>
 
-        <div className="border-t border-border/20 px-3 py-2">
+        <div className="border-t border-border/10 px-3 py-2">
           <div className="flex items-center justify-between">
             <div className="text-[11px] font-semibold text-fg">Mission Metrics</div>
             {savingMetrics ? <SpinnerGap className="h-3.5 w-3.5 animate-spin text-muted-fg" /> : null}
@@ -1166,7 +1178,7 @@ function MissionChat({
                     "rounded px-2 py-1 text-[10px] font-medium transition-colors border",
                     allEnabled
                       ? "bg-accent/20 text-accent border-accent/40"
-                      : "bg-zinc-800/40 text-muted-fg border-border/20 hover:bg-zinc-800/60"
+                      : "bg-card/60 text-muted-fg border-border/15 hover:bg-card/80"
                   )}
                 >
                   {group.label}
@@ -1174,7 +1186,7 @@ function MissionChat({
               );
             })}
           </div>
-          <div className="mt-2 rounded border border-border/20 bg-zinc-900/55 p-2">
+          <div className="mt-2 rounded border border-border/15 bg-card/60 p-2">
             <div className="text-[10px] font-medium text-muted-fg">Latest Samples</div>
             <div className="mt-1 space-y-1">
               {METRIC_TOGGLE_ORDER.filter((toggle) => latestMetricByKey.has(toggle)).slice(0, 8).map((toggle) => {
@@ -1276,9 +1288,9 @@ function CreateMissionDialog({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-2xl rounded-lg border border-border/40 bg-zinc-900 shadow-2xl max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-2xl rounded-lg border border-border/30 bg-card shadow-2xl max-h-[90vh] overflow-y-auto"
       >
-        <div className="flex items-center justify-between border-b border-border/20 px-5 py-3">
+        <div className="flex items-center justify-between border-b border-border/10 px-5 py-3">
           <div className="flex items-center gap-2">
             <Rocket className="h-4 w-4 text-accent" />
             <h2 className="text-sm font-semibold text-fg">New Mission</h2>
@@ -1297,7 +1309,7 @@ function CreateMissionDialog({
               onChange={(e) => setDraft((p) => ({ ...p, prompt: e.target.value }))}
               placeholder="Describe what you want to accomplish..."
               rows={4}
-              className="w-full rounded-lg border border-border/30 bg-zinc-800 px-3 py-2 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20 resize-none"
+              className="w-full rounded-lg border border-border/15 bg-surface-recessed px-3 py-2 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20 resize-none"
             />
           </label>
 
@@ -1308,7 +1320,7 @@ function CreateMissionDialog({
               value={draft.title}
               onChange={(e) => setDraft((p) => ({ ...p, title: e.target.value }))}
               placeholder="e.g. Refactor auth middleware"
-              className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+              className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             />
           </label>
 
@@ -1319,7 +1331,7 @@ function CreateMissionDialog({
               <select
                 value={draft.laneId}
                 onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
-                className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
               >
                 <option value="">Auto</option>
                 {lanes.map((l) => (
@@ -1334,7 +1346,7 @@ function CreateMissionDialog({
               <select
                 value={draft.priority}
                 onChange={(e) => setDraft((p) => ({ ...p, priority: e.target.value as MissionPriority }))}
-                className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
               >
                 <option value="low">Low</option>
                 <option value="normal">Normal</option>
@@ -1351,7 +1363,7 @@ function CreateMissionDialog({
             <select
               value={draft.orchestratorModel}
               onChange={(e) => setDraft((p) => ({ ...p, orchestratorModel: e.target.value }))}
-              className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+              className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
             >
               <option value="sonnet">Claude Sonnet (default)</option>
               <option value="opus">Claude Opus</option>
@@ -1374,7 +1386,7 @@ function CreateMissionDialog({
                       ...p,
                       thinkingBudgets: { ...p.thinkingBudgets, [model]: Number(e.target.value) || 0 }
                     }))}
-                    className="h-7 w-full rounded border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+                    className="h-7 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
                   />
                   <span className="text-muted-fg/60 text-[9px] shrink-0">tokens</span>
                 </label>
@@ -1400,7 +1412,7 @@ function CreateMissionDialog({
                     "rounded px-2.5 py-1 text-[10px] font-medium border transition-colors",
                     draft.prStrategy.kind === kind
                       ? "bg-accent/20 text-accent border-accent/40"
-                      : "bg-zinc-800/40 text-muted-fg border-border/20 hover:bg-zinc-800/60"
+                      : "bg-card/60 text-muted-fg border-border/15 hover:bg-card/80"
                   )}
                 >
                   {kind === "integration" ? "Integration PR" : kind === "per-lane" ? "Per-Lane PRs" : "Manual"}
@@ -1421,7 +1433,7 @@ function CreateMissionDialog({
                         prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
                       }));
                     }}
-                    className="h-6 w-24 rounded border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+                    className="h-6 w-24 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
                   />
                 </label>
                 <label className="flex items-center gap-1 text-[10px] text-muted-fg">
@@ -1453,7 +1465,7 @@ function CreateMissionDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border/20 px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-border/10 px-5 py-3">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
           <Button
             variant="primary"
@@ -1491,7 +1503,7 @@ function MissionSettingsDialog({
 }) {
   if (!open) return null;
 
-  const inputClass = "h-8 w-full rounded border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40";
+  const inputClass = "h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1499,9 +1511,9 @@ function MissionSettingsDialog({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-2xl rounded-lg border border-border/40 bg-zinc-900 shadow-2xl"
+        className="w-full max-w-2xl rounded-lg border border-border/30 bg-card shadow-2xl"
       >
-        <div className="flex items-center justify-between border-b border-border/20 px-5 py-3">
+        <div className="flex items-center justify-between border-b border-border/10 px-5 py-3">
           <div className="flex items-center gap-2">
             <GearSix className="h-4 w-4 text-accent" />
             <h2 className="text-sm font-semibold text-fg">Mission Settings</h2>
@@ -1515,7 +1527,7 @@ function MissionSettingsDialog({
           {notice ? <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">{notice}</div> : null}
           {error ? <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div> : null}
 
-          <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-3">
+          <div className="rounded-lg border border-border/15 bg-card/60 p-3">
             <div className="text-xs font-semibold text-fg">Mission Defaults</div>
             <div className="mt-3 space-y-3">
               <div>
@@ -1551,7 +1563,7 @@ function MissionSettingsDialog({
             </div>
           </div>
 
-          <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-3">
+          <div className="rounded-lg border border-border/15 bg-card/60 p-3">
             <div className="text-xs font-semibold text-fg">Worker Permissions</div>
             <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
@@ -1623,7 +1635,7 @@ function MissionSettingsDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border/20 px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-border/10 px-5 py-3">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Close</Button>
           <Button variant="primary" size="sm" onClick={onSave} disabled={busy}>
             {busy ? "Saving..." : "Save settings"}
@@ -1662,6 +1674,7 @@ export default function MissionsPage() {
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("board");
   const [searchFilter, setSearchFilter] = useState("");
+  const [missionListView, setMissionListView] = useState<MissionListViewMode>("list");
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [chatJumpTarget, setChatJumpTarget] = useState<OrchestratorChatTarget | null>(null);
 
@@ -2185,9 +2198,9 @@ export default function MissionsPage() {
     <LazyMotion features={domAnimation}>
       <div className="flex h-full min-h-0">
         {/* ════════════ LEFT SIDEBAR ════════════ */}
-        <div className="flex w-[260px] shrink-0 flex-col border-r border-border/20 bg-zinc-900/60">
+        <div className="flex w-[260px] shrink-0 flex-col border-r border-border/20 bg-card/40">
           {/* Sidebar Header */}
-          <div className="flex items-center justify-between border-b border-border/20 px-3 py-2.5">
+          <div className="flex items-center justify-between border-b border-border/10 px-3 py-2.5">
             <div className="flex items-center gap-2">
               <Rocket className="h-4 w-4 text-accent" />
               <span className="text-xs font-semibold text-fg">Missions</span>
@@ -2222,20 +2235,38 @@ export default function MissionsPage() {
             </div>
           </div>
 
-          {/* Search */}
-          <div className="px-3 py-2">
-            <div className="relative">
-              <MagnifyingGlass className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
-              <input
-                value={searchFilter}
-                onChange={(e) => setSearchFilter(e.target.value)}
-                placeholder="Search missions..."
-                className="h-7 w-full rounded border border-border/20 bg-zinc-800/60 pl-7 pr-2 text-xs text-fg outline-none focus:border-accent/30"
-              />
+          {/* View mode toggle + Search */}
+          <div className="px-3 py-2 space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <MagnifyingGlass className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
+                <input
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                  placeholder="Search missions..."
+                  className="h-7 w-full rounded border border-border/15 bg-surface-recessed pl-7 pr-2 text-xs text-fg outline-none focus:border-accent/30"
+                />
+              </div>
+              <div className="flex gap-0.5 rounded-lg bg-card/60 border border-border/10 p-0.5">
+                <button
+                  className={cn("rounded px-1.5 py-1 text-xs", missionListView === "list" ? "bg-accent/20 text-fg" : "text-muted-fg hover:text-fg")}
+                  onClick={() => setMissionListView("list")}
+                  title="List view"
+                >
+                  <List size={14} weight="regular" />
+                </button>
+                <button
+                  className={cn("rounded px-1.5 py-1 text-xs", missionListView === "board" ? "bg-accent/20 text-fg" : "text-muted-fg hover:text-fg")}
+                  onClick={() => setMissionListView("board")}
+                  title="Board view"
+                >
+                  <Kanban size={14} weight="regular" />
+                </button>
+              </div>
             </div>
           </div>
 
-          {/* Mission list */}
+          {/* Mission list / board */}
           <div className="flex-1 overflow-y-auto px-2 pb-2">
             {filteredMissions.length === 0 ? (
               <div className="px-2 py-8 text-center text-xs text-muted-fg/60">
@@ -2252,7 +2283,47 @@ export default function MissionsPage() {
                   </div>
                 ) : "No matches"}
               </div>
+            ) : missionListView === "board" ? (
+              /* Mission Kanban Board */
+              <div className="space-y-3 pt-1">
+                {MISSION_BOARD_COLUMNS.map((col) => {
+                  const colMissions = filteredMissions.filter((m) => m.status === col.key);
+                  if (colMissions.length === 0) return null;
+                  return (
+                    <div key={col.key}>
+                      <div className="flex items-center gap-2 mb-1.5 px-1">
+                        <span className={cn("text-[10px] font-medium uppercase tracking-wider", col.color)}>{col.label}</span>
+                        <span className="text-[10px] text-muted-fg/50">{colMissions.length}</span>
+                      </div>
+                      <div className="space-y-1">
+                        {colMissions.map((m) => (
+                          <button
+                            key={m.id}
+                            onClick={() => setSelectedMissionId(m.id)}
+                            className={cn(
+                              "w-full text-left rounded-lg p-2.5 transition-colors border",
+                              m.id === selectedMissionId
+                                ? "border-accent/30 bg-accent/10"
+                                : "border-border/10 bg-card/70 hover:bg-card/90"
+                            )}
+                          >
+                            <div className="text-xs font-medium text-fg truncate">{m.title}</div>
+                            <div className="mt-1 text-[11px] text-muted-fg truncate">{m.prompt}</div>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <span className="text-[10px] font-mono text-muted-fg">{relativeWhen(m.createdAt)}</span>
+                              {m.totalSteps > 0 && (
+                                <span className="text-[10px] text-muted-fg ml-auto">{m.completedSteps}/{m.totalSteps}</span>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
+              /* Mission List View */
               <div className="space-y-1">
                 {filteredMissions.map((m) => {
                   const isSelected = m.id === selectedMissionId;
@@ -2266,7 +2337,7 @@ export default function MissionsPage() {
                         "w-full text-left rounded-lg px-2.5 py-2 transition-colors",
                         isSelected
                           ? "bg-accent/15 border border-accent/30"
-                          : "hover:bg-zinc-800/60 border border-transparent",
+                          : "hover:bg-card/60 border border-transparent",
                         isActive && !isSelected && "ade-glow-pulse-blue"
                       )}
                     >
@@ -2281,7 +2352,7 @@ export default function MissionsPage() {
                           </div>
                           {m.totalSteps > 0 && (
                             <div className="mt-1.5 flex items-center gap-2">
-                              <div className="h-1 flex-1 rounded-full bg-zinc-700">
+                              <div className="h-1 flex-1 rounded-full bg-card">
                                 <div
                                   className="h-1 rounded-full bg-accent transition-all"
                                   style={{ width: `${progress}%` }}
@@ -2317,7 +2388,7 @@ export default function MissionsPage() {
           ) : (
             <>
               {/* ── Header Bar ── */}
-              <div className="flex items-center gap-3 border-b border-border/20 bg-zinc-900/40 px-4 py-2.5">
+              <div className="flex items-center gap-3 border-b border-border/10 bg-card/40 px-4 py-2.5">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <h2 className="truncate text-sm font-semibold text-fg">
@@ -2391,7 +2462,7 @@ export default function MissionsPage() {
               </AnimatePresence>
 
               {/* ── Tab Navigation ── */}
-              <div className="flex items-center gap-0.5 border-b border-border/20 bg-zinc-900/30 px-4">
+              <div className="flex items-center gap-0.5 border-b border-border/10 bg-card/30 px-4">
                 {([
                   { key: "board" as WorkspaceTab, label: "Board", icon: SquaresFour },
                   { key: "dag" as WorkspaceTab, label: "DAG", icon: Graph },
@@ -2505,7 +2576,7 @@ export default function MissionsPage() {
 
               {/* ── Bottom Steering Bar (hidden on Channels tab since channels subsume steering) ── */}
               {isActiveMission && activeTab !== "channels" && (
-                <div className="border-t border-border/20 bg-zinc-900/60 px-4 py-2.5">
+                <div className="border-t border-border/10 bg-card/40 px-4 py-2.5">
                   {steerAck && (
                     <div className="mb-2 rounded border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] text-emerald-300 flex items-center justify-between">
                       <span>{steerAck}</span>
@@ -2520,7 +2591,7 @@ export default function MissionsPage() {
                       onChange={(e) => setSteerInput(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSteer(); } }}
                       placeholder="Type a directive to steer this mission..."
-                      className="h-8 flex-1 rounded-lg border border-border/30 bg-zinc-800 px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+                      className="h-8 flex-1 rounded-lg border border-border/15 bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
                     />
                     <Button
                       variant="primary"
@@ -2586,7 +2657,7 @@ function ActivityNarrativeHeader({
 }) {
   if (!runGraph) {
     return (
-      <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-3 text-center">
+      <div className="rounded-lg border border-border/15 bg-card/60 px-3 py-3 text-center">
         <div className="text-xs text-muted-fg">No orchestrator run yet. Start a run to see activity.</div>
       </div>
     );
@@ -2637,13 +2708,13 @@ function ActivityNarrativeHeader({
   return (
     <div className="space-y-2">
       {/* Progress summary card */}
-      <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-2.5">
+      <div className="rounded-lg border border-border/15 bg-card/60 px-3 py-2.5">
         <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wider mb-2">Mission Progress</div>
 
         {/* Progress bar */}
         {totalSteps > 0 && (
           <div className="mb-2">
-            <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-zinc-700">
+            <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-card">
               {succeededCount > 0 && (
                 <div
                   className="bg-emerald-500 transition-all"
@@ -2686,7 +2757,7 @@ function ActivityNarrativeHeader({
 
       {/* Narrative feed card */}
       {(narrativeLines.length > 0 || steeringLog.length > 0) && (
-        <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-2.5">
+        <div className="rounded-lg border border-border/15 bg-card/60 px-3 py-2.5">
           <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wider mb-1.5">Recent Activity</div>
           <div className="space-y-1">
             {/* Show steering directives first */}
@@ -2742,7 +2813,7 @@ function StepDetailPanel({
 
   if (!step) {
     return (
-      <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
+      <aside className="rounded-lg border border-border/15 bg-card/60 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
         <div className="text-[11px] font-semibold text-fg">Step Details</div>
         <p className="mt-2 text-[11px] text-muted-fg">Select a card in Board or a node in DAG to inspect worker progress.</p>
       </aside>
@@ -2771,7 +2842,7 @@ function StepDetailPanel({
     : isRecord(resultEnvelope) ? JSON.stringify(resultEnvelope, null, 2) : null;
 
   return (
-    <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full">
+    <aside className="rounded-lg border border-border/15 bg-card/60 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full">
       <div className="flex items-center justify-between">
         <div className="text-[11px] font-semibold text-fg">Step Details</div>
         <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium", STEP_STATUS_COLORS[step.status] ?? "bg-muted/20 text-muted-fg")}>
@@ -2785,30 +2856,30 @@ function StepDetailPanel({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
-        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
           <div className="text-muted-fg">Key</div>
           <div className="font-medium text-fg">{step.stepKey}</div>
         </div>
-        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
           <div className="text-muted-fg">Type</div>
           <div className="font-medium text-fg">{stepType}</div>
         </div>
-        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
           <div className="text-muted-fg">Attempts</div>
           <div className="font-medium text-fg">{attempts.length}</div>
         </div>
-        <div className="rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
           <div className="text-muted-fg">Dependencies</div>
           <div className="font-medium text-fg">{step.dependencyStepIds.length}</div>
         </div>
-        <div className="col-span-2 rounded border border-border/20 bg-zinc-900/50 px-2 py-1">
+        <div className="col-span-2 rounded border border-border/15 bg-card/50 px-2 py-1">
           <div className="text-muted-fg">Lane</div>
           <div className="font-medium text-fg">{step.laneId ?? "none"}</div>
         </div>
       </div>
 
       {(dependencyLabels.length > 0 || doneCriteria || expectedSignals.length > 0) && (
-        <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px] space-y-1.5">
+        <div className="mt-3 rounded border border-border/15 bg-card/50 px-2 py-2 text-[10px] space-y-1.5">
           {dependencyLabels.length > 0 && (
             <div>
               <div className="text-muted-fg">Depends on</div>
@@ -2830,7 +2901,7 @@ function StepDetailPanel({
         </div>
       )}
 
-      <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px]">
+      <div className="mt-3 rounded border border-border/15 bg-card/50 px-2 py-2 text-[10px]">
         <div className="text-muted-fg">Latest Worker Attempt</div>
         {latestAttempt ? (
           <div className="mt-1 space-y-1">
@@ -2867,7 +2938,7 @@ function StepDetailPanel({
       </div>
 
       {resultText && (
-        <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px]">
+        <div className="mt-3 rounded border border-border/15 bg-card/50 px-2 py-2 text-[10px]">
           <button
             onClick={() => setShowFullOutput(!showFullOutput)}
             className="flex items-center gap-1 text-muted-fg hover:text-fg transition-colors w-full"
@@ -2876,7 +2947,7 @@ function StepDetailPanel({
             <span className="font-medium">View Full Output</span>
           </button>
           {showFullOutput && (
-            <pre className="mt-2 max-h-[300px] overflow-auto rounded bg-zinc-900/80 p-2 text-[10px] font-mono text-zinc-300 whitespace-pre-wrap break-all">
+            <pre className="mt-2 max-h-[300px] overflow-auto rounded bg-card/80 p-2 text-[10px] font-mono text-fg/80 whitespace-pre-wrap break-all">
               {resultText}
             </pre>
           )}
@@ -2934,7 +3005,7 @@ function BoardTab({
         return (
           <div
             key={col.status}
-            className="w-[220px] shrink-0 rounded-lg border border-border/20 bg-zinc-800/30"
+            className="w-[220px] shrink-0 rounded-lg border border-border/10 bg-card/70 backdrop-blur-sm"
           >
             {/* Column header */}
             <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
@@ -2969,7 +3040,7 @@ function BoardTab({
                       "rounded-lg border px-2.5 py-2 transition-colors cursor-pointer",
                       selectedStepId === step.id
                         ? "border-accent/45 bg-accent/10"
-                        : "border-border/20 bg-zinc-900/60 hover:bg-zinc-800/60"
+                        : "border-border/15 bg-card/50 hover:bg-card/70"
                     )}
                   >
                     <div className="text-xs font-medium text-fg truncate">{step.title}</div>

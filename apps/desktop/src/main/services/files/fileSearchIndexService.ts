@@ -29,6 +29,10 @@ function normalizeRelative(relPath: string): string {
   return relPath.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
+function shouldSkipPathPrefix(relPath: string): boolean {
+  return relPath === ".ade" || relPath.startsWith(".ade/");
+}
+
 function hasNullByte(buf: Buffer): boolean {
   const max = Math.min(buf.length, 8192);
   for (let i = 0; i < max; i++) {
@@ -170,6 +174,7 @@ export function createFileSearchIndexService() {
       for (const entry of entries) {
         const relPath = normalizeRelative(path.join(relDir, entry.name));
         if (!relPath) continue;
+        if (shouldSkipPathPrefix(relPath)) continue;
         if (entry.isDirectory() && shouldSkipDirectoryName(entry.name)) continue;
         if (await opts.shouldIgnore(relPath)) continue;
 

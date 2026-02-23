@@ -105,7 +105,7 @@ export function AutomationsSection() {
   }, []);
 
   return (
-    <section className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+    <section className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold">Automations</div>
@@ -120,15 +120,15 @@ export function AutomationsSection() {
       </div>
 
       {error ? (
-        <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div>
+        <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-400">{error}</div>
       ) : null}
 
       <div className="mt-3 space-y-2">
         {rules.length === 0 ? (
-          <div className="rounded border border-border bg-bg/40 p-3 text-xs text-muted-fg">No automation rules configured.</div>
+          <div className="rounded-lg border border-border/10 bg-card/80 p-3 text-xs text-muted-fg">No automation rules configured.</div>
         ) : (
           rules.map((rule) => (
-            <div key={rule.id} className="rounded border border-border bg-bg/40 p-2">
+            <div key={rule.id} className="rounded-lg border border-border/10 bg-card/80 p-2">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -180,7 +180,7 @@ export function AutomationsSection() {
       <Dialog.Root open={historyDialog != null} onOpenChange={(open) => setHistoryDialog(open ? historyDialog : null)}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
-          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-sm border border-border bg-bg p-4 shadow-2xl focus:outline-none">
+          <Dialog.Content className="fixed left-1/2 top-[8%] z-50 w-[min(980px,calc(100vw-24px))] -translate-x-1/2 rounded-xl border border-border/20 bg-bg p-4 shadow-2xl focus:outline-none">
             <div className="mb-3 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <Dialog.Title className="text-sm font-semibold truncate">Automation History</Dialog.Title>
@@ -198,12 +198,12 @@ export function AutomationsSection() {
             </div>
 
             {historyDialog?.busy ? (
-              <div className="rounded border border-border bg-card/40 p-3 text-xs text-muted-fg">Loading runs…</div>
+              <div className="rounded-lg border border-border/10 bg-card/80 p-3 text-xs text-muted-fg">Loading runs…</div>
             ) : null}
 
             {historyDialog ? (
               <div className="grid min-h-0 grid-cols-[360px_1fr] gap-3">
-                <div className="max-h-[65vh] overflow-auto rounded border border-border bg-card/30 p-2">
+                <div className="max-h-[65vh] overflow-auto rounded-lg border border-border/10 bg-card/80 p-2">
                   {historyDialog.runs.length === 0 ? (
                     <div className="p-2 text-xs text-muted-fg">No runs yet.</div>
                   ) : (
@@ -217,7 +217,7 @@ export function AutomationsSection() {
                             onClick={() => void loadRunDetail(run.id)}
                             className={cn(
                               "w-full rounded border px-2 py-2 text-left",
-                              selected ? "border-accent bg-accent/10" : "border-border bg-bg/40 hover:bg-muted/40"
+                              selected ? "border-accent/30 bg-accent/10" : "border-border/15 bg-card/80 hover:bg-muted/60"
                             )}
                           >
                             <div className="flex items-center justify-between gap-2">
@@ -236,7 +236,7 @@ export function AutomationsSection() {
                   )}
                 </div>
 
-                <div className="max-h-[65vh] overflow-auto rounded border border-border bg-card/30 p-3">
+                <div className="max-h-[65vh] overflow-auto rounded-lg border border-border/10 bg-card/80 p-3">
                   {historyDialog.detailBusy ? (
                     <div className="text-xs text-muted-fg">Loading run detail…</div>
                   ) : !historyDialog.detail ? (
@@ -247,7 +247,7 @@ export function AutomationsSection() {
                         run: <span className="font-mono">{historyDialog.detail.run.id}</span>
                       </div>
                       {historyDialog.detail.actions.map((action) => (
-                        <div key={action.id} className="rounded border border-border bg-bg/40 p-2">
+                        <div key={action.id} className="rounded-lg border border-border/10 bg-card/80 p-2">
                           <div className="flex items-center justify-between gap-2 text-xs">
                             <div className="font-semibold text-fg">
                               #{action.actionIndex + 1} {action.actionType}
@@ -258,7 +258,7 @@ export function AutomationsSection() {
                             <div className="mt-1 text-xs text-red-300">{action.errorMessage}</div>
                           ) : null}
                           {action.output ? (
-                            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-border bg-card/40 p-2 text-[11px] leading-relaxed text-fg">
+                            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-border/10 bg-surface-recessed p-2 text-[11px] leading-relaxed text-fg">
                               {action.output}
                             </pre>
                           ) : null}

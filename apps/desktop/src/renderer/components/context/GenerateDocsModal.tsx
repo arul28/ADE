@@ -579,7 +579,7 @@ export function GenerateDocsModal({
           {phase === "running" && ptyId && sessionId && (
             <div className="mt-3">
               {/* Doc status bar */}
-              <div className="mb-2 flex items-center gap-4 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+              <div className="mb-2 flex items-center gap-4 rounded-lg border border-border/60 bg-card/60 px-3 py-2">
                 {docStatusIndicator("PRD", prdExists)}
                 {docStatusIndicator("Architecture", archExists)}
                 {docsReady && (
@@ -611,7 +611,7 @@ export function GenerateDocsModal({
               </div>
 
               {/* Doc status */}
-              <div className="flex items-center gap-4 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+              <div className="flex items-center gap-4 rounded-lg border border-border/60 bg-card/60 px-3 py-2">
                 {docStatusIndicator("PRD", prdExists)}
                 {docStatusIndicator("Architecture", archExists)}
               </div>

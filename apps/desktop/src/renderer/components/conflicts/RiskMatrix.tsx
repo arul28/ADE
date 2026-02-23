@@ -9,12 +9,12 @@ function pairKey(a: string, b: string): string {
 }
 
 function cellClasses(risk: RiskMatrixEntry["riskLevel"], selected: boolean, stale: boolean): string {
-  const base = selected ? "ring-2 ring-accent" : "ring-1 ring-border/70";
+  const base = selected ? "ring-2 ring-accent" : "ring-1 ring-border/20";
   const staleClass = stale ? "opacity-65" : "";
-  if (risk === "high") return cn("bg-red-500/30 text-red-100", base, staleClass);
-  if (risk === "medium") return cn("bg-amber-500/25 text-amber-100", base, staleClass);
-  if (risk === "low") return cn("bg-emerald-500/20 text-emerald-100", base, staleClass);
-  return cn("bg-card text-muted-fg", base, staleClass);
+  if (risk === "high") return cn("bg-red-500/25 backdrop-blur-sm text-red-100 shadow-[0_0_10px_-3px_rgba(239,68,68,0.25)]", base, staleClass);
+  if (risk === "medium") return cn("bg-amber-500/20 backdrop-blur-sm text-amber-100 shadow-[0_0_8px_-3px_rgba(245,158,11,0.2)]", base, staleClass);
+  if (risk === "low") return cn("bg-emerald-500/15 backdrop-blur-sm text-emerald-100 shadow-[0_0_6px_-3px_rgba(16,185,129,0.15)]", base, staleClass);
+  return cn("bg-card/50 backdrop-blur-sm text-muted-fg", base, staleClass);
 }
 
 function hasSamePair(a: { laneAId: string; laneBId: string }, b: { laneAId: string; laneBId: string }): boolean {
@@ -67,6 +67,7 @@ export function RiskMatrix({
 
   const [hoveredPair, setHoveredPair] = React.useState<{ laneAId: string; laneBId: string } | null>(null);
   const [hoveredRect, setHoveredRect] = React.useState<DOMRect | null>(null);
+  const [hoveredRowCol, setHoveredRowCol] = React.useState<{ rowId: string; colId: string } | null>(null);
   const hoverTimerRef = React.useRef<number | null>(null);
   const progressStartedAtRef = React.useRef<number | null>(null);
 
@@ -155,7 +156,7 @@ export function RiskMatrix({
   }, [loading, progress]);
 
   if (lanes.length === 0) {
-    return <div className="rounded shadow-card bg-card/40 p-3 text-xs text-muted-fg">No lanes to compare.</div>;
+    return <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-3 text-xs text-muted-fg shadow-card">No lanes to compare.</div>;
   }
 
   const startHover = (
@@ -206,10 +207,10 @@ export function RiskMatrix({
   }, [progress, entries.length]);
 
   return (
-    <div className="relative overflow-auto rounded shadow-card bg-card/30">
+    <div className="relative overflow-auto rounded-lg border border-border/10 shadow-card bg-card/30 backdrop-blur-sm">
       {loading && progress ? (
-        <div className="sticky left-0 top-0 z-30 bg-bg/90 px-2 py-1 text-xs text-muted-fg">
-          Computing {progress.completedPairs}/{progress.totalPairs} pairs…{etaLabel ? ` ${etaLabel}` : ""}
+        <div className="sticky left-0 top-0 z-30 bg-card/80 backdrop-blur-sm px-3 py-1.5 text-xs text-muted-fg border-b border-border/10">
+          Computing {progress.completedPairs}/{progress.totalPairs} pairs...{etaLabel ? ` ${etaLabel}` : ""}
         </div>
       ) : null}
       <table className="w-full min-w-[580px] border-collapse text-xs">
@@ -219,7 +220,10 @@ export function RiskMatrix({
               Lane
             </th>
             {lanes.map((lane) => (
-              <th key={lane.id} className="bg-bg px-2 py-2 text-left text-muted-fg">
+              <th key={lane.id} className={cn(
+                "bg-bg px-2 py-2 text-left text-muted-fg transition-colors duration-100",
+                hoveredRowCol?.colId === lane.id && "bg-card/40 text-fg"
+              )}>
                 <span className="block max-w-[120px] truncate">{lane.name}</span>
               </th>
             ))}
@@ -228,7 +232,10 @@ export function RiskMatrix({
         <tbody>
           {lanes.map((rowLane, rowIndex) => (
             <tr key={rowLane.id}>
-              <td className="sticky left-0 z-10 bg-bg px-2 py-2 font-medium text-fg">
+              <td className={cn(
+                "sticky left-0 z-10 bg-bg px-2 py-2 font-medium text-fg transition-colors duration-100",
+                hoveredRowCol?.rowId === rowLane.id && "bg-card/40"
+              )}>
                 <span className="block max-w-[140px] truncate">{rowLane.name}</span>
               </td>
               {lanes.map((colLane, colIndex) => {
@@ -249,9 +256,9 @@ export function RiskMatrix({
                     <button
                       type="button"
                       className={cn(
-                        "relative flex h-12 w-full flex-col items-center justify-center rounded-lg px-1 text-[11px] font-semibold transition-all duration-300",
+                        "relative flex h-12 w-full flex-col items-center justify-center rounded-lg px-1 text-[11px] font-semibold transition-all duration-150 hover:brightness-110",
                         isLoadingCell
-                          ? cn("ade-risk-skeleton text-muted-fg ring-1 ring-border/50", skeletonResolved && "opacity-60")
+                          ? cn("ade-risk-skeleton text-muted-fg ring-1 ring-border/20", skeletonResolved && "opacity-60")
                           : cellClasses(riskLevel, isSelected, stale),
                         shouldAnimateIn && "ade-risk-cell-enter",
                         changeEffect === "increased" && "ade-risk-cell-increase",
@@ -259,8 +266,14 @@ export function RiskMatrix({
                       )}
                       style={isLoadingCell ? { animationDelay: `${(skeletonIndex % 8) * 45}ms` } : undefined}
                       onClick={() => onSelectPair({ laneAId: rowLane.id, laneBId: colLane.id })}
-                      onMouseEnter={(event) => startHover({ laneAId: rowLane.id, laneBId: colLane.id }, event)}
-                      onMouseLeave={stopHover}
+                      onMouseEnter={(event) => {
+                        startHover({ laneAId: rowLane.id, laneBId: colLane.id }, event);
+                        setHoveredRowCol({ rowId: rowLane.id, colId: colLane.id });
+                      }}
+                      onMouseLeave={() => {
+                        stopHover();
+                        setHoveredRowCol(null);
+                      }}
                       title={staleTitle}
                     >
                       {isLoadingCell ? (

@@ -42,7 +42,7 @@ export function SessionDeltaCard({ sessionId }: { sessionId: string }) {
             <Chip className="text-[10px]">-{delta.deletions}</Chip>
           </div>
           {delta.touchedFiles.length ? (
-            <div className="max-h-24 overflow-auto rounded-lg bg-muted/20 p-2 text-[11px] leading-relaxed">
+            <div className="max-h-24 overflow-auto rounded-lg bg-card/60 p-2 text-[11px] leading-relaxed">
               {delta.touchedFiles.slice(0, 20).map((file) => (
                 <div key={file}>{file}</div>
               ))}

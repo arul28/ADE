@@ -88,7 +88,7 @@ function renderTable(lines: string[]) {
     <div className="overflow-x-auto rounded-lg border border-border/30">
       <table className="w-full text-[11px]">
         <thead>
-          <tr className="bg-muted/30">
+          <tr className="bg-card/60">
             {headers.map((h, i) => (
               <th key={i} className="px-2.5 py-1.5 text-left font-semibold text-muted-fg border-b border-border/30">{h}</th>
             ))}

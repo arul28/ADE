@@ -134,7 +134,7 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 
 function previewLines(title: string, bullets: string[]) {
   return (
-    <div className="rounded border border-border bg-card/40 p-3 text-xs">
+    <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
       <div className="flex items-center gap-2 font-semibold text-fg">
         <MagicWand size={16} weight="regular" className="text-muted-fg" />
         {title}
@@ -521,7 +521,7 @@ export function OnboardingPage() {
   return (
     <div className="h-full min-h-0 overflow-auto bg-bg text-fg">
       <div className="mx-auto w-full max-w-6xl p-4">
-        <div className="rounded border border-border bg-card/60 p-4 shadow-sm">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-card">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-lg font-semibold">Project onboarding</div>
@@ -556,7 +556,7 @@ export function OnboardingPage() {
 
           <div className={cn("mt-4 grid gap-3", showStepsSidebar ? "lg:grid-cols-[260px_1fr]" : "lg:grid-cols-1")}>
             {showStepsSidebar ? (
-              <aside className="rounded-lg border border-border bg-bg/40 p-2">
+              <aside className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-2">
               <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">Steps</div>
               <div className="mt-1 space-y-1">
                 {steps.map((id, idx) => {
@@ -569,7 +569,7 @@ export function OnboardingPage() {
                       type="button"
                       className={cn(
                         "w-full rounded-md border px-2 py-2 text-left text-xs transition-colors",
-                        active ? "border-accent bg-accent/15" : "border-border bg-card/40 hover:bg-muted/60"
+                        active ? "border-accent bg-accent/15 shadow-[0_0_16px_-4px_rgba(6,214,160,0.15)]" : "border-border/30 bg-card hover:bg-card/80"
                       )}
                       onClick={() => setStep(id)}
                     >
@@ -581,7 +581,7 @@ export function OnboardingPage() {
                             ) : active ? (
                               <Sparkle size={16} weight="regular" className="text-accent" />
                             ) : (
-                              <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-muted/70 text-[10px] text-muted-fg">
+                              <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-card/80 border border-border/20 text-[10px] text-muted-fg">
                                 {idx + 1}
                               </span>
                             )}
@@ -598,16 +598,16 @@ export function OnboardingPage() {
             ) : null}
 
             <main className="min-w-0 space-y-3">
-              <div className="rounded-lg border border-border bg-card/40 p-3">
+              <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3">
                 <div className="text-sm font-semibold">{heading.title}</div>
                 <div className="mt-1 text-xs text-muted-fg">{heading.subtitle}</div>
               </div>
 
               {step === "welcome" ? (
                 <div className="space-y-3">
-                  <div className="rounded border border-border bg-card/40 p-4">
+                  <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
                     <div className="flex items-start gap-3">
-                      <div className="mt-0.5 rounded-md border border-border bg-bg/60 p-2">
+                      <div className="mt-0.5 rounded-md border border-border/10 bg-card backdrop-blur-sm p-2">
                         <Sparkle size={20} weight="regular" className="text-accent" />
                       </div>
                       <div className="min-w-0">
@@ -628,7 +628,7 @@ export function OnboardingPage() {
                     </div>
                   </div>
 
-                  <details className="rounded border border-border bg-card/40 p-4">
+                  <details className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
                     <summary className="cursor-pointer text-xs font-semibold text-fg">What guided onboarding does</summary>
                     <div className="mt-3 space-y-2">
                       {previewLines("High-level steps", [
@@ -638,14 +638,14 @@ export function OnboardingPage() {
                         "Generate initial packs for quick context + conflict prediction."
                       ])}
                       <div className="grid gap-2 md:grid-cols-2">
-                        <div className="rounded border border-border bg-bg/40 p-3 text-xs">
+                        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
                           <div className="flex items-center gap-2 font-semibold text-fg">
                             <GitBranch size={16} weight="regular" className="text-muted-fg" />
                             Lanes + worktrees
                           </div>
                           <div className="mt-1 text-muted-fg">Keep multiple branches checked out side-by-side without clobbering your working tree.</div>
                         </div>
-                        <div className="rounded border border-border bg-bg/40 p-3 text-xs">
+                        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
                           <div className="flex items-center gap-2 font-semibold text-fg">
                             <Package size={16} weight="regular" className="text-muted-fg" />
                             Packs + conflict radar
@@ -684,7 +684,7 @@ export function OnboardingPage() {
 
                   {defaults ? (
                     <div className="grid gap-3 md:grid-cols-2">
-                      <div className="rounded border border-border bg-card/40 p-3 text-xs">
+                      <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
                         <div className="font-semibold text-fg">Signals</div>
                         <div className="mt-2 space-y-1">
                           {defaults.indicators.length === 0 ? (
@@ -699,7 +699,7 @@ export function OnboardingPage() {
                           )}
                         </div>
                       </div>
-                      <div className="rounded border border-border bg-card/40 p-3 text-xs">
+                      <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
                         <div className="font-semibold text-fg">Suggested config</div>
                         <div className="mt-2 text-muted-fg">
                           processes: {defaults.suggestedConfig.processes?.length ?? 0} · test suites:{" "}
@@ -716,7 +716,7 @@ export function OnboardingPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+                    <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-4 text-xs text-muted-fg">
                       Run detection to generate a starting config draft.
                     </div>
                   )}
@@ -730,7 +730,7 @@ export function OnboardingPage() {
                     "Validate config before saving. No commands are executed."
                   ])}
 
-                  <div className="rounded border border-border bg-card/40 p-3 text-xs">
+                  <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 text-xs">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="font-semibold text-fg">Config target</div>
@@ -745,7 +745,7 @@ export function OnboardingPage() {
                       <div className="flex items-center gap-2">
                         <label className="text-[11px] text-muted-fg">Apply mode</label>
                         <select
-                          className="h-8 rounded border border-border bg-bg px-2 text-xs"
+                          className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           value={applyMode}
                           onChange={(e) => setApplyMode(e.target.value as "append" | "replace")}
                         >
@@ -781,21 +781,21 @@ export function OnboardingPage() {
                   ) : null}
 
                   {!defaults ? (
-                    <div className="rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+                    <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-4 text-xs text-muted-fg">
                       Run Detect Defaults first.
                     </div>
                   ) : (
                     <div className="grid gap-3 lg:grid-cols-2">
-                      <div className="rounded border border-border bg-card/40 p-3">
+                      <div className="rounded border border-border/30 bg-card backdrop-blur-sm p-3">
                         <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Processes</div>
                         <div className="mt-2 space-y-2">
                           {processDraft.length === 0 ? (
-                            <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
+                            <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-3 text-xs text-muted-fg">
                               No suggested processes.
                             </div>
                           ) : null}
                           {processDraft.map((row, idx) => (
-                            <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+                            <div key={`${row.id}:${idx}`} className="rounded border border-border/10 bg-card backdrop-blur-sm p-2">
                               <div className="flex items-center justify-between gap-2">
                                 <label className="flex items-center gap-2 text-xs">
                                   <input
@@ -813,7 +813,7 @@ export function OnboardingPage() {
                               </div>
                               <div className="mt-2 grid gap-2 md:grid-cols-2">
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                                   value={row.name}
                                   onChange={(e) =>
                                     setProcessDraft((prev) =>
@@ -823,7 +823,7 @@ export function OnboardingPage() {
                                   placeholder="name"
                                 />
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg font-mono"
                                   value={row.commandLine}
                                   onChange={(e) =>
                                     setProcessDraft((prev) =>
@@ -833,7 +833,7 @@ export function OnboardingPage() {
                                   placeholder="command"
                                 />
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                                   value={row.cwd}
                                   onChange={(e) =>
                                     setProcessDraft((prev) =>
@@ -847,16 +847,16 @@ export function OnboardingPage() {
                           ))}
                         </div>
                       </div>
-	                      <div className="rounded border border-border bg-card/40 p-3">
+	                      <div className="rounded border border-border/30 bg-card backdrop-blur-sm p-3">
 	                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Test suites</div>
 	                        <div className="mt-2 space-y-2">
 	                          {testDraft.length === 0 ? (
-                            <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
+                            <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-3 text-xs text-muted-fg">
                               No suggested test suites.
                             </div>
                           ) : null}
 	                          {testDraft.map((row, idx) => (
-	                            <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+	                            <div key={`${row.id}:${idx}`} className="rounded border border-border/10 bg-card backdrop-blur-sm p-2">
                               <div className="flex items-center justify-between gap-2">
                                 <label className="flex items-center gap-2 text-xs">
                                   <input
@@ -874,7 +874,7 @@ export function OnboardingPage() {
                               </div>
                               <div className="mt-2 grid gap-2 md:grid-cols-2">
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                                   value={row.name}
                                   onChange={(e) =>
                                     setTestDraft((prev) =>
@@ -884,7 +884,7 @@ export function OnboardingPage() {
                                   placeholder="name"
                                 />
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg font-mono"
                                   value={row.commandLine}
                                   onChange={(e) =>
                                     setTestDraft((prev) =>
@@ -894,7 +894,7 @@ export function OnboardingPage() {
                                   placeholder="command"
                                 />
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                                   value={row.cwd}
                                   onChange={(e) =>
                                     setTestDraft((prev) =>
@@ -909,16 +909,16 @@ export function OnboardingPage() {
 	                        </div>
 	                      </div>
 
-                      <div className="rounded border border-border bg-card/40 p-3">
+                      <div className="rounded border border-border/30 bg-card backdrop-blur-sm p-3">
                         <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Stack buttons</div>
                         <div className="mt-2 space-y-2">
                           {stackDraft.length === 0 ? (
-                            <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
+                            <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-3 text-xs text-muted-fg">
                               No suggested stack buttons.
                             </div>
                           ) : null}
                           {stackDraft.map((row, idx) => (
-                            <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+                            <div key={`${row.id}:${idx}`} className="rounded border border-border/10 bg-card backdrop-blur-sm p-2">
                               <div className="flex items-center justify-between gap-2">
                                 <label className="flex items-center gap-2 text-xs">
                                   <input
@@ -931,7 +931,7 @@ export function OnboardingPage() {
                                   <span className="font-semibold text-fg">{row.id}</span>
                                 </label>
                                 <select
-                                  className="h-7 rounded border border-border bg-bg px-2 text-[11px] text-muted-fg"
+                                  className="h-7 rounded border border-border/30 bg-bg px-2 text-[11px] text-muted-fg"
                                   value={row.startOrder ?? "parallel"}
                                   onChange={(e) =>
                                     setStackDraft((prev) =>
@@ -949,7 +949,7 @@ export function OnboardingPage() {
                               </div>
                               <div className="mt-2 grid gap-2 md:grid-cols-2">
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                                   value={row.name ?? ""}
                                   onChange={(e) =>
                                     setStackDraft((prev) =>
@@ -959,7 +959,7 @@ export function OnboardingPage() {
                                   placeholder="name"
                                 />
                                 <input
-                                  className="h-8 rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg font-mono"
                                   value={(row.processIds ?? []).join(", ")}
                                   onChange={(e) =>
                                     setStackDraft((prev) =>
@@ -984,11 +984,11 @@ export function OnboardingPage() {
                         </div>
                       </div>
 
-                      <div className="rounded border border-border bg-card/40 p-3">
+                      <div className="rounded border border-border/30 bg-card backdrop-blur-sm p-3">
                         <div className="text-xs font-semibold uppercase tracking-wide text-muted-fg">Automations</div>
                         <div className="mt-2 space-y-2">
                           {automationDraft.length === 0 ? (
-                            <div className="rounded border border-dashed border-border bg-bg/40 p-3 text-xs text-muted-fg">
+                            <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-3 text-xs text-muted-fg">
                               No suggested automations.
                             </div>
                           ) : null}
@@ -998,7 +998,7 @@ export function OnboardingPage() {
                               triggerType === "schedule" && row.trigger?.cron ? ` (${row.trigger.cron})` : triggerType === "commit" && row.trigger?.branch ? ` (${row.trigger.branch})` : "";
                             const actionTypes = (row.actions ?? []).map((a) => (a as any)?.type).filter(Boolean).join(", ");
                             return (
-                              <div key={`${row.id}:${idx}`} className="rounded border border-border bg-bg/40 p-2">
+                              <div key={`${row.id}:${idx}`} className="rounded border border-border/10 bg-card backdrop-blur-sm p-2">
                                 <div className="flex flex-wrap items-start justify-between gap-2">
                                   <label className="flex items-center gap-2 text-xs">
                                     <input
@@ -1033,7 +1033,7 @@ export function OnboardingPage() {
                                 </div>
                                 <div className="mt-2 grid gap-2 md:grid-cols-2">
                                   <input
-                                    className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                                    className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                                     value={row.name ?? ""}
                                     onChange={(e) =>
                                       setAutomationDraft((prev) =>
@@ -1042,7 +1042,7 @@ export function OnboardingPage() {
                                     }
                                     placeholder="name"
                                   />
-                                  <div className="flex items-center rounded border border-border bg-card/60 px-2 text-[11px] text-muted-fg font-mono">
+                                  <div className="flex items-center rounded border border-border/15 bg-card px-2 text-[11px] text-muted-fg font-mono">
                                     {actionTypes || "(no actions)"}
                                   </div>
                                 </div>
@@ -1077,12 +1077,12 @@ export function OnboardingPage() {
                   ) : null}
 
                   {branches.length ? (
-                    <div className="rounded border border-border bg-card/40 p-3">
+                    <div className="rounded border border-border/30 bg-card backdrop-blur-sm p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-xs font-semibold text-muted-fg">Select branches to import</div>
                         <div className="flex items-center gap-2">
                           <input
-                            className="h-8 w-[min(320px,100%)] rounded border border-border bg-bg px-2 text-xs outline-none placeholder:text-muted-fg"
+                            className="h-8 w-[min(320px,100%)] rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none placeholder:text-muted-fg"
                             placeholder="Search branches"
                             value={branchQuery}
                             onChange={(e) => setBranchQuery(e.target.value)}
@@ -1091,10 +1091,10 @@ export function OnboardingPage() {
                         </div>
                       </div>
 
-                      <div className="mt-2 max-h-[360px] overflow-auto rounded border border-border bg-bg/40">
+                      <div className="mt-2 max-h-[360px] overflow-auto rounded border border-border/10 bg-card">
                         <table className="w-full text-left text-xs">
                           <thead className="sticky top-0 bg-bg">
-                            <tr className="border-b border-border">
+                            <tr className="border-b border-border/10">
                               <th className="px-3 py-2 font-semibold text-fg">Import</th>
                               <th className="px-3 py-2 font-semibold text-fg">Branch</th>
                               <th className="px-3 py-2 font-semibold text-fg">Ahead</th>
@@ -1102,7 +1102,7 @@ export function OnboardingPage() {
                               <th className="px-3 py-2 font-semibold text-fg">Remote</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-border">
+                          <tbody className="divide-y divide-border/10">
                             {visibleBranches.map((b) => {
                               const checked = selectedBranches.has(b.branchRef);
                               return (
@@ -1136,7 +1136,7 @@ export function OnboardingPage() {
                         <div className="text-xs text-muted-fg">
                           Import parent:{" "}
                           <select
-                            className="ml-2 h-8 rounded border border-border bg-bg px-2 text-xs"
+                            className="ml-2 h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                             value={importParentLaneId}
                             onChange={(e) => setImportParentLaneId(e.target.value)}
                           >
@@ -1170,7 +1170,7 @@ export function OnboardingPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+                    <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-4 text-xs text-muted-fg">
                       Detect branches to import existing work into lanes.
                     </div>
                   )}
@@ -1205,18 +1205,18 @@ export function OnboardingPage() {
                   ) : null}
 
                   {Object.keys(importResults).length ? (
-                    <div className="rounded border border-border bg-card/40 p-3">
+                    <div className="rounded border border-border/30 bg-card backdrop-blur-sm p-3">
                       <div className="text-xs font-semibold text-muted-fg">Import results</div>
-                      <div className="mt-2 max-h-[320px] overflow-auto rounded border border-border bg-bg/40">
+                      <div className="mt-2 max-h-[320px] overflow-auto rounded border border-border/10 bg-card">
                         <table className="w-full text-left text-xs">
                           <thead className="sticky top-0 bg-bg">
-                            <tr className="border-b border-border">
+                            <tr className="border-b border-border/10">
                               <th className="px-3 py-2 font-semibold text-fg">Branch</th>
                               <th className="px-3 py-2 font-semibold text-fg">Status</th>
                               <th className="px-3 py-2 font-semibold text-fg">Details</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-border">
+                          <tbody className="divide-y divide-border/10">
                             {Object.entries(importResults).map(([branchRef, res]) => (
                               <tr key={branchRef}>
                                 <td className="px-3 py-2 font-mono text-fg">{branchRef}</td>
@@ -1244,7 +1244,7 @@ export function OnboardingPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="rounded border border-dashed border-border bg-bg/40 p-4 text-xs text-muted-fg">
+                    <div className="rounded border border-dashed border-border/20 bg-card backdrop-blur-sm p-4 text-xs text-muted-fg">
                       No imports yet. Select branches in the previous step.
                     </div>
                   )}
@@ -1280,9 +1280,9 @@ export function OnboardingPage() {
                     "You can re-open this wizard anytime by visiting #/onboarding."
                   ])}
 
-                  <div className="rounded border border-border bg-card/40 p-4">
+                  <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
                     <div className="flex items-start gap-3">
-                      <div className="mt-0.5 rounded-md border border-border bg-bg/60 p-2">
+                      <div className="mt-0.5 rounded-md border border-border/10 bg-card backdrop-blur-sm p-2">
                         <Sparkle size={20} weight="regular" className="text-accent" />
                       </div>
                       <div className="min-w-0">

@@ -111,6 +111,8 @@ type ChatRuntime = CodexRuntime | ClaudeRuntime;
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
+  transcriptBytesWritten: number;
+  transcriptLimitReached: boolean;
   metadataPath: string;
   laneWorktreePath: string;
   runtime: ChatRuntime | null;
@@ -129,6 +131,8 @@ type ResolvedChatConfig = {
 const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 const DEFAULT_CLAUDE_MODEL = "sonnet";
 const DEFAULT_REASONING_EFFORT = "medium";
+const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "low", description: "Fastest turn-around with shallow reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
@@ -335,6 +339,14 @@ function toIso(): string {
   return new Date().toISOString();
 }
 
+function fileSizeOrZero(filePath: string): number {
+  try {
+    return fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir: string;
@@ -489,9 +501,29 @@ export function createAgentChatService(args: {
   };
 
   const writeTranscript = (managed: ManagedChatSession, envelope: AgentChatEventEnvelope): void => {
+    if (managed.transcriptLimitReached) return;
     try {
       fs.mkdirSync(path.dirname(managed.transcriptPath), { recursive: true });
-      fs.appendFileSync(managed.transcriptPath, `${JSON.stringify(envelope)}\n`, "utf8");
+      const rawLine = `${JSON.stringify(envelope)}\n`;
+      const chunk = Buffer.from(rawLine, "utf8");
+      const remaining = MAX_CHAT_TRANSCRIPT_BYTES - managed.transcriptBytesWritten;
+      if (remaining <= 0) {
+        managed.transcriptLimitReached = true;
+        void fs.promises.appendFile(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, "utf8").catch(() => {});
+        return;
+      }
+      let toWrite = chunk;
+      if (chunk.length > remaining) {
+        toWrite = chunk.subarray(0, remaining);
+        managed.transcriptLimitReached = true;
+      }
+      managed.transcriptBytesWritten += toWrite.length;
+      void fs.promises.appendFile(managed.transcriptPath, toWrite).then(async () => {
+        if (!managed.transcriptLimitReached) return;
+        await fs.promises.appendFile(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, "utf8");
+      }).catch(() => {
+        // ignore transcript write failures
+      });
     } catch {
       // ignore transcript write failures
     }
@@ -616,6 +648,8 @@ export function createAgentChatService(args: {
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
       transcriptPath: row.transcriptPath || path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+      transcriptBytesWritten: fileSizeOrZero(row.transcriptPath || path.join(transcriptsDir, `${sessionId}.chat.jsonl`)),
+      transcriptLimitReached: false,
       metadataPath: metadataPathFor(sessionId),
       laneWorktreePath: lane.worktreePath,
       runtime: null,
@@ -623,6 +657,7 @@ export function createAgentChatService(args: {
       closed: row.status !== "running",
       endedNotified: row.status !== "running"
     };
+    managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
 
     managedSessions.set(sessionId, managed);
     return managed;
@@ -1406,6 +1441,8 @@ export function createAgentChatService(args: {
         lastActivityAt: toIso()
       },
       transcriptPath: path.join(transcriptsDir, `${randomUUID()}.chat.jsonl`),
+      transcriptBytesWritten: 0,
+      transcriptLimitReached: false,
       metadataPath: metadataPathFor(randomUUID()),
       laneWorktreePath: projectRoot,
       runtime: null,
@@ -1584,6 +1621,8 @@ export function createAgentChatService(args: {
         lastActivityAt: startedAt
       },
       transcriptPath,
+      transcriptBytesWritten: fileSizeOrZero(transcriptPath),
+      transcriptLimitReached: false,
       metadataPath,
       laneWorktreePath: lane.worktreePath,
       runtime: null,
@@ -1591,6 +1630,7 @@ export function createAgentChatService(args: {
       closed: false,
       endedNotified: false
     };
+    managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
 
     managedSessions.set(sessionId, managed);
 

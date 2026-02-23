@@ -1406,7 +1406,28 @@ export function createMissionService({
       if (runIds.length) {
         db.run(
           `
-            delete from orchestrator_timeline_events
+            update orchestrator_attempts
+            set context_snapshot_id = null
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_attempt_runtime
+            where attempt_id in (
+              select id
+              from orchestrator_attempts
+              where project_id = ?
+                and run_id in (${runPlaceholders})
+            )
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_runtime_events
             where project_id = ?
               and run_id in (${runPlaceholders})
           `,
@@ -1422,7 +1443,55 @@ export function createMissionService({
         );
         db.run(
           `
+            delete from orchestrator_chat_messages
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_worker_digests
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_lane_decisions
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_context_checkpoints
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_metrics_samples
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
             delete from orchestrator_context_snapshots
+            where project_id = ?
+              and run_id in (${runPlaceholders})
+          `,
+          [projectId, ...runIds]
+        );
+        db.run(
+          `
+            delete from orchestrator_chat_threads
             where project_id = ?
               and run_id in (${runPlaceholders})
           `,
@@ -1445,6 +1514,63 @@ export function createMissionService({
           [projectId, ...runIds]
         );
       }
+
+      db.run(
+        `
+          delete from mission_metrics_config
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_chat_messages
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_chat_threads
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_worker_digests
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_lane_decisions
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_context_checkpoints
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          delete from orchestrator_metrics_samples
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
 
       db.run(
         `

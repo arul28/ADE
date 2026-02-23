@@ -27,7 +27,7 @@ function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selecte
         "group relative flex items-center gap-3 rounded-lg p-3 transition-all border",
         selected
           ? "border-accent bg-accent/5 ring-1 ring-accent/30"
-          : "border-border hover:border-border/80 hover:bg-muted/20"
+          : "border-border/30 hover:border-border/50 hover:bg-muted/60"
       )}
       title={label}
     >
@@ -43,7 +43,7 @@ function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selecte
         </div>
       </div>
       <div className="text-left">
-        <div className="text-sm font-medium">{label}</div>
+        <div className="text-sm font-medium text-fg">{label}</div>
         <div className="text-xs text-muted-fg mt-0.5">{description}</div>
       </div>
       {selected && (
@@ -350,19 +350,19 @@ export function GeneralSection() {
     return <EmptyState title="General" description="Loading..." />;
   }
 
-  const inputClass = "mt-1 h-8 w-full rounded border border-border bg-bg px-2 text-sm";
+  const inputClass = "mt-1 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-sm text-fg placeholder:text-muted-fg/50";
   const selectClass = inputClass;
 
   return (
     <div className="space-y-6">
       {orchestratorNotice ? (
-        <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{orchestratorNotice}</div>
+        <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">{orchestratorNotice}</div>
       ) : null}
       {orchestratorError ? (
-        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">{orchestratorError}</div>
+        <div className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{orchestratorError}</div>
       ) : null}
       <div>
-        <div className="text-sm font-semibold">Theme</div>
+        <div className="text-sm font-semibold text-fg">Theme</div>
         <div className="mt-2 flex gap-3">
           {THEME_IDS.map((id) => (
             <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
@@ -371,13 +371,13 @@ export function GeneralSection() {
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <div className="rounded-lg border border-border bg-card/70 p-3">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
           <div className="text-xs text-muted-fg">App</div>
           <div className="mt-1 text-sm font-medium">v{info.appVersion}</div>
           <div className="mt-1 text-xs text-muted-fg">{info.isPackaged ? "packaged" : "dev"}</div>
         </div>
 
-        <div className="rounded-lg border border-border bg-card/70 p-3">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
           <div className="text-xs text-muted-fg">Runtime</div>
           <div className="mt-1 text-sm">
             {info.platform} / {info.arch}
@@ -387,13 +387,13 @@ export function GeneralSection() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
           <div className="text-xs text-muted-fg">Provider Mode</div>
           <div className="mt-2 text-sm">{providerMode}</div>
         </div>
 
         {/* Mission Defaults */}
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
           <div className="text-xs text-muted-fg">Mission Defaults</div>
           <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
             <label className="text-sm">
@@ -437,7 +437,7 @@ export function GeneralSection() {
         </div>
 
         {/* Model Preferences (Task Routing) */}
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
           <div className="text-xs text-muted-fg">Model Preferences</div>
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-sm">
@@ -450,11 +450,11 @@ export function GeneralSection() {
               </thead>
               <tbody>
                 {TASK_ROUTING_KEYS.map((key) => (
-                  <tr key={key} className="border-t border-border/50">
+                  <tr key={key} className="border-t border-border/10">
                     <td className="py-2 pr-3 text-sm">{TASK_ROUTING_LABELS[key] ?? key}</td>
                     <td className="py-2 pr-3">
                       <select
-                        className="h-7 w-full rounded border border-border bg-bg px-1.5 text-sm"
+                        className="h-7 w-full rounded border border-border/15 bg-surface-recessed px-1.5 text-sm text-fg"
                         value={taskRoutingDraft[key]?.provider ?? "auto"}
                         onChange={(e) =>
                           setTaskRoutingDraft((prev) => ({
@@ -471,7 +471,7 @@ export function GeneralSection() {
                     <td className="py-2">
                       <input
                         type="text"
-                        className="h-7 w-full rounded border border-border bg-bg px-1.5 text-sm"
+                        className="h-7 w-full rounded border border-border/15 bg-surface-recessed px-1.5 text-sm text-fg placeholder:text-muted-fg/50"
                         placeholder="e.g. claude-sonnet-4-6"
                         value={taskRoutingDraft[key]?.model ?? ""}
                         onChange={(e) =>
@@ -490,7 +490,7 @@ export function GeneralSection() {
         </div>
 
         {/* Orchestrator Settings */}
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
           <div className="text-xs text-muted-fg">Orchestrator Settings</div>
           <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
             <label className="text-sm">
@@ -661,7 +661,7 @@ export function GeneralSection() {
         </div>
 
         {/* Worker Permissions */}
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
           <div className="text-xs text-muted-fg">Worker Permissions</div>
           <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
             {/* Claude worker permissions */}
@@ -693,7 +693,7 @@ export function GeneralSection() {
                 Dangerously skip permissions
               </label>
               {workerPermDraft.claudeDangerouslySkip ? (
-                <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                <div className="rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-400">
                   Warning: This disables all permission checks for Claude workers. Use with caution.
                 </div>
               ) : null}
@@ -752,7 +752,7 @@ export function GeneralSection() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+        <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
           <div className="text-xs text-muted-fg">Env</div>
           <div className="mt-2 grid grid-cols-1 gap-2 text-sm md:grid-cols-2">
             <div>

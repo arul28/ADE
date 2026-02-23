@@ -519,7 +519,7 @@ export function LaneGitActionsPane({
       >
         <button
           type="button"
-          className="shrink-0 h-3.5 w-3.5 rounded bg-muted/30 flex items-center justify-center hover:bg-accent/10"
+          className="shrink-0 h-3.5 w-3.5 rounded border border-border/15 bg-surface-recessed flex items-center justify-center hover:bg-accent/10"
           onClick={(e) => {
             e.stopPropagation();
             toggleStageFile(file.path, mode === "staged");
@@ -824,7 +824,7 @@ export function LaneGitActionsPane({
           <div className="h-4 w-px bg-border/20" />
 
           <input
-            className="h-6 min-w-[80px] max-w-[160px] flex-1 rounded-lg bg-muted/30 px-1.5 text-xs outline-none focus:ring-1 focus:ring-accent/30"
+            className="h-6 min-w-[80px] max-w-[160px] flex-1 rounded-lg border border-border/15 bg-surface-recessed px-1.5 text-xs outline-none focus:ring-1 focus:ring-accent/30"
             placeholder="Commit message..."
             value={commitMessage}
             onChange={(e) => setCommitMessage(e.target.value)}
@@ -1064,11 +1064,11 @@ export function LaneGitActionsPane({
                           </Button>
                         </div>
                         {stashes.length === 0 ? (
-                          <div className="rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">No stashes in this lane.</div>
+                          <div className="rounded-lg border border-border/10 bg-card/60 px-2 py-1 text-[11px] text-muted-fg">No stashes in this lane.</div>
                         ) : (
                           <div className="space-y-1">
                             {stashes.slice(0, 4).map((stash) => (
-                              <div key={stash.ref} className="flex items-center gap-2 rounded-lg bg-muted/20 px-2 py-1">
+                              <div key={stash.ref} className="flex items-center gap-2 rounded-lg border border-border/10 bg-card/60 px-2 py-1">
                                 <div className="min-w-0 flex-1">
                                   <div className="truncate text-xs text-fg">{stash.subject || stash.ref}</div>
                                   <div className="truncate text-[11px] text-muted-fg">{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
@@ -1181,7 +1181,7 @@ export function LaneGitActionsPane({
 
       {/* Status bar */}
       {(notice || error || busyAction) && (
-        <div className={cn("shrink-0 flex items-center justify-between border-t border-border/15 px-2 py-0.5 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
+        <div className={cn("shrink-0 flex items-center justify-between border-t border-border/10 px-2 py-0.5 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
           <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>
         </div>
       )}
@@ -1210,7 +1210,7 @@ export function LaneGitActionsPane({
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="mt-3 h-9 w-full rounded bg-muted/30 shadow-card px-2 text-sm outline-none focus:ring-1 focus:ring-accent/30"
+              className="mt-3 h-9 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-2 text-sm outline-none focus:ring-1 focus:ring-accent/30"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-400">{textPromptError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">

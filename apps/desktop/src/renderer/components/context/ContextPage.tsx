@@ -90,9 +90,9 @@ function renderTable(lines: string[]) {
     <div className="overflow-x-auto rounded-lg border border-border/30">
       <table className="w-full text-[11px]">
         <thead>
-          <tr className="bg-muted/30">
+          <tr className="bg-surface-recessed">
             {headers.map((h, i) => (
-              <th key={i} className="px-2.5 py-1.5 text-left font-semibold text-muted-fg border-b border-border/30">{h}</th>
+              <th key={i} className="px-2.5 py-1.5 text-left font-semibold text-muted-fg border-b border-border/10">{h}</th>
             ))}
           </tr>
         </thead>
@@ -100,7 +100,7 @@ function renderTable(lines: string[]) {
           {dataLines.map((line, i) => {
             const cells = parseRow(line);
             return (
-              <tr key={i} className="border-b border-border/15 hover:bg-muted/15 transition-colors">
+              <tr key={i} className="border-b border-border/8 hover:bg-muted/15 transition-colors">
                 {cells.map((cell, j) => (
                   <td key={j} className="px-2.5 py-1.5 text-fg/80">{cell}</td>
                 ))}
@@ -155,7 +155,7 @@ function HeaderCard({ header }: { header: Record<string, unknown> }) {
   const display = Object.entries(header).filter(([k]) => !["schema", "contractVersion"].includes(k));
   if (!display.length) return null;
   return (
-    <div className="rounded-lg border border-border/30 bg-card/40 p-3">
+    <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3">
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
         {display.slice(0, 14).map(([key, value]) => (
           <div key={key} className="flex gap-1.5 overflow-hidden">
@@ -291,7 +291,7 @@ function LanesPanel() {
               "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
               selectedLaneId === lane.id
                 ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
+                : "bg-card text-muted-fg hover:bg-card/90 hover:text-fg"
             )}
           >
             {lane.name}
@@ -371,7 +371,7 @@ function MissionsPanel() {
               "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
               selectedId === m.id
                 ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
+                : "bg-card text-muted-fg hover:bg-card/90 hover:text-fg"
             )}
           >
             {m.title || shortId(m.id)}
@@ -436,7 +436,7 @@ function ConflictsPanel() {
               "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
               selectedLaneId === lane.id
                 ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
+                : "bg-card text-muted-fg hover:bg-card/90 hover:text-fg"
             )}
           >
             {lane.name}
@@ -501,7 +501,7 @@ function FeaturesPanel() {
           onChange={(e) => setFeatureKey(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") void load(); }}
           placeholder="Enter feature key..."
-          className="flex-1 rounded-lg border border-border/40 bg-card/30 px-3 py-1.5 text-xs text-fg placeholder:text-muted-fg/50 focus:border-accent/50 focus:outline-none"
+          className="flex-1 rounded-lg border border-border/15 bg-surface-recessed px-3 py-1.5 text-xs text-fg placeholder:text-muted-fg/50 focus:border-accent/50 focus:outline-none"
         />
         <Button size="sm" variant="outline" onClick={() => void load()} disabled={!featureKey.trim()}>
           Load
@@ -573,7 +573,7 @@ function PlansPanel() {
               "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
               selectedLaneId === lane.id
                 ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
+                : "bg-card text-muted-fg hover:bg-card/90 hover:text-fg"
             )}
           >
             {lane.name}
@@ -640,9 +640,9 @@ function PackPanel({
   };
 
   return (
-    <div className="rounded border border-border/40 bg-panel/50 overflow-hidden">
+    <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border/30">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 mb-1">
         <div>
           <h2 className="text-sm font-semibold text-fg">{title}</h2>
           <div className="text-[11px] text-muted-fg">
@@ -677,7 +677,7 @@ function PackPanel({
 
       {/* Version History Drawer */}
       {showVersions ? (
-        <div className="border-t border-border/30 px-4 py-3">
+        <div className="mt-1 border-t border-border/10 px-4 py-3">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-fg">Version History</h3>
             <button type="button" className="text-[11px] text-muted-fg hover:text-fg" onClick={() => setShowVersions(false)}>Close</button>
@@ -687,7 +687,7 @@ function PackPanel({
           ) : (
             <div className="space-y-1.5">
               {versions.map((v) => (
-                <div key={v.id} className="flex items-center gap-3 rounded-lg bg-card/30 px-2.5 py-1.5 text-[11px]">
+                <div key={v.id} className="flex items-center gap-3 rounded-lg border border-border/10 bg-card backdrop-blur-sm px-2.5 py-1.5 text-[11px]">
                   <span className="font-medium text-accent">v{v.versionNumber}</span>
                   <span className="text-muted-fg">{shortId(v.contentHash, 12)}</span>
                   <span className="ml-auto text-muted-fg">{relativeTime(v.createdAt)}</span>
@@ -700,7 +700,7 @@ function PackPanel({
 
       {/* Events Drawer */}
       {showEvents ? (
-        <div className="border-t border-border/30 px-4 py-3">
+        <div className="mt-1 border-t border-border/10 px-4 py-3">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold text-fg">Recent Events</h3>
             <button type="button" className="text-[11px] text-muted-fg hover:text-fg" onClick={() => setShowEvents(false)}>Close</button>
@@ -710,7 +710,7 @@ function PackPanel({
           ) : (
             <div className="space-y-1.5">
               {events.map((ev) => (
-                <div key={ev.id} className="flex items-center gap-3 rounded-lg bg-card/30 px-2.5 py-1.5 text-[11px]">
+                <div key={ev.id} className="flex items-center gap-3 rounded-lg border border-border/10 bg-card backdrop-blur-sm px-2.5 py-1.5 text-[11px]">
                   <span className="font-medium text-fg">{ev.eventType}</span>
                   <span className="ml-auto text-muted-fg">{relativeTime(ev.createdAt)}</span>
                 </div>
@@ -722,7 +722,7 @@ function PackPanel({
 
       {/* Pack file path */}
       {pack?.path ? (
-        <div className="border-t border-border/20 px-4 py-1.5">
+        <div className="mt-1 border-t border-border/10 px-4 py-1.5">
           <div className="truncate text-[11px] text-muted-fg/60">{pack.path}</div>
         </div>
       ) : null}
@@ -797,7 +797,7 @@ export function ContextPage() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="mb-4 flex items-center gap-1 rounded border border-border/30 bg-card/30 p-1 w-fit">
+      <div className="mb-4 flex items-center gap-1 rounded border border-border/10 bg-card backdrop-blur-sm p-1 w-fit">
         {TABS.map((tab) => (
           <button
             key={tab.id}
@@ -807,7 +807,7 @@ export function ContextPage() {
               "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
               activeTab === tab.id
                 ? "bg-accent/15 text-accent shadow-sm ring-1 ring-accent/20"
-                : "text-muted-fg hover:bg-muted/40 hover:text-fg"
+                : "text-muted-fg hover:bg-card/80 hover:text-fg"
             )}
           >
             <tab.icon size={14} weight="regular" />

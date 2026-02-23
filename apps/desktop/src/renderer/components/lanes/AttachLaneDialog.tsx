@@ -31,11 +31,11 @@ export function AttachLaneDialog({
           <div className="mt-3 space-y-2">
             <div>
               <div className="mb-1 text-xs text-muted-fg">Lane name</div>
-              <input value={attachName} onChange={(e) => setAttachName(e.target.value)} placeholder="e.g. bugfix/from-other-worktree" className="h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg" autoFocus />
+              <input value={attachName} onChange={(e) => setAttachName(e.target.value)} placeholder="e.g. bugfix/from-other-worktree" className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none placeholder:text-muted-fg" autoFocus />
             </div>
             <div>
               <div className="mb-1 text-xs text-muted-fg">Attached path</div>
-              <input value={attachPath} onChange={(e) => setAttachPath(e.target.value)} placeholder="/absolute/path/to/existing/worktree" className="h-10 w-full rounded bg-muted/30 shadow-card px-3 font-mono text-xs outline-none placeholder:text-muted-fg" />
+              <input value={attachPath} onChange={(e) => setAttachPath(e.target.value)} placeholder="/absolute/path/to/existing/worktree" className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 font-mono text-xs outline-none placeholder:text-muted-fg" />
             </div>
           </div>
           <div className="mt-3 flex items-center justify-end gap-2">

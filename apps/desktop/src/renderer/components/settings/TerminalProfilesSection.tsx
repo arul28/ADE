@@ -86,7 +86,7 @@ export function TerminalProfilesSection() {
   };
 
   return (
-    <section className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+    <section className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 md:col-span-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold">Terminal Profiles</div>
@@ -107,20 +107,20 @@ export function TerminalProfilesSection() {
       </div>
 
       {error ? (
-        <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div>
+        <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-400">{error}</div>
       ) : null}
 
       {!snapshot ? (
-        <div className="mt-3 rounded border border-border bg-bg/40 p-3 text-xs text-muted-fg">Loading profiles…</div>
+        <div className="mt-3 rounded-lg border border-border/10 bg-card/80 p-3 text-xs text-muted-fg">Loading profiles...</div>
       ) : (
         <div className="mt-3 space-y-2">
           {snapshot.profiles.map((profile) => (
-            <div key={profile.id} className="rounded border border-border bg-bg/40 p-2">
+            <div key={profile.id} className="rounded-lg border border-border/10 bg-card/80 p-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <input
-                      className="h-8 w-[220px] rounded border border-border bg-card/60 px-2 text-xs"
+                      className="h-8 w-[220px] rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                       value={profile.name}
                       onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
                     />
@@ -146,13 +146,13 @@ export function TerminalProfilesSection() {
                     </label>
                   </div>
                   <input
-                    className="mt-2 h-8 w-full rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                    className="mt-2 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg font-mono"
                     placeholder="Command to run (leave empty for normal shell)"
                     value={profile.command}
                     onChange={(e) => updateProfile(profile.id, { command: e.target.value })}
                   />
                   <input
-                    className="mt-2 h-8 w-full rounded border border-border bg-card/60 px-2 text-xs"
+                    className="mt-2 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                     placeholder="Description (optional)"
                     value={profile.description ?? ""}
                     onChange={(e) => updateProfile(profile.id, { description: e.target.value })}
@@ -162,23 +162,23 @@ export function TerminalProfilesSection() {
             </div>
           ))}
 
-          <div className="rounded border border-dashed border-border bg-bg/30 p-2">
+          <div className="rounded-lg border border-dashed border-border/20 bg-card/80 p-3">
             <div className="text-xs font-semibold text-fg">Add profile</div>
             <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
               <input
-                className="h-8 rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg font-mono"
                 placeholder="id (e.g. cursor)"
                 value={draftNew.id}
                 onChange={(e) => setDraftNew((prev) => ({ ...prev, id: e.target.value }))}
               />
               <input
-                className="h-8 rounded border border-border bg-card/60 px-2 text-xs"
+                className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                 placeholder="name (e.g. Cursor)"
                 value={draftNew.name}
                 onChange={(e) => setDraftNew((prev) => ({ ...prev, name: e.target.value }))}
               />
               <input
-                className="h-8 rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg font-mono"
                 placeholder="command (e.g. cursor .)"
                 value={draftNew.command}
                 onChange={(e) => setDraftNew((prev) => ({ ...prev, command: e.target.value }))}

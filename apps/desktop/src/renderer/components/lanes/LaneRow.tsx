@@ -91,9 +91,11 @@ export function LaneRow({
   return (
     <div
       className={cn(
-        "group relative flex flex-col gap-1 rounded shadow-card bg-card/70 p-3 transition-all hover:shadow-card-hover",
-        primary && "bg-card/90 shadow-card-hover",
-        selected && !primary && "bg-card/85 shadow-card-hover"
+        "group relative flex flex-col gap-1 rounded-lg bg-card/50 backdrop-blur-sm py-2.5 px-3 mb-1.5 transition-all duration-200 border border-border/10",
+        "hover:bg-card/70 hover:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.4)] hover:-translate-y-[1px]",
+        "shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)]",
+        primary && "bg-card/80 shadow-[0_0_16px_-4px_rgba(16,185,129,0.15)] border-emerald-500/15 hover:border-emerald-500/25 hover:shadow-[0_0_20px_-4px_rgba(16,185,129,0.2)]",
+        selected && !primary && "bg-card/75 shadow-[0_0_16px_-4px_rgba(245,158,11,0.2)] ring-1 ring-amber-500/15 border-amber-500/15 hover:shadow-[0_0_20px_-4px_rgba(245,158,11,0.25)]"
       )}
       style={{ paddingLeft: `${12 + stackIndentPx}px` }}
       onClick={(event) => onSelect({ extend: event.shiftKey })}
@@ -124,15 +126,23 @@ export function LaneRow({
           <div className="flex items-center gap-2">
             <GitBranch size={14} className={cn(selected ? "text-accent" : "text-muted-fg")} />
             <span className="truncate font-sans text-base font-semibold tracking-tight text-fg">{lane.name}</span>
-            <span className="rounded-lg bg-muted/40 px-1.5 py-0.5 text-xs text-muted-fg/70">{lane.laneType}</span>
+            <span className="rounded-lg bg-muted/30 px-1.5 py-0.5 text-xs text-muted-fg/70 border border-border/10">{lane.laneType}</span>
             {lane.parentLaneId ? (
               <span className="inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[11px] uppercase text-muted-fg">
                 <Stack size={12} />
                 d{lane.stackDepth}
               </span>
             ) : null}
-            {isPrimaryLane ? <span className="rounded-lg bg-emerald-500/15 px-1.5 py-0.5 text-[11px] uppercase text-emerald-700">home</span> : null}
-            <span className={cn("inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[11px] uppercase text-muted-fg transition-colors duration-400", statusAnimClass)}>
+            {isPrimaryLane ? <span className="rounded-lg bg-emerald-500/15 px-1.5 py-0.5 text-[11px] uppercase text-emerald-700 shadow-[0_0_6px_-1px_rgba(16,185,129,0.3)]">home</span> : null}
+            <span className={cn(
+              "inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] uppercase text-muted-fg transition-all duration-400 border border-border/10",
+              conflictStatus?.status === "conflict-active" && "bg-red-500/10 text-red-300 border-red-500/20 shadow-[0_0_8px_-2px_rgba(239,68,68,0.25)]",
+              conflictStatus?.status === "conflict-predicted" && "bg-orange-500/10 text-orange-300 border-orange-500/20 shadow-[0_0_8px_-2px_rgba(249,115,22,0.2)]",
+              conflictStatus?.status === "behind-base" && "bg-amber-500/10 text-amber-300 border-amber-500/20 shadow-[0_0_6px_-2px_rgba(245,158,11,0.2)]",
+              conflictStatus?.status === "merge-ready" && "bg-emerald-500/10 text-emerald-300 border-emerald-500/20 shadow-[0_0_6px_-2px_rgba(16,185,129,0.2)]",
+              !conflictStatus?.status && "bg-muted/30",
+              statusAnimClass
+            )}>
               <span className={cn("inline-block h-2 w-2 rounded-full", conflictDotClass(conflictStatus?.status))} />
               {conflictStatus?.status ?? "unknown"}
             </span>
@@ -256,7 +266,7 @@ export function LaneRow({
                     <input
                       value={draftName}
                       onChange={(event) => setDraftName(event.target.value)}
-                      className="block w-full rounded bg-muted/30 shadow-card px-3 py-2 text-lg focus:outline-none"
+                      className="block w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 py-2 text-lg focus:outline-none"
                       autoFocus
                     />
                   </div>
@@ -444,18 +454,19 @@ export function LaneRow({
         </div>
       </div>
 
-      <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border/10 pt-2 text-[11px] font-mono uppercase tracking-wider text-muted-fg">
-        <div className="flex flex-col">
+      <div className="mt-2 grid grid-cols-3 gap-2 pt-2 border-t border-border/5 text-[11px] font-mono uppercase tracking-wider text-muted-fg">
+        <div className="flex flex-col rounded-md bg-card/30 p-1.5">
           <span className="opacity-50">{lane.parentLaneId ? "Vs Parent" : "Pull"}</span>
-          <span className={cn("font-bold", lane.status.ahead > 0 || lane.status.behind > 0 ? "text-accent" : "text-fg")}>
-            {lane.status.ahead}↑ {lane.status.behind}↓
+          <span className="font-bold">
+            <span className={cn(lane.status.ahead > 0 ? "text-emerald-400" : "text-fg")}>{lane.status.ahead}↑</span>{" "}
+            <span className={cn(lane.status.behind > 0 ? "text-red-400" : "text-fg")}>{lane.status.behind}↓</span>
           </span>
         </div>
-        <div className="flex flex-col pl-2">
+        <div className="flex flex-col rounded-md bg-card/30 p-1.5">
           <span className="opacity-50">State</span>
           <span className={cn("font-bold", lane.status.dirty ? "text-accent" : "text-fg")}>{lane.status.dirty ? "DIRTY" : "CLEAN"}</span>
         </div>
-        <div className="flex flex-col pl-2">
+        <div className="flex flex-col rounded-md bg-card/30 p-1.5">
           <span className="opacity-50">Last Active</span>
           <span className="text-fg">{isPrimaryLane ? "Pinned" : "Just now"}</span>
         </div>

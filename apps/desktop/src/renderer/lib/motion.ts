@@ -161,3 +161,95 @@ export const layoutTransition: Transition = {
   stiffness: 300,
   damping: 30,
 };
+
+/* ── Modal / Dialog Variants ── */
+
+export const modalVariants: Variants = {
+  hidden: { opacity: 0, scale: 0.96 },
+  visible: { opacity: 1, scale: 1, transition: springs.default },
+  exit: { opacity: 0, scale: 0.96, transition: { duration: 0.15 } },
+};
+
+/* ── Dropdown Variants ── */
+
+export const dropdownVariants: Variants = {
+  hidden: { opacity: 0, scaleY: 0.95 },
+  visible: {
+    opacity: 1,
+    scaleY: 1,
+    transition: { type: "spring", stiffness: 500, damping: 30 },
+  },
+  exit: { opacity: 0, scaleY: 0.95, transition: { duration: 0.1 } },
+};
+
+export const dropdownItemStagger: Variants = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0.02 } },
+};
+
+export const dropdownItem: Variants = {
+  hidden: { opacity: 0, x: -4 },
+  visible: { opacity: 1, x: 0, transition: { duration: 0.12 } },
+};
+
+/* ── List Item Variants (AnimatePresence) ── */
+
+export const listItemVariants: Variants = {
+  hidden: { opacity: 0, height: 0 },
+  visible: { opacity: 1, height: "auto", transition: springs.default },
+  exit: { opacity: 0, height: 0, transition: { duration: 0.2 } },
+};
+
+/* ── Toast Variants ── */
+
+export const toastVariants: Variants = {
+  hidden: { opacity: 0, x: 40, scale: 0.95 },
+  visible: { opacity: 1, x: 0, scale: 1, transition: springs.default },
+  exit: { opacity: 0, x: 40, scale: 0.95, transition: { duration: 0.2 } },
+};
+
+/* ── Route Visit Tracking (first-visit stagger) ── */
+
+const _visitedRoutes = new Set<string>();
+
+/**
+ * Mark a route as visited and return whether this is the first visit.
+ * Pages call this once on mount to decide whether to play stagger entrance.
+ */
+export function markRouteVisited(route: string): boolean {
+  const isFirst = !_visitedRoutes.has(route);
+  _visitedRoutes.add(route);
+  return isFirst;
+}
+
+/**
+ * Returns stagger container props for a page.
+ * On first visit: plays the stagger entrance animation.
+ * On revisit: skips directly to the visible state (no stagger).
+ */
+export function getStaggerProps(routeKey: string): { variants: Variants; initial: string; animate: string } {
+  const isFirst = !_visitedRoutes.has(routeKey);
+  _visitedRoutes.add(routeKey);
+
+  if (!isFirst) {
+    return {
+      variants: {},
+      initial: "visible",
+      animate: "visible",
+    };
+  }
+
+  return {
+    variants: staggerContainerFast,
+    initial: "hidden",
+    animate: "visible",
+  };
+}
+
+/* ── Status Flip (departure-board style) ── */
+
+export const flipVariants: Variants = {
+  hidden: { opacity: 0, rotateX: -90 },
+  visible: { opacity: 1, rotateX: 0, transition: springs.snappy },
+  exit: { opacity: 0, rotateX: 90, transition: { duration: 0.15 } },
+};

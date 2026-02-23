@@ -21,7 +21,7 @@ import {
   getBezierPath,
   useReactFlow
 } from "@xyflow/react";
-import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning } from "@phosphor-icons/react";
+import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning, Cube, SquaresFour } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   BatchAssessmentResult,
@@ -55,6 +55,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { Graph3DScene, type Graph3DNode, type Graph3DEdge } from "./Graph3DScene";
 
 type GraphNodeData = {
   lane: LaneSummary;
@@ -563,14 +564,14 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
       {lane.tags.length > 0 ? (
         <div className="mt-1 flex flex-wrap gap-1">
           {lane.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="rounded bg-muted/20 px-1 text-[10px] text-muted-fg">
+            <span key={tag} className="rounded bg-surface-recessed px-1 text-[10px] text-muted-fg">
               {tag}
             </span>
           ))}
         </div>
       ) : null}
       {data.collapsedChildCount > 0 ? (
-        <div className="mt-1 inline-flex items-center gap-1 rounded bg-muted/40 px-1 text-[11px]">
+        <div className="mt-1 inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1 text-[11px]">
           <Stack size={12} weight="regular" />
           {data.collapsedChildCount} children
         </div>
@@ -737,6 +738,7 @@ function GraphInner() {
   }, [lanes]);
 
   const [viewMode, setViewMode] = React.useState<GraphViewMode>("all");
+  const [is3DView, setIs3DView] = React.useState(false);
   const [graphState, setGraphState] = React.useState<GraphPersistedState>(createDefaultState());
   const [loadedGraphState, setLoadedGraphState] = React.useState(false);
   const [nodes, setNodes] = React.useState<Array<Node<GraphNodeData>>>([]);
@@ -2381,7 +2383,7 @@ function GraphInner() {
           <div className="h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
         </div>
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="rounded shadow-card bg-card/90 px-4 py-3 text-sm text-muted-fg">
+          <div className="rounded-lg border border-border/10 bg-card/90 backdrop-blur-sm shadow-card px-4 py-3 text-sm text-muted-fg">
             <div className="flex items-center gap-2">
               <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
               Loading topology…
@@ -2407,9 +2409,9 @@ function GraphInner() {
     <div className="relative h-full w-full">
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
 
-      <div className="absolute left-0 right-0 top-0 z-20 bg-bg border-b border-border/30 px-3 py-1.5">
+      <div className="absolute left-0 right-0 top-0 z-20 bg-bg border-b border-border/10 px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg bg-muted/30 p-0.5">
+          <div className="inline-flex rounded-lg bg-surface-recessed p-0.5">
             {VIEW_MODES.map((mode) => (
               <button
                 key={mode}
@@ -2437,12 +2439,12 @@ function GraphInner() {
                 }));
               }}
               placeholder="Filter…"
-              className="h-7 w-[220px] rounded-lg bg-muted/30 pl-7 pr-2 text-xs outline-none"
+              className="h-7 w-[220px] rounded-lg border border-border/15 bg-surface-recessed pl-7 pr-2 text-xs text-fg outline-none placeholder:text-muted-fg/50"
             />
           </div>
 
           <select
-            className="h-7 rounded-lg bg-muted/30 px-2 text-xs"
+            className="h-7 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
             value={graphState.activePreset}
             onChange={(event) => loadPreset(event.target.value)}
           >
@@ -2514,8 +2516,8 @@ function GraphInner() {
               Filters
             </Button>
             {showFiltersPanel ? (
-              <div className="absolute right-0 top-8 z-40 w-[360px] rounded bg-card/95 p-2 text-xs shadow-float">
-                <div className="mb-2 rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">
+              <div className="absolute right-0 top-8 z-40 w-[360px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-2 text-xs shadow-float">
+                <div className="mb-2 rounded-lg bg-surface-recessed px-2 py-1 text-[11px] text-muted-fg">
                   Drag-drop integrates commits by default; use Reparent when you want to change stack hierarchy.
                 </div>
                 <div className="mb-2">
@@ -2642,7 +2644,7 @@ function GraphInner() {
                           }
                         }))
                       }
-                      className="h-7 rounded-lg bg-muted/30 px-2 text-xs normal-case text-fg"
+                      className="h-7 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs normal-case text-fg"
                     >
                       <option value="">all stacks</option>
                       {rootLaneOptions.map((lane) => (
@@ -2666,7 +2668,7 @@ function GraphInner() {
                           }
                         }));
                       }}
-                      className="h-7 rounded-lg bg-muted/30 px-2 text-xs normal-case text-fg"
+                      className="h-7 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs normal-case text-fg"
                     >
                       <option value="">all tags</option>
                       {availableTags.map((tag) => (
@@ -2680,9 +2682,52 @@ function GraphInner() {
               </div>
             ) : null}
           </div>
+
+          {/* 2D / 3D toggle */}
+          <div className="ml-2 inline-flex rounded-lg bg-surface-recessed p-0.5">
+            <button
+              type="button"
+              className={cn("rounded px-2 py-1 text-xs flex items-center gap-1", !is3DView ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg")}
+              onClick={() => setIs3DView(false)}
+            >
+              <SquaresFour size={12} weight="regular" />
+              2D
+            </button>
+            <button
+              type="button"
+              className={cn("rounded px-2 py-1 text-xs flex items-center gap-1", is3DView ? "bg-accent text-accent-fg" : "text-muted-fg hover:text-fg")}
+              onClick={() => setIs3DView(true)}
+            >
+              <Cube size={12} weight="regular" />
+              3D
+            </button>
+          </div>
         </div>
       </div>
 
+      {is3DView ? (
+        /* 3D Graph View */
+        <div className="absolute inset-0 pt-[52px]">
+          <Graph3DScene
+            nodes={lanes.map<Graph3DNode>((lane, i) => ({
+              id: lane.id,
+              label: lane.name,
+              x: (i % 5) * 4 - 8,
+              y: Math.floor(i / 5) * 4 - 4,
+              status: lane.laneType === "primary" ? "primary" : "idle",
+              type: lane.laneType === "primary" ? "primary" : "worktree",
+            }))}
+            edges={lanes
+              .filter((lane) => lane.parentLaneId)
+              .map<Graph3DEdge>((lane) => ({
+                source: lane.parentLaneId!,
+                target: lane.id,
+                type: "topology",
+              }))}
+            onNodeClick={(nodeId) => navigate(`/lanes/${nodeId}`)}
+          />
+        </div>
+      ) : (
       <div className="absolute inset-0 pt-[52px]">
         <ReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>
           nodes={nodes}
@@ -2962,10 +3007,11 @@ function GraphInner() {
           </svg>
         ) : null}
       </div>
+      )}
 
       {contextMenu ? (
         <div
-          className="fixed z-[90] min-w-[190px] rounded bg-card/95 p-1 shadow-float"
+          className="fixed z-[90] min-w-[190px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-1 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onMouseLeave={() => setContextMenu(null)}
         >
@@ -3006,7 +3052,7 @@ function GraphInner() {
                 type="button"
                 className={cn(
                   "flex w-full items-center rounded px-2 py-1 text-left text-xs",
-                  item.disabled ? "cursor-not-allowed text-muted-fg" : "text-fg hover:bg-muted/70"
+                  item.disabled ? "cursor-not-allowed text-muted-fg" : "text-fg hover:bg-card/80"
                 )}
                 title={item.disabled ? item.reason : undefined}
                 onClick={() => {
@@ -3022,7 +3068,7 @@ function GraphInner() {
       ) : null}
 
       {appearanceEditor ? (
-        <div className="fixed z-[95] w-[340px] rounded bg-card/95 p-3 shadow-float" style={{ left: appearanceEditor.x, top: appearanceEditor.y }}>
+        <div className="fixed z-[95] w-[340px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-3 shadow-float" style={{ left: appearanceEditor.x, top: appearanceEditor.y }}>
           <div className="mb-2 text-xs font-semibold text-fg">Customize Appearance</div>
           <div className="mb-2 text-xs text-muted-fg">Color</div>
           <div className="mb-3 flex flex-wrap gap-1.5">
@@ -3046,7 +3092,7 @@ function GraphInner() {
                 key={option.label}
                 type="button"
                 className={cn(
-                  "inline-flex h-7 items-center gap-1 rounded bg-muted/20 px-2 text-xs",
+                  "inline-flex h-7 items-center gap-1 rounded border border-border/10 bg-card/60 px-2 text-xs",
                   appearanceEditor.icon === option.key && "bg-accent/20 ring-1 ring-accent"
                 )}
                 onClick={() => setAppearanceEditor((prev) => (prev ? { ...prev, icon: option.key } : prev))}
@@ -3059,7 +3105,7 @@ function GraphInner() {
           <div className="mb-2 text-xs text-muted-fg">Tags</div>
           <div className="mb-2 flex flex-wrap gap-1">
             {appearanceEditor.tags.map((tag) => (
-              <span key={tag} className="inline-flex items-center gap-1 rounded bg-muted/20 px-1 text-xs text-fg">
+              <span key={tag} className="inline-flex items-center gap-1 rounded border border-border/10 bg-card/60 px-1 text-xs text-fg">
                 {tag}
                 <button
                   type="button"
@@ -3084,7 +3130,7 @@ function GraphInner() {
             <input
               value={appearanceEditor.newTag}
               onChange={(event) => setAppearanceEditor((prev) => (prev ? { ...prev, newTag: event.target.value } : prev))}
-              className="h-7 flex-1 rounded-lg bg-muted/30 px-2 text-xs outline-none"
+              className="h-7 flex-1 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs outline-none"
               placeholder="new tag"
             />
             <Button
@@ -3132,10 +3178,10 @@ function GraphInner() {
 
       {reparentDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(780px,100%)] rounded bg-card p-4 shadow-float">
+          <div className="w-[min(780px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
             <div className="mb-2 text-sm font-semibold text-fg">Confirm Lane Drop</div>
             {reparentDialog.integratePlan || reparentDialog.laneIds.length === 1 ? (
-              <div className="mb-2 inline-flex rounded-lg bg-muted/20 p-0.5 text-xs">
+              <div className="mb-2 inline-flex rounded-lg border border-border/10 bg-card/60 p-0.5 text-xs">
                 {reparentDialog.integratePlan ? (
                   <button
                     type="button"
@@ -3172,7 +3218,7 @@ function GraphInner() {
                 ) : null}
               </div>
             ) : null}
-            <div className="mb-2 rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">
+            <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
               {reparentDialog.actionMode === "integrate"
                 ? "Integrate keeps stack ancestry unchanged and brings source lane commits into the target lane."
                 : reparentDialog.actionMode === "pr"
@@ -3180,7 +3226,7 @@ function GraphInner() {
                 : "Reparent changes stack ancestry. ADE rebases selected lane commits onto the target parent branch."}
             </div>
             {reparentDialog.actionMode === "integrate" && reparentDialog.integratePlan ? (
-              <div className="mb-2 rounded-lg bg-muted/20 p-2 text-xs">
+              <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
                 <div className="font-semibold text-fg">{reparentDialog.integratePlan.summary}</div>
                 <div className="mt-1 text-muted-fg">{reparentDialog.integratePlan.detail}</div>
               </div>
@@ -3189,7 +3235,7 @@ function GraphInner() {
                 <div className="mb-2 text-xs text-muted-fg">
                   Target parent: <span className="text-fg">{laneById.get(reparentDialog.targetLaneId)?.name ?? reparentDialog.targetLaneId}</span>
                 </div>
-                <div className="mb-2 rounded-lg bg-muted/20 p-2 text-xs">
+                <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
                   {reparentDialog.laneIds.length === 1 ? (
                     <div>
                       {laneById.get(reparentDialog.laneIds[0]!)?.name ?? reparentDialog.laneIds[0]} → {laneById.get(reparentDialog.targetLaneId)?.name ?? reparentDialog.targetLaneId}
@@ -3215,7 +3261,7 @@ function GraphInner() {
                 No overlapping files detected.
               </div>
             )}
-            <div className="mb-3 max-h-[180px] overflow-auto rounded-lg bg-muted/20 p-2 text-xs">
+            <div className="mb-3 max-h-[180px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
               {reparentDialog.overlapFiles.length === 0
                 ? "No overlaps."
                 : reparentDialog.overlapFiles.slice(0, 12).map((file) => <div key={file}>{file}</div>)}
@@ -3231,7 +3277,7 @@ function GraphInner() {
                 : ""}
             </div>
             {reparentDialog.preview ? (
-              <div className="mb-3 rounded-lg bg-muted/20 p-2 text-xs">
+              <div className="mb-3 rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
                 <div>Preview outcome: {reparentDialog.preview.outcome}</div>
                 <div>
                   files changed: {reparentDialog.preview.diffStat.filesChanged} · conflicts: {reparentDialog.preview.conflictingFiles.length}
@@ -3282,7 +3328,7 @@ function GraphInner() {
 
       {prDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(980px,100%)] rounded bg-card p-4 shadow-float">
+          <div className="w-[min(980px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-fg">
                 {prDialog.existingPr ? `PR #${prDialog.existingPr.githubPrNumber}` : "Create Pull Request"}
@@ -3305,7 +3351,7 @@ function GraphInner() {
             {!prDialog.existingPr ? (
               <div className="space-y-3">
                 {prDialog.loadingDraft ? (
-                  <div className="rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">
+                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
                     <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
                     Drafting description from pack…
                   </div>
@@ -3313,12 +3359,12 @@ function GraphInner() {
 
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                   <input
-                    className="h-9 rounded bg-muted/30 px-3 text-sm md:col-span-2"
+                    className="h-9 rounded border border-border/15 bg-surface-recessed px-3 text-sm md:col-span-2"
                     placeholder="PR title"
                     value={prDialog.title}
                     onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
                   />
-                  <label className="inline-flex h-9 items-center gap-2 rounded bg-muted/30 px-3 text-xs text-muted-fg">
+                  <label className="inline-flex h-9 items-center gap-2 rounded border border-border/15 bg-surface-recessed px-3 text-xs text-muted-fg">
                     <input
                       type="checkbox"
                       checked={prDialog.draft}
@@ -3329,7 +3375,7 @@ function GraphInner() {
                 </div>
 
                 <textarea
-                  className="min-h-[240px] w-full rounded bg-muted/30 px-3 py-2 text-xs"
+                  className="min-h-[240px] w-full rounded border border-border/15 bg-surface-recessed px-3 py-2 text-xs"
                   value={prDialog.body}
                   onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, body: e.target.value } : prev))}
                   placeholder="PR description (markdown)"
@@ -3409,7 +3455,7 @@ function GraphInner() {
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="rounded-lg bg-muted/20 p-2 text-xs">
+                <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
                   <div className="font-semibold text-fg">{prDialog.existingPr.title}</div>
                   <div className="mt-1 text-muted-fg">
                     state: {prDialog.existingPr.state} · checks: {prDialog.existingPr.checksStatus} · reviews: {prDialog.existingPr.reviewStatus}
@@ -3418,9 +3464,9 @@ function GraphInner() {
                 </div>
 
                 {prDialog.loadingDetails ? (
-                  <div className="rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">Loading PR status…</div>
+                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">Loading PR status…</div>
                 ) : prDialog.status ? (
-                  <div className="rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">
+                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
                     <div>
                       mergeable: <span className="text-fg">{prDialog.status.isMergeable ? "yes" : "no"}</span> · conflicts:{" "}
                       <span className="text-fg">{prDialog.status.mergeConflicts ? "yes" : "no"}</span> · behind base:{" "}
@@ -3430,7 +3476,7 @@ function GraphInner() {
                 ) : null}
 
                 <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                  <div className="rounded-lg bg-muted/20 p-2 text-xs">
+                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
                     <div className="mb-1 font-semibold text-fg">Checks</div>
                     {prDialog.checks.length === 0 ? (
                       <div className="text-muted-fg">No checks.</div>
@@ -3443,7 +3489,7 @@ function GraphInner() {
                       ))
                     )}
                   </div>
-                  <div className="rounded-lg bg-muted/20 p-2 text-xs">
+                  <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-xs">
                     <div className="mb-1 font-semibold text-fg">Reviews</div>
                     {prDialog.reviews.length === 0 ? (
                       <div className="text-muted-fg">No reviews.</div>
@@ -3463,7 +3509,7 @@ function GraphInner() {
                     <select
                       value={prDialog.mergeMethod}
                       onChange={(e) => setPrDialog((prev) => (prev ? { ...prev, mergeMethod: e.target.value as MergeMethod } : prev))}
-                      className="h-8 rounded bg-muted/30 px-2 text-xs"
+                      className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs"
                     >
                       <option value="merge">merge</option>
                       <option value="squash">squash</option>
@@ -3536,7 +3582,7 @@ function GraphInner() {
 
       {integrationDialog ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(780px,100%)] rounded bg-card p-4 shadow-float">
+          <div className="w-[min(780px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="text-sm font-semibold text-fg">Create Integration Lane</div>
               <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setIntegrationDialog(null)}>
@@ -3555,14 +3601,14 @@ function GraphInner() {
             </div>
 
             <input
-              className="mb-2 h-9 w-full rounded bg-muted/30 px-3 text-sm"
+              className="mb-2 h-9 w-full rounded border border-border/15 bg-surface-recessed px-3 text-sm"
               value={integrationDialog.name}
               onChange={(e) => setIntegrationDialog((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
               placeholder="Integration lane name"
               disabled={integrationDialog.busy}
             />
 
-            <div className="mb-3 max-h-[160px] overflow-auto rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">
+            <div className="mb-3 max-h-[160px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">
               {integrationDialog.laneIds.map((laneId) => (
                 <div key={laneId} className="truncate">
                   {laneById.get(laneId)?.name ?? laneId}
@@ -3571,7 +3617,7 @@ function GraphInner() {
             </div>
 
             {integrationDialog.step ? (
-              <div className="mb-3 rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">{integrationDialog.step}</div>
+              <div className="mb-3 rounded-lg border border-border/10 bg-card/60 p-2 text-xs text-muted-fg">{integrationDialog.step}</div>
             ) : null}
 
             <div className="flex justify-end gap-2">
@@ -3628,7 +3674,7 @@ function GraphInner() {
 
       {selectedLaneIds.length > 1 ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[60] flex justify-center">
-          <div className="pointer-events-auto rounded bg-card/95 px-3 py-2 shadow-float">
+          <div className="pointer-events-auto rounded border border-border/10 bg-card/95 backdrop-blur-sm px-3 py-2 shadow-float">
             <div className="mb-1 text-[11px] text-muted-fg">{selectedLaneIds.length} lanes selected</div>
             <div className="flex items-center gap-1">
               <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void runBatchOperation("restack")}>
@@ -3677,7 +3723,7 @@ function GraphInner() {
                     style={{ width: `${(batchStatus.steps.filter((step) => step.status === "done" || step.status === "failed" || step.status === "skipped").length / Math.max(1, batchStatus.steps.length)) * 100}%` }}
                   />
                 </div>
-                <div className="max-h-[90px] overflow-auto rounded bg-muted/20 p-1">
+                <div className="max-h-[90px] overflow-auto rounded border border-border/10 bg-card/60 p-1">
                   {batchStatus.steps.map((step) => (
                     <div key={step.laneId} className="flex items-center justify-between gap-2">
                       <span className="truncate">{step.laneName}</span>
@@ -3752,7 +3798,7 @@ function GraphInner() {
       ) : null}
 
       {edgeSimulation ? (
-        <div className="absolute right-3 top-[66px] z-[89] w-[360px] rounded bg-card/95 p-3 text-xs shadow-float">
+        <div className="absolute right-3 top-[66px] z-[89] w-[360px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-3 text-xs shadow-float">
           <div className="mb-1 flex items-center justify-between gap-2">
             <div className="font-semibold text-fg">Merge Simulation</div>
             <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setEdgeSimulation(null)}>
@@ -3763,7 +3809,7 @@ function GraphInner() {
             {(laneById.get(edgeSimulation.laneAId)?.name ?? edgeSimulation.laneAId)} → {(laneById.get(edgeSimulation.laneBId)?.name ?? edgeSimulation.laneBId)}
           </div>
           {edgeSimulation.loading ? (
-            <div className="rounded-lg bg-muted/20 p-3 text-muted-fg">
+            <div className="rounded-lg border border-border/10 bg-card/60 p-3 text-muted-fg">
               <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
               <div>Running merge simulation…</div>
             </div>
@@ -3774,13 +3820,13 @@ function GraphInner() {
             </div>
           ) : edgeSimulation.result ? (
             <div className="space-y-2">
-              <div className="rounded-lg bg-muted/20 p-2">
+              <div className="rounded-lg border border-border/10 bg-card/60 p-2">
                 <div>Outcome: <span className="font-semibold text-fg">{edgeSimulation.result.outcome}</span></div>
                 <div className="text-muted-fg">
                   files changed: {edgeSimulation.result.diffStat.filesChanged} · insertions: {edgeSimulation.result.diffStat.insertions} · deletions: {edgeSimulation.result.diffStat.deletions}
                 </div>
               </div>
-              <div className="max-h-[180px] overflow-auto rounded-lg bg-muted/20 p-2">
+              <div className="max-h-[180px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2">
                 {edgeSimulation.result.conflictingFiles.length === 0 ? (
                   <div className="text-muted-fg">No conflicting files.</div>
                 ) : (
@@ -3797,7 +3843,7 @@ function GraphInner() {
       ) : null}
 
       {conflictPanel ? (
-        <div className="absolute right-3 top-[66px] z-[89] w-[420px] rounded bg-card/95 p-3 text-xs shadow-float">
+        <div className="absolute right-3 top-[66px] z-[89] w-[420px] rounded border border-border/10 bg-card/95 backdrop-blur-sm p-3 text-xs shadow-float">
           <div className="mb-1 flex items-center justify-between gap-2">
             <div className="font-semibold text-fg">Conflict Resolution</div>
             <button type="button" className="text-muted-fg hover:text-fg" onClick={() => setConflictPanel(null)}>
@@ -3815,12 +3861,12 @@ function GraphInner() {
           ) : null}
 
           {conflictPanel.loading ? (
-            <div className="mb-2 rounded-lg bg-muted/20 p-2 text-muted-fg">
+            <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-muted-fg">
               <div className="mb-1 inline-flex h-3 w-3 animate-spin rounded-full border-2 border-muted-fg border-t-transparent" />
               <div>Running merge simulation…</div>
             </div>
           ) : conflictPanel.result ? (
-            <div className="mb-2 rounded-lg bg-muted/20 p-2 text-muted-fg">
+            <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-muted-fg">
               <div>
                 outcome: <span className="font-semibold text-fg">{conflictPanel.result.outcome}</span>
               </div>
@@ -3833,7 +3879,7 @@ function GraphInner() {
 
           <div className="mb-2">
             <div className="mb-1 text-[11px] font-semibold text-fg">Overlapping Files</div>
-            <div className="max-h-[120px] overflow-auto rounded-lg bg-muted/20 p-2 text-[11px]">
+            <div className="max-h-[120px] overflow-auto rounded-lg border border-border/10 bg-card/60 p-2 text-[11px]">
               {(() => {
                 const key = edgePairKey(conflictPanel.laneAId, conflictPanel.laneBId);
                 const files = overlapFilesByPair.get(key) ?? [];
@@ -3851,7 +3897,7 @@ function GraphInner() {
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-muted-fg">Apply to:</span>
 	              <select
-	                className="h-7 rounded bg-muted/30 px-2 text-[11px]"
+	                className="h-7 rounded border border-border/15 bg-surface-recessed px-2 text-[11px]"
 	                value={conflictPanel.applyLaneId}
 	                onChange={(e) =>
 	                  setConflictPanel((prev) =>
@@ -3916,7 +3962,7 @@ function GraphInner() {
           </div>
 
           {conflictPanel.preview ? (
-            <div className="mb-2 rounded-lg bg-muted/20 p-2 text-[11px] text-muted-fg">
+            <div className="mb-2 rounded-lg border border-border/10 bg-card/60 p-2 text-[11px] text-muted-fg">
               <div className="mb-1 font-semibold text-fg">AI preview</div>
               <div>
                 files: <span className="text-fg">{conflictPanel.preview.stats.fileCount}</span> · approx chars:{" "}
@@ -3936,7 +3982,7 @@ function GraphInner() {
                   {conflictPanel.preview.laneExportLite ? (
                     <div className="mt-2">
                       <div className="text-[11px] font-semibold text-fg">lane export (lite)</div>
-                      <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                      <pre className="mt-1 max-h-40 overflow-auto rounded border border-border/10 bg-card/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
                         {conflictPanel.preview.laneExportLite}
                       </pre>
                     </div>
@@ -3944,7 +3990,7 @@ function GraphInner() {
                   {conflictPanel.preview.peerLaneExportLite ? (
                     <div className="mt-2">
                       <div className="text-[11px] font-semibold text-fg">peer lane export (lite)</div>
-                      <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                      <pre className="mt-1 max-h-40 overflow-auto rounded border border-border/10 bg-card/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
                         {conflictPanel.preview.peerLaneExportLite}
                       </pre>
                     </div>
@@ -3952,7 +3998,7 @@ function GraphInner() {
                   {conflictPanel.preview.conflictExportStandard ? (
                     <div className="mt-2">
                       <div className="text-[11px] font-semibold text-fg">conflict export (standard)</div>
-                      <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                      <pre className="mt-1 max-h-40 overflow-auto rounded border border-border/10 bg-card/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
                         {conflictPanel.preview.conflictExportStandard}
                       </pre>
                     </div>
@@ -3964,20 +4010,20 @@ function GraphInner() {
                   <summary className="cursor-pointer text-[11px] text-muted-fg">included files</summary>
                   <div className="mt-1 space-y-2">
                     {conflictPanel.preview.files.slice(0, 6).map((f) => (
-                      <details key={f.path} className="rounded bg-muted/20 p-2">
+                      <details key={f.path} className="rounded border border-border/10 bg-card/60 p-2">
                         <summary className="cursor-pointer text-[11px] text-fg">{f.path}</summary>
                         {f.markerPreview ? (
-                          <pre className="mt-2 max-h-28 overflow-auto rounded bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                          <pre className="mt-2 max-h-28 overflow-auto rounded border border-border/10 bg-card/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
                             {f.markerPreview}
                           </pre>
                         ) : null}
                         {f.laneDiff ? (
-                          <pre className="mt-2 max-h-28 overflow-auto rounded bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                          <pre className="mt-2 max-h-28 overflow-auto rounded border border-border/10 bg-card/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
                             {f.laneDiff}
                           </pre>
                         ) : null}
                         {f.peerDiff ? (
-                          <pre className="mt-2 max-h-28 overflow-auto rounded bg-muted/20 p-2 text-[10px] text-fg whitespace-pre-wrap">
+                          <pre className="mt-2 max-h-28 overflow-auto rounded border border-border/10 bg-card/60 p-2 text-[10px] text-fg whitespace-pre-wrap">
                             {f.peerDiff}
                           </pre>
                         ) : null}
@@ -3991,7 +4037,7 @@ function GraphInner() {
 
           {conflictPanel.proposal ? (
             <div className="space-y-2">
-              <div className="rounded-lg bg-muted/20 p-2 text-[11px] text-muted-fg">
+              <div className="rounded-lg border border-border/10 bg-card/60 p-2 text-[11px] text-muted-fg">
                 <div className="mb-1 font-semibold text-fg">Proposal</div>
                 <div>status: <span className="text-fg">{conflictPanel.proposal.status}</span></div>
                 {conflictPanel.proposal.confidence != null ? (
@@ -4002,7 +4048,7 @@ function GraphInner() {
                 ) : null}
               </div>
 
-              <div className="rounded-lg bg-muted/20 p-2">
+              <div className="rounded-lg border border-border/10 bg-card/60 p-2">
                 <div className="mb-1 text-[11px] font-semibold text-fg">Apply Mode</div>
                 <div className="flex flex-wrap gap-2 text-[11px] text-muted-fg">
                   {(["unstaged", "staged", "commit"] as const).map((mode) => (
@@ -4018,7 +4064,7 @@ function GraphInner() {
                 </div>
                 {conflictPanel.applyMode === "commit" ? (
                   <input
-                    className="mt-2 h-8 w-full rounded bg-muted/30 px-2 text-[11px]"
+                    className="mt-2 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-[11px]"
                     placeholder="Commit message"
                     value={conflictPanel.commitMessage}
                     onChange={(e) => setConflictPanel((prev) => (prev ? { ...prev, commitMessage: e.target.value } : prev))}
@@ -4089,7 +4135,7 @@ function GraphInner() {
 
       {nodeTooltip && hoveredTooltipLane ? (
         <div
-          className="pointer-events-none fixed z-[92] min-w-[240px] rounded bg-card/95 px-2.5 py-2 text-[11px] shadow-float ade-tooltip-motion ade-tooltip-open"
+          className="pointer-events-none fixed z-[92] min-w-[240px] rounded border border-border/10 bg-card/95 backdrop-blur-sm px-2.5 py-2 text-[11px] shadow-float ade-tooltip-motion ade-tooltip-open"
           style={{ left: nodeTooltip.x, top: nodeTooltip.y }}
         >
           <div className="font-semibold text-fg">{hoveredTooltipLane.name}</div>
@@ -4107,10 +4153,10 @@ function GraphInner() {
 
       {textPrompt ? (
         <div className="fixed inset-0 z-[96] flex items-center justify-center bg-black/45 p-4">
-          <div className="w-[min(460px,100%)] rounded bg-card p-4 shadow-float">
+          <div className="w-[min(460px,100%)] rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4 shadow-float">
             <div className="text-sm font-semibold text-fg">{textPrompt.title}</div>
             {textPrompt.message ? (
-              <div className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">
+              <div className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap rounded-lg border border-border/10 bg-card/60 px-2 py-1 text-[11px] text-muted-fg">
                 {textPrompt.message}
               </div>
             ) : null}
@@ -4132,7 +4178,7 @@ function GraphInner() {
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="mt-3 h-9 w-full rounded bg-muted/30 px-2 text-sm outline-none focus:ring-1 focus:ring-accent"
+              className="mt-3 h-9 w-full rounded border border-border/15 bg-surface-recessed px-2 text-sm outline-none focus:ring-1 focus:ring-accent"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-300">{textPromptError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
@@ -4149,7 +4195,7 @@ function GraphInner() {
 
       {edgeHover ? (
         <div
-          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded bg-card/95 px-2 py-1 text-[11px] text-fg shadow-float"
+          className="pointer-events-none fixed z-[91] max-w-[420px] whitespace-pre-wrap rounded border border-border/10 bg-card/95 backdrop-blur-sm px-2 py-1 text-[11px] text-fg shadow-float"
           style={{ left: edgeHover.x, top: edgeHover.y }}
         >
           {edgeHover.label}

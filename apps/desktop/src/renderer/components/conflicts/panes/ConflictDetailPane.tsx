@@ -99,7 +99,7 @@ export function ConflictDetailPane() {
             </span>
           )}
         </div>
-        <div className="mt-2 rounded-lg bg-muted/20 px-3 py-2 font-mono text-xs text-muted-fg">
+        <div className="mt-2 rounded-lg bg-card/60 px-3 py-2 font-mono text-xs text-muted-fg">
           <span className="text-muted-fg/60">branch</span>{" "}
           <span className="text-fg">{selectedLane.branchRef}</span>
           <span className="mx-2 text-muted-fg/30">|</span>
@@ -110,7 +110,7 @@ export function ConflictDetailPane() {
 
       {/* Progress indicator */}
       {loading && progress && (
-        <div className="rounded-lg bg-muted/20 p-2 text-xs text-muted-fg">
+        <div className="rounded-lg bg-card/60 p-2 text-xs text-muted-fg">
           Analyzing... {progress.completedPairs}/{progress.totalPairs} pairs
         </div>
       )}

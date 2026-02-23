@@ -20,6 +20,7 @@ export type AdeDb = {
 };
 
 const require = createRequire(__filename);
+const FLUSH_DEBOUNCE_MS = 500;
 
 function resolveSqlJsWasmDir(): string {
   // Ensure the wasm file can be located regardless of cwd.
@@ -1764,6 +1765,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const db: Database = new SQL.Database(data);
 
   migrate(db);
+  db.run("pragma foreign_keys = on");
 
   let dirty = false;
   let flushTimer: NodeJS.Timeout | null = null;
@@ -1796,7 +1798,6 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         // Best-effort directory sync; unsupported platforms/filesystems can skip.
       }
       dirty = false;
-      logger.debug("db.flushed", { dbPath, bytes: bytes.length });
     } catch (err) {
       if (tempPath && fs.existsSync(tempPath)) {
         try {
@@ -1812,7 +1813,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const scheduleFlush = () => {
     dirty = true;
     if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushNow, 125);
+    flushTimer = setTimeout(flushNow, FLUSH_DEBOUNCE_MS);
   };
 
   const getString = (key: string): string | null => {

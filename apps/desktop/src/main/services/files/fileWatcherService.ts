@@ -47,6 +47,17 @@ export function createFileWatcherService() {
     });
   };
 
+  const stopAllForSender = (senderId: number): void => {
+    const workspaceIds: string[] = [];
+    for (const sub of subscriptions.values()) {
+      if (sub.senderId !== senderId) continue;
+      workspaceIds.push(sub.workspaceId);
+    }
+    for (const workspaceId of workspaceIds) {
+      stop(workspaceId, senderId);
+    }
+  };
+
   const emitDebounced = (subKey: string, fileKey: string, emit: () => void) => {
     let queue = pendingBySub.get(subKey);
     if (!queue) {
@@ -76,14 +87,15 @@ export function createFileWatcherService() {
         },
         ignored: [
           /(^|[/\\])\.git($|[/\\])/,
-          /(^|[/\\])node_modules($|[/\\])/
+          /(^|[/\\])node_modules($|[/\\])/,
+          /(^|[/\\])\.ade($|[/\\])/
         ]
       });
 
       const forward = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
         const relRaw = path.relative(args.rootPath, absPath);
         const relPath = normalizeRelative(relRaw);
-        if (!relPath || relPath.startsWith(".git/") || relPath === ".git") return;
+        if (!relPath || relPath.startsWith(".git/") || relPath === ".git" || relPath.startsWith(".ade/") || relPath === ".ade") return;
         const fileKey = `${kind}:${relPath}`;
         emitDebounced(key, fileKey, () => {
           callback({
@@ -111,6 +123,8 @@ export function createFileWatcherService() {
     },
 
     stop,
+
+    stopAllForSender,
 
     disposeAll(): void {
       for (const entry of subscriptions.values()) {

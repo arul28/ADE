@@ -52,7 +52,7 @@ function RoleBadge({ role }: { role: OrchestratorWorkerRole }) {
     <span
       className={cn(
         "rounded px-1.5 py-0.5 text-[9px] font-medium border",
-        ROLE_BADGE_CLASSES[role] ?? "bg-zinc-500/20 text-zinc-300 border-zinc-500/30"
+        ROLE_BADGE_CLASSES[role] ?? "bg-muted/30 text-muted-fg border-border/30"
       )}
     >
       {ROLE_LABELS[role] ?? role}
@@ -66,10 +66,10 @@ function PhaseSection({ phase }: { phase: ExecutionPlanPhase }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="rounded border border-border/20 bg-zinc-900/40">
+    <div className="rounded border border-border/20 bg-surface-recessed">
       <button
         onClick={() => setExpanded((prev) => !prev)}
-        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-zinc-800/40"
+        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-card/60"
       >
         {expanded
           ? <CaretDown size={12} weight="regular" className="text-muted-fg shrink-0" />
@@ -88,7 +88,7 @@ function PhaseSection({ phase }: { phase: ExecutionPlanPhase }) {
         <div className="flex items-center gap-1.5 shrink-0">
           <span className={cn(
             "rounded px-1 py-0.5 text-[9px] font-medium",
-            EXECUTOR_BADGE_CLASSES[phase.executorKind] ?? "bg-zinc-500/20 text-zinc-300"
+            EXECUTOR_BADGE_CLASSES[phase.executorKind] ?? "bg-muted/30 text-muted-fg"
           )}>
             {phase.model !== "default" ? phase.model : phase.executorKind}
           </span>
@@ -131,7 +131,7 @@ function StepRow({ step }: { step: ExecutionPlanStepPreview }) {
         <RoleBadge role={step.role} />
         <span className={cn(
           "rounded px-1 py-0.5 text-[9px] font-medium",
-          EXECUTOR_BADGE_CLASSES[step.executorKind] ?? "bg-zinc-500/20 text-zinc-300"
+          EXECUTOR_BADGE_CLASSES[step.executorKind] ?? "bg-muted/30 text-muted-fg"
         )}>
           {step.executorKind}
         </span>
@@ -149,7 +149,7 @@ type ExecutionPlanPreviewProps = {
 export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
   if (!preview) {
     return (
-      <div className="rounded-lg border border-border/20 bg-zinc-800/30 px-3 py-3 text-center">
+      <div className="rounded-lg border border-border/20 bg-card/60 px-3 py-3 text-center">
         <div className="text-xs text-muted-fg">No execution plan available</div>
       </div>
     );
@@ -158,7 +158,7 @@ export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
   const { strategy, teamSummary, phases, recoveryPolicy, integrationPrPlan, aligned, driftNotes } = preview;
 
   return (
-    <div className="rounded-lg border border-border/20 bg-zinc-800/30 space-y-2.5 p-3">
+    <div className="rounded-lg border border-border/20 bg-card/60 space-y-2.5 p-3">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">

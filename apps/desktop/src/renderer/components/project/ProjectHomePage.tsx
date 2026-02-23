@@ -112,20 +112,20 @@ function statusBadgeBg(status: ProcessRuntimeStatus): string {
   if (status === "running") return "bg-emerald-500/15 text-emerald-400";
   if (status === "starting" || status === "stopping") return "bg-amber-500/15 text-amber-400";
   if (status === "degraded" || status === "crashed") return "bg-red-500/15 text-red-400";
-  return "bg-muted/20 text-muted-fg";
+  return "bg-muted/50 text-muted-fg";
 }
 
 function readinessBadgeBg(readiness: ProcessRuntime["readiness"]): string {
   if (readiness === "ready") return "bg-emerald-500/15 text-emerald-400";
   if (readiness === "not_ready") return "bg-red-500/15 text-red-400";
-  return "bg-muted/20 text-muted-fg";
+  return "bg-muted/50 text-muted-fg";
 }
 
 function testStatusBadgeBg(status: string | undefined): string {
   if (status === "passed") return "bg-emerald-500/15 text-emerald-400";
   if (status === "failed") return "bg-red-500/15 text-red-400";
   if (status === "running") return "bg-blue-500/15 text-blue-400";
-  return "bg-muted/20 text-muted-fg";
+  return "bg-muted/50 text-muted-fg";
 }
 
 function getRuntimeFallback(laneId: string | null, processId: string): ProcessRuntime {
@@ -979,7 +979,7 @@ export function ProjectHomePage() {
           <div>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-bold tracking-tight">Project header</div>
+                <div className="text-sm font-bold tracking-tight text-fg">Project header</div>
                 <div className="text-xs text-muted-fg/70">Repo summary and global stack controls</div>
               </div>
               <div className="flex items-center gap-2">
@@ -988,7 +988,7 @@ export function ProjectHomePage() {
                 <label className="flex items-center gap-2 text-xs text-muted-fg">
                   <span>Running in:</span>
                   <select
-                    className="h-7 rounded-lg bg-muted/30 px-2 text-xs"
+                    className="h-7 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                     value={effectiveLaneId ?? ""}
                     onChange={(e) => selectRunLane(e.target.value || null)}
                   >
@@ -1063,7 +1063,7 @@ export function ProjectHomePage() {
           <div>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-bold tracking-tight">Quick add process</div>
+                <div className="text-sm font-bold tracking-tight text-fg">Quick add process</div>
                 <div className="text-xs text-muted-fg/70">Use this for common commands. You can fine-tune in Config editor.</div>
               </div>
               <Button size="sm" variant="outline" onClick={scrollToConfigEditor}>
@@ -1073,19 +1073,19 @@ export function ProjectHomePage() {
 
             <div className="grid gap-2 md:grid-cols-[160px_1fr_1fr_auto_auto]">
               <input
-                className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
+                className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2.5 text-xs text-fg outline-none transition-colors focus:border-accent/40 placeholder:text-muted-fg/50"
                 placeholder="Name (optional)"
                 value={quickProcessName}
                 onChange={(e) => setQuickProcessName(e.target.value)}
               />
               <input
-                className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
+                className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2.5 text-xs text-fg outline-none transition-colors focus:border-accent/40 placeholder:text-muted-fg/50"
                 placeholder="Working directory, e.g. src"
                 value={quickProcessCwd}
                 onChange={(e) => setQuickProcessCwd(e.target.value)}
               />
               <input
-                className="h-8 rounded-lg border border-border/20 bg-muted/20 px-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/50"
+                className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2.5 text-xs text-fg outline-none transition-colors focus:border-accent/40 placeholder:text-muted-fg/50"
                 placeholder='Command, e.g. "pnpm dev"'
                 value={quickProcessCommand}
                 onChange={(e) => setQuickProcessCommand(e.target.value)}
@@ -1126,7 +1126,7 @@ export function ProjectHomePage() {
             <div className="overflow-hidden rounded-lg border border-border bg-card">
               <table className="w-full text-left text-xs">
                 <thead>
-                  <tr className="border-b-2 border-accent/20 bg-muted/30">
+                  <tr className="border-b-2 border-accent/20 bg-surface-recessed">
                     <th className="px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Name</th>
                     <th className="w-24 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Status</th>
                     <th className="w-24 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Readiness</th>
@@ -1145,7 +1145,7 @@ export function ProjectHomePage() {
                     return (
                       <tr
                         key={definition.id}
-                        className={cx("cursor-pointer transition-colors duration-150 hover:bg-muted/20", active && "bg-accent/15 border-l-2 border-accent")}
+                        className={cx("cursor-pointer transition-colors duration-150 hover:bg-muted/40", active && "bg-accent/15 border-l-2 border-accent")}
                         onClick={() => setSelectedProcessId(definition.id)}
                       >
                         <td className={cx("truncate py-2 font-medium", active ? "pl-2 pr-3" : "px-3")} title={definition.name}>
@@ -1227,7 +1227,7 @@ export function ProjectHomePage() {
           <div className="rounded-lg bg-card border border-border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-semibold">Process logs</div>
+                <div className="text-sm font-semibold text-fg">Process logs</div>
                 <div className="text-xs text-muted-fg">
                   {selectedProcessRuntime ? `${selectedProcessRuntime.processId} (${selectedProcessRuntime.status})` : "No process selected"}
                 </div>
@@ -1249,7 +1249,7 @@ export function ProjectHomePage() {
             <div className="mt-2 relative">
               <MagnifyingGlass size={14} weight="regular" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/40" />
               <input
-                className="h-8 w-full rounded-lg border border-border/15 bg-muted/20 pl-8 pr-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/40"
+                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed pl-8 pr-2.5 text-xs text-fg outline-none transition-colors focus:border-accent/40 placeholder:text-muted-fg/50"
                 placeholder="Search log lines..."
                 value={processLogSearch}
                 onChange={(e) => setProcessLogSearch(e.target.value)}
@@ -1292,7 +1292,7 @@ export function ProjectHomePage() {
                 <div key={suite.id} className={cx("rounded-lg bg-card border border-border p-3 border-l-[3px] transition-colors duration-150", last?.status === "passed" ? "border-l-emerald-500/50" : last?.status === "failed" ? "border-l-red-500/50" : last?.status === "running" ? "border-l-blue-500/50" : "border-l-border/20")}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-sm font-semibold">{suite.name}</div>
+                      <div className="text-sm font-semibold text-fg">{suite.name}</div>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
                         <Chip>{suite.id}</Chip>
                         <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(last?.status))}>{last?.status ?? "never"}</span>
@@ -1340,7 +1340,7 @@ export function ProjectHomePage() {
                   <button
                     key={run.id}
                     className={cx(
-                      "flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-muted/20",
+                      "flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 hover:bg-muted/40",
                       selectedRunId === run.id && "bg-accent/10 ring-1 ring-accent/30"
                     )}
                     onClick={() => setSelectedRunId(run.id)}
@@ -1356,7 +1356,7 @@ export function ProjectHomePage() {
           <div className="rounded-lg bg-card border border-border p-3">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-semibold">Suite logs</div>
+                <div className="text-sm font-semibold text-fg">Suite logs</div>
                 <div className="text-xs text-muted-fg">
                   {selectedRun ? `${selectedRun.suiteName} • ${selectedRun.status}` : "Select a run"}
                 </div>
@@ -1367,7 +1367,7 @@ export function ProjectHomePage() {
             <div className="mt-2 relative">
               <MagnifyingGlass size={14} weight="regular" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/40" />
               <input
-                className="h-8 w-full rounded-lg border border-border/15 bg-muted/20 pl-8 pr-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/40"
+                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed pl-8 pr-2.5 text-xs text-fg outline-none transition-colors focus:border-accent/40 placeholder:text-muted-fg/50"
                 placeholder="Search log lines..."
                 value={testLogSearch}
                 onChange={(e) => setTestLogSearch(e.target.value)}
@@ -1401,13 +1401,13 @@ export function ProjectHomePage() {
           <div ref={configEditorRef}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-semibold">Config editor</div>
+                <div className="text-sm font-semibold text-fg">Config editor</div>
                 <div className="text-xs text-muted-fg">Processes, stack buttons, and test suites</div>
               </div>
               <div className="flex items-center gap-2">
                 <label className="text-xs text-muted-fg">Editing</label>
                 <select
-                  className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                  className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                   value={configTarget}
                   onChange={(e) => setConfigTarget(e.target.value as "shared" | "local")}
                 >
@@ -1422,7 +1422,7 @@ export function ProjectHomePage() {
             </div>
 
             <div className="space-y-3">
-              <div className="rounded bg-muted/15 p-2">
+              <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Processes</div>
                   <Button
@@ -1470,7 +1470,7 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) =>
@@ -1478,7 +1478,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) =>
@@ -1486,7 +1486,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="cwd (use this instead of cd ... &&)"
                           value={row.cwd}
                           onChange={(e) =>
@@ -1494,7 +1494,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder='command, e.g. pnpm dev'
                           value={row.commandLine}
                           onChange={(e) =>
@@ -1502,7 +1502,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder='env JSON, e.g. {"PORT":"3000"}'
                           value={row.envJson}
                           onChange={(e) =>
@@ -1510,7 +1510,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="dependsOn (comma-separated ids)"
                           value={row.dependsOnCsv}
                           onChange={(e) =>
@@ -1518,7 +1518,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           value={row.restart}
                           onChange={(e) =>
                             setProcessRows((prev) =>
@@ -1532,7 +1532,7 @@ export function ProjectHomePage() {
                           <option value="on_crash">restart: on_crash</option>
                         </select>
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="gracefulShutdownMs"
                           value={row.gracefulShutdownMs}
                           onChange={(e) =>
@@ -1542,7 +1542,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           value={row.readinessType}
                           onChange={(e) =>
                             setProcessRows((prev) =>
@@ -1558,7 +1558,7 @@ export function ProjectHomePage() {
                         </select>
                         {row.readinessType === "port" ? (
                           <input
-                            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                             placeholder="readiness port"
                             value={row.readinessPort}
                             onChange={(e) =>
@@ -1570,7 +1570,7 @@ export function ProjectHomePage() {
                         ) : null}
                         {row.readinessType === "logRegex" ? (
                           <input
-                            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                             placeholder="readiness pattern"
                             value={row.readinessPattern}
                             onChange={(e) =>
@@ -1580,7 +1580,7 @@ export function ProjectHomePage() {
                             }
                           />
                         ) : null}
-                        <label className="inline-flex h-8 items-center gap-2 rounded bg-muted/20 px-2 text-xs">
+                        <label className="inline-flex h-8 items-center gap-2 rounded bg-card px-2 text-xs text-fg">
                           <input
                             type="checkbox"
                             checked={row.autostart}
@@ -1590,10 +1590,10 @@ export function ProjectHomePage() {
                           />
                           autostart
                         </label>
-                        <details className="rounded bg-card/30 px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
+                        <details className="rounded-lg border border-border/10 bg-card px-2 py-1 text-xs md:col-span-2 xl:col-span-3">
                           <summary className="cursor-pointer select-none text-muted-fg">Advanced: argv JSON (optional)</summary>
                           <input
-                            className="mt-2 h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
+                            className="mt-2 h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                             placeholder='["npm","run","dev"]'
                             value={row.commandJson}
                             onChange={(e) =>
@@ -1607,7 +1607,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded bg-muted/15 p-2">
+              <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Stack buttons</div>
                   <Button
@@ -1641,13 +1641,13 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) => setStackRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) =>
@@ -1655,7 +1655,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="process ids (comma-separated)"
                           value={row.processIdsCsv}
                           onChange={(e) =>
@@ -1665,7 +1665,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <select
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           value={row.startOrder}
                           onChange={(e) =>
                             setStackRows((prev) =>
@@ -1684,7 +1684,7 @@ export function ProjectHomePage() {
                 </div>
               </div>
 
-              <div className="rounded bg-muted/15 p-2">
+              <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold">Test suites</div>
                   <Button
@@ -1726,25 +1726,25 @@ export function ProjectHomePage() {
 
                       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="id"
                           value={row.id}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, id: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="name"
                           value={row.name}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, name: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="cwd"
                           value={row.cwd}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, cwd: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder='command JSON, e.g. ["npm","run","test:unit"]'
                           value={row.commandJson}
                           onChange={(e) =>
@@ -1752,13 +1752,13 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder='env JSON, e.g. {"CI":"1"}'
                           value={row.envJson}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, envJson: e.target.value } : p)))}
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
                           placeholder="timeoutMs (optional)"
                           value={row.timeoutMs}
                           onChange={(e) =>
@@ -1766,7 +1766,7 @@ export function ProjectHomePage() {
                           }
                         />
                         <input
-                          className="h-8 rounded-lg bg-muted/30 px-2 text-xs md:col-span-2 xl:col-span-3"
+                          className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg md:col-span-2 xl:col-span-3"
                           placeholder="tags (comma-separated: unit, lint, integration, e2e, custom)"
                           value={row.tagsCsv}
                           onChange={(e) => setSuiteRows((prev) => prev.map((p, i) => (i === idx ? { ...p, tagsCsv: e.target.value } : p)))}
@@ -1793,9 +1793,9 @@ export function ProjectHomePage() {
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
-      <div className="flex items-center justify-between border-b border-border/15 px-5 py-3 shrink-0">
+      <div className="flex items-center justify-between px-5 py-3 mb-1 shrink-0">
         <div>
-          <div className="text-base font-bold tracking-tight">Run</div>
+          <div className="text-base font-bold tracking-tight text-fg">Run</div>
           <div className="text-xs text-muted-fg/70">Managed processes, lane-scoped stack controls, tests, and config</div>
         </div>
         <div className="flex items-center gap-2">

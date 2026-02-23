@@ -25,9 +25,9 @@ export function SettingsPage() {
   const [section, setSection] = useState<SectionId>("general");
 
   return (
-    <div className="flex h-full overflow-hidden rounded border border-border/40 bg-card">
+    <div className="flex h-full overflow-hidden rounded-xl border border-border/10 bg-card backdrop-blur-sm">
       {/* Left sidebar */}
-      <nav className="w-[180px] shrink-0 border-r border-border bg-card/30 py-3 px-2">
+      <nav className="w-[180px] shrink-0 border-r border-border/10 bg-card/80 py-3 px-2">
         <div className="text-[10px] uppercase tracking-wider text-muted-fg px-2 mb-2">Settings</div>
         {SECTIONS.map((s) => (
           <button
@@ -38,7 +38,7 @@ export function SettingsPage() {
               "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors",
               section === s.id
                 ? "bg-accent/15 text-accent font-medium"
-                : "text-muted-fg hover:bg-muted/30 hover:text-fg"
+                : "text-muted-fg hover:bg-muted/80 hover:text-fg"
             )}
           >
             <s.icon size={16} weight="regular" className="shrink-0" />

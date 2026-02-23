@@ -46,8 +46,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const project = useAppStore((s) => s.project);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
-  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const visitedTabsRef = useRef(new Set<string>());
+  const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
@@ -141,6 +142,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
+  }, [location.pathname]);
+
+  // Track visited tabs — mark after a short delay so stagger animation can play on first visit
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      visitedTabsRef.current.add(location.pathname);
+    }, 500);
+    return () => clearTimeout(timer);
   }, [location.pathname]);
 
   // Listen for projectMissing broadcast from main process.
@@ -507,16 +516,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex min-h-0">
         <aside
-          className="ade-sidebar shrink-0 flex flex-col py-2 pl-1.5 pr-0.5 z-10 border-r border-border/20 bg-bg"
-          onMouseEnter={() => setSidebarExpanded(true)}
-          onMouseLeave={() => setSidebarExpanded(false)}
+          className="ade-sidebar shrink-0 flex flex-col py-2 z-10 border-r border-border/20 bg-bg"
         >
-          <TabNav expanded={sidebarExpanded} />
+          <TabNav />
         </aside>
 
         <main className={cn("relative flex min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
-          <div className="relative z-[1] h-full min-h-0 w-full">
+          <div className="relative z-[1] h-full min-h-0 w-full" data-tab-revisit={!isFirstVisit || undefined}>
             {children}
           </div>
 

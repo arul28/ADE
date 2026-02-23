@@ -17,14 +17,14 @@ export const Button = React.forwardRef<
   ref
 ) {
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded font-medium text-[12px] transition-colors duration-100 active:scale-[0.97] active:translate-y-[0.5px] disabled:opacity-40 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-1.5 rounded font-medium text-[12px] transition-all duration-100 active:scale-[0.97] active:translate-y-[0.5px] disabled:opacity-40 disabled:pointer-events-none";
 
   const sizes = size === "sm" ? "h-7 px-2.5" : "h-8 px-3";
 
   const variants: Record<Variant, string> = {
-    primary: "bg-accent text-accent-fg hover:brightness-110 active:brightness-95",
+    primary: "bg-accent text-accent-fg shadow-sm hover:shadow-md hover:brightness-110 hover:-translate-y-[1px] active:translate-y-0 active:brightness-95",
     outline:
-      "border border-border/60 text-fg hover:bg-muted/40 active:bg-muted/60",
+      "border border-border/60 text-fg hover:bg-muted/40 active:bg-muted/60 ade-btn-outline",
     ghost: "text-muted-fg hover:text-fg hover:bg-muted/30 active:bg-muted/50"
   };
 

@@ -118,12 +118,18 @@ export function createFileService({
   const watcherService = createFileWatcherService();
   const indexService = createFileSearchIndexService();
   const ignoreCache = new Map<string, boolean>();
+  const ignoredPrefixCache = new Set<string>();
 
   const clearIgnoreCacheForRoot = (rootPath: string): void => {
     const prefix = `${rootPath}::`;
     for (const key of ignoreCache.keys()) {
       if (key.startsWith(prefix)) {
         ignoreCache.delete(key);
+      }
+    }
+    for (const key of ignoredPrefixCache) {
+      if (key.startsWith(prefix)) {
+        ignoredPrefixCache.delete(key);
       }
     }
   };
@@ -185,15 +191,32 @@ export function createFileService({
     if (!normalized) return false;
     if (normalized.startsWith(".git/") || normalized === ".git") return true;
     if (normalized.startsWith("node_modules/")) return true;
+    if (normalized.startsWith(".ade/") || normalized === ".ade") return true;
+
+    const keyPrefix = `${rootPath}::`;
+    const segments = normalized.split("/");
+    for (let i = segments.length; i > 0; i--) {
+      const probe = segments.slice(0, i).join("/");
+      if (ignoredPrefixCache.has(`${keyPrefix}${probe}`)) {
+        return true;
+      }
+    }
 
     const cacheKey = `${rootPath}::${normalized}`;
     if (ignoreCache.has(cacheKey)) {
       return ignoreCache.get(cacheKey) ?? false;
     }
 
-    const check = await runGit(["check-ignore", "-q", "--", normalized], { cwd: rootPath, timeoutMs: 3_000 });
+    const check = await runGit(["check-ignore", "-q", "--", normalized], {
+      cwd: rootPath,
+      timeoutMs: 3_000,
+      maxOutputBytes: 1024
+    });
     const ignored = check.exitCode === 0;
     ignoreCache.set(cacheKey, ignored);
+    if (ignored) {
+      ignoredPrefixCache.add(cacheKey);
+    }
     return ignored;
   };
 
@@ -430,6 +453,10 @@ export function createFileService({
 
     stopWatching(args: FilesWatchArgs, senderId: number): void {
       watcherService.stop(args.workspaceId, senderId);
+    },
+
+    stopWatchingBySender(senderId: number): void {
+      watcherService.stopAllForSender(senderId);
     },
 
     async quickOpen(args: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> {

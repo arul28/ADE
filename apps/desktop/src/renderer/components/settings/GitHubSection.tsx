@@ -136,20 +136,20 @@ export function GitHubSection() {
   return (
     <div className="space-y-4">
       {saveNotice ? (
-        <div className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+        <div className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
           {saveNotice}
         </div>
       ) : null}
       {actionError ? (
-        <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800">{actionError}</div>
+        <div className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{actionError}</div>
       ) : null}
 
-      <div className="rounded-lg border border-border bg-card/70 p-3">
+      <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
         <div className="text-xs text-muted-fg">GitHub (Local Token)</div>
         <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
           <input
             type="password"
-            className="h-9 rounded border border-border bg-bg px-3 text-sm md:col-span-2"
+            className="h-9 rounded border border-border/15 bg-surface-recessed px-3 text-sm text-fg md:col-span-2"
             placeholder="GitHub token (PAT)"
             value={githubTokenDraft}
             onChange={(e) => setGithubTokenDraft(e.target.value)}
@@ -216,7 +216,7 @@ export function GitHubSection() {
             </Button>
           </div>
         </div>
-        <div className="mt-2 rounded border border-border bg-bg/40 px-3 py-2 text-xs text-muted-fg">
+        <div className="mt-2 rounded-lg border border-border/10 bg-surface-recessed px-3 py-2 text-xs text-muted-fg">
           <div>token stored: {githubStatus?.tokenStored ? "yes" : "no"}</div>
           <div>repo: {githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : "unknown"}</div>
           <div>user: {githubStatus?.userLogin ?? "unknown"}</div>
@@ -228,14 +228,14 @@ export function GitHubSection() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-border bg-card/70 p-3">
+      <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
         <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">PR Polling</div>
         <div className="flex items-center gap-2">
           <input
             type="number"
             min={5}
             max={300}
-            className="h-8 w-[120px] rounded border border-border bg-bg px-2 text-xs outline-none focus:border-accent"
+            className="h-8 w-[120px] rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
             value={prPollingIntervalDraft}
             onChange={(e) => setPrPollingIntervalDraft(e.target.value)}
           />
@@ -272,7 +272,7 @@ export function GitHubSection() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-border bg-card/70 p-3">
+      <div className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-4">
         <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">Lane Auto-Rebase</div>
         <label className="flex items-center gap-2">
           <input

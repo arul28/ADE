@@ -53,7 +53,11 @@ async function gitShowText(
   spec: string,
   maxBytes: number
 ): Promise<{ exists: boolean; text: string; isBinary?: boolean }> {
-  const res = await runGit(["show", spec], { cwd, timeoutMs: 10_000 });
+  const res = await runGit(["show", spec], {
+    cwd,
+    timeoutMs: 10_000,
+    maxOutputBytes: maxBytes + 64 * 1024
+  });
   if (res.exitCode !== 0) return { exists: false, text: "" };
   const buf = Buffer.from(res.stdout, "utf8");
   if (detectBinary(buf)) return { exists: true, text: "", isBinary: true };

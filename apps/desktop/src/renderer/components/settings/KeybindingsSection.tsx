@@ -114,7 +114,7 @@ export function KeybindingsSection() {
   }, [defs, draft]);
 
   return (
-    <section className="rounded-lg border border-border bg-card/70 p-3 md:col-span-2">
+    <section className="rounded-lg border border-border/10 bg-card backdrop-blur-sm p-3 md:col-span-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold">Keybindings</div>
@@ -123,7 +123,7 @@ export function KeybindingsSection() {
             <span className="font-mono">J,ArrowDown</span>. (Binding application is incremental; some areas still use defaults.)
           </div>
           {conflicts.chordCount > 0 ? (
-            <div className="mt-2 rounded border border-amber-900 bg-amber-950/20 px-2 py-1 text-xs text-amber-300">
+            <div className="mt-2 rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-400">
               {conflicts.chordCount} binding conflict{conflicts.chordCount === 1 ? "" : "s"} detected. Conflicting shortcuts may not behave predictably.
             </div>
           ) : null}
@@ -145,16 +145,16 @@ export function KeybindingsSection() {
       </div>
 
       {error ? (
-        <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div>
+        <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-400">{error}</div>
       ) : null}
 
       {!snapshot ? (
-        <div className="mt-3 rounded border border-border bg-bg/40 p-3 text-xs text-muted-fg">Loading keybindings…</div>
+        <div className="mt-3 rounded-lg border border-border/10 bg-card/80 p-3 text-xs text-muted-fg">Loading keybindings…</div>
       ) : (
-        <div className="mt-3 overflow-auto rounded border border-border bg-bg/40">
+        <div className="mt-3 overflow-auto rounded-lg border border-border/10 bg-card/80">
           <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-bg">
-              <tr className="border-b border-border">
+            <thead className="sticky top-0 bg-card">
+              <tr className="border-b border-border/10">
                 <th className="px-3 py-2 font-semibold text-fg">Action</th>
                 <th className="px-3 py-2 font-semibold text-fg">Scope</th>
                 <th className="px-3 py-2 font-semibold text-fg">Default</th>
@@ -162,7 +162,7 @@ export function KeybindingsSection() {
                 <th className="px-3 py-2 font-semibold text-fg">Effective</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border">
+            <tbody className="divide-y divide-border/10">
               {defs.map((def) => {
                 const override = draft.get(def.id) ?? "";
                 const effective = effectiveBinding(def, draft);
@@ -177,7 +177,7 @@ export function KeybindingsSection() {
                     <td className="px-3 py-2 font-mono text-muted-fg">{def.defaultBinding}</td>
                     <td className="px-3 py-2">
                       <input
-                        className="h-8 w-full rounded border border-border bg-card/60 px-2 text-xs font-mono"
+                        className="h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs font-mono text-fg placeholder:text-muted-fg/50"
                         placeholder="(empty)"
                         value={override}
                         onChange={(e) =>

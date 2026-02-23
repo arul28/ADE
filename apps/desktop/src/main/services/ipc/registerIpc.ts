@@ -809,6 +809,8 @@ export function registerIpc({
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   globalStatePath: string;
 }) {
+  const watcherCleanupBoundSenders = new Set<number>();
+
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
   ipcMain.handle(IPC.appGetProject, async () => getCtx().project);
@@ -1714,7 +1716,6 @@ export function registerIpc({
     const ctx = getCtx();
     const key = `dock_layout:${arg.layoutId}`;
     const value = ctx.db.getJson<DockLayout>(key);
-    ctx.logger.debug("layout.get", { key, hit: value != null });
     return value;
   });
 
@@ -1730,7 +1731,6 @@ export function registerIpc({
     const ctx = getCtx();
     const key = `tiling_tree:${arg.layoutId}`;
     const value = ctx.db.getJson<unknown>(key);
-    ctx.logger.debug("tilingTree.get", { key, hit: value != null });
     return value;
   });
 
@@ -2025,6 +2025,17 @@ export function registerIpc({
   ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
     const ctx = getCtx();
     const senderId = event.sender.id;
+    if (!watcherCleanupBoundSenders.has(senderId)) {
+      watcherCleanupBoundSenders.add(senderId);
+      event.sender.once("destroyed", () => {
+        watcherCleanupBoundSenders.delete(senderId);
+        try {
+          getCtx().fileService.stopWatchingBySender(senderId);
+        } catch {
+          // context may already be disposed/switched
+        }
+      });
+    }
     await ctx.fileService.watchWorkspace(arg, (payload: FileChangeEvent) => {
       try {
         event.sender.send(IPC.filesChange, payload);

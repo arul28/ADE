@@ -37,7 +37,7 @@ export function MergeConfirmDialog({
           </Dialog.Description>
 
           <div className="mt-4 space-y-3">
-            <div className="rounded-lg bg-muted/20 p-3 text-xs text-muted-fg">
+            <div className="rounded-lg bg-card/60 p-3 text-xs text-muted-fg">
               <div>
                 <strong>Source:</strong> {source?.name} ({source?.branchRef})
               </div>

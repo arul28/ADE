@@ -171,8 +171,8 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
   return (
     <div className="flex h-full min-h-0">
       {/* Channel Sidebar */}
-      <aside className="w-[200px] shrink-0 border-r border-border/20 bg-[#16213e]/60 flex flex-col">
-        <div className="border-b border-border/20 px-3 py-2">
+      <aside className="w-[200px] shrink-0 border-r border-border/10 bg-[#16213e]/60 flex flex-col">
+        <div className="border-b border-border/10 px-3 py-2">
           <div className="text-xs font-semibold text-fg">Channels</div>
         </div>
         <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
@@ -231,7 +231,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
       {/* Conversation Area */}
       <div className="flex min-w-0 flex-1 flex-col bg-[#1a1a2e]/40">
         {/* Header */}
-        <div className="border-b border-border/20 px-4 py-2 flex items-center gap-2">
+        <div className="border-b border-border/10 px-4 py-2 flex items-center gap-2">
           <Hash size={14} weight="regular" className="text-muted-fg" />
           <span className="text-xs font-semibold text-fg">{channelName}</span>
           {selectedThread && (
@@ -275,7 +275,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
         </div>
 
         {/* Input bar */}
-        <div className="border-t border-border/20 px-4 py-2.5">
+        <div className="border-t border-border/10 px-4 py-2.5">
           <div className="flex items-center gap-2">
             <input
               value={input}
@@ -327,7 +327,7 @@ function ChannelButton({
         "w-full rounded px-2 py-1.5 text-left transition-colors flex items-center gap-1.5",
         isSelected
           ? "bg-accent/15 text-fg"
-          : "text-muted-fg hover:bg-zinc-800/50 hover:text-fg"
+          : "text-muted-fg hover:bg-card/60 hover:text-fg"
       )}
     >
       <span className={cn("inline-block h-1.5 w-1.5 rounded-full shrink-0", statusColor)} />
@@ -381,7 +381,7 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
   if (isInterAgent) {
     return (
       <div className="flex justify-start ml-4">
-        <div className="max-w-[75%] rounded-lg border-l-2 border-violet-500/30 bg-zinc-800/40 px-3 py-2 text-xs">
+        <div className="max-w-[75%] rounded-lg border-l-2 border-violet-500/30 bg-card/60 px-3 py-2 text-xs">
           <div className="mb-1 flex items-center gap-1 text-[10px] text-violet-300/80">
             <ChatCircle size={12} weight="regular" />
             <span>
@@ -394,7 +394,7 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
               })()}
             </span>
           </div>
-          <div className="whitespace-pre-wrap text-zinc-300">{msg.content}</div>
+          <div className="whitespace-pre-wrap text-muted-fg">{msg.content}</div>
           <div className="mt-1 text-[9px] text-muted-fg">
             {new Date(msg.timestamp).toLocaleTimeString()}
           </div>
@@ -428,7 +428,7 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
               <CaretDown size={12} weight="regular" className={cn("ml-auto transition-transform", expanded && "rotate-180")} />
             </div>
             {expanded && (
-              <pre className="mt-2 max-h-[200px] overflow-auto rounded bg-zinc-900/80 p-2 text-[10px] font-mono text-zinc-300 whitespace-pre-wrap break-all">
+              <pre className="mt-2 max-h-[200px] overflow-auto rounded bg-surface-recessed p-2 text-[10px] font-mono text-muted-fg whitespace-pre-wrap break-all">
                 {msg.content}
               </pre>
             )}
@@ -442,7 +442,7 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
   if (msg.role === "orchestrator" && msg.content.length < 80 && !msg.content.includes("\n")) {
     return (
       <div className="flex justify-center py-1">
-        <span className="rounded-full bg-zinc-800/50 px-3 py-0.5 text-[10px] text-muted-fg">
+        <span className="rounded-full bg-card/60 px-3 py-0.5 text-[10px] text-muted-fg">
           {msg.content}
         </span>
       </div>
@@ -460,8 +460,8 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
         isWorker
           ? "border-l-2 border-l-violet-500 border-violet-500/35 bg-violet-500/10 text-violet-100 max-w-[85%]"
           : isCoordinator
-            ? "w-full border-border/30 bg-zinc-800/70 text-zinc-100"
-            : "max-w-[85%] border-border/30 bg-zinc-800/70 text-zinc-100"
+            ? "w-full border-border/30 bg-card/80 text-fg"
+            : "max-w-[85%] border-border/30 bg-card/80 text-fg"
       )}>
         <div className="mb-1 flex items-center gap-1 text-[10px] text-muted-fg">
           {roleIcon && React.createElement(roleIcon, { size: 12, weight: "regular" })}

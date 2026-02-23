@@ -31,10 +31,15 @@ type ActiveRunEntry = {
   startedAt: string;
   logPath: string;
   logStream: fs.WriteStream;
+  logBytesWritten: number;
+  logLimitReached: boolean;
   timeoutTimer: NodeJS.Timeout | null;
   killTimer: NodeJS.Timeout | null;
   stopIntent: "canceled" | "timed_out" | null;
 };
+
+const MAX_TEST_LOG_BYTES = 10 * 1024 * 1024;
+const TEST_LOG_LIMIT_NOTICE = "\n[ADE] test log limit reached (10MB). Further output omitted.\n";
 
 function clampMaxBytes(maxBytes: number | undefined, fallback: number): number {
   if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes)) return fallback;
@@ -78,6 +83,38 @@ export function createTestService({
 }) {
   const activeRuns = new Map<string, ActiveRunEntry>();
   const nowIso = () => new Date().toISOString();
+
+  const writeRunLogChunk = (entry: ActiveRunEntry, chunk: string | Buffer) => {
+    if (entry.logLimitReached) return;
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    const remaining = MAX_TEST_LOG_BYTES - entry.logBytesWritten;
+    if (remaining <= 0) {
+      entry.logLimitReached = true;
+      try {
+        entry.logStream.write(TEST_LOG_LIMIT_NOTICE);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    if (data.length > remaining) {
+      try {
+        entry.logStream.write(data.subarray(0, remaining));
+        entry.logBytesWritten += remaining;
+        entry.logLimitReached = true;
+        entry.logStream.write(TEST_LOG_LIMIT_NOTICE);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    try {
+      entry.logStream.write(data);
+      entry.logBytesWritten += data.length;
+    } catch {
+      // ignore
+    }
+  };
 
   const persistRunStart = (runId: string, laneId: string, suiteId: string, startedAt: string, logPath: string) => {
     db.run(
@@ -209,11 +246,7 @@ export function createTestService({
     else if (entry.stopIntent === "canceled") status = "canceled";
     else status = exitCode === 0 ? "passed" : "failed";
 
-    try {
-      entry.logStream.write(`\n# test run ended at ${endedAt} status=${status} exit=${exitCode ?? "null"}\n`);
-    } catch {
-      // ignore
-    }
+    writeRunLogChunk(entry, `\n# test run ended at ${endedAt} status=${status} exit=${exitCode ?? "null"}\n`);
     try {
       entry.logStream.end();
     } catch {
@@ -248,7 +281,13 @@ export function createTestService({
     fs.mkdirSync(suiteDir, { recursive: true });
     const logPath = path.join(suiteDir, `${runId}.log`);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
-    logStream.write(`\n# test run start ${startedAt} cmd=${JSON.stringify(suite.command)} cwd=${cwd}\n`);
+    const initialLogBytes = (() => {
+      try {
+        return fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
+      } catch {
+        return 0;
+      }
+    })();
 
     const child: ChildProcessByStdio<null, Readable, Readable> = spawn(suite.command[0]!, suite.command.slice(1), {
       cwd,
@@ -266,10 +305,14 @@ export function createTestService({
       startedAt,
       logPath,
       logStream,
+      logBytesWritten: initialLogBytes,
+      logLimitReached: initialLogBytes >= MAX_TEST_LOG_BYTES,
       timeoutTimer: null,
       killTimer: null,
       stopIntent: null
     };
+
+    writeRunLogChunk(entry, `\n# test run start ${startedAt} cmd=${JSON.stringify(suite.command)} cwd=${cwd}\n`);
 
     activeRuns.set(runId, entry);
     persistRunStart(runId, laneId, suite.id, startedAt, logPath);
@@ -289,11 +332,7 @@ export function createTestService({
     emitRun(summary);
 
     const onChunk = (stream: "stdout" | "stderr", chunk: string) => {
-      try {
-        logStream.write(chunk);
-      } catch {
-        // ignore
-      }
+      writeRunLogChunk(entry, chunk);
       emitLog(runId, suite.id, stream, chunk);
     };
 
@@ -302,11 +341,7 @@ export function createTestService({
     child.stdout.on("data", (chunk: string) => onChunk("stdout", chunk));
     child.stderr.on("data", (chunk: string) => onChunk("stderr", chunk));
     child.on("error", (err) => {
-      try {
-        logStream.write(`\n[test run error] ${String(err)}\n`);
-      } catch {
-        // ignore
-      }
+      writeRunLogChunk(entry, `\n[test run error] ${String(err)}\n`);
     });
     child.on("close", (code) => finishRun(entry, code ?? null));
 

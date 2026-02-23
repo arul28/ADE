@@ -49,11 +49,11 @@ export function CreateLaneDialog({
                 value={createLaneName}
                 onChange={(e) => setCreateLaneName(e.target.value)}
                 placeholder="e.g. feature/auth-refresh"
-                className="mt-1 h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
+                className="mt-1 h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none placeholder:text-muted-fg"
                 autoFocus
               />
             </div>
-            <label className="flex items-center gap-2 rounded bg-muted/20 px-3 py-2 text-xs cursor-pointer">
+            <label className="flex items-center gap-2 rounded border border-border/10 bg-card/60 px-3 py-2 text-xs cursor-pointer">
               <input
                 type="checkbox"
                 checked={createAsChild}
@@ -70,7 +70,7 @@ export function CreateLaneDialog({
                 <select
                   value={createParentLaneId}
                   onChange={(event) => setCreateParentLaneId(event.target.value)}
-                  className="h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none"
+                  className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
                 >
                   <option value="">Select a parent lane...</option>
                   {lanes.map((lane) => (
@@ -84,7 +84,7 @@ export function CreateLaneDialog({
                 <select
                   value={createBaseBranch}
                   onChange={(event) => setCreateBaseBranch(event.target.value)}
-                  className="h-10 w-full rounded bg-muted/30 shadow-card px-3 text-sm outline-none"
+                  className="h-10 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-3 text-sm outline-none"
                 >
                   {createBranches.filter((b) => !b.isRemote).map((branch) => (
                     <option key={branch.name} value={branch.name}>

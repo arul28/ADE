@@ -1012,10 +1012,10 @@ export function FilesPage() {
             {openTabs.map((tab) => {
               const dirty = tab.content !== tab.savedContent;
               return (
-                <div key={tab.path} className={cx("flex items-center gap-1 rounded-lg border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-card border-b-2 border-b-accent" : "border-border/40 bg-card/40")}>
-                  <button className="max-w-[220px] truncate text-left" onClick={() => setActiveTabPath(tab.path)}>
+                <div key={tab.path} className={cx("flex items-center gap-1 rounded-lg border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-card border-b-2 border-b-accent" : "border-border/40 bg-card")}>
+                  <button className="max-w-[220px] truncate text-left flex items-center gap-1" onClick={() => setActiveTabPath(tab.path)}>
                     {tab.path.split("/").pop()}
-                    {dirty ? " \u2022" : ""}
+                    {dirty ? <span className="ml-0.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" title="Unsaved changes" /> : null}
                   </button>
                   <button className="text-muted-fg hover:text-fg" onClick={() => closeTab(tab.path)}>x</button>
                 </div>
@@ -1076,7 +1076,7 @@ export function FilesPage() {
                     {conflictHunks.map((hunk) => {
                       const resolved = resolvedConflictKeys.has(hunk.key);
                       return (
-                        <div key={hunk.key} className={cx("rounded border bg-card/40 p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
+                        <div key={hunk.key} className={cx("rounded border border-border/10 bg-card backdrop-blur-sm p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
                           <div className="flex items-center justify-between">
                             <span>Lines {hunk.startLine}-{hunk.endLine}</span>
                             {resolved ? <span className="inline-flex items-center gap-1 text-emerald-300"><Sparkles size={12} weight="regular" />Resolved</span> : null}
@@ -1121,7 +1121,7 @@ export function FilesPage() {
       bodyClassName: "flex flex-col",
       children: (
         <div className="flex flex-col h-full min-h-0 p-2">
-          <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2 shrink-0">
+          <div className="flex items-center gap-2 rounded-lg border border-border/15 bg-surface-recessed px-2 shrink-0">
             <Search size={14} weight="regular" className="text-muted-fg" />
             <input
               value={searchQuery}
@@ -1130,14 +1130,14 @@ export function FilesPage() {
                 if (!showSearch) setShowSearch(true);
               }}
               placeholder="Search in files..."
-              className="h-7 w-full bg-transparent text-xs outline-none"
+              className="h-7 w-full bg-transparent text-xs text-fg outline-none placeholder:text-muted-fg/50"
             />
           </div>
           <div className="mt-2 flex-1 min-h-0 overflow-auto rounded-lg">
             {searchResults.map((item, idx) => (
               <button
                 key={`${item.path}:${item.line}:${idx}`}
-                className="block w-full px-2 py-1.5 text-left text-xs hover:bg-muted/50 rounded"
+                className="block w-full px-2 py-1.5 text-left text-xs hover:bg-muted/40 rounded"
                 onClick={() => {
                   openFile(item.path).catch(() => {});
                 }}
@@ -1163,13 +1163,13 @@ export function FilesPage() {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {/* Header bar */}
-      <div className="flex items-center justify-between gap-2 border-b border-border/15 px-3 py-2 shrink-0 bg-card/30">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 mb-1 shrink-0 border-b border-border/10 bg-card backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="text-sm font-semibold">Files</div>
+          <div className="text-sm font-semibold text-fg">Files</div>
           <select
             value={workspaceId}
             onChange={(e) => switchWorkspace(e.target.value)}
-            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
           >
             {workspaces.map((ws) => (
               <option key={ws.id} value={ws.id}>
@@ -1178,7 +1178,7 @@ export function FilesPage() {
             ))}
           </select>
           {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-            <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-2 py-0.5 text-xs text-amber-900">
+            <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
               <AlertTriangle size={12} weight="regular" />
               Primary workspace is read-only
             </span>
@@ -1200,8 +1200,8 @@ export function FilesPage() {
         <div className={cx(
           "flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs shrink-0",
           activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit
-            ? "border-amber-500/30 bg-amber-500/10 text-amber-900"
-            : "border-orange-500/30 bg-orange-500/10 text-orange-900"
+            ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+            : "border-orange-500/30 bg-orange-500/10 text-orange-400"
         )}>
           {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
             <span>
@@ -1220,7 +1220,7 @@ export function FilesPage() {
         </div>
       ) : null}
 
-      {error ? <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-800 shrink-0">{error}</div> : null}
+      {error ? <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-400 shrink-0">{error}</div> : null}
 
       {/* Floating pane tiling area */}
       <div className="flex-1 min-h-0">
@@ -1276,22 +1276,22 @@ export function FilesPage() {
       {showQuickOpen ? (
         <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/40 pt-20">
           <div className="w-[640px] rounded bg-[--color-surface-overlay] border border-border/50 p-3 shadow-float">
-            <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border/15 bg-surface-recessed px-2">
               <Search size={16} weight="regular" className="text-muted-fg" />
               <input
                 autoFocus
                 value={quickOpen}
                 onChange={(e) => setQuickOpen(e.target.value)}
                 placeholder="Quick open (Ctrl/Cmd+P)"
-                className="h-9 w-full bg-transparent text-sm outline-none"
+                className="h-9 w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted-fg/50"
               />
               <Button size="sm" variant="ghost" onClick={() => setShowQuickOpen(false)}>Esc</Button>
             </div>
-            <div className="mt-2 max-h-[40vh] overflow-auto rounded-lg bg-muted/20">
+            <div className="mt-2 max-h-[40vh] overflow-auto rounded-lg border border-border/10 bg-card backdrop-blur-sm">
               {quickOpenResults.map((item) => (
                 <button
                   key={item.path}
-                  className="block w-full px-3 py-2 text-left text-xs hover:bg-muted/50"
+                  className="block w-full px-3 py-2 text-left text-xs hover:bg-muted/40"
                   onClick={() => {
                     openFile(item.path).catch(() => {});
                     setShowQuickOpen(false);
@@ -1332,7 +1332,7 @@ export function FilesPage() {
                 }
               }}
               placeholder={textPrompt.placeholder}
-              className="h-9 w-full rounded-lg bg-muted/20 bg-bg px-2 text-sm outline-none"
+              className="h-9 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-sm text-fg outline-none"
             />
             {textPromptError ? <div className="mt-2 text-xs text-red-300">{textPromptError}</div> : null}
             <div className="mt-3 flex justify-end gap-2">
@@ -1418,7 +1418,7 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
           <select
             value={compareRef}
             onChange={(e) => setCompareRef(e.target.value)}
-            className="h-8 rounded-lg bg-muted/30 px-2 text-xs"
+            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
           >
             {commits.map((commit) => (
               <option key={commit.sha} value={commit.sha}>
@@ -1431,7 +1431,7 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
         <div className="truncate text-xs text-muted-fg">{path}</div>
       </div>
 
-      {error ? <div className="p-3 text-xs text-red-800">{error}</div> : null}
+      {error ? <div className="p-3 text-xs text-red-400">{error}</div> : null}
       <div className="min-h-0 flex-1">{diff ? <MonacoDiffView diff={diff} className="h-full" /> : null}</div>
     </div>
   );

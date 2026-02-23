@@ -34,6 +34,8 @@ type PtyEntry = {
   tracked: boolean;
   transcriptPath: string;
   transcriptStream: fs.WriteStream | null;
+  transcriptBytesWritten: number;
+  transcriptLimitReached: boolean;
   lastPreviewWriteAt: number;
   previewCurrentLine: string;
   latestPreviewLine: string | null;
@@ -108,6 +110,9 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
   ];
   return (allowed as string[]).includes(value) ? (value as TerminalToolType) : "other";
 }
+
+const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
 
 export function createPtyService({
   projectRoot,
@@ -299,8 +304,24 @@ export function createPtyService({
 
   const writeTranscript = (entry: PtyEntry, data: string) => {
     if (!entry.tracked || !entry.transcriptStream) return;
+    if (entry.transcriptLimitReached) return;
     try {
-      entry.transcriptStream.write(data);
+      const chunk = Buffer.from(data, "utf8");
+      const remaining = MAX_TRANSCRIPT_BYTES - entry.transcriptBytesWritten;
+      if (remaining <= 0) {
+        entry.transcriptLimitReached = true;
+        entry.transcriptStream.write(TRANSCRIPT_LIMIT_NOTICE);
+        return;
+      }
+      if (chunk.length > remaining) {
+        entry.transcriptStream.write(chunk.subarray(0, remaining));
+        entry.transcriptBytesWritten += remaining;
+        entry.transcriptLimitReached = true;
+        entry.transcriptStream.write(TRANSCRIPT_LIMIT_NOTICE);
+        return;
+      }
+      entry.transcriptStream.write(chunk);
+      entry.transcriptBytesWritten += chunk.length;
     } catch {
       // ignore
     }
@@ -375,8 +396,14 @@ export function createPtyService({
       const transcriptPath = safeTranscriptPathFor(sessionId);
 
       let transcriptStream: fs.WriteStream | null = null;
+      let transcriptBytesWritten = 0;
       if (tracked) {
         fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+        try {
+          transcriptBytesWritten = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
+        } catch {
+          transcriptBytesWritten = 0;
+        }
         transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
       }
 
@@ -452,6 +479,8 @@ export function createPtyService({
         tracked,
         transcriptPath,
         transcriptStream,
+        transcriptBytesWritten,
+        transcriptLimitReached: transcriptBytesWritten >= MAX_TRANSCRIPT_BYTES,
         lastPreviewWriteAt: 0,
         previewCurrentLine: "",
         latestPreviewLine: null,

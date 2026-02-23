@@ -93,13 +93,13 @@ export function LaneDiffPane({
   if (selectedCommit && laneId) {
     return (
       <div className="h-full flex flex-col">
-        <div className="flex items-center justify-between gap-2 px-2 py-1 bg-card/30 shrink-0">
+        <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-card/40 backdrop-blur-sm shrink-0">
           <div className="min-w-0 flex items-center gap-2 text-xs">
-            <span className="text-muted-fg">Commit</span>
-            <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
+            <span className="text-muted-fg/70">Commit</span>
+            <span className="font-mono text-fg rounded bg-accent/8 px-1.5 py-0.5">{selectedCommit.shortSha}</span>
             <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
           </div>
-          <Chip className="text-[11px]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
+          <Chip className="text-[11px] shadow-[0_0_6px_-1px_rgba(6,214,160,0.15)]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
         </div>
         <div className="flex-1 min-h-0">
           <Group
@@ -109,23 +109,23 @@ export function LaneDiffPane({
           >
             <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="26%" className="min-w-0 bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
               <div className="flex h-full min-h-0 flex-col">
-                <div className="flex items-center justify-between bg-card/30 px-2 py-1 shrink-0">
+                <div className="flex items-center justify-between bg-card/40 backdrop-blur-sm px-2 py-1 shrink-0">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-fg/70">Files</span>
-                    <Chip className="h-4 px-1 text-[11px]">{commitFiles.length}</Chip>
+                    <Chip className="h-4 px-1 text-[11px] shadow-[0_0_4px_-1px_rgba(6,214,160,0.1)]">{commitFiles.length}</Chip>
                   </div>
                 </div>
-                <div className="flex-1 min-h-0 overflow-auto p-1 space-y-0.5">
+                <div className="flex-1 min-h-0 overflow-auto p-1.5 space-y-1">
                   {commitFiles.length ? (
                     commitFiles.map((file) => (
                       <button
                         key={file}
                         type="button"
                         className={cn(
-                          "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs transition-colors",
+                          "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-all duration-150",
                           selectedCommitFilePath === file
-                            ? "bg-accent/10 text-fg shadow-card"
-                            : "text-muted-fg hover:bg-muted/30 hover:text-fg"
+                            ? "bg-accent/10 text-fg shadow-[0_0_8px_-2px_rgba(6,214,160,0.15)] border border-accent/10"
+                            : "text-muted-fg hover:bg-card/40 hover:text-fg hover:shadow-[0_1px_4px_-1px_rgba(0,0,0,0.2)] border border-transparent"
                         )}
                         onClick={() => setSelectedCommitFilePath(file)}
                         title={file}
@@ -163,11 +163,20 @@ export function LaneDiffPane({
   if (selectedPath && diff && laneId) {
     return (
       <div className="h-full flex flex-col">
-        <div className="flex items-center justify-between px-2 py-1 bg-card/30 shrink-0">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
-            <span className="text-muted-fg">/</span>
-            <span className="font-semibold">{diff.path}</span>
+        <div className="flex items-center justify-between px-3 py-1.5 bg-card/40 backdrop-blur-sm shrink-0">
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-muted-fg/70 rounded bg-muted/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
+            <span className="text-muted-fg/30 mx-1">/</span>
+            {diff.path.split("/").map((segment, idx, arr) => (
+              <React.Fragment key={idx}>
+                <span className={cn(
+                  idx === arr.length - 1
+                    ? "font-semibold text-fg rounded bg-accent/8 px-1 py-0.5"
+                    : "text-muted-fg/60 hover:text-muted-fg transition-colors"
+                )}>{segment}</span>
+                {idx < arr.length - 1 && <span className="text-accent/30 mx-0.5">/</span>}
+              </React.Fragment>
+            ))}
           </div>
           <div className="flex items-center gap-1">
             {selectedFileMode === "unstaged" ? (

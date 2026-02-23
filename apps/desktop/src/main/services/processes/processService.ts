@@ -34,6 +34,8 @@ type ManagedProcessEntry = {
   runId: string | null;
   stopIntent: ManagedTerminationReason | null;
   logStream: fs.WriteStream | null;
+  logBytesWritten: number;
+  logLimitReached: boolean;
   readinessRegex: RegExp | null;
   readinessTimeout: NodeJS.Timeout | null;
   readinessInterval: NodeJS.Timeout | null;
@@ -48,6 +50,8 @@ const HEALTH_CHECK_INTERVAL_MS = 2_500;
 const HEALTH_DEGRADED_AFTER_FAILURES = 2;
 const RESTART_BACKOFF_BASE_MS = 400;
 const RESTART_BACKOFF_MAX_MS = 30_000;
+const MAX_PROCESS_LOG_BYTES = 10 * 1024 * 1024;
+const PROCESS_LOG_LIMIT_NOTICE = "\n[ADE] process log limit reached (10MB). Further output omitted.\n";
 
 function clampMaxBytes(maxBytes: number | undefined, fallback: number): number {
   if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes)) return fallback;
@@ -156,6 +160,62 @@ export function createProcessService({
   const nowIso = () => new Date().toISOString();
 
   const processLogPath = (laneId: string, processId: string) => path.join(processLogsDir, laneId, `${processId}.log`);
+
+  const fileSizeOrZero = (filePath: string): number => {
+    try {
+      return fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  const rotateProcessLogIfNeeded = (filePath: string) => {
+    const currentSize = fileSizeOrZero(filePath);
+    if (currentSize < MAX_PROCESS_LOG_BYTES) return;
+    const rotatedPath = `${filePath}.1`;
+    try {
+      fs.rmSync(rotatedPath, { force: true });
+    } catch {
+      // ignore
+    }
+    try {
+      fs.renameSync(filePath, rotatedPath);
+    } catch {
+      // ignore
+    }
+  };
+
+  const writeProcessLogChunk = (entry: ManagedProcessEntry, chunk: string | Buffer) => {
+    if (!entry.logStream || entry.logLimitReached) return;
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    const remaining = MAX_PROCESS_LOG_BYTES - entry.logBytesWritten;
+    if (remaining <= 0) {
+      entry.logLimitReached = true;
+      try {
+        entry.logStream.write(PROCESS_LOG_LIMIT_NOTICE);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    if (data.length > remaining) {
+      try {
+        entry.logStream.write(data.subarray(0, remaining));
+        entry.logBytesWritten += remaining;
+        entry.logLimitReached = true;
+        entry.logStream.write(PROCESS_LOG_LIMIT_NOTICE);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    try {
+      entry.logStream.write(data);
+      entry.logBytesWritten += data.length;
+    } catch {
+      // ignore
+    }
+  };
 
   const persistRuntime = (runtime: ProcessRuntime) => {
     db.run(
@@ -306,6 +366,8 @@ export function createProcessService({
       runId: null,
       stopIntent: null,
       logStream: null,
+      logBytesWritten: 0,
+      logLimitReached: false,
       readinessRegex: null,
       readinessTimeout: null,
       readinessInterval: null,
@@ -444,11 +506,7 @@ export function createProcessService({
     const endedAt = nowIso();
 
     if (entry.logStream) {
-      try {
-        entry.logStream.write(`\n# process ended at ${endedAt} exit=${exitCode ?? "null"}\n`);
-      } catch {
-        // ignore
-      }
+      writeProcessLogChunk(entry, `\n# process ended at ${endedAt} exit=${exitCode ?? "null"}\n`);
       try {
         entry.logStream.end();
       } catch {
@@ -524,13 +582,7 @@ export function createProcessService({
     child.stderr.setEncoding("utf8");
 
     const onChunk = (stream: "stdout" | "stderr", chunk: string) => {
-      if (entry.logStream) {
-        try {
-          entry.logStream.write(chunk);
-        } catch {
-          // ignore
-        }
-      }
+      writeProcessLogChunk(entry, chunk);
       emitLog(laneId, processId, stream, chunk);
       if (entry.definition?.readiness.type === "logRegex" && entry.runtime.status === "starting" && entry.readinessRegex && entry.readinessRegex.test(chunk)) {
         markReadinessReady(entry);
@@ -565,8 +617,8 @@ export function createProcessService({
     const startedAt = nowIso();
     const runId = randomUUID();
     const logPath = processLogPath(laneId, definition.id);
+    rotateProcessLogIfNeeded(logPath);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
-    logStream.write(`\n# process start ${startedAt} cmd=${JSON.stringify(definition.command)} cwd=${cwd}\n`);
 
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
@@ -590,6 +642,9 @@ export function createProcessService({
     entry.stopIntent = null;
     entry.runId = runId;
     entry.logStream = logStream;
+    entry.logBytesWritten = fileSizeOrZero(logPath);
+    entry.logLimitReached = entry.logBytesWritten >= MAX_PROCESS_LOG_BYTES;
+    writeProcessLogChunk(entry, `\n# process start ${startedAt} cmd=${JSON.stringify(definition.command)} cwd=${cwd}\n`);
     entry.runtime.status = "starting";
     entry.runtime.readiness = "unknown";
     entry.runtime.pid = child.pid ?? null;
@@ -608,11 +663,7 @@ export function createProcessService({
     });
     child.on("error", (err) => {
       logger.warn("process.child_error", { laneId, processId: definition.id, err: String(err) });
-      try {
-        entry.logStream?.write(`\n[process error] ${String(err)}\n`);
-      } catch {
-        // ignore
-      }
+      writeProcessLogChunk(entry, `\n[process error] ${String(err)}\n`);
     });
     child.on("close", (code) => {
       logger.info("process.exit", { laneId, processId: definition.id, code });

@@ -27,7 +27,7 @@ function detectPresetLabel(policy: MissionExecutionPolicy): { label: string; col
     policy.testing.mode === "post_implementation"
   ) return { label: "Standard", color: "bg-violet-500/20 text-violet-300 border-violet-500/30" };
 
-  return { label: "Custom", color: "bg-zinc-500/20 text-zinc-300 border-zinc-500/30" };
+  return { label: "Custom", color: "bg-muted/30 text-muted-fg border-border/30" };
 }
 
 function PhaseIcon({ active, label }: { active: boolean; label: string }) {
@@ -67,7 +67,7 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
   }
 
   return (
-    <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium border border-zinc-500/30 bg-zinc-500/20 text-zinc-400", className)}>
+    <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium border border-border/30 bg-muted/30 text-muted-fg", className)}>
       Classic
     </span>
   );

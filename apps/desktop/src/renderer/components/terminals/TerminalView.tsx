@@ -79,10 +79,10 @@ const terminalThemes: Record<"light" | "dark", XtermTheme> = {
     selectionBackground: "rgba(194, 35, 35, 0.16)"
   },
   dark: {
-    background: "#1A1A1A",
+    background: "#0c0e16",
     foreground: "#EDEDED",
     cursor: "#F59E0B",
-    cursorAccent: "#0A0A0A",
+    cursorAccent: "#0c0e16",
     selectionBackground: "rgba(245, 158, 11, 0.26)"
   }
 };
@@ -829,13 +829,15 @@ export function TerminalView({ ptyId, sessionId, className }: { ptyId: string; s
   return (
     <div
       className={cn(
-        "relative h-full min-h-0 min-w-0 w-full overflow-hidden rounded-xl bg-muted/70 shadow-card",
+        "relative h-full min-h-0 min-w-0 w-full overflow-hidden rounded-xl bg-surface-recessed",
+        exited == null && "ade-terminal-active-glow shadow-[0_0_12px_-4px_rgba(34,197,94,0.2)]",
+        exited != null && "shadow-card",
         className
       )}
     >
       <div ref={containerRef} className="ade-terminal-host h-full w-full m-0 p-0 border-0 overflow-hidden" />
       {exited != null ? (
-        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg bg-bg/90 shadow-card px-2 py-1 text-[11px] text-muted-fg">
+        <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
         </div>
       ) : null}

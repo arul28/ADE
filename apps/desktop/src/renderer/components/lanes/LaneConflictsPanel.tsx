@@ -78,51 +78,60 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
 
       {status ? (
         <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-          <div className="rounded border border-border bg-card/50 p-2">
+          <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-2.5 shadow-card transition-all duration-150 hover:shadow-card-hover hover:bg-card/50">
             <div className="text-[11px] uppercase tracking-wider text-muted-fg">Overlaps</div>
-            <div className="font-semibold text-fg">{status.overlappingFileCount}</div>
+            <div className={cn("font-semibold text-fg", status.overlappingFileCount > 0 && "text-amber-400")}>{status.overlappingFileCount}</div>
           </div>
-          <div className="rounded border border-border bg-card/50 p-2">
+          <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-2.5 shadow-card transition-all duration-150 hover:shadow-card-hover hover:bg-card/50">
             <div className="text-[11px] uppercase tracking-wider text-muted-fg">Peers</div>
-            <div className="font-semibold text-fg">{status.peerConflictCount}</div>
+            <div className={cn("font-semibold text-fg", status.peerConflictCount > 0 && "text-red-400")}>{status.peerConflictCount}</div>
           </div>
-          <div className="rounded border border-border bg-card/50 p-2">
+          <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-2.5 shadow-card transition-all duration-150 hover:shadow-card-hover hover:bg-card/50">
             <div className="text-[11px] uppercase tracking-wider text-muted-fg">Predicted</div>
-            <div className="font-semibold text-fg">{status.lastPredictedAt ? new Date(status.lastPredictedAt).toLocaleString() : "—"}</div>
+            <div className="font-semibold text-fg">{status.lastPredictedAt ? new Date(status.lastPredictedAt).toLocaleString() : "---"}</div>
           </div>
         </div>
       ) : null}
 
-      {error ? <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div> : null}
+      {error ? <div className="mt-2 rounded-lg border border-red-500/20 bg-red-950/20 p-2.5 text-xs text-red-300 shadow-[0_0_8px_-2px_rgba(239,68,68,0.15)]">{error}</div> : null}
 
-      <div className="mt-2 flex-1 min-h-0 overflow-auto rounded border border-border bg-card/30">
-        <div className="border-b border-border px-2 py-1 text-[11px] uppercase tracking-wider text-muted-fg">Overlaps</div>
-        <div className="divide-y divide-border">
+      <div className="mt-2 flex-1 min-h-0 overflow-auto rounded-lg border border-border/10 bg-card/30 backdrop-blur-sm shadow-card">
+        <div className="px-3 py-1.5 text-[11px] uppercase tracking-wider text-muted-fg bg-card/30">Overlaps</div>
+        <div className="flex flex-col gap-1.5 p-1.5">
           {overlaps.map((overlap) => (
-            <div key={overlap.peerId ?? "base"} className="px-2 py-2 text-xs">
+            <div key={overlap.peerId ?? "base"} className={cn(
+              "rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm px-3 py-2.5 text-xs transition-all duration-150 hover:bg-card/60 hover:shadow-card-hover hover:-translate-y-[0.5px]",
+              overlap.riskLevel === "high" && "border-red-500/15 shadow-[0_0_8px_-2px_rgba(239,68,68,0.1)]",
+              overlap.riskLevel === "medium" && "border-amber-500/15 shadow-[0_0_8px_-2px_rgba(245,158,11,0.1)]",
+              overlap.riskLevel === "low" && "border-emerald-500/15"
+            )}>
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate font-semibold text-fg">{overlap.peerName}</div>
                   <div className="truncate text-[11px] text-muted-fg">
-                    risk: {overlap.riskLevel} · files: {overlap.files.length}
+                    risk: <span className={cn(
+                      overlap.riskLevel === "high" && "text-red-400",
+                      overlap.riskLevel === "medium" && "text-amber-400",
+                      overlap.riskLevel === "low" && "text-emerald-400"
+                    )}>{overlap.riskLevel}</span> · files: {overlap.files.length}
                   </div>
                 </div>
               </div>
               {overlap.files.length ? (
-                <div className="mt-1 max-h-[120px] overflow-auto rounded border border-border bg-bg/40 p-1">
+                <div className="mt-1.5 max-h-[120px] overflow-auto rounded-md bg-bg/30 p-1.5">
                   {overlap.files.slice(0, 12).map((file) => (
-                    <div key={file.path} className="truncate font-mono text-[11px] text-muted-fg" title={file.path}>
+                    <div key={file.path} className="truncate font-mono text-[11px] text-muted-fg py-0.5" title={file.path}>
                       {file.path}
                     </div>
                   ))}
                   {overlap.files.length > 12 ? (
-                    <div className="px-1 py-0.5 text-[11px] text-muted-fg">+{overlap.files.length - 12} more…</div>
+                    <div className="px-1 py-0.5 text-[11px] text-muted-fg">+{overlap.files.length - 12} more...</div>
                   ) : null}
                 </div>
               ) : null}
             </div>
           ))}
-          {!overlaps.length && !loading ? <div className="px-2 py-3 text-xs text-muted-fg">No overlaps detected.</div> : null}
+          {!overlaps.length && !loading ? <div className="px-3 py-3 text-xs text-muted-fg">No overlaps detected.</div> : null}
         </div>
       </div>
     </div>

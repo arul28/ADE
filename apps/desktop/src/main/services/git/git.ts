@@ -5,12 +5,16 @@ export type GitRunOptions = {
   cwd: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  maxOutputBytes?: number;
 };
 
 export type GitRunResult = {
   exitCode: number;
   stdout: string;
   stderr: string;
+  timedOut?: boolean;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
 };
 
 export type GitMergeTreeConflict = {
@@ -27,8 +31,38 @@ export type GitMergeTreeResult = GitRunResult & {
   usedWriteTree: boolean;
 };
 
+const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+
+function appendChunkWithCap(args: {
+  current: string;
+  chunk: Buffer;
+  currentBytes: number;
+  maxBytes: number;
+}): { text: string; bytes: number; truncated: boolean } {
+  const { current, chunk, currentBytes, maxBytes } = args;
+  if (maxBytes <= 0 || currentBytes >= maxBytes) {
+    return { text: current, bytes: currentBytes, truncated: true };
+  }
+  const remaining = maxBytes - currentBytes;
+  if (chunk.length <= remaining) {
+    return {
+      text: current + chunk.toString("utf8"),
+      bytes: currentBytes + chunk.length,
+      truncated: false
+    };
+  }
+  return {
+    text: current + chunk.subarray(0, remaining).toString("utf8"),
+    bytes: maxBytes,
+    truncated: true
+  };
+}
+
 export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
+    ? Math.max(0, Math.floor(opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES))
+    : DEFAULT_MAX_OUTPUT_BYTES;
 
   return await new Promise<GitRunResult>((resolve) => {
     const child = spawn("git", args, {
@@ -37,8 +71,20 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
       stdio: ["ignore", "pipe", "pipe"]
     });
 
+    let settled = false;
     let stdout = "";
     let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+
+    const finish = (result: GitRunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(onTimeout);
+      resolve(result);
+    };
 
     const onTimeout = setTimeout(() => {
       try {
@@ -46,22 +92,61 @@ export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRu
       } catch {
         // ignore
       }
-      resolve({ exitCode: 124, stdout, stderr: stderr.length ? stderr : "git timed out" });
+      finish({
+        exitCode: 124,
+        stdout,
+        stderr: stderr.length ? stderr : "git timed out",
+        timedOut: true,
+        stdoutTruncated,
+        stderrTruncated
+      });
     }, timeoutMs);
 
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-
-    child.stdout.on("data", (d) => {
-      stdout += String(d);
+    child.stdout.on("data", (d: Buffer | string) => {
+      if (stdoutTruncated) return;
+      const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
+      const next = appendChunkWithCap({
+        current: stdout,
+        chunk,
+        currentBytes: stdoutBytes,
+        maxBytes: maxOutputBytes
+      });
+      stdout = next.text;
+      stdoutBytes = next.bytes;
+      stdoutTruncated = next.truncated;
     });
-    child.stderr.on("data", (d) => {
-      stderr += String(d);
+    child.stderr.on("data", (d: Buffer | string) => {
+      if (stderrTruncated) return;
+      const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d), "utf8");
+      const next = appendChunkWithCap({
+        current: stderr,
+        chunk,
+        currentBytes: stderrBytes,
+        maxBytes: maxOutputBytes
+      });
+      stderr = next.text;
+      stderrBytes = next.bytes;
+      stderrTruncated = next.truncated;
+    });
+
+    child.on("error", (error) => {
+      finish({
+        exitCode: 1,
+        stdout,
+        stderr: stderr.length ? stderr : error.message,
+        stdoutTruncated,
+        stderrTruncated
+      });
     });
 
     child.on("close", (code) => {
-      clearTimeout(onTimeout);
-      resolve({ exitCode: code ?? 1, stdout, stderr });
+      finish({
+        exitCode: code ?? 1,
+        stdout,
+        stderr,
+        stdoutTruncated,
+        stderrTruncated
+      });
     });
   });
 }

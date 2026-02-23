@@ -205,8 +205,8 @@ export function PRsPage() {
               {stackedChains.map((chain) => {
                 const rootPr = prByLaneId.get(chain.rootLaneId) ?? null;
                 return (
-                  <div key={chain.rootLaneId} className="rounded shadow-card bg-card/60 ring-1 ring-border/10 overflow-hidden">
-                    <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-gradient-to-r from-muted/40 via-muted/20 to-transparent border-b border-border/15">
+                  <div key={chain.rootLaneId} className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card overflow-hidden transition-all duration-200 hover:shadow-card-hover hover:border-border/20">
+                    <div className="flex items-center justify-between gap-2 px-3 py-2.5 bg-gradient-to-r from-emerald-500/8 via-card/30 to-transparent">
                       <div className="text-xs font-bold text-fg tracking-tight">{chain.rootLaneName}</div>
                       <Button
                         size="sm"
@@ -227,7 +227,7 @@ export function PRsPage() {
                         Land stack
                       </Button>
                     </div>
-                    <div className="divide-y divide-border/15">
+                    <div className="flex flex-col gap-1 p-1.5">
                       {chain.items.map((item) => {
                         const pr = item.pr;
                         const isSelected = pr && pr.id === selectedPrId;
@@ -236,8 +236,10 @@ export function PRsPage() {
                             key={item.laneId}
                             type="button"
                             className={cn(
-                              "flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs transition-colors duration-100 hover:bg-muted/40",
-                              isSelected && "bg-accent/10 border-l-2 border-l-accent"
+                              "flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-all duration-150 border border-transparent",
+                              isSelected
+                                ? "bg-accent/10 border-accent/15 shadow-[0_0_10px_-3px_rgba(6,214,160,0.15)]"
+                                : "hover:bg-card/50 hover:border-border/10 hover:shadow-card hover:-translate-y-[0.5px]"
                             )}
                             onClick={() => {
                               if (pr) setSelectedPrId(pr.id);
@@ -265,7 +267,13 @@ export function PRsPage() {
                             </div>
                             {pr ? (
                               <div className="flex flex-wrap items-center justify-end gap-1 shrink-0">
-                                <Chip className={cn("text-[11px] px-1.5 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
+                                <Chip className={cn(
+                                  "text-[11px] px-1.5 rounded-md",
+                                  stateChip(pr.state).className,
+                                  pr.state === "open" && "shadow-[0_0_6px_-1px_rgba(59,130,246,0.2)]",
+                                  pr.state === "merged" && "shadow-[0_0_6px_-1px_rgba(16,185,129,0.2)]",
+                                  pr.state === "draft" && "shadow-[0_0_6px_-1px_rgba(168,85,247,0.15)]"
+                                )}>{stateChip(pr.state).label}</Chip>
                               </div>
                             ) : null}
                           </button>
@@ -280,8 +288,8 @@ export function PRsPage() {
               ) : null}
             </div>
           ) : (
-            <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 overflow-hidden">
-              <div className="divide-y divide-border/15">
+            <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card overflow-hidden">
+              <div className="flex flex-col gap-1 p-1.5">
                 {allPrsSorted.map((pr) => {
                   const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
                   const isSelected = pr.id === selectedPrId;
@@ -290,8 +298,10 @@ export function PRsPage() {
                       key={pr.id}
                       type="button"
                       className={cn(
-                        "flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs transition-colors duration-100 hover:bg-muted/40",
-                        isSelected && "bg-accent/10 border-l-2 border-l-accent"
+                        "flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-all duration-150 border border-transparent",
+                        isSelected
+                          ? "bg-accent/10 border-accent/15 shadow-[0_0_10px_-3px_rgba(6,214,160,0.15)]"
+                          : "hover:bg-card/50 hover:border-border/10 hover:shadow-card hover:-translate-y-[0.5px]"
                       )}
                       onClick={() => setSelectedPrId(pr.id)}
                     >
@@ -332,36 +342,50 @@ export function PRsPage() {
 
           {/* Status badges */}
           <div className="flex flex-wrap items-center gap-2.5 py-1">
-            <Chip className={cn("text-xs px-2.5 py-1 rounded-md font-medium", stateChip(selectedPr.state).className)}>{stateChip(selectedPr.state).label}</Chip>
-            <Chip className={cn("text-xs px-2.5 py-1 rounded-md font-medium inline-flex items-center gap-1.5", checksChip(selectedPr.checksStatus).className)}>
+            <Chip className={cn(
+              "text-xs px-2.5 py-1 rounded-md font-medium",
+              stateChip(selectedPr.state).className,
+              selectedPr.state === "open" && "shadow-[0_0_8px_-2px_rgba(59,130,246,0.2)]",
+              selectedPr.state === "merged" && "shadow-[0_0_8px_-2px_rgba(16,185,129,0.2)]"
+            )}>{stateChip(selectedPr.state).label}</Chip>
+            <Chip className={cn(
+              "text-xs px-2.5 py-1 rounded-md font-medium inline-flex items-center gap-1.5",
+              checksChip(selectedPr.checksStatus).className,
+              selectedPr.checksStatus === "passing" && "shadow-[0_0_8px_-2px_rgba(34,197,94,0.2)]",
+              selectedPr.checksStatus === "failing" && "shadow-[0_0_8px_-2px_rgba(239,68,68,0.2)]"
+            )}>
               <span className={cn("h-1.5 w-1.5 rounded-full", checksChip(selectedPr.checksStatus).dotColor)} />
               {checksChip(selectedPr.checksStatus).label}
             </Chip>
-            <Chip className={cn("text-xs px-2.5 py-1 rounded-md font-medium", reviewsChip(selectedPr.reviewStatus).className)}>{reviewsChip(selectedPr.reviewStatus).label}</Chip>
+            <Chip className={cn(
+              "text-xs px-2.5 py-1 rounded-md font-medium",
+              reviewsChip(selectedPr.reviewStatus).className,
+              selectedPr.reviewStatus === "approved" && "shadow-[0_0_8px_-2px_rgba(34,197,94,0.2)]"
+            )}>{reviewsChip(selectedPr.reviewStatus).label}</Chip>
           </div>
 
           {/* Branch info */}
-          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5 transition-all duration-150 hover:shadow-card-hover">
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Branches</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
               <span className="text-muted-fg/70 font-medium">Base</span>
-              <span className="font-mono text-fg bg-muted/30 rounded-md px-2 py-0.5 w-fit">{selectedPr.baseBranch}</span>
+              <span className="font-mono text-fg bg-card/80 rounded-md px-2 py-0.5 w-fit">{selectedPr.baseBranch}</span>
               <span className="text-muted-fg/70 font-medium">Head</span>
-              <span className="font-mono text-fg bg-muted/30 rounded-md px-2 py-0.5 w-fit">{selectedPr.headBranch}</span>
+              <span className="font-mono text-fg bg-card/80 rounded-md px-2 py-0.5 w-fit">{selectedPr.headBranch}</span>
             </div>
           </div>
 
           {/* Changes */}
-          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5 transition-all duration-150 hover:shadow-card-hover">
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Changes</div>
             <div className="flex items-center gap-5">
-              <span className="text-sm font-bold font-mono text-emerald-400">+{selectedPr.additions}</span>
-              <span className="text-sm font-bold font-mono text-red-400">-{selectedPr.deletions}</span>
+              <span className="text-sm font-bold font-mono text-emerald-400 shadow-[0_0_6px_-1px_rgba(34,197,94,0.2)] rounded px-1.5 py-0.5 bg-emerald-500/8">+{selectedPr.additions}</span>
+              <span className="text-sm font-bold font-mono text-red-400 shadow-[0_0_6px_-1px_rgba(239,68,68,0.2)] rounded px-1.5 py-0.5 bg-red-500/8">-{selectedPr.deletions}</span>
             </div>
           </div>
 
           {/* Lane info */}
-          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5 transition-all duration-150 hover:shadow-card-hover">
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Lane</div>
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="text-fg font-medium">{laneById.get(selectedPr.laneId)?.name ?? selectedPr.laneId}</span>
@@ -377,7 +401,7 @@ export function PRsPage() {
           </div>
 
           {/* Timestamps */}
-          <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
+          <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5 transition-all duration-150 hover:shadow-card-hover">
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Timestamps</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
               <span className="text-muted-fg/60 font-medium">Created</span>
@@ -422,14 +446,14 @@ export function PRsPage() {
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       {/* Header bar */}
-      <div className="flex items-center gap-4 border-b border-border/15 px-4 py-2.5">
+      <div className="flex items-center gap-4 px-4 py-2.5 bg-card/20 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
           <div className="text-sm font-bold text-fg tracking-tight">PRs</div>
           <span className="text-xs text-muted-fg/60 font-medium tabular-nums">{prs.length} linked</span>
         </div>
 
         {/* Segmented control */}
-        <div className="flex items-center rounded-lg bg-muted/30 p-0.5 gap-0.5">
+        <div className="flex items-center rounded-lg bg-card/80 p-0.5 gap-0.5">
           <button
             type="button"
             className={cn(
@@ -460,7 +484,7 @@ export function PRsPage() {
           <select
             value={mergeMethod}
             onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
-            className="h-8 rounded-lg bg-muted/30 px-2 text-xs text-fg border border-border/15 focus:outline-none focus:ring-1 focus:ring-accent/30"
+            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent/30"
             title="Default merge method"
           >
             <option value="squash">squash</option>
@@ -491,7 +515,7 @@ export function PRsPage() {
               </Button>
             </div>
             <div className="mt-1.5 text-xs text-muted-fg/70">Root: <span className="font-semibold text-fg">{landStackDialog.rootLaneName}</span></div>
-            <div className="mt-4 flex items-center justify-between gap-2 rounded bg-muted/20 px-3 py-2.5">
+            <div className="mt-4 flex items-center justify-between gap-2 rounded bg-card/60 px-3 py-2.5">
               <div className="text-xs text-muted-fg">Merge method: <span className="font-mono font-medium text-fg">{mergeMethod}</span></div>
               <Button size="sm" variant="primary" className="shadow-card font-semibold" disabled={landStackDialog.running} onClick={() => void runLandStack()}>
                 {landStackDialog.running ? "Landing..." : "Land Stack"}
@@ -502,8 +526,8 @@ export function PRsPage() {
             ) : null}
             {landStackDialog.results ? (
               <div className="mt-4 max-h-[50vh] overflow-auto rounded bg-muted/15 ring-1 ring-border/10">
-                <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-muted-fg/60 font-semibold border-b border-border/10">Results</div>
-                <div className="divide-y divide-border/10">
+                <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-muted-fg/60 font-semibold">Results</div>
+                <div className="space-y-1 px-1">
                   {landStackDialog.results.map((r, idx) => (
                     <div key={`${r.prNumber}:${idx}`} className="px-3 py-2.5 text-xs">
                       <div className="flex items-center justify-between gap-2">

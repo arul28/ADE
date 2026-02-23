@@ -291,7 +291,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
         ) : (
           <div className="mt-3 flex-1 min-h-0 overflow-auto space-y-3">
-            <div className="rounded shadow-card bg-card/50 p-3">
+            <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm p-3 shadow-card">
               <div className="mb-2 text-xs font-semibold text-fg">Create PR</div>
               <div className="grid gap-2">
                 <label className="text-xs text-muted-fg">
@@ -299,7 +299,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                   <input
                     value={createDraft.title}
                     onChange={(e) => setCreateDraft((p) => ({ ...p, title: e.target.value }))}
-                    className="mt-1 h-8 w-full rounded bg-muted/30 px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+                    className="mt-1 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                   />
                 </label>
                 <label className="text-xs text-muted-fg">
@@ -307,14 +307,14 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                   <input
                     value={createDraft.baseBranch ?? ""}
                     onChange={(e) => setCreateDraft((p) => ({ ...p, baseBranch: e.target.value }))}
-                    className="mt-1 h-8 w-full rounded bg-muted/30 px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+                    className="mt-1 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                     placeholder={defaultBaseBranch}
                   />
                 </label>
                 <div className="text-xs text-muted-fg">
                   Head branch: <span className="font-medium text-fg">{defaultHeadBranch}</span>
                 </div>
-                <div className="rounded bg-muted/20 px-2 py-1 text-xs text-muted-fg">
+                <div className="rounded bg-card/60 px-2 py-1 text-xs text-muted-fg">
                   PR will be: <span className="font-medium text-fg">{defaultHeadBranch}</span>{" "}
                   → <span className="font-medium text-fg">{createDraft.baseBranch || defaultBaseBranch}</span>
                 </div>
@@ -323,7 +323,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                   <textarea
                     value={createDraft.body}
                     onChange={(e) => setCreateDraft((p) => ({ ...p, body: e.target.value }))}
-                    className="mt-1 h-[140px] w-full resize-none rounded bg-muted/30 p-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+                    className="mt-1 h-[140px] w-full resize-none rounded border border-border/15 bg-surface-recessed p-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                     placeholder="Write PR description…"
                   />
                 </label>
@@ -333,7 +333,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     <input
                       value={labelsDraft}
                       onChange={(e) => setLabelsDraft(e.target.value)}
-                      className="mt-1 h-8 w-full rounded bg-muted/30 px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+                      className="mt-1 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                       placeholder="bug, enhancement"
                     />
                   </label>
@@ -342,7 +342,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     <input
                       value={reviewersDraft}
                       onChange={(e) => setReviewersDraft(e.target.value)}
-                      className="mt-1 h-8 w-full rounded bg-muted/30 px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+                      className="mt-1 h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                       placeholder="octocat, teammate"
                     />
                   </label>
@@ -366,14 +366,14 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
               </div>
             </div>
 
-            <div className="rounded shadow-card bg-card/50 p-3">
+            <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm p-3 shadow-card">
               <div className="mb-2 text-xs font-semibold text-fg">Link Existing PR</div>
               <div className="flex gap-2">
                 <input
                   value={linkValue}
                   onChange={(e) => setLinkValue(e.target.value)}
                   placeholder="PR URL or number (e.g. 123)"
-                  className="h-8 flex-1 rounded bg-muted/30 px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+                  className="h-8 flex-1 rounded border border-border/15 bg-surface-recessed px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                 />
                 <Button size="sm" variant="outline" className="h-8" disabled={loading || !linkValue.trim()} onClick={() => void linkPr()}>
                   Link
@@ -428,7 +428,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             <select
               value={mergeMethod}
               onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
-              className="h-7 rounded bg-muted/30 px-2 text-xs"
+              className="h-7 rounded border border-border/15 bg-surface-recessed px-2 text-xs"
               title="Merge method"
             >
               <option value="squash">squash</option>
@@ -451,31 +451,56 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
 
       {status ? (
         <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-          <div className="rounded shadow-card bg-card/50 p-2">
+          <div className={cn(
+            "rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-3 shadow-card transition-all duration-150 hover:shadow-card-hover",
+            status.isMergeable && "border-emerald-500/15 shadow-[0_0_8px_-2px_rgba(16,185,129,0.12)]",
+            !status.isMergeable && "border-red-500/15 shadow-[0_0_8px_-2px_rgba(239,68,68,0.12)]"
+          )}>
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Mergeable</div>
-            <div className="font-semibold text-fg">{status.isMergeable ? "yes" : "no"}</div>
+            <div className={cn("font-semibold", status.isMergeable ? "text-emerald-400" : "text-red-400")}>{status.isMergeable ? "yes" : "no"}</div>
           </div>
-          <div className="rounded shadow-card bg-card/50 p-2">
+          <div className={cn(
+            "rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-3 shadow-card transition-all duration-150 hover:shadow-card-hover",
+            status.mergeConflicts && "border-red-500/15 shadow-[0_0_8px_-2px_rgba(239,68,68,0.12)]",
+            !status.mergeConflicts && "border-emerald-500/15"
+          )}>
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Conflicts</div>
-            <div className="font-semibold text-fg">{status.mergeConflicts ? "yes" : "no"}</div>
+            <div className={cn("font-semibold", status.mergeConflicts ? "text-red-400" : "text-emerald-400")}>{status.mergeConflicts ? "yes" : "no"}</div>
           </div>
-          <div className="rounded shadow-card bg-card/50 p-2">
+          <div className={cn(
+            "rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-3 shadow-card transition-all duration-150 hover:shadow-card-hover",
+            status.behindBaseBy > 0 && "border-amber-500/15 shadow-[0_0_6px_-2px_rgba(245,158,11,0.12)]"
+          )}>
             <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Behind Base</div>
-            <div className="font-semibold text-fg">{status.behindBaseBy}</div>
+            <div className={cn("font-semibold", status.behindBaseBy > 0 ? "text-amber-400" : "text-fg")}>{status.behindBaseBy}</div>
           </div>
         </div>
       ) : null}
 
       <div className="mt-2 grid flex-1 min-h-0 grid-cols-1 gap-2 overflow-auto">
-        <div className="rounded shadow-card bg-card/30">
-          <div className="px-2 py-1 text-xs font-medium tracking-widest uppercase text-muted-fg">Checks</div>
-          <div className="divide-y divide-border/10">
+        <div className={cn(
+          "rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-3 shadow-card transition-all duration-150 hover:shadow-card-hover",
+          pr.checksStatus === "passing" && "ade-ci-passing",
+          pr.checksStatus === "failing" && "ade-ci-failing"
+        )}>
+          <div className="pb-1.5 text-xs font-medium tracking-widest uppercase text-muted-fg">Checks</div>
+          <div className="flex flex-col gap-1">
             {checks.map((check) => (
-              <div key={check.name} className="px-2 py-1.5 text-xs">
+              <div key={check.name} className={cn(
+                "rounded-md px-2.5 py-2 text-xs border border-border/5 transition-all duration-100 hover:bg-card/30",
+                check.conclusion === "success" && "border-l-2 border-l-emerald-500/40",
+                check.conclusion === "failure" && "border-l-2 border-l-red-500/40",
+                check.status === "in_progress" && "border-l-2 border-l-amber-500/40"
+              )}>
                 <div className="flex items-center justify-between gap-2">
                   <div className="truncate text-fg">{check.name}</div>
                   <div className="flex items-center gap-2">
-                    <div className="text-xs text-muted-fg">{check.conclusion ?? check.status}</div>
+                    <div className={cn(
+                      "text-xs",
+                      check.conclusion === "success" && "text-emerald-400",
+                      check.conclusion === "failure" && "text-red-400",
+                      !check.conclusion && "text-muted-fg"
+                    )}>{check.conclusion ?? check.status}</div>
                     {check.detailsUrl ? (
                       <Button
                         size="sm"
@@ -493,16 +518,25 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             {!checks.length ? <div className="px-2 py-2 text-xs text-muted-fg">No checks found.</div> : null}
           </div>
         </div>
-        <div className="rounded shadow-card bg-card/30">
-          <div className="px-2 py-1 text-xs font-medium tracking-widest uppercase text-muted-fg">Reviews</div>
-          <div className="divide-y divide-border/10">
+        <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-3 shadow-card transition-all duration-150 hover:shadow-card-hover">
+          <div className="pb-1.5 text-xs font-medium tracking-widest uppercase text-muted-fg">Reviews</div>
+          <div className="flex flex-col gap-1">
             {reviews.map((review, idx) => (
-              <div key={`${review.reviewer}:${idx}`} className="px-2 py-1.5 text-xs">
+              <div key={`${review.reviewer}:${idx}`} className={cn(
+                "rounded-md px-2.5 py-2 text-xs border border-border/5 transition-all duration-100 hover:bg-card/30",
+                review.state === "approved" && "border-l-2 border-l-emerald-500/40",
+                review.state === "changes_requested" && "border-l-2 border-l-amber-500/40"
+              )}>
                 <div className="flex items-center justify-between gap-2">
-                  <div className="truncate text-fg">{review.reviewer}</div>
-                  <div className="text-xs text-muted-fg">{review.state}</div>
+                  <div className="truncate text-fg font-medium">{review.reviewer}</div>
+                  <div className={cn(
+                    "text-xs",
+                    review.state === "approved" && "text-emerald-400",
+                    review.state === "changes_requested" && "text-amber-400",
+                    review.state !== "approved" && review.state !== "changes_requested" && "text-muted-fg"
+                  )}>{review.state}</div>
                 </div>
-                {review.body ? <div className="mt-1 line-clamp-2 text-xs text-muted-fg">{review.body}</div> : null}
+                {review.body ? <div className="mt-1 line-clamp-2 text-xs text-muted-fg/70">{review.body}</div> : null}
               </div>
             ))}
             {!reviews.length ? <div className="px-2 py-2 text-xs text-muted-fg">No reviews found.</div> : null}

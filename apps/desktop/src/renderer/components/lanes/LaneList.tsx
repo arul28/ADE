@@ -140,7 +140,7 @@ export function LaneList({
               else setLocalFilter(next);
             }}
             placeholder="Filter lanes…"
-            className="h-8 w-full rounded bg-muted/30 shadow-card px-2 text-xs outline-none placeholder:text-muted-fg"
+            className="h-8 w-full rounded border border-border/15 bg-surface-recessed shadow-card px-2 text-xs outline-none placeholder:text-muted-fg"
           />
         </div>
         {visibleLanes.length === 0 ? (

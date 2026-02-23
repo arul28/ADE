@@ -147,6 +147,7 @@ const PREFILTER_MAX_PEERS_PER_LANE = 6;
 const PREFILTER_MAX_GLOBAL_PAIRS = 800;
 const PREFILTER_MAX_TOUCHED_FILES = 800;
 const STALE_MS = 5 * 60_000;
+const EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -3033,7 +3034,8 @@ export function createConflictService({
 
     const diffResult = await runGit(["diff", "--binary"], {
       cwd: cwdLane.worktreePath,
-      timeoutMs: 45_000
+      timeoutMs: 45_000,
+      maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
     });
     const patchPath = path.join(runDir, "changes.patch");
     let finalPatchPath: string | null = null;
@@ -3062,6 +3064,8 @@ export function createConflictService({
       contextGaps: [],
       warnings: [
         ...(proc.signal ? [`process_signal:${proc.signal}`] : []),
+        ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
+        ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : []),
         ...missingRequiredPacks.map((relPath) => `missing_pack:${relPath}`)
       ],
       committedAt: null,
@@ -3483,7 +3487,8 @@ export function createConflictService({
     const cwdLane = laneService.getLaneBaseAndBranch(run.cwdLaneId);
     const diffResult = await runGit(["diff", "--binary"], {
       cwd: cwdLane.worktreePath,
-      timeoutMs: 45_000
+      timeoutMs: 45_000,
+      maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
     });
 
     const runDir = path.join(externalRunsRootDir, runId);
@@ -3501,6 +3506,11 @@ export function createConflictService({
       status,
       completedAt,
       patchPath: finalPatchPath,
+      warnings: [
+        ...(run.warnings ?? []),
+        ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
+        ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : [])
+      ],
       error: args.exitCode === 0 ? null : `Exit code ${args.exitCode}`
     };
     writeExternalRunRecord(updatedRecord);

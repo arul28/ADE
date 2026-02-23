@@ -34,16 +34,11 @@ const mainItems = [
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
 
-interface TabNavProps {
-  expanded?: boolean;
-}
-
-export function TabNav({ expanded = true }: TabNavProps) {
+export function TabNav() {
   const project = useAppStore((s) => s.project);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [tooltip, setTooltip] = useState<{ label: string; top: number } | null>(null);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -57,19 +52,6 @@ export function TabNav({ expanded = true }: TabNavProps) {
     setContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
 
-  const handleMouseEnter = useCallback(
-    (e: React.MouseEvent, label: string) => {
-      if (expanded) return;
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      setTooltip({ label, top: rect.top + rect.height / 2 });
-    },
-    [expanded],
-  );
-
-  const handleMouseLeave = useCallback(() => {
-    setTooltip(null);
-  }, []);
-
   const renderItem = (
     it: { to: string; label: string; icon: React.ElementType },
   ) => {
@@ -79,13 +61,9 @@ export function TabNav({ expanded = true }: TabNavProps) {
       <NavLink
         key={it.to}
         to={it.to}
-        title={expanded ? undefined : it.label}
-        onMouseEnter={(e) => handleMouseEnter(e, it.label)}
-        onMouseLeave={handleMouseLeave}
         className={cn(
-          "relative flex items-center w-full h-8 rounded-md transition-colors duration-100 group",
+          "relative flex items-center w-full h-9 rounded-md transition-colors duration-100 group",
           "text-muted-fg/70 hover:text-fg hover:bg-muted/30",
-          expanded ? "gap-2.5 px-2.5" : "justify-center px-0",
         )}
       >
         {/* Active indicator bar */}
@@ -97,40 +75,41 @@ export function TabNav({ expanded = true }: TabNavProps) {
           />
         )}
 
-        {/* Icon wrapper */}
-        <span className="relative inline-flex items-center shrink-0">
-          <it.icon
-            size={expanded ? 16 : 20}
-            weight="regular"
-            className={cn(
-              "transition-all duration-150 shrink-0",
-              isActive ? "text-accent" : "group-hover:text-fg/70",
-            )}
-          />
-          {/* Terminal attention dot */}
-          {it.to === "/work" && terminalAttention.indicator !== "none" ? (
-            <span
-              title={
-                terminalAttention.indicator === "running-needs-attention"
-                  ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
-                  : "All active terminals running"
-              }
+        {/* Fixed-width icon container - never moves during collapse */}
+        <span className="flex items-center justify-center w-[52px] shrink-0">
+          <span className="relative inline-flex items-center">
+            <it.icon
+              size={18}
+              weight="regular"
               className={cn(
-                "absolute -right-1 -top-1 h-2 w-2 rounded-full",
-                terminalAttention.indicator === "running-needs-attention"
-                  ? "bg-amber-400"
-                  : "bg-emerald-500",
+                "transition-colors duration-150 shrink-0",
+                isActive ? "text-accent" : "group-hover:text-fg/70",
               )}
             />
-          ) : null}
+            {/* Terminal attention dot */}
+            {it.to === "/work" && terminalAttention.indicator !== "none" ? (
+              <span
+                title={
+                  terminalAttention.indicator === "running-needs-attention"
+                    ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                    : "All active terminals running"
+                }
+                className={cn(
+                  "absolute -right-1 -top-1 ade-status-dot",
+                  terminalAttention.indicator === "running-needs-attention"
+                    ? "ade-status-dot-warning"
+                    : "ade-status-dot-active",
+                )}
+              />
+            ) : null}
+          </span>
         </span>
 
-        {/* Label with opacity transition */}
+        {/* Label - flows naturally, hidden by sidebar overflow:hidden when collapsed */}
         <span
           className={cn(
-            "text-xs font-medium tracking-normal truncate whitespace-nowrap transition-opacity duration-150",
+            "text-xs font-medium whitespace-nowrap",
             isActive && "text-fg font-medium",
-            expanded ? "opacity-100" : "opacity-0 w-0 overflow-hidden",
           )}
         >
           {it.label}
@@ -167,20 +146,6 @@ export function TabNav({ expanded = true }: TabNavProps) {
         {/* Settings pinned to bottom */}
         {renderItem(settingsItem)}
       </nav>
-
-      {/* Tooltip when collapsed */}
-      {!expanded && tooltip && (
-        <div
-          className="fixed z-50 px-2.5 py-1 rounded-md bg-[--color-surface-overlay] border border-border/40 shadow-float text-[11px] font-mono text-fg whitespace-nowrap pointer-events-none"
-          style={{
-            left: 58,
-            top: tooltip.top,
-            transform: "translateY(-50%)",
-          }}
-        >
-          {tooltip.label}
-        </div>
-      )}
 
       {/* Context menu */}
       {contextMenu && project?.rootPath ? (

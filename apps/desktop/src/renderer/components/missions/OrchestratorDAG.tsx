@@ -39,7 +39,7 @@ function getPhaseKind(step: OrchestratorStep): string {
   return stepType || taskType || "";
 }
 
-const NODE_W = 160;
+const BASE_NODE_W = 160;
 const NODE_H = 60;
 const GAP_Y = 20;
 const GAP_X = 100;
@@ -52,12 +52,13 @@ type LayoutNode = {
   x: number;
   y: number;
   attemptCount: number;
+  nodeW: number;
 };
 
-function computeLayout(steps: OrchestratorStep[], attemptsByStep: Map<string, number>): LayoutNode[] {
+function computeLayout(steps: OrchestratorStep[], attemptsByStep: Map<string, number>, maxDepth: { value: number }): LayoutNode[] {
   if (steps.length === 0) return [];
 
-  // Build adjacency: stepId → step
+  // Build adjacency: stepId -> step
   const stepMap = new Map<string, OrchestratorStep>();
   for (const step of steps) {
     stepMap.set(step.id, step);
@@ -79,19 +80,21 @@ function computeLayout(steps: OrchestratorStep[], attemptsByStep: Map<string, nu
   // Roots have no dependencies
   const roots = steps.filter((s) => s.dependencyStepIds.length === 0);
   const queue: Array<{ id: string; depth: number }> = roots.map((s) => ({ id: s.id, depth: 0 }));
-  let maxDepth = 0;
+  let mDepth = 0;
 
   while (queue.length > 0) {
     const { id, depth } = queue.shift()!;
     const existing = depthMap.get(id);
     if (existing !== undefined && existing >= depth) continue;
     depthMap.set(id, depth);
-    if (depth > maxDepth) maxDepth = depth;
+    if (depth > mDepth) mDepth = depth;
 
     for (const childId of dependents.get(id) ?? []) {
       queue.push({ id: childId, depth: depth + 1 });
     }
   }
+
+  maxDepth.value = mDepth;
 
   // For steps not reached (cycles or disconnected), assign depth 0
   for (const step of steps) {
@@ -107,20 +110,24 @@ function computeLayout(steps: OrchestratorStep[], attemptsByStep: Map<string, nu
     columns.set(col, list);
   }
 
-  // Layout nodes
+  // Layout nodes with depth-based sizing
   const nodes: LayoutNode[] = [];
-  for (let col = 0; col <= maxDepth; col++) {
+  for (let col = 0; col <= mDepth; col++) {
     const colSteps = columns.get(col) ?? [];
     colSteps.sort((a, b) => a.stepIndex - b.stepIndex);
+    // Earlier pipeline steps are slightly larger
+    const depthScale = mDepth > 0 ? 1 + (1 - col / mDepth) * 0.1 : 1;
+    const nodeW = Math.round(BASE_NODE_W * depthScale);
     for (let row = 0; row < colSteps.length; row++) {
       const step = colSteps[row];
       nodes.push({
         step,
         col,
         row,
-        x: PADDING + col * (NODE_W + GAP_X),
+        x: PADDING + col * (BASE_NODE_W + GAP_X),
         y: PADDING + row * (NODE_H + GAP_Y),
         attemptCount: attemptsByStep.get(step.id) ?? 0,
+        nodeW,
       });
     }
   }
@@ -143,7 +150,8 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
     return map;
   }, [attempts]);
 
-  const nodes = useMemo(() => computeLayout(steps, attemptsByStep), [steps, attemptsByStep]);
+  const maxDepthRef = useMemo(() => ({ value: 0 }), []);
+  const nodes = useMemo(() => computeLayout(steps, attemptsByStep, maxDepthRef), [steps, attemptsByStep, maxDepthRef]);
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, LayoutNode>();
@@ -154,7 +162,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
   // Compute SVG dimensions
   const svgWidth = useMemo(() => {
     if (nodes.length === 0) return 300;
-    return Math.max(...nodes.map((n) => n.x + NODE_W)) + PADDING;
+    return Math.max(...nodes.map((n) => n.x + n.nodeW)) + PADDING;
   }, [nodes]);
 
   const svgHeight = useMemo(() => {
@@ -183,7 +191,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
         result.push({
           fromId: depId,
           toId: node.step.id,
-          x1: depNode.x + NODE_W,
+          x1: depNode.x + depNode.nodeW,
           y1: depNode.y + NODE_H / 2,
           x2: node.x,
           y2: node.y + NODE_H / 2,
@@ -196,7 +204,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
   if (steps.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded border border-border/20 bg-card/60 p-6 text-xs text-muted-fg">
+      <div className="flex items-center justify-center rounded border border-border/10 bg-card/60 p-6 text-xs text-muted-fg">
         No steps to display
       </div>
     );
@@ -204,9 +212,15 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
   return (
     <div
-      className="overflow-auto rounded border border-border/20 bg-card/60"
+      className="overflow-auto rounded border border-border/10 bg-card/60"
       style={{ perspective: '1200px', perspectiveOrigin: '50% 40%' }}
     >
+      {/* Inline style for flow animation */}
+      <style>{`
+        @keyframes ade-flow-dash {
+          to { stroke-dashoffset: -14; }
+        }
+      `}</style>
       <svg
         style={{ transformStyle: 'preserve-3d' }}
         width={svgWidth}
@@ -214,19 +228,44 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
         viewBox={`0 0 ${svgWidth} ${svgHeight}`}
         className="block"
       >
-        {/* Edge lines */}
+        {/* Edge lines with animated flow */}
         {edges.map((edge) => {
           const midX = (edge.x1 + edge.x2) / 2;
           return (
-            <path
-              key={`${edge.fromId}-${edge.toId}`}
-              d={`M${edge.x1},${edge.y1} C${midX},${edge.y1} ${midX},${edge.y2} ${edge.x2},${edge.y2}`}
-              fill="none"
-              stroke={edge.satisfied ? "#22c55e" : "#6b7280"}
-              strokeWidth={1.5}
-              strokeDasharray={edge.satisfied ? "none" : "4 3"}
-              opacity={0.6}
-            />
+            <g key={`${edge.fromId}-${edge.toId}`}>
+              {/* Base edge */}
+              <path
+                d={`M${edge.x1},${edge.y1} C${midX},${edge.y1} ${midX},${edge.y2} ${edge.x2},${edge.y2}`}
+                fill="none"
+                stroke={edge.satisfied ? "#22c55e" : "#6b7280"}
+                strokeWidth={1.5}
+                opacity={0.4}
+              />
+              {/* Animated dash overlay for unsatisfied edges */}
+              {!edge.satisfied && (
+                <path
+                  d={`M${edge.x1},${edge.y1} C${midX},${edge.y1} ${midX},${edge.y2} ${edge.x2},${edge.y2}`}
+                  fill="none"
+                  stroke="#6b7280"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 4"
+                  opacity={0.6}
+                  style={{ animation: 'ade-flow-dash 1.5s linear infinite' }}
+                />
+              )}
+              {/* Animated flow for satisfied edges */}
+              {edge.satisfied && (
+                <path
+                  d={`M${edge.x1},${edge.y1} C${midX},${edge.y1} ${midX},${edge.y2} ${edge.x2},${edge.y2}`}
+                  fill="none"
+                  stroke="#22c55e"
+                  strokeWidth={1.5}
+                  strokeDasharray="6 8"
+                  opacity={0.7}
+                  style={{ animation: 'ade-flow-dash 1.5s linear infinite' }}
+                />
+              )}
+            </g>
           );
         })}
 
@@ -242,6 +281,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
           const isFailed = node.step.status === "failed";
           const isSucceeded = node.step.status === "succeeded";
+          const nodeW = node.nodeW;
 
           return (
             <g
@@ -250,7 +290,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
               onClick={() => onStepClick?.(node.step.id)}
               onMouseEnter={() => setHoveredId(node.step.id)}
               onMouseLeave={() => setHoveredId(null)}
-              className="cursor-pointer"
+              className={cn("cursor-pointer", isFailed && "ade-node-failed-pulse")}
               style={{
                 transformStyle: 'preserve-3d',
                 transition: 'transform 200ms ease',
@@ -259,11 +299,11 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
             >
               {/* Running: spinning ring (thin blue border, 4s rotation) */}
               {isRunning && (
-                <g>
+                <g className="ade-spin-4s" style={{ transformOrigin: `${nodeW / 2}px ${NODE_H / 2}px` }}>
                   <rect
                     x={-3}
                     y={-3}
-                    width={NODE_W + 6}
+                    width={nodeW + 6}
                     height={NODE_H + 6}
                     rx={11}
                     fill="none"
@@ -271,51 +311,46 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                     strokeWidth={1.5}
                     strokeDasharray="12 8"
                     opacity={0.7}
-                  >
-                    <animateTransform
-                      attributeName="transform"
-                      type="rotate"
-                      from={`0 ${(NODE_W + 6) / 2} ${(NODE_H + 6) / 2}`}
-                      to={`360 ${(NODE_W + 6) / 2} ${(NODE_H + 6) / 2}`}
-                      dur="4s"
-                      repeatCount="indefinite"
-                    />
-                  </rect>
-                  <rect
-                    x={-2}
-                    y={-2}
-                    width={NODE_W + 4}
-                    height={NODE_H + 4}
-                    rx={10}
-                    fill="none"
-                    stroke={statusColor}
-                    strokeWidth={2}
-                    opacity={0.4}
-                  >
-                    <animate
-                      attributeName="opacity"
-                      values="0.4;0.1;0.4"
-                      dur="1.5s"
-                      repeatCount="indefinite"
-                    />
-                  </rect>
+                  />
                 </g>
+              )}
+
+              {/* Running glow pulse */}
+              {isRunning && (
+                <rect
+                  x={-2}
+                  y={-2}
+                  width={nodeW + 4}
+                  height={NODE_H + 4}
+                  rx={10}
+                  fill="none"
+                  stroke={statusColor}
+                  strokeWidth={2}
+                  opacity={0.4}
+                >
+                  <animate
+                    attributeName="opacity"
+                    values="0.4;0.1;0.4"
+                    dur="1.5s"
+                    repeatCount="indefinite"
+                  />
+                </rect>
               )}
 
               {/* Phase tint background */}
               <rect
-                width={NODE_W}
+                width={nodeW}
                 height={NODE_H}
                 rx={8}
                 fill={phaseTint}
               />
 
-              {/* Node background — diamond shape for gates, regular for others */}
+              {/* Node background -- diamond shape for gates, regular for others */}
               {isGateNode ? (
                 <rect
                   x={4}
                   y={4}
-                  width={NODE_W - 8}
+                  width={nodeW - 8}
                   height={NODE_H - 8}
                   rx={4}
                   fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
@@ -326,7 +361,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 />
               ) : isMergeNode ? (
                 <rect
-                  width={NODE_W}
+                  width={nodeW}
                   height={NODE_H}
                   rx={NODE_H / 2}
                   fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
@@ -336,7 +371,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 />
               ) : (
                 <rect
-                  width={NODE_W}
+                  width={nodeW}
                   height={NODE_H}
                   rx={8}
                   fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
@@ -350,7 +385,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
               <rect
                 x={8}
                 y={0}
-                width={NODE_W - 16}
+                width={nodeW - 16}
                 height={3}
                 rx={1.5}
                 fill={statusColor}
@@ -358,7 +393,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
               {/* Title text */}
               <text
-                x={NODE_W / 2}
+                x={nodeW / 2}
                 y={26}
                 textAnchor="middle"
                 fill="var(--color-fg)"
@@ -370,7 +405,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
               {/* Status text */}
               <text
-                x={NODE_W / 2}
+                x={nodeW / 2}
                 y={42}
                 textAnchor="middle"
                 fill={statusColor}
@@ -380,25 +415,55 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 {node.step.status}
               </text>
 
-              {/* Completed: green check icon */}
+              {/* Completed: animated checkmark SVG */}
               {isSucceeded && (
-                <g transform={`translate(${NODE_W - 18}, 2)`}>
-                  <circle cx={7} cy={7} r={7} fill="#22c55e" opacity={0.2} />
-                  <text x={7} y={11} textAnchor="middle" fill="#22c55e" fontSize={10} fontWeight={700}>{"\u2713"}</text>
+                <g transform={`translate(${nodeW - 20}, 2)`}>
+                  <circle cx={8} cy={8} r={8} fill="#22c55e" opacity={0.2} />
+                  <path
+                    d="M5 8.5 L7.5 11 L11.5 6"
+                    fill="none"
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray="12"
+                    strokeDashoffset="12"
+                  >
+                    <animate
+                      attributeName="stroke-dashoffset"
+                      from="12"
+                      to="0"
+                      dur="0.5s"
+                      fill="freeze"
+                    />
+                  </path>
                 </g>
               )}
 
-              {/* Failed: red X icon */}
+              {/* Failed: red X icon with pulse */}
               {isFailed && (
-                <g transform={`translate(${NODE_W - 18}, 2)`}>
-                  <circle cx={7} cy={7} r={7} fill="#ef4444" opacity={0.2} />
-                  <text x={7} y={11} textAnchor="middle" fill="#ef4444" fontSize={10} fontWeight={700}>{"\u2717"}</text>
+                <g transform={`translate(${nodeW - 20}, 2)`}>
+                  <circle cx={8} cy={8} r={8} fill="#ef4444" opacity={0.2}>
+                    <animate
+                      attributeName="opacity"
+                      values="0.2;0.5;0.2"
+                      dur="1s"
+                      repeatCount="3"
+                    />
+                  </circle>
+                  <path
+                    d="M5.5 5.5 L10.5 10.5 M10.5 5.5 L5.5 10.5"
+                    fill="none"
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                  />
                 </g>
               )}
 
               {/* Attempt count badge */}
               {node.attemptCount > 0 && (
-                <g transform={`translate(${NODE_W - 16}, ${NODE_H - 16})`}>
+                <g transform={`translate(${nodeW - 16}, ${NODE_H - 16})`}>
                   <rect
                     width={20}
                     height={14}

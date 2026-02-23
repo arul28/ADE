@@ -9,7 +9,7 @@ const MODEL_COLORS: Record<string, string> = {
   "claude-haiku": "bg-blue-400",
   "codex": "bg-emerald-500",
   "codex-mini": "bg-emerald-400",
-  "default": "bg-zinc-500"
+  "default": "bg-muted-fg"
 };
 
 function getModelColor(model: string): string {
@@ -70,7 +70,7 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
 
   if (loading && !stats) {
     return (
-      <div className="flex items-center justify-center h-48 text-zinc-500 text-xs">
+      <div className="flex items-center justify-center h-48 text-muted-fg text-xs">
         <SpinnerGap size={16} weight="regular" className="animate-spin mr-1.5" />
         Loading usage data...
       </div>
@@ -79,7 +79,7 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
 
   if (!stats) {
     return (
-      <div className="flex items-center justify-center h-48 text-zinc-500 text-xs">
+      <div className="flex items-center justify-center h-48 text-muted-fg text-xs">
         No usage data available
       </div>
     );
@@ -94,7 +94,7 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
   return (
     <div className="flex flex-col gap-3 p-4 overflow-y-auto">
       {/* Scope indicator */}
-      <div className="rounded border border-border/20 bg-zinc-800/40 px-3 py-1.5 text-xs text-fg font-medium">
+      <div className="rounded border border-border/10 bg-card/80 backdrop-blur-sm px-3 py-1.5 text-xs text-fg font-medium">
         {scopeLabel}
       </div>
 
@@ -109,10 +109,10 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Active Sessions */}
       {stats.activeSessions.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">Live Sessions</h3>
+          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">Live Sessions</h3>
           <div className="flex flex-col gap-1">
             {stats.activeSessions.map((s) => (
-              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-zinc-800/60 border border-zinc-700/40">
+              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded border border-border/10 bg-card">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
@@ -120,9 +120,9 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                 <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-medium", s.provider === "codex" ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}>
                   {s.provider}
                 </span>
-                <span className="text-xs text-zinc-300 truncate">{s.model}</span>
-                <span className="text-[10px] text-zinc-500 ml-auto">{s.feature}</span>
-                <span className="text-[10px] text-zinc-400">{formatDuration(s.elapsedMs)}</span>
+                <span className="text-xs text-fg/80 truncate">{s.model}</span>
+                <span className="text-[10px] text-muted-fg ml-auto">{s.feature}</span>
+                <span className="text-[10px] text-fg/60">{formatDuration(s.elapsedMs)}</span>
               </div>
             ))}
           </div>
@@ -132,7 +132,7 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Model Breakdown */}
       {stats.byModel.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">By Model</h3>
+          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">By Model</h3>
           <div className="flex flex-col gap-1.5">
             {stats.byModel.map((m) => {
               const total = m.inputTokens + m.outputTokens;
@@ -144,15 +144,15 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                       <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-medium", m.provider === "codex" ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}>
                         {m.provider}
                       </span>
-                      <span className="text-zinc-300">{m.model}</span>
+                      <span className="text-fg/80">{m.model}</span>
                     </div>
-                    <div className="flex items-center gap-3 text-zinc-500 text-[10px]">
+                    <div className="flex items-center gap-3 text-muted-fg text-[10px]">
                       <span>{m.sessions} sessions</span>
                       <span>{formatTokens(total)} tokens</span>
                       <span>{formatCost(m.costEstimateUsd)}</span>
                     </div>
                   </div>
-                  <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                  <div className="h-1.5 rounded-full bg-card overflow-hidden">
                     <div className={cn("h-full rounded-full transition-all", getModelColor(m.model))} style={{ width: `${pct}%` }} />
                   </div>
                 </div>
@@ -165,12 +165,12 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Mission Breakdown (hidden when scoped to a single mission) */}
       {!missionId && stats.missionBreakdown.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">By Mission</h3>
+          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">By Mission</h3>
           <div className="flex flex-col gap-0.5">
             {stats.missionBreakdown.map((m) => (
-              <div key={m.missionId} className="flex items-center justify-between px-2.5 py-1.5 rounded bg-zinc-800/40 text-[11px]">
-                <span className="text-zinc-300 truncate max-w-[60%]">{m.missionTitle}</span>
-                <div className="flex items-center gap-3 text-zinc-500 text-[10px]">
+              <div key={m.missionId} className="flex items-center justify-between px-2.5 py-1.5 rounded border border-border/10 bg-card/80 text-[11px]">
+                <span className="text-fg/80 truncate max-w-[60%]">{m.missionTitle}</span>
+                <div className="flex items-center gap-3 text-muted-fg text-[10px]">
                   <span>{formatTokens(m.totalTokens)}</span>
                   <span>{formatCost(m.costEstimateUsd)}</span>
                 </div>
@@ -183,10 +183,10 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Recent Sessions */}
       {stats.recentSessions.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wide">Recent Sessions</h3>
+          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">Recent Sessions</h3>
           <div className="flex flex-col gap-0.5">
             {stats.recentSessions.slice(0, 20).map((s) => (
-              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 rounded bg-zinc-800/30 text-[11px]">
+              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 rounded border border-border/10 bg-card/60 text-[11px]">
                 {s.success ? (
                   <CheckCircle size={12} weight="regular" className="text-emerald-400 shrink-0" />
                 ) : (
@@ -195,9 +195,9 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                 <span className={cn("px-1 py-0.5 rounded text-[9px] font-medium", s.provider === "codex" ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}>
                   {s.provider}
                 </span>
-                <span className="text-zinc-400 truncate">{s.feature}</span>
-                <span className="text-zinc-500 text-[10px] ml-auto">{formatTokens(s.inputTokens + s.outputTokens)}</span>
-                <span className="text-zinc-600 text-[10px]">{formatDuration(s.durationMs)}</span>
+                <span className="text-muted-fg truncate">{s.feature}</span>
+                <span className="text-muted-fg text-[10px] ml-auto">{formatTokens(s.inputTokens + s.outputTokens)}</span>
+                <span className="text-muted-fg/60 text-[10px]">{formatDuration(s.durationMs)}</span>
               </div>
             ))}
           </div>
@@ -209,13 +209,13 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
 
 function SummaryCard({ icon: Icon, label, value, sub }: { icon: React.ElementType; label: string; value: string; sub?: string }) {
   return (
-    <div className="flex flex-col gap-0.5 p-2.5 rounded-lg bg-zinc-800/50 border border-zinc-700/30">
+    <div className="flex flex-col gap-0.5 p-2.5 rounded-lg border border-border/10 bg-card">
       <div className="flex items-center gap-1.5">
-        <Icon size={12} weight="regular" className="text-zinc-500" />
-        <span className="text-[11px] text-zinc-500 uppercase tracking-wide">{label}</span>
+        <Icon size={12} weight="regular" className="text-muted-fg" />
+        <span className="text-[11px] text-muted-fg uppercase tracking-wide">{label}</span>
       </div>
-      <span className="font-mono text-2xl font-semibold tracking-tight text-zinc-200">{value}</span>
-      {sub && <span className="text-[11px] text-zinc-500">{sub}</span>}
+      <span className="font-mono text-2xl font-semibold tracking-tight text-fg">{value}</span>
+      {sub && <span className="text-[11px] text-muted-fg">{sub}</span>}
     </div>
   );
 }

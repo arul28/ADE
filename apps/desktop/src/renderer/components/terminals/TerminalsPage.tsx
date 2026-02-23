@@ -74,9 +74,9 @@ function toolBorderClass(toolType: string | null | undefined): string {
 
 /** Tool-type → badge color */
 function toolBadgeClass(toolType: string | null | undefined): string {
-  if (toolType === "claude" || toolType === "claude-chat") return "bg-violet-500/12 text-violet-700";
-  if (toolType === "codex" || toolType === "codex-chat") return "bg-sky-500/12 text-sky-700";
-  return "bg-muted/40 text-muted-fg";
+  if (toolType === "claude" || toolType === "claude-chat") return "bg-violet-500/15 text-violet-400";
+  if (toolType === "codex" || toolType === "codex-chat") return "bg-sky-500/15 text-sky-400";
+  return "bg-muted/50 text-muted-fg";
 }
 
 function statusDot(session: TerminalSessionSummary): { cls: string; spinning: boolean; label: string } {
@@ -113,13 +113,13 @@ function LaunchPanel({
   }, [lanes, laneId]);
 
   return (
-    <div className="border-b border-border/15 bg-[--color-surface-recessed]/40 px-3 py-2.5 space-y-2">
+    <div className="mb-1 bg-[--color-surface-recessed]/40 px-3 py-2.5 space-y-2">
       {/* Lane selector */}
       <div className="flex items-center gap-2">
         <label className="text-[11px] uppercase tracking-wider text-muted-fg/70 shrink-0">Lane</label>
         <div className="relative flex-1">
           <select
-            className="h-6 w-full appearance-none rounded bg-muted/30 pl-2 pr-6 text-xs outline-none hover:bg-muted/50 transition-colors cursor-pointer"
+            className="h-6 w-full appearance-none rounded border border-border/15 bg-surface-recessed pl-2 pr-6 text-xs text-fg outline-none hover:border-accent/30 transition-colors cursor-pointer"
             value={laneId}
             onChange={(e) => setLaneId(e.target.value)}
           >
@@ -139,7 +139,7 @@ function LaunchPanel({
           type="button"
           disabled={!laneId}
           onClick={() => onLaunchPty(laneId, "claude")}
-          className="inline-flex items-center gap-1 rounded bg-violet-500/12 px-2 py-1 text-xs font-medium text-violet-700 transition-all hover:bg-violet-500/20 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded bg-violet-500/15 px-2 py-1 text-xs font-medium text-violet-400 transition-all hover:bg-violet-500/25 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
         >
           <Terminal size={12} weight="regular" />
           Claude
@@ -148,7 +148,7 @@ function LaunchPanel({
           type="button"
           disabled={!laneId}
           onClick={() => onLaunchPty(laneId, "codex")}
-          className="inline-flex items-center gap-1 rounded bg-sky-500/12 px-2 py-1 text-xs font-medium text-sky-700 transition-all hover:bg-sky-500/20 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded bg-sky-500/15 px-2 py-1 text-xs font-medium text-sky-400 transition-all hover:bg-sky-500/25 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
         >
           <Terminal size={12} weight="regular" />
           Codex
@@ -157,7 +157,7 @@ function LaunchPanel({
           type="button"
           disabled={!laneId}
           onClick={() => onLaunchPty(laneId, "shell")}
-          className="inline-flex items-center gap-1 rounded bg-muted/40 px-2 py-1 text-xs font-medium text-muted-fg transition-all hover:bg-muted/70 hover:text-fg active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded bg-muted/50 px-2 py-1 text-xs font-medium text-muted-fg transition-all hover:bg-muted/70 hover:text-fg active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
         >
           <Terminal size={12} weight="regular" />
           Shell
@@ -180,17 +180,17 @@ function LaunchPanel({
           {chatOpen && (
             <div className="absolute left-0 top-full z-50 mt-1 w-40 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
               <button
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
                 onClick={() => { onLaunchChat(laneId, "claude"); setChatOpen(false); }}
               >
-                <BrainCircuit size={14} weight="regular" className="text-violet-600" />
+                <BrainCircuit size={14} weight="regular" className="text-violet-400" />
                 Claude chat
               </button>
               <button
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40"
                 onClick={() => { onLaunchChat(laneId, "codex"); setChatOpen(false); }}
               >
-                <BrainCircuit size={14} weight="regular" className="text-sky-600" />
+                <BrainCircuit size={14} weight="regular" className="text-sky-400" />
                 Codex chat
               </button>
             </div>
@@ -412,10 +412,10 @@ export function TerminalsPage() {
           />
 
           {/* Filters */}
-          <div className="border-b border-border/15 px-3 py-2 space-y-1.5">
+          <div className="mb-1 px-3 py-2 space-y-1.5">
             <div className="flex items-center gap-2">
               <select
-                className="h-6 flex-1 rounded bg-muted/25 px-2 text-xs outline-none hover:bg-muted/40 transition-colors"
+                className="h-6 flex-1 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none hover:border-accent/30 transition-colors"
                 value={filterLaneId}
                 onChange={(e) => setFilterLaneId(e.target.value)}
               >
@@ -423,7 +423,7 @@ export function TerminalsPage() {
                 {lanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
               <select
-                className="h-6 w-28 rounded bg-muted/25 px-2 text-xs outline-none hover:bg-muted/40 transition-colors"
+                className="h-6 w-28 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none hover:border-accent/30 transition-colors"
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as TerminalSessionStatus | "all")}
               >
@@ -435,7 +435,7 @@ export function TerminalsPage() {
               </select>
             </div>
             <input
-              className="h-6 w-full rounded bg-muted/25 px-2 text-xs outline-none placeholder:text-muted-fg/50 hover:bg-muted/40 transition-colors"
+              className="h-6 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none placeholder:text-muted-fg/50 hover:border-accent/30 transition-colors"
               placeholder="Search sessions..."
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -455,7 +455,7 @@ export function TerminalsPage() {
                 </div>
                 <button
                   type="button"
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-all hover:bg-emerald-500/25 active:scale-[0.97]"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-all hover:bg-emerald-500/25 active:scale-[0.97]"
                   onClick={() => {
                     if (lanes.length > 0) handleLaunchPty(lanes[0]!.id, "shell").catch(() => {});
                   }}
@@ -472,7 +472,7 @@ export function TerminalsPage() {
                   <div>
                     <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/10 bg-bg/90 px-3 py-1 backdrop-blur-sm">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">
                         Running · {runningFiltered.length}
                       </span>
                     </div>
@@ -527,7 +527,7 @@ export function TerminalsPage() {
               )}
               {selectedSession?.status === "running" && selectedSession.ptyId ? null : (
                 <div className="absolute inset-0 flex items-center justify-center bg-bg/60 backdrop-blur-[2px]">
-                  <div className="rounded-lg border border-border/20 bg-card/90 px-4 py-2.5 text-xs text-muted-fg shadow-card">
+                  <div className="rounded-lg border border-border/15 bg-card backdrop-blur-sm px-4 py-2.5 text-xs text-muted-fg shadow-card">
                     Select a running session to interact.
                   </div>
                 </div>
@@ -535,7 +535,7 @@ export function TerminalsPage() {
             </div>
           ) : (
             <div className="flex h-full flex-col items-center justify-center px-6">
-              <div className="mb-3 rounded-lg bg-muted/20 p-3.5">
+              <div className="mb-3 rounded-lg border border-border/10 bg-card p-3.5">
                 <Monitor size={24} weight="regular" className="text-muted-fg/35" />
               </div>
               <div className="text-sm font-semibold text-fg/50">
@@ -561,7 +561,7 @@ export function TerminalsPage() {
           {selectedSession ? (
             <div className="space-y-2.5">
               {/* Metadata */}
-              <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
+              <div className="rounded-lg border border-border/15 bg-card/80 backdrop-blur-sm p-2.5">
                 <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
                   <Info size={12} weight="regular" />
                   Session info
@@ -578,7 +578,7 @@ export function TerminalsPage() {
                     ["Started", new Date(selectedSession.startedAt).toLocaleTimeString()],
                     selectedSession.endedAt ? ["Ended", new Date(selectedSession.endedAt).toLocaleTimeString()] : null,
                   ].filter((row): row is [string, string] => row != null).map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/20 transition-colors">
+                    <div key={label} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40 transition-colors">
                       <span className="text-muted-fg/70 shrink-0">{label}</span>
                       <span className="truncate font-medium text-right">{value}</span>
                     </div>
@@ -588,7 +588,7 @@ export function TerminalsPage() {
 
               {/* Last output */}
               {sanitizeTerminalInlineText(selectedSession.lastOutputPreview, 420) ? (
-                <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
+                <div className="rounded-lg border border-border/15 bg-card/80 backdrop-blur-sm p-2.5">
                   <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
                     <Monitor size={12} weight="regular" />
                     Last output
@@ -601,7 +601,7 @@ export function TerminalsPage() {
 
               {/* Summary */}
               {selectedSession.summary && selectedSession.status !== "running" ? (
-                <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
+                <div className="rounded-lg border border-border/15 bg-card/80 backdrop-blur-sm p-2.5">
                   <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
                     <FileText size={12} weight="regular" />
                     Summary
@@ -612,7 +612,7 @@ export function TerminalsPage() {
 
               {/* Resume command */}
               {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
-                <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
+                <div className="rounded-lg border border-border/15 bg-card/80 backdrop-blur-sm p-2.5">
                   <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
                     <Play size={12} weight="regular" />
                     Resume command
@@ -625,7 +625,7 @@ export function TerminalsPage() {
 
               {/* Terminal health */}
               {selectedHealth ? (
-                <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
+                <div className="rounded-lg border border-border/15 bg-card/80 backdrop-blur-sm p-2.5">
                   <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
                     <Info size={12} weight="regular" />
                     Terminal health
@@ -672,7 +672,7 @@ export function TerminalsPage() {
             </div>
           ) : (
             <div className="flex h-full flex-col items-center justify-center px-6">
-              <div className="mb-3 rounded-lg bg-muted/20 p-3.5">
+              <div className="mb-3 rounded-lg border border-border/10 bg-card p-3.5">
                 <Info size={20} weight="regular" className="text-muted-fg/35" />
               </div>
               <div className="text-xs font-semibold text-fg/50">No session selected</div>
@@ -695,12 +695,12 @@ export function TerminalsPage() {
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       {/* Header */}
-      <div className="border-b border-border/20 px-3 py-2">
+      <div className="mb-1 px-3 py-2">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold tracking-tight text-fg/80">Work</span>
             {runningSessions.length > 0 ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {runningSessions.length} running
               </span>
@@ -759,14 +759,14 @@ function SessionRow({
   const canResume = session.status !== "running" && Boolean(session.resumeCommand);
 
   return (
-    <div className="group relative border-b border-border/8 last:border-b-0">
+    <div className="group relative mb-0.5 last:mb-0">
       <button
         type="button"
         className={cn(
           "w-full border-l-2 px-3 py-2.5 text-left transition-colors duration-100",
           isSelected
-            ? "border-l-accent bg-accent/8 text-fg"
-            : "border-l-transparent hover:bg-muted/25 hover:border-l-border/40",
+            ? "border-l-accent bg-accent/10 text-fg"
+            : "border-l-transparent hover:bg-muted/40 hover:border-l-border/40",
           !isSelected && toolBorderClass(session.toolType),
           isSelected && "border-l-accent"
         )}
@@ -791,7 +791,7 @@ function SessionRow({
             </span>
           ) : null}
           {session.exitCode != null && session.exitCode !== 0 ? (
-            <span className="rounded bg-red-500/12 px-1 py-0.5 text-[10.5px] font-mono font-medium text-red-600 leading-none">
+            <span className="rounded bg-red-500/15 px-1 py-0.5 text-[10.5px] font-mono font-medium text-red-400 leading-none">
               exit {session.exitCode}
             </span>
           ) : null}
@@ -801,7 +801,7 @@ function SessionRow({
       {canResume ? (
         <button
           type="button"
-          className="absolute right-2 top-2.5 inline-flex items-center gap-1 rounded border border-border/30 bg-card/90 px-1.5 py-0.5 text-[11px] text-muted-fg opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+          className="absolute right-2 top-2.5 inline-flex items-center gap-1 rounded border border-border/30 bg-card backdrop-blur-sm px-1.5 py-0.5 text-[11px] text-muted-fg opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
           disabled={resumingSessionId != null}
           onClick={(e) => { e.stopPropagation(); onResume(); }}
           title="Resume"

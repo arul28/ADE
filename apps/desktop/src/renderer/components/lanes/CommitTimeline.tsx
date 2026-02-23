@@ -123,7 +123,7 @@ export function CommitTimeline({
 
   return (
     <div ref={containerRef} className="relative flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
+      <div className="flex items-center justify-between px-2 py-1.5 bg-card/40 backdrop-blur-sm">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Commits</span>
           <span className="text-[11px] text-muted-fg">{loading ? "loading..." : `${commits.length}`}</span>
@@ -146,8 +146,8 @@ export function CommitTimeline({
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onScroll={onScroll}>
         <div className="relative pl-5 pr-1 py-1">
-          {/* Continuous vertical line */}
-          <div className="absolute left-[11px] top-0 bottom-0 w-px bg-border" />
+          {/* Continuous vertical line with accent tint */}
+          <div className="absolute left-[11px] top-0 bottom-0 w-px ade-timeline-line" />
 
           {commits.map((commit, idx) => {
             const isNewest = idx === commits.length - 1;
@@ -160,8 +160,10 @@ export function CommitTimeline({
                   type="button"
                   title={isMerge ? "Merge commit (multiple parents)." : "Commit"}
                   className={cn(
-                    "group relative flex w-full items-start gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
-                    isSelected ? "bg-accent/10 text-fg" : "text-muted-fg hover:bg-muted/40 hover:text-fg"
+                    "group relative flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left text-xs transition-all duration-150",
+                    isSelected
+                      ? "bg-accent/10 text-fg shadow-[0_0_10px_-3px_rgba(6,214,160,0.15)] border border-accent/10"
+                      : "text-muted-fg hover:bg-card/40 hover:text-fg hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)] hover:-translate-y-[0.5px] border border-transparent hover:border-border/10"
                   )}
                   onClick={() => onSelectCommit(commit)}
                   onMouseEnter={(e) => {
@@ -185,12 +187,12 @@ export function CommitTimeline({
                   <div className="absolute left-[-8px] top-[6px]">
                     <div
                       className={cn(
-                        "h-2.5 w-2.5 rounded-full border-2",
+                        "h-2.5 w-2.5 rounded-full border-2 transition-all duration-150",
                         isNewest
-                          ? "border-emerald-400 bg-emerald-500"
+                          ? "border-emerald-400 bg-emerald-500 ade-glow-emerald"
                           : isMerge
-                            ? "border-sky-400 bg-transparent"
-                            : "border-border bg-bg",
+                            ? "border-sky-400 bg-transparent ade-glow-sky"
+                            : "border-border/50 bg-bg hover:border-amber-500/40",
                         isSelected && "ring-2 ring-accent/60 ring-offset-1 ring-offset-bg"
                       )}
                     />
@@ -229,10 +231,10 @@ export function CommitTimeline({
                 {/* Arrow connector pointing up between commits */}
                 {!isLast ? (
                   <div className="relative flex items-center justify-start pl-[3px] h-3">
-                    <div className="absolute left-[10px] top-0 bottom-0 w-px bg-border" />
+                    <div className="absolute left-[10px] top-0 bottom-0 w-px ade-timeline-line" />
                     {/* Small upward arrow */}
                     <svg className="absolute left-[6px] top-[1px]" width="10" height="10" viewBox="0 0 10 10">
-                      <path d="M5 9 L5 2 M2 5 L5 1 L8 5" fill="none" stroke="currentColor" className="text-muted-fg/50" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M5 9 L5 2 M2 5 L5 1 L8 5" fill="none" stroke="currentColor" className="text-amber-500/50" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </div>
                 ) : null}
@@ -248,7 +250,7 @@ export function CommitTimeline({
       {/* Tooltip that follows hovered item */}
       {hovered && tooltipPos ? (
         <div
-          className="pointer-events-none absolute z-50 w-[260px] rounded border border-border bg-bg p-2 text-xs shadow-2xl ring-1 ring-border/60 backdrop-blur-sm"
+          className="pointer-events-none absolute z-50 w-[260px] rounded-lg border border-border/20 bg-card/80 p-2.5 text-xs shadow-float backdrop-blur-md"
           style={{
             left: Math.min(tooltipPos.x, (containerRef.current?.clientWidth ?? 300) - 270),
             top: Math.max(0, tooltipPos.y - 8),

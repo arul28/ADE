@@ -60,7 +60,7 @@ const PRESET_LABELS: Record<PresetKey, { label: string; desc: string; color: str
   quick: { label: "Quick", desc: "Minimal steps, no testing", color: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
   standard: { label: "Standard", desc: "Balanced with testing", color: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
   thorough: { label: "Thorough", desc: "Full pipeline with review", color: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
-  custom: { label: "Custom", desc: "Phase-level configuration", color: "border-zinc-500/40 bg-zinc-500/10 text-zinc-300" }
+  custom: { label: "Custom", desc: "Phase-level configuration", color: "border-border/40 bg-muted/20 text-muted-fg" }
 };
 
 function detectPreset(policy: MissionExecutionPolicy): PresetKey {
@@ -88,7 +88,7 @@ function detectPreset(policy: MissionExecutionPolicy): PresetKey {
   return "custom";
 }
 
-const selectClass = "h-7 rounded border border-border/30 bg-zinc-800 px-1.5 text-xs text-fg outline-none focus:border-accent/40";
+const selectClass = "h-7 rounded border border-border/30 bg-card px-1.5 text-xs text-fg outline-none focus:border-accent/40";
 
 function PhaseRow({
   label,
@@ -163,7 +163,7 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
               "flex-1 rounded-lg border px-2 py-1.5 text-center text-xs font-medium transition-colors",
               preset === key
                 ? PRESET_LABELS[key].color
-                : "border-border/20 bg-zinc-800/40 text-muted-fg hover:border-border/40"
+                : "border-border/20 bg-card/60 text-muted-fg hover:border-border/40"
             )}
           >
             <div>{PRESET_LABELS[key].label}</div>
@@ -172,7 +172,7 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
         ))}
       </div>
 
-      <div className="rounded-lg border border-border/20 bg-zinc-800/30 p-2 space-y-0.5">
+      <div className="rounded-lg border border-border/20 bg-card/60 p-2 space-y-0.5">
         <div className="flex items-center gap-2 pb-1 border-b border-border/10 mb-1">
           <span className="w-24 text-[11px] text-muted-fg font-medium">Phase</span>
           <span className="flex-1 text-[11px] text-muted-fg font-medium">Mode</span>
@@ -299,7 +299,7 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           {value.prStrategy?.kind !== "manual" && (
             <div className="flex items-center gap-2">
               <input
-                className="h-7 flex-1 rounded border border-border/30 bg-zinc-800 px-1.5 text-xs text-fg outline-none focus:border-accent/40"
+                className="h-7 flex-1 rounded border border-border/30 bg-card px-1.5 text-xs text-fg outline-none focus:border-accent/40"
                 placeholder="Target branch"
                 value={(value.prStrategy && "targetBranch" in value.prStrategy ? value.prStrategy.targetBranch : undefined) ?? "main"}
                 onChange={(e) => {

@@ -70,16 +70,16 @@ function ConflictsPageInner() {
   return (
     <div className="flex h-full flex-col">
       {/* Tab bar */}
-      <div className="flex items-center gap-1 border-b border-border/50 bg-card/30 px-3 py-1">
+      <div className="flex items-center gap-1.5 bg-card/30 backdrop-blur-sm px-3 py-1.5">
         {TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => dispatch({ type: "SET_ACTIVE_TAB", tab: tab.id })}
             className={cn(
-              "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+              "rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200 border",
               activeTab === tab.id
-                ? "bg-accent/15 text-accent"
-                : "text-muted-fg hover:text-fg hover:bg-muted/30"
+                ? "bg-red-500/10 text-red-300 border-red-500/20 shadow-[0_0_12px_-3px_rgba(239,68,68,0.2)]"
+                : "text-muted-fg border-transparent hover:text-fg hover:bg-card/40 hover:border-border/15 hover:shadow-card"
             )}
           >
             {tab.label}

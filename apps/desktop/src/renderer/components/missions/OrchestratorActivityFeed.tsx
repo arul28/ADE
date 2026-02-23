@@ -228,7 +228,7 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="h-7 rounded border border-border/30 bg-zinc-800 px-2 text-[11px] text-fg outline-none focus:border-accent/40"
+          className="h-7 rounded border border-border/30 bg-card px-2 text-[11px] text-fg outline-none focus:border-accent/40"
         >
           {CATEGORY_OPTIONS.map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
@@ -239,7 +239,7 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           placeholder="Filter events..."
-          className="h-7 w-40 rounded border border-border/30 bg-zinc-800 px-2 text-[11px] text-fg outline-none focus:border-accent/40"
+          className="h-7 w-40 rounded border border-border/30 bg-card px-2 text-[11px] text-fg outline-none focus:border-accent/40"
         />
 
         <div className="flex rounded border border-border/30 overflow-hidden">
@@ -251,7 +251,7 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
                 "px-2 py-0.5 text-[11px] font-medium transition-colors",
                 severity === sev
                   ? "bg-accent/20 text-accent"
-                  : "bg-zinc-800 text-muted-fg hover:bg-zinc-800/80"
+                  : "bg-card text-muted-fg hover:bg-card/80"
               )}
             >
               {sev === "all" ? "All" : sev === "warnings" ? "Warnings" : "Errors"}

@@ -522,12 +522,30 @@ app.whenReady().then(async () => {
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
     // then routes them through the same onHeadChanged pipeline (packs, automations, restack suggestions).
     let headWatcherTimer: NodeJS.Timeout | null = null;
+    let headWatcherActive = false;
     let headWatcherRunning = false;
+    let headWatcherDelayMs = 5_000;
     let missingBroadcasted = false;
+
+    const HEAD_WATCHER_MIN_INTERVAL_MS = 5_000;
+    const HEAD_WATCHER_MAX_INTERVAL_MS = 20_000;
+
+    const scheduleHeadPoll = (delayMs: number) => {
+      if (!headWatcherActive) return;
+      if (headWatcherTimer) {
+        clearTimeout(headWatcherTimer);
+      }
+      headWatcherTimer = setTimeout(() => {
+        headWatcherTimer = null;
+        void pollHeads();
+      }, Math.max(HEAD_WATCHER_MIN_INTERVAL_MS, delayMs));
+    };
 
     const pollHeads = async () => {
       if (headWatcherRunning) return;
       headWatcherRunning = true;
+      let lanesChecked = 0;
+      let changesDetected = false;
       try {
         // Check if the active project root still exists on disk.
         if (!fs.existsSync(projectRoot)) {
@@ -553,6 +571,7 @@ app.whenReady().then(async () => {
           const laneId = String(row.id ?? "").trim();
           const worktreePath = String(row.worktree_path ?? "");
           if (!laneId || !worktreePath) continue;
+          lanesChecked += 1;
           active.add(laneId);
 
           const head = await runGit(["rev-parse", "HEAD"], { cwd: worktreePath, timeoutMs: 8_000 });
@@ -566,6 +585,7 @@ app.whenReady().then(async () => {
             continue;
           }
           if (prev !== sha) {
+            changesDetected = true;
             handleHeadChanged({ laneId, reason: "head_watcher", preHeadSha: prev, postHeadSha: sha });
           }
         }
@@ -577,20 +597,30 @@ app.whenReady().then(async () => {
         logger.warn("git.head_watcher_failed", { err: err instanceof Error ? err.message : String(err) });
       } finally {
         headWatcherRunning = false;
+        if (headWatcherActive) {
+          if (changesDetected) {
+            headWatcherDelayMs = HEAD_WATCHER_MIN_INTERVAL_MS;
+          } else if (lanesChecked === 0) {
+            headWatcherDelayMs = HEAD_WATCHER_MAX_INTERVAL_MS;
+          } else {
+            headWatcherDelayMs = Math.min(HEAD_WATCHER_MAX_INTERVAL_MS, headWatcherDelayMs + 2_500);
+          }
+          scheduleHeadPoll(headWatcherDelayMs);
+        }
       }
     };
 
     const startHeadWatcher = () => {
-      if (headWatcherTimer) return;
+      if (headWatcherActive) return;
+      headWatcherActive = true;
+      headWatcherDelayMs = HEAD_WATCHER_MIN_INTERVAL_MS;
       void pollHeads();
-      headWatcherTimer = setInterval(() => {
-        void pollHeads();
-      }, 5_000);
     };
 
     const disposeHeadWatcher = () => {
+      headWatcherActive = false;
       if (!headWatcherTimer) return;
-      clearInterval(headWatcherTimer);
+      clearTimeout(headWatcherTimer);
       headWatcherTimer = null;
     };
 
@@ -644,69 +674,81 @@ app.whenReady().then(async () => {
     };
   };
 
-  const closeContext = () => {
-    try {
-      ctxRef.disposeHeadWatcher();
-    } catch {
-      // ignore
+  let closeContextPromise: Promise<void> | null = null;
+
+  const closeContext = async () => {
+    if (closeContextPromise) {
+      await closeContextPromise;
+      return;
     }
-    try {
-      ctxRef.prPollingService.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.automationService.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.aiOrchestratorService.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.jobEngine.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.fileService.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.testService.disposeAll();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.processService.disposeAll();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.ptyService.disposeAll();
-    } catch {
-      // ignore
-    }
-    try {
-      void ctxRef.agentChatService.disposeAll();
-    } catch {
-      // ignore
-    }
-    try {
-      ctxRef.db.flushNow();
-      ctxRef.db.close();
-    } catch {
-      // ignore
-    }
+    const ctx = ctxRef;
+    closeContextPromise = (async () => {
+      try {
+        ctx.disposeHeadWatcher();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.prPollingService.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.automationService.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.aiOrchestratorService.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.jobEngine.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.fileService.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.testService.disposeAll();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.processService.disposeAll();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.ptyService.disposeAll();
+      } catch {
+        // ignore
+      }
+      try {
+        await ctx.agentChatService.disposeAll();
+      } catch {
+        // ignore
+      }
+      try {
+        ctx.db.flushNow();
+        ctx.db.close();
+      } catch {
+        // ignore
+      }
+    })().finally(() => {
+      closeContextPromise = null;
+    });
+    await closeContextPromise;
   };
 
   const switchProjectFromDialog = async (selectedPath: string) => {
     const repoRoot = await resolveRepoRoot(selectedPath); // require a real git repo for onboarding.
     const baseRef = await detectDefaultBaseRef(repoRoot);
-    closeContext();
+    await closeContext();
     ctxRef = await initContextForProjectRoot({ projectRoot: repoRoot, baseRef, ensureExclude: true });
     return ctxRef.project;
   };
@@ -744,9 +786,19 @@ app.whenReady().then(async () => {
     }
   });
 
-  app.on("before-quit", () => {
+  let quitAfterCleanup = false;
+  app.on("before-quit", (event) => {
+    if (quitAfterCleanup) return;
+    quitAfterCleanup = true;
+    event.preventDefault();
     ctxRef.logger.info("app.before_quit");
-    closeContext();
+    void closeContext()
+      .catch(() => {
+        // ignore
+      })
+      .finally(() => {
+        app.quit();
+      });
   });
 });
 

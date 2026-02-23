@@ -155,7 +155,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
           <div className="rounded bg-muted/15 p-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <input
-                className="h-8 w-[min(420px,100%)] rounded bg-muted/30 px-2 text-xs outline-none placeholder:text-muted-fg"
+                className="h-8 w-[min(420px,100%)] rounded border border-border/15 bg-surface-recessed px-2 text-xs outline-none placeholder:text-muted-fg"
                 placeholder="Filter jobs (name, file, command)"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -163,7 +163,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
               <div className="flex items-center gap-2">
                 <label className="text-[11px] text-muted-fg">Mode</label>
                 <select
-                  className="h-8 rounded bg-muted/30 px-2 text-xs"
+                  className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs"
                   value={mode}
                   onChange={(e) => setMode(e.target.value as CiImportMode)}
                 >
@@ -233,7 +233,7 @@ export function CiImportPanel({ onImported }: { onImported?: () => void }) {
                       </td>
                       <td className="px-3 py-2 align-top">
                         <select
-                          className="h-8 rounded bg-muted/30 px-2 text-xs"
+                          className="h-8 rounded border border-border/15 bg-surface-recessed px-2 text-xs"
                           value={kindById.get(job.id) ?? inferKind(job)}
                           disabled={!checked}
                           onChange={(e) =>
