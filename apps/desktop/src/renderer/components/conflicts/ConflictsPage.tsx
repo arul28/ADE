@@ -51,6 +51,20 @@ function ConflictsPageInner() {
       }
     }
 
+    // Multi-merge deep-link: ?tab=merge-multiple&sourceLaneIds=a,b,c&mode=integration
+    const sourceLaneIdsParam = searchParams.get("sourceLaneIds");
+    const modeParam = searchParams.get("mode");
+    if (sourceLaneIdsParam) {
+      const ids = sourceLaneIdsParam.split(",").map((s) => s.trim()).filter((id) => laneIds.has(id));
+      if (ids.length > 0) {
+        dispatch({ type: "SET_ACTIVE_TAB", tab: "merge-multiple" });
+        dispatch({ type: "SET_MULTI_MERGE_SOURCES", laneIds: ids });
+        if (modeParam === "integration" || modeParam === "stacked") {
+          dispatch({ type: "SET_MULTI_MERGE_MODE", mode: modeParam });
+        }
+      }
+    }
+
     appliedDeepLinkRef.current = paramsKey;
   }, [searchParams, lanes, dispatch]);
 
@@ -70,21 +84,23 @@ function ConflictsPageInner() {
   return (
     <div className="flex h-full flex-col">
       {/* Tab bar */}
-      <div className="flex items-center gap-1.5 bg-card/30 backdrop-blur-sm px-3 py-1.5">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => dispatch({ type: "SET_ACTIVE_TAB", tab: tab.id })}
-            className={cn(
-              "rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200 border",
-              activeTab === tab.id
-                ? "bg-red-500/10 text-red-300 border-red-500/20 shadow-[0_0_12px_-3px_rgba(239,68,68,0.2)]"
-                : "text-muted-fg border-transparent hover:text-fg hover:bg-card/40 hover:border-border/15 hover:shadow-card"
-            )}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="flex items-center gap-1 bg-card/40 backdrop-blur-sm border-b border-border/10 px-4 py-2">
+        <div className="flex items-center rounded-lg bg-card/80 p-0.5 gap-0.5">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => dispatch({ type: "SET_ACTIVE_TAB", tab: tab.id })}
+              className={cn(
+                "px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150",
+                activeTab === tab.id
+                  ? "bg-accent text-accent-fg shadow-sm"
+                  : "text-muted-fg hover:text-fg hover:bg-muted/40"
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Active tab content */}

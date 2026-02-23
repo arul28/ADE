@@ -34,7 +34,7 @@ import type { createPackService } from "../packs/packService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
-import { runGit } from "../git/git";
+import { runGit, runGitOrThrow } from "../git/git";
 
 type PullRequestRow = {
   id: string;
@@ -669,7 +669,7 @@ export function createPrService({
     await refreshOne(args.prId);
   };
 
-  const draftDescription = async (laneId: string): Promise<{ title: string; body: string }> => {
+  const draftDescription = async (laneId: string, model?: string): Promise<{ title: string; body: string }> => {
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
@@ -716,7 +716,8 @@ export function createPrService({
         const draft = await aiIntegrationService.draftPrDescription({
           laneId,
           cwd: lane.worktreePath,
-          prompt
+          prompt,
+          ...(model ? { model } : {})
         });
         const parsed = parsePrDraftJson(draft.text);
         if (parsed) return parsed;
@@ -775,6 +776,17 @@ export function createPrService({
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
     const inferredBaseRef = parentLane?.branchRef ?? (lane.parentLaneId ? lane.baseRef : (primaryLane?.branchRef ?? lane.baseRef));
     const baseBranch = (args.baseBranch ?? branchNameFromRef(inferredBaseRef)).trim();
+
+    // Push the branch to remote before creating the PR
+    const upstreamCheck = await runGit(
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      { cwd: lane.worktreePath, timeoutMs: 10_000 }
+    );
+    if (upstreamCheck.exitCode === 0) {
+      await runGitOrThrow(["push"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    } else {
+      await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    }
 
     const createdAt = nowIso();
     const created = await githubService.apiRequest<any>({
@@ -1084,11 +1096,14 @@ export function createPrService({
         mergeResults.push({ laneId: sourceLaneId, success: false, error: `Lane not found: ${sourceLaneId}` });
         continue;
       }
+      const sourceBranch = branchNameFromRef(sourceLane.branchRef);
       const mergeRes = await runGit(
-        ["merge", "--no-commit", "--no-ff", branchNameFromRef(sourceLane.branchRef)],
+        ["merge", "--no-ff", "-m", `Merge ${sourceLane.name} into integration`, sourceBranch],
         { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
       );
       if (mergeRes.exitCode !== 0) {
+        // Abort the failed merge so subsequent merges can proceed
+        await runGit(["merge", "--abort"], { cwd: integrationLane.worktreePath, timeoutMs: 10_000 });
         mergeResults.push({ laneId: sourceLaneId, success: false, error: mergeRes.stderr.trim() || "Merge failed" });
       } else {
         mergeResults.push({ laneId: sourceLaneId, success: true });
@@ -1301,8 +1316,8 @@ export function createPrService({
       return await updateDescription(args);
     },
 
-    async draftDescription(laneId: string): Promise<{ title: string; body: string }> {
-      return await draftDescription(laneId);
+    async draftDescription(laneId: string, model?: string): Promise<{ title: string; body: string }> {
+      return await draftDescription(laneId, model);
     },
 
     async land(args: LandPrArgs): Promise<LandResult> {

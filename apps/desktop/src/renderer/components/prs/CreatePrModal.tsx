@@ -54,6 +54,30 @@ export function CreatePrModal({
   const [integrationTitle, setIntegrationTitle] = React.useState("");
   const [integrationDraft, setIntegrationDraft] = React.useState(false);
 
+  // Body & AI draft
+  const [normalBody, setNormalBody] = React.useState("");
+  const [integrationBody, setIntegrationBody] = React.useState("");
+  const [draftModel, setDraftModel] = React.useState("haiku");
+  const [drafting, setDrafting] = React.useState(false);
+
+  const handleDraftAI = async (laneId: string) => {
+    setDrafting(true);
+    try {
+      const result = await window.ade.prs.draftDescription(laneId, draftModel);
+      if (mode === "normal") {
+        setNormalTitle(result.title);
+        setNormalBody(result.body);
+      } else if (mode === "integration") {
+        setIntegrationTitle(result.title);
+        setIntegrationBody(result.body);
+      }
+    } catch (err: any) {
+      setExecError(err?.message ?? String(err));
+    } finally {
+      setDrafting(false);
+    }
+  };
+
   // Execute
   const [busy, setBusy] = React.useState(false);
   const [execError, setExecError] = React.useState<string | null>(null);
@@ -78,6 +102,10 @@ export function CreatePrModal({
       setBusy(false);
       setExecError(null);
       setResults(null);
+      setNormalBody("");
+      setIntegrationBody("");
+      setDraftModel("haiku");
+      setDrafting(false);
     }, 200);
     return () => clearTimeout(id);
   }, [open]);
@@ -91,7 +119,7 @@ export function CreatePrModal({
         const pr = await window.ade.prs.createFromLane({
           laneId: normalLaneId,
           title: normalTitle || lane?.name || "PR",
-          body: "",
+          body: normalBody,
           draft: normalDraft,
         });
         setResults([pr]);
@@ -113,6 +141,7 @@ export function CreatePrModal({
           integrationLaneName: integrationName,
           baseBranch,
           title: integrationTitle || `Integration: ${integrationName}`,
+          body: integrationBody,
           draft: integrationDraft,
         });
         const failedMerges = result.mergeResults.filter((r) => !r.success);
@@ -217,6 +246,35 @@ export function CreatePrModal({
                       placeholder="Auto-generated from lane name"
                     />
                   </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-fg">Body (markdown)</label>
+                    <textarea
+                      value={normalBody}
+                      onChange={(e) => setNormalBody(e.target.value)}
+                      rows={5}
+                      className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none resize-none"
+                      placeholder="PR description..."
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={draftModel}
+                      onChange={(e) => setDraftModel(e.target.value)}
+                      className="rounded-lg border border-border bg-card px-2 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
+                    >
+                      <option value="haiku">Haiku</option>
+                      <option value="sonnet">Sonnet</option>
+                      <option value="opus">Opus</option>
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!normalLaneId || drafting}
+                      onClick={() => void handleDraftAI(normalLaneId)}
+                    >
+                      {drafting ? "Drafting..." : "Draft with AI"}
+                    </Button>
+                  </div>
                   <label className="flex items-center gap-2 text-xs text-fg">
                     <input type="checkbox" checked={normalDraft} onChange={(e) => setNormalDraft(e.target.checked)} />
                     Create as draft
@@ -298,6 +356,35 @@ export function CreatePrModal({
                       className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none"
                       placeholder={`Integration: ${integrationName}`}
                     />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-fg">Body (markdown)</label>
+                    <textarea
+                      value={integrationBody}
+                      onChange={(e) => setIntegrationBody(e.target.value)}
+                      rows={5}
+                      className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none resize-none"
+                      placeholder="PR description..."
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={draftModel}
+                      onChange={(e) => setDraftModel(e.target.value)}
+                      className="rounded-lg border border-border bg-card px-2 py-1.5 text-xs text-fg focus:border-accent focus:outline-none"
+                    >
+                      <option value="haiku">Haiku</option>
+                      <option value="sonnet">Sonnet</option>
+                      <option value="opus">Opus</option>
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={integrationSources.length === 0 || drafting}
+                      onClick={() => void handleDraftAI(integrationSources[0]!)}
+                    >
+                      {drafting ? "Drafting..." : "Draft with AI"}
+                    </Button>
                   </div>
                   <label className="flex items-center gap-2 text-xs text-fg">
                     <input type="checkbox" checked={integrationDraft} onChange={(e) => setIntegrationDraft(e.target.checked)} />

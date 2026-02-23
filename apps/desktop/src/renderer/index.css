@@ -196,21 +196,53 @@ h6 {
    Collapsible Sidebar
    ═══════════════════════════════════════════════════════════ */
 
-.ade-sidebar {
+/* Outer clip container — only width changes, icons never reflow */
+.ade-sidebar-clip {
   width: 52px;
-  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
-  background: linear-gradient(180deg, var(--color-surface) 0%, var(--color-bg) 100%);
+  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.ade-sidebar:hover {
+.ade-sidebar-clip:hover {
   width: 168px;
+}
+
+/* Inner content — always full expanded width so icon positions are pixel-stable */
+.ade-sidebar {
+  width: 168px;
+  background: linear-gradient(180deg, var(--color-surface) 0%, var(--color-bg) 100%);
 }
 
 [data-theme="dark"] .ade-sidebar,
 :root .ade-sidebar {
   background: linear-gradient(180deg, rgba(18, 20, 32, 0.95) 0%, rgba(12, 14, 22, 0.98) 100%);
+}
+
+[data-theme="dark"] .ade-sidebar-clip,
+:root .ade-sidebar-clip {
   border-right-color: rgba(38, 42, 66, 0.3);
+}
+
+/* Phase-2 label animation: fade out immediately, fade in after width expands */
+.ade-tab-label {
+  opacity: 0;
+  transition: opacity 80ms ease 0ms;
+  will-change: opacity;
+}
+
+.ade-sidebar-clip:hover .ade-tab-label {
+  opacity: 1;
+  transition: opacity 80ms ease 140ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-sidebar-clip {
+    transition: width 0ms;
+  }
+  .ade-tab-label,
+  .ade-sidebar-clip:hover .ade-tab-label {
+    transition: opacity 0ms;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════

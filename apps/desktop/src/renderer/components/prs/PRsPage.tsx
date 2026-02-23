@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, GitPullRequest, Plus } from "@phosphor-icons/react";
-import type { LandResult, MergeMethod, PrSummary } from "../../../shared/types";
+import { ArrowRight, Eye, GitMerge, GitPullRequest, Plus } from "@phosphor-icons/react";
+import type { LandResult, MergeMethod, PrSummary, PrWithConflicts } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -67,7 +67,7 @@ export function PRsPage() {
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
 
-  const [prs, setPrs] = React.useState<PrSummary[]>([]);
+  const [prs, setPrs] = React.useState<PrWithConflicts[]>([]);
   const [viewMode, setViewMode] = React.useState<ViewMode>("chains");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -83,6 +83,13 @@ export function PRsPage() {
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
 
+  // Per-PR action state
+  const [actionBusy, setActionBusy] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+  const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
+  const [descPreview, setDescPreview] = React.useState<{ title: string; body: string } | null>(null);
+  const [descPreviewBusy, setDescPreviewBusy] = React.useState(false);
+
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
   const prByLaneId = React.useMemo(() => new Map(prs.map((pr) => [pr.laneId, pr] as const)), [prs]);
   const prById = React.useMemo(() => new Map(prs.map((pr) => [pr.id, pr] as const)), [prs]);
@@ -94,7 +101,7 @@ export function PRsPage() {
     setError(null);
     try {
       if (!lanes.length) await refreshLanes();
-      const next = await window.ade.prs.refresh();
+      const next = await window.ade.prs.listWithConflicts();
       setPrs(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -111,7 +118,14 @@ export function PRsPage() {
   React.useEffect(() => {
     const unsub = window.ade.prs.onEvent((event) => {
       if (event.type !== "prs-updated") return;
-      setPrs(event.prs);
+      // Merge incoming summaries with existing conflict data so analysis isn't lost between full refreshes
+      setPrs((prev) => {
+        const prevMap = new Map(prev.map((p) => [p.id, p]));
+        return event.prs.map((pr) => ({
+          ...pr,
+          conflictAnalysis: prevMap.get(pr.id)?.conflictAnalysis ?? null,
+        }));
+      });
     });
     return () => {
       unsub();
@@ -134,14 +148,15 @@ export function PRsPage() {
   }, [lanes]);
 
   const stackedChains = React.useMemo(() => {
+    type ChainItem = { laneId: string; laneName: string; depth: number; pr: PrWithConflicts | null };
     const out: Array<{
       rootLaneId: string;
       rootLaneName: string;
-      items: Array<{ laneId: string; laneName: string; depth: number; pr: PrSummary | null }>;
+      items: ChainItem[];
       hasAnyPr: boolean;
     }> = [];
 
-    const visit = (laneId: string, depth: number, acc: Array<{ laneId: string; laneName: string; depth: number; pr: PrSummary | null }>) => {
+    const visit = (laneId: string, depth: number, acc: ChainItem[]) => {
       const lane = laneById.get(laneId);
       if (!lane) return;
       const pr = prByLaneId.get(laneId) ?? null;
@@ -152,14 +167,20 @@ export function PRsPage() {
     };
 
     for (const root of sortByCreatedAtAsc(chainRoots)) {
-      const items: Array<{ laneId: string; laneName: string; depth: number; pr: PrSummary | null }> = [];
-      visit(root.id, 0, items);
-      const hasAnyPr = items.some((i) => i.pr != null);
+      const allItems: ChainItem[] = [];
+      visit(root.id, 0, allItems);
+      const hasAnyPr = allItems.some((i) => i.pr != null);
       if (!hasAnyPr) continue;
+      // Filter out leaf lanes with no PR (keeps parent lanes needed for tree structure)
+      const laneIdsWithChildren = new Set<string>();
+      for (const lane of lanes) {
+        if (lane.parentLaneId) laneIdsWithChildren.add(lane.parentLaneId);
+      }
+      const items = allItems.filter((item) => item.pr != null || laneIdsWithChildren.has(item.laneId));
       out.push({ rootLaneId: root.id, rootLaneName: root.name, items, hasAnyPr });
     }
     return out;
-  }, [chainRoots, childrenByParent, laneById, prByLaneId]);
+  }, [chainRoots, childrenByParent, laneById, prByLaneId, lanes]);
 
   const allPrsSorted = React.useMemo(() => {
     const laneName = (laneId: string) => laneById.get(laneId)?.name ?? laneId;
@@ -189,6 +210,90 @@ export function PRsPage() {
     const first = prs[0] ?? null;
     setSelectedPrId(first?.id ?? null);
   }, [prs, selectedPrId, prById]);
+
+  // Clear action state when switching PRs
+  React.useEffect(() => {
+    setActionBusy(false);
+    setActionError(null);
+    setActionResult(null);
+    setDescPreview(null);
+    setDescPreviewBusy(false);
+  }, [selectedPrId]);
+
+  const handleMergePr = async () => {
+    if (!selectedPr) return;
+    setActionBusy(true);
+    setActionError(null);
+    setActionResult(null);
+    try {
+      const res = await window.ade.prs.land({ prId: selectedPr.id, method: mergeMethod });
+      setActionResult(res);
+      await refresh();
+    } catch (err: any) {
+      setActionError(err?.message ?? String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleRefreshPr = async () => {
+    if (!selectedPr) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const refreshed = await window.ade.prs.refresh({ prId: selectedPr.id });
+      if (refreshed.length > 0) {
+        setPrs((prev) => prev.map((p) => (p.id === refreshed[0]!.id ? { ...refreshed[0]!, conflictAnalysis: p.conflictAnalysis } : p)));
+      }
+    } catch (err: any) {
+      setActionError(err?.message ?? String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handlePushChanges = async () => {
+    if (!selectedPr) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await window.ade.git.push({ laneId: selectedPr.laneId });
+      await handleRefreshPr();
+    } catch (err: any) {
+      setActionError(err?.message ?? String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDraftDescription = async () => {
+    if (!selectedPr) return;
+    setDescPreviewBusy(true);
+    setActionError(null);
+    try {
+      const drafted = await window.ade.prs.draftDescription(selectedPr.laneId);
+      setDescPreview(drafted);
+    } catch (err: any) {
+      setActionError(err?.message ?? String(err));
+    } finally {
+      setDescPreviewBusy(false);
+    }
+  };
+
+  const handleConfirmDescription = async () => {
+    if (!selectedPr || !descPreview) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await window.ade.prs.updateDescription({ prId: selectedPr.id, body: descPreview.body });
+      setDescPreview(null);
+      await refresh();
+    } catch (err: any) {
+      setActionError(err?.message ?? String(err));
+    } finally {
+      setActionBusy(false);
+    }
+  };
 
   /* ---- Pane configs ---- */
 
@@ -261,12 +366,19 @@ export function PRsPage() {
                               <div className="min-w-0">
                                 <div className="flex items-center gap-2">
                                   <span className="font-semibold text-fg truncate">{item.laneName}</span>
+                                  {/integrat/i.test(item.laneName) && (
+                                    <span className="inline-flex items-center gap-0.5 text-[10px] text-purple-400 bg-purple-500/10 border border-purple-500/15 rounded px-1 py-0.5">
+                                      <GitMerge size={10} weight="regular" />
+                                      integration
+                                    </span>
+                                  )}
                                   {pr ? <span className="font-mono text-xs text-muted-fg/70">#{pr.githubPrNumber}</span> : <span className="text-xs italic text-muted-fg/50">(no PR)</span>}
                                 </div>
                               </div>
                             </div>
                             {pr ? (
                               <div className="flex flex-wrap items-center justify-end gap-1 shrink-0">
+                                <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
                                 <Chip className={cn(
                                   "text-[11px] px-1.5 rounded-md",
                                   stateChip(pr.state).className,
@@ -309,10 +421,19 @@ export function PRsPage() {
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-xs text-muted-fg/70">#{pr.githubPrNumber}</span>
                           <span className="truncate font-medium text-fg">{pr.title}</span>
+                          {/integrat/i.test(laneName) && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] text-purple-400 bg-purple-500/10 border border-purple-500/15 rounded px-1 py-0.5 shrink-0">
+                              <GitMerge size={10} weight="regular" />
+                              integration
+                            </span>
+                          )}
                         </div>
                         <div className="mt-0.5 text-xs text-muted-fg/60 truncate">{laneName}</div>
                       </div>
-                      <Chip className={cn("text-[11px] px-1.5 shrink-0 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
+                        <Chip className={cn("text-[11px] px-1.5 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
+                      </div>
                     </button>
                   );
                 })}
@@ -334,6 +455,12 @@ export function PRsPage() {
             <div className="flex items-baseline gap-2.5">
               <span className="font-mono text-lg text-muted-fg/70">#{selectedPr.githubPrNumber}</span>
               <span className="text-lg font-bold text-fg tracking-tight">{selectedPr.title}</span>
+              {/integrat/i.test(laneById.get(selectedPr.laneId)?.name ?? "") && (
+                <span className="inline-flex items-center gap-1 text-[11px] text-purple-400 bg-purple-500/10 border border-purple-500/15 rounded-md px-1.5 py-0.5">
+                  <GitMerge size={12} weight="regular" />
+                  integration
+                </span>
+              )}
             </div>
             <div className="mt-1.5 text-xs text-muted-fg/60 font-mono">
               {selectedPr.repoOwner}/{selectedPr.repoName}
@@ -417,19 +544,170 @@ export function PRsPage() {
             </div>
           </div>
 
+          {/* Conflicts */}
+          {selectedPr.conflictAnalysis && (
+            <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5 transition-all duration-150 hover:shadow-card-hover">
+              <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Conflicts</div>
+              <div className="flex items-center gap-3">
+                <PrConflictBadge riskLevel={selectedPr.conflictAnalysis.riskLevel} overlappingFileCount={selectedPr.conflictAnalysis.overlapCount} />
+                {selectedPr.conflictAnalysis.conflictPredicted && (
+                  <span className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/15 rounded-md px-1.5 py-0.5">conflict predicted</span>
+                )}
+              </div>
+              {selectedPr.conflictAnalysis.peerConflicts.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="text-[11px] text-muted-fg/70 font-medium">Peer conflicts</div>
+                  {selectedPr.conflictAnalysis.peerConflicts.map((peer) => (
+                    <div key={peer.peerId} className="rounded border border-border/10 bg-card/30 px-2.5 py-2 text-xs space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-fg">{peer.peerName}</span>
+                        <PrConflictBadge riskLevel={peer.riskLevel} overlappingFileCount={peer.overlapFiles.length} />
+                      </div>
+                      {peer.overlapFiles.length > 0 && (
+                        <div className="text-[11px] text-muted-fg/60 font-mono space-y-0.5">
+                          {peer.overlapFiles.map((f) => (
+                            <div key={f} className="truncate">{f}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2 text-accent border-accent/20 hover:bg-accent/10"
+                onClick={() => navigate(`/conflicts?tab=merge-multiple&sourceLaneIds=${encodeURIComponent(selectedPr.laneId)}`)}
+              >
+                Resolve in Conflicts tab
+                <ArrowRight size={14} weight="regular" className="ml-1.5" />
+              </Button>
+            </div>
+          )}
+
           {/* Actions */}
-          <div className="flex items-center gap-3 pt-1">
-            <Button size="sm" variant="primary" className="shadow-card" onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}>
-              Open on GitHub
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selectedPr.laneId)}`)}
-            >
-              View lane
-            </Button>
+          <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-3 transition-all duration-150 hover:shadow-card-hover">
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Actions</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="primary" className="shadow-card" onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}>
+                Open on GitHub
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selectedPr.laneId)}`)}
+              >
+                View lane
+              </Button>
+              <Button size="sm" variant="outline" disabled={actionBusy} onClick={() => void handleRefreshPr()}>
+                {actionBusy ? "Syncing..." : "Sync"}
+              </Button>
+              <Button size="sm" variant="outline" disabled={actionBusy} onClick={() => void handlePushChanges()}>
+                Push
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={actionBusy || descPreviewBusy}
+                onClick={() => void handleDraftDescription()}
+              >
+                {descPreviewBusy ? "Drafting..." : "Update Description"}
+              </Button>
+            </div>
+
+            {/* Merge section */}
+            {(selectedPr.state === "open" || selectedPr.state === "draft") && (
+              <div className="flex items-center gap-2 pt-1 border-t border-border/10">
+                <select
+                  value={mergeMethod}
+                  onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
+                  className="h-7 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
+                  title="Merge method"
+                >
+                  <option value="squash">squash</option>
+                  <option value="merge">merge</option>
+                  <option value="rebase">rebase</option>
+                </select>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={actionBusy || selectedPr.state !== "open"}
+                  onClick={() => void handleMergePr()}
+                >
+                  {actionBusy ? "Merging..." : "Merge PR"}
+                </Button>
+              </div>
+            )}
+
+            {/* Lane management */}
+            <div className="flex items-center gap-2 pt-1 border-t border-border/10">
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-red-400 border-red-500/20 hover:bg-red-500/10"
+                disabled={actionBusy}
+                onClick={async () => {
+                  const laneName = laneById.get(selectedPr.laneId)?.name ?? selectedPr.laneId;
+                  if (!confirm(`Archive lane "${laneName}"? This will remove it from the active lanes list.`)) return;
+                  setActionBusy(true);
+                  setActionError(null);
+                  try {
+                    await window.ade.lanes.archive({ laneId: selectedPr.laneId });
+                    await Promise.all([refreshLanes(), refresh()]);
+                  } catch (err: any) {
+                    setActionError(err?.message ?? String(err));
+                  } finally {
+                    setActionBusy(false);
+                  }
+                }}
+              >
+                Archive Lane
+              </Button>
+            </div>
           </div>
+
+          {/* Action error */}
+          {actionError && (
+            <div className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+              {actionError}
+            </div>
+          )}
+
+          {/* Merge result */}
+          {actionResult && (
+            <div className={cn(
+              "rounded border px-3 py-2 text-xs",
+              actionResult.success
+                ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-400"
+                : "border-red-500/30 bg-red-500/5 text-red-400"
+            )}>
+              {actionResult.success
+                ? `Merged PR #${actionResult.prNumber}`
+                : `Merge failed: ${actionResult.error ?? "unknown error"}`}
+            </div>
+          )}
+
+          {/* Description preview */}
+          {descPreview && (
+            <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2">
+              <div className="text-xs font-semibold text-fg">Description Preview</div>
+              <div className="text-xs text-muted-fg">Title: <span className="font-medium text-fg">{descPreview.title}</span></div>
+              <textarea
+                value={descPreview.body}
+                onChange={(e) => setDescPreview((prev) => prev ? { ...prev, body: e.target.value } : null)}
+                className="w-full h-[200px] resize-none rounded border border-border/15 bg-surface-recessed p-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+              />
+              <div className="flex gap-2 justify-end">
+                <Button size="sm" variant="outline" onClick={() => setDescPreview(null)}>
+                  Cancel
+                </Button>
+                <Button size="sm" variant="primary" disabled={actionBusy} onClick={() => void handleConfirmDescription()}>
+                  {actionBusy ? "Updating..." : "Confirm & Update"}
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex h-full items-center justify-center">
@@ -437,7 +715,8 @@ export function PRsPage() {
         </div>
       )
     }
-  }), [prs.length, viewMode, stackedChains, allPrsSorted, selectedPrId, selectedPr, laneById, prByLaneId, navigate]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [prs.length, viewMode, stackedChains, allPrsSorted, selectedPrId, selectedPr, laneById, prByLaneId, navigate, actionBusy, actionError, actionResult, descPreview, descPreviewBusy, mergeMethod]);
 
   if (error) {
     return <EmptyState title="PRs" description={`Failed to load PRs: ${error}`} />;

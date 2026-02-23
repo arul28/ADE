@@ -549,7 +549,7 @@ declare global {
         getChecks: (prId: string) => Promise<PrCheck[]>;
         getReviews: (prId: string) => Promise<PrReview[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
-        draftDescription: (laneId: string) => Promise<{ title: string; body: string }>;
+        draftDescription: (laneId: string, model?: string) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;

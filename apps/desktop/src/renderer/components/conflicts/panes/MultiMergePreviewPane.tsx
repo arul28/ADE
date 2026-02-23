@@ -28,6 +28,10 @@ export function MultiMergePreviewPane() {
     integrationLaneId,
   } = useConflictsState();
 
+  const [execBusy, setExecBusy] = React.useState(false);
+  const [execError, setExecError] = React.useState<string | null>(null);
+  const [execResult, setExecResult] = React.useState<string | null>(null);
+
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
   const statusByLane = React.useMemo(() => {
@@ -57,71 +61,107 @@ export function MultiMergePreviewPane() {
     dispatch({ type: "SET_MULTI_MERGE_SOURCES", laneIds: arr });
   };
 
-  const initMergePlan = () => {
-    const targetLaneId = multiMergeTargetLaneId ?? primaryLane?.id ?? lanes[0]?.id ?? "";
-    dispatch({
-      type: "SET_MERGE_PLAN",
-      plan: {
-        targetLaneId,
-        sourceLaneIds: multiMergeSourceLaneIds,
-        cursor: 0,
-        activeMerge: null,
-      },
-    });
-  };
-
-  const createIntegrationLane = async () => {
-    const baseLaneId = multiMergeTargetLaneId ?? primaryLane?.id;
-    if (!baseLaneId) return;
-    const name = multiMergeIntegrationName.trim();
-    if (!name) return;
-
-    dispatch({ type: "SET_INTEGRATION_BUSY", busy: true });
-    dispatch({ type: "SET_INTEGRATION_ERROR", error: null });
+  const executeStackedPrs = async () => {
+    const targetBranch = (() => {
+      const targetLane = lanes.find((l) => l.id === multiMergeTargetLaneId);
+      if (targetLane) {
+        const ref = targetLane.branchRef.trim();
+        return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+      }
+      return primaryLane?.branchRef ?? "main";
+    })();
+    setExecBusy(true);
+    setExecError(null);
+    setExecResult(null);
     try {
-      const created = await window.ade.lanes.createChild({
-        parentLaneId: baseLaneId,
-        name,
-        description: "Integration lane created by ADE Conflicts assistant",
+      const result = await window.ade.prs.createStacked({
+        laneIds: multiMergeSourceLaneIds,
+        targetBranch,
+        draft: false,
       });
-      dispatch({ type: "SET_INTEGRATION_LANE_ID", laneId: created.id });
-      dispatch({
-        type: "SET_MERGE_PLAN",
-        plan: {
-          targetLaneId: created.id,
-          sourceLaneIds: multiMergeSourceLaneIds,
-          cursor: 0,
-          activeMerge: null,
-        },
-      });
+      if (result.errors.length > 0) {
+        setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
+      }
+      setExecResult(`Created ${result.prs.length} stacked PR(s)`);
     } catch (err: any) {
-      dispatch({ type: "SET_INTEGRATION_ERROR", error: err?.message ?? String(err) });
+      setExecError(err?.message ?? String(err));
     } finally {
-      dispatch({ type: "SET_INTEGRATION_BUSY", busy: false });
+      setExecBusy(false);
     }
   };
 
+  const executeIntegrationMerge = async () => {
+    const baseBranch = (() => {
+      const targetLane = lanes.find((l) => l.id === multiMergeTargetLaneId);
+      if (targetLane) {
+        const ref = targetLane.branchRef.trim();
+        return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+      }
+      return primaryLane?.branchRef ?? "main";
+    })();
+    const name = multiMergeIntegrationName.trim();
+    if (!name) return;
+
+    setExecBusy(true);
+    setExecError(null);
+    setExecResult(null);
+    try {
+      const result = await window.ade.prs.createIntegration({
+        sourceLaneIds: multiMergeSourceLaneIds,
+        integrationLaneName: name,
+        baseBranch,
+        title: `Integration: ${name}`,
+        draft: false,
+      });
+      const failedMerges = result.mergeResults.filter((r) => !r.success);
+      if (failedMerges.length > 0) {
+        setExecError(failedMerges.map((r) => `${r.laneId}: ${r.error ?? "failed"}`).join("\n"));
+      }
+      dispatch({ type: "SET_INTEGRATION_LANE_ID", laneId: result.integrationLaneId });
+      setExecResult(`Created integration PR #${result.pr.githubPrNumber}`);
+    } catch (err: any) {
+      setExecError(err?.message ?? String(err));
+    } finally {
+      setExecBusy(false);
+    }
+  };
+
+  // Per-pair conflict risk from batch matrix data
+  const pairConflictRisk = React.useMemo(() => {
+    const map = new Map<string, string>();
+    if (!batch?.matrix) return map;
+    for (const entry of batch.matrix) {
+      const key = pairKey(entry.laneAId, entry.laneBId);
+      map.set(key, entry.riskLevel ?? "none");
+    }
+    return map;
+  }, [batch]);
+
   return (
-    <div className="h-full overflow-auto p-3 space-y-4">
+    <div className="h-full overflow-auto p-4 space-y-5">
       {/* Mode selector */}
-      <div className="flex rounded-lg border border-border/50 text-xs font-medium">
-        {(["stacked", "integration"] as const).map((mode) => (
-          <button
-            key={mode}
-            onClick={() => dispatch({ type: "SET_MULTI_MERGE_MODE", mode })}
-            className={cn(
-              "flex-1 px-3 py-2 transition-colors first:rounded-l-lg last:rounded-r-lg",
-              multiMergeMode === mode ? "bg-accent/15 text-accent" : "text-muted-fg hover:text-fg"
-            )}
-          >
-            {mode === "stacked" ? "Stacked Merge" : "Integration Merge"}
-          </button>
-        ))}
+      <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-1">
+        <div className="flex text-xs font-medium">
+          {(["stacked", "integration"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => dispatch({ type: "SET_MULTI_MERGE_MODE", mode })}
+              className={cn(
+                "flex-1 px-3 py-2 rounded-md transition-all duration-150",
+                multiMergeMode === mode
+                  ? "bg-accent text-accent-fg shadow-sm"
+                  : "text-muted-fg hover:text-fg hover:bg-muted/40"
+              )}
+            >
+              {mode === "stacked" ? "Stacked Merge" : "Integration Merge"}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Target lane */}
-      <div>
-        <div className="mb-1 text-xs font-medium text-fg">Target Lane</div>
+      <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5">
+        <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Target Lane</div>
         <LaneDropdown
           lanes={lanes}
           value={multiMergeTargetLaneId}
@@ -133,43 +173,48 @@ export function MultiMergePreviewPane() {
 
       {/* Integration lane name (integration mode) */}
       {multiMergeMode === "integration" && (
-        <div>
-          <div className="mb-1 text-xs font-medium text-fg">Integration Lane Name</div>
+        <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5">
+          <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Integration Lane Name</div>
           <input
             type="text"
             value={multiMergeIntegrationName}
             onChange={(e) => dispatch({ type: "SET_MULTI_MERGE_INTEGRATION_NAME", name: e.target.value })}
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none"
+            className="w-full rounded-lg border border-border/15 bg-surface-recessed px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
             placeholder="integration"
           />
         </div>
       )}
 
       {/* Source lane selection */}
-      <div>
-        <div className="mb-1 text-xs font-medium text-fg">
-          Source Lanes ({multiMergeSourceLaneIds.length} selected)
+      <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5">
+        <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">
+          Source Lanes
+          <span className="ml-2 text-fg font-semibold normal-case tracking-normal">{multiMergeSourceLaneIds.length} selected</span>
         </div>
-        <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-card/50 p-2 space-y-1">
+        <div className="max-h-44 overflow-y-auto rounded-lg border border-border/10 bg-card/30 p-1.5 space-y-1">
           {availableSources.map((lane) => {
             const checked = multiMergeSourceLaneIds.includes(lane.id);
             const status = statusByLane.get(lane.id);
+            const riskDot = status?.status === "conflict-active" || status?.status === "conflict-predicted" ? "bg-red-400" : status?.status === "behind-base" ? "bg-amber-400" : status?.status === "merge-ready" ? "bg-emerald-400" : "bg-neutral-400";
             return (
               <label
                 key={lane.id}
                 className={cn(
-                  "flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer transition-colors",
-                  checked ? "bg-accent/10" : "hover:bg-muted/30"
+                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs cursor-pointer transition-all duration-150 border border-transparent",
+                  checked
+                    ? "bg-accent/10 border-accent/15 shadow-[0_0_10px_-3px_rgba(6,214,160,0.15)]"
+                    : "hover:bg-card/50 hover:border-border/10 hover:shadow-card"
                 )}
               >
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={() => toggleSource(lane.id)}
-                  className="rounded border-border"
+                  className="rounded border-border accent-accent"
                 />
+                <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", riskDot)} />
                 <span className="truncate font-medium text-fg">{lane.name}</span>
-                <span className="ml-auto text-[11px] text-muted-fg">
+                <span className="ml-auto text-[11px] text-muted-fg/60 capitalize">
                   {status?.status ?? "unknown"}
                 </span>
               </label>
@@ -178,10 +223,39 @@ export function MultiMergePreviewPane() {
         </div>
       </div>
 
+      {/* Per-pair conflict indicators */}
+      {multiMergeSourceLaneIds.length > 1 && (
+        <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5">
+          <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Pair Conflict Risk</div>
+          <div className="space-y-1">
+            {multiMergeSourceLaneIds.map((idA, i) =>
+              multiMergeSourceLaneIds.slice(i + 1).map((idB) => {
+                const risk = pairConflictRisk.get(pairKey(idA, idB)) ?? "unknown";
+                const laneA = lanes.find((l) => l.id === idA);
+                const laneB = lanes.find((l) => l.id === idB);
+                const dotColor = risk === "high" ? "bg-red-400" : risk === "medium" ? "bg-amber-400" : risk === "low" ? "bg-emerald-400" : "bg-neutral-400";
+                return (
+                  <div key={`${idA}::${idB}`} className="flex items-center gap-2 rounded-md border border-border/10 bg-card/30 px-2.5 py-1.5 text-xs">
+                    <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotColor)} />
+                    <span className="truncate font-medium text-fg">{laneA?.name ?? idA}</span>
+                    <span className="text-muted-fg/40">&harr;</span>
+                    <span className="truncate font-medium text-fg">{laneB?.name ?? idB}</span>
+                    <span className={cn(
+                      "ml-auto text-[11px] font-medium capitalize",
+                      risk === "high" ? "text-red-400" : risk === "medium" ? "text-amber-400" : risk === "low" ? "text-emerald-400" : "text-muted-fg/60"
+                    )}>{risk}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Merge order (reorderable) */}
       {multiMergeSourceLaneIds.length > 0 && (
-        <div>
-          <div className="mb-1 text-xs font-medium text-fg">Merge Order</div>
+        <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5 space-y-2.5">
+          <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Merge Order</div>
           <div className="space-y-1">
             {multiMergeSourceLaneIds.map((id, idx) => {
               const lane = lanes.find((l) => l.id === id);
@@ -193,40 +267,46 @@ export function MultiMergePreviewPane() {
                 <div
                   key={id}
                   className={cn(
-                    "flex items-center gap-2 rounded-lg border px-2 py-1.5 text-xs",
-                    isActive ? "border-accent bg-accent/10" : isCompleted ? "border-emerald-500/30 bg-emerald-500/5" : "border-border bg-card/50"
+                    "flex items-center gap-2.5 rounded-lg border px-3 py-2 text-xs transition-all duration-150",
+                    isActive
+                      ? "border-accent/20 bg-accent/10 shadow-[0_0_10px_-3px_rgba(6,214,160,0.15)]"
+                      : isCompleted
+                        ? "border-emerald-500/20 bg-emerald-500/5"
+                        : "border-border/10 bg-card/30 hover:border-border/15 hover:shadow-card"
                   )}
                 >
-                  <span className="w-5 text-center text-muted-fg">{idx + 1}</span>
+                  <span className="w-5 text-center text-muted-fg/60 font-mono font-semibold">{idx + 1}</span>
                   {isCompleted ? (
-                    <Check size={12} className="text-emerald-500" />
+                    <Check size={12} className="text-emerald-400" />
                   ) : isActive ? (
                     <SpinnerGap size={12} className="animate-spin text-accent" />
                   ) : (
-                    <Circle size={12} className="text-muted-fg/40" />
+                    <Circle size={12} className="text-muted-fg/30" />
                   )}
                   <span className="truncate font-medium text-fg">{lane?.name ?? id}</span>
-                  <span className="ml-auto text-[11px] text-muted-fg">{status?.status ?? ""}</span>
-                  <button
-                    onClick={() => moveSource(idx, "up")}
-                    disabled={idx === 0}
-                    className="p-0.5 text-muted-fg hover:text-fg disabled:opacity-30"
-                  >
-                    <ArrowUp size={12} />
-                  </button>
-                  <button
-                    onClick={() => moveSource(idx, "down")}
-                    disabled={idx === multiMergeSourceLaneIds.length - 1}
-                    className="p-0.5 text-muted-fg hover:text-fg disabled:opacity-30"
-                  >
-                    <ArrowDown size={12} />
-                  </button>
-                  <button
-                    onClick={() => toggleSource(id)}
-                    className="p-0.5 text-muted-fg hover:text-red-500"
-                  >
-                    <X size={12} />
-                  </button>
+                  <span className="ml-auto text-[11px] text-muted-fg/60 capitalize">{status?.status ?? ""}</span>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      onClick={() => moveSource(idx, "up")}
+                      disabled={idx === 0}
+                      className="p-1 rounded text-muted-fg hover:text-fg hover:bg-card/60 disabled:opacity-30 transition-colors"
+                    >
+                      <ArrowUp size={12} />
+                    </button>
+                    <button
+                      onClick={() => moveSource(idx, "down")}
+                      disabled={idx === multiMergeSourceLaneIds.length - 1}
+                      className="p-1 rounded text-muted-fg hover:text-fg hover:bg-card/60 disabled:opacity-30 transition-colors"
+                    >
+                      <ArrowDown size={12} />
+                    </button>
+                    <button
+                      onClick={() => toggleSource(id)}
+                      className="p-1 rounded text-muted-fg hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -234,45 +314,47 @@ export function MultiMergePreviewPane() {
         </div>
       )}
 
-      {/* Action buttons */}
-      <div className="flex gap-2 pt-2">
+      {/* Action area */}
+      <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5">
         {multiMergeMode === "stacked" ? (
           <Button
             size="sm"
             variant="primary"
-            disabled={multiMergeSourceLaneIds.length === 0 || !multiMergeTargetLaneId || mergePlanBusy}
-            onClick={initMergePlan}
+            className="w-full shadow-card font-semibold tracking-wide"
+            disabled={multiMergeSourceLaneIds.length === 0 || !multiMergeTargetLaneId || execBusy}
+            onClick={() => void executeStackedPrs()}
           >
-            {mergePlanBusy ? "Merging..." : "Start Stacked Merge"}
+            {execBusy ? "Creating PRs..." : "Create Stacked PRs"}
           </Button>
         ) : (
           <Button
             size="sm"
             variant="primary"
+            className="w-full shadow-card font-semibold tracking-wide"
             disabled={
               multiMergeSourceLaneIds.length === 0 ||
               !multiMergeTargetLaneId ||
               !multiMergeIntegrationName.trim() ||
-              integrationBusy
+              execBusy
             }
-            onClick={() => void createIntegrationLane()}
+            onClick={() => void executeIntegrationMerge()}
           >
-            {integrationBusy ? "Creating..." : "Create Integration Lane & Merge"}
+            {execBusy ? "Creating..." : "Create Integration PR"}
           </Button>
         )}
       </div>
 
       {/* Error display */}
-      {(mergePlanError || integrationError) && (
-        <div className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700">
-          {mergePlanError || integrationError}
+      {(execError || mergePlanError || integrationError) && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-3.5 py-2.5 text-xs text-red-400 whitespace-pre-wrap">
+          {execError || mergePlanError || integrationError}
         </div>
       )}
 
-      {/* Integration lane created */}
-      {integrationLaneId && (
-        <div className="rounded border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700">
-          Integration lane created. Merge plan is active.
+      {/* Success result */}
+      {execResult && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3.5 py-2.5 text-xs text-emerald-400">
+          {execResult}
         </div>
       )}
     </div>

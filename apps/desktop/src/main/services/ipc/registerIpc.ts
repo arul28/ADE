@@ -2562,9 +2562,9 @@ export function registerIpc({
     return await ctx.prService.updateDescription(arg);
   });
 
-  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: { laneId: string }): Promise<{ title: string; body: string }> => {
+  ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: { laneId: string; model?: string }): Promise<{ title: string; body: string }> => {
     const ctx = getCtx();
-    return await ctx.prService.draftDescription(arg.laneId);
+    return await ctx.prService.draftDescription(arg.laneId, arg.model);
   });
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {

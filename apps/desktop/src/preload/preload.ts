@@ -738,8 +738,8 @@ contextBridge.exposeInMainWorld("ade", {
     getChecks: async (prId: string): Promise<PrCheck[]> => ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
     getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateDescription, args),
-    draftDescription: async (laneId: string): Promise<{ title: string; body: string }> =>
-      ipcRenderer.invoke(IPC.prsDraftDescription, { laneId }),
+    draftDescription: async (laneId: string, model?: string): Promise<{ title: string; body: string }> =>
+      ipcRenderer.invoke(IPC.prsDraftDescription, { laneId, model }),
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> => ipcRenderer.invoke(IPC.prsLandStack, args),
     openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),

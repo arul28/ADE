@@ -516,9 +516,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex min-h-0">
         <aside
-          className="ade-sidebar shrink-0 flex flex-col py-2 z-10 border-r border-border/20 bg-bg"
+          className="ade-sidebar-clip shrink-0 z-10 border-r border-border/20"
         >
-          <TabNav />
+          <div className="ade-sidebar flex flex-col py-2 h-full">
+            <TabNav />
+          </div>
         </aside>
 
         <main className={cn("relative flex min-h-0 min-w-0 flex-1", tintClass)}>

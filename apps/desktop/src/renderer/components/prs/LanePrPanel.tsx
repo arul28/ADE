@@ -73,6 +73,8 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
   const [linkValue, setLinkValue] = React.useState("");
   const [labelsDraft, setLabelsDraft] = React.useState("");
   const [reviewersDraft, setReviewersDraft] = React.useState("");
+  const [descPreview, setDescPreview] = React.useState<{ title: string; body: string } | null>(null);
+  const [descPreviewBusy, setDescPreviewBusy] = React.useState(false);
 
   const defaultBaseBranch = React.useMemo(() => {
     if (!lane) return branchNameFromRef(primaryLane?.branchRef ?? "main");
@@ -252,17 +254,35 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
 
   const updateDescription = async () => {
     if (!pr) return;
-    setLoading(true);
+    setDescPreviewBusy(true);
     setError(null);
     try {
       const drafted = await window.ade.prs.draftDescription(laneId);
-      await window.ade.prs.updateDescription({ prId: pr.id, body: drafted.body });
+      setDescPreview(drafted);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDescPreviewBusy(false);
+    }
+  };
+
+  const confirmDescriptionUpdate = async () => {
+    if (!pr || !descPreview) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await window.ade.prs.updateDescription({ prId: pr.id, body: descPreview.body });
+      setDescPreview(null);
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
+  };
+
+  const cancelDescriptionUpdate = () => {
+    setDescPreview(null);
   };
 
   if (!pr) {
@@ -422,8 +442,8 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             </Button>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" className="h-7" onClick={() => void updateDescription()} disabled={loading}>
-              Update Description
+            <Button size="sm" variant="outline" className="h-7" onClick={() => void updateDescription()} disabled={loading || descPreviewBusy}>
+              {descPreviewBusy ? "Drafting..." : "Update Description"}
             </Button>
             <select
               value={mergeMethod}
@@ -448,6 +468,26 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           {mergeResult.success ? `Merged PR #${mergeResult.prNumber}` : `Merge failed: ${mergeResult.error ?? "unknown error"}`}
         </div>
       ) : null}
+
+      {descPreview && (
+        <div className="mt-2 rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2">
+          <div className="text-xs font-semibold text-fg">Description Preview</div>
+          <div className="text-xs text-muted-fg">Title: <span className="font-medium text-fg">{descPreview.title}</span></div>
+          <textarea
+            value={descPreview.body}
+            onChange={(e) => setDescPreview((prev) => prev ? { ...prev, body: e.target.value } : null)}
+            className="w-full h-[200px] resize-none rounded border border-border/15 bg-surface-recessed p-2 text-xs outline-none focus:ring-1 focus:ring-accent"
+          />
+          <div className="flex gap-2 justify-end">
+            <Button size="sm" variant="outline" className="h-7" onClick={cancelDescriptionUpdate}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="primary" className="h-7" disabled={loading} onClick={() => void confirmDescriptionUpdate()}>
+              {loading ? "Updating..." : "Confirm & Update"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {status ? (
         <div className="mt-2 grid grid-cols-3 gap-2 text-xs">

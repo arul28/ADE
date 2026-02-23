@@ -105,10 +105,10 @@ export function TabNav() {
           </span>
         </span>
 
-        {/* Label - flows naturally, hidden by sidebar overflow:hidden when collapsed */}
+        {/* Label - opacity-animated separately from width transition */}
         <span
           className={cn(
-            "text-xs font-medium whitespace-nowrap",
+            "ade-tab-label text-xs font-medium whitespace-nowrap",
             isActive && "text-fg font-medium",
           )}
         >
