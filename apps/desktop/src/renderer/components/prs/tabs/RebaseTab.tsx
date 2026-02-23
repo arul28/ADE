@@ -41,6 +41,26 @@ function categorize(need: RebaseNeed): UrgencyCategory {
   return "clean";
 }
 
+/* ── inline style constants ── */
+const S = {
+  mainBg: "#0F0D14",
+  cardBg: "#13101A",
+  headerBg: "#0C0A10",
+  borderDefault: "#1E1B26",
+  borderSubtle: "#27272A",
+  textPrimary: "#FAFAFA",
+  textSecondary: "#A1A1AA",
+  textMuted: "#71717A",
+  textDisabled: "#52525B",
+  accent: "#A78BFA",
+  accentSubtleBg: "#A78BFA18",
+  accentBorder: "#A78BFA30",
+  success: "#22C55E",
+  warning: "#F59E0B",
+  error: "#EF4444",
+  info: "#3B82F6",
+} as const;
+
 export function RebaseTab({
   rebaseNeeds,
   lanes,
@@ -152,30 +172,65 @@ export function RebaseTab({
         key={need.laneId}
         type="button"
         className={cn(
-          "flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-colors duration-100",
-          isSelected
-            ? "border-l-2 border-l-accent bg-accent/8"
-            : "border-l-2 border-l-transparent hover:bg-card/40",
+          "flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs transition-colors duration-100",
         )}
+        style={{
+          borderRadius: 0,
+          borderLeft: isSelected ? `3px solid ${S.accent}` : "3px solid transparent",
+          backgroundColor: isSelected ? "#A78BFA12" : "transparent",
+        }}
+        onMouseEnter={(e) => {
+          if (!isSelected) e.currentTarget.style.backgroundColor = "#13101A66";
+        }}
+        onMouseLeave={(e) => {
+          if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
+        }}
         onClick={() => onSelectItem(need.laneId)}
       >
         <div className="flex items-center gap-2 min-w-0">
           <StatusDot
-            color={need.conflictPredicted ? "#f59e0b" : need.behindBy > 0 ? "#3b82f6" : "#22c55e"}
+            color={need.conflictPredicted ? S.warning : need.behindBy > 0 ? S.info : S.success}
             pulse={need.conflictPredicted}
           />
-          <span className="font-semibold text-fg truncate">{laneName}</span>
+          <span
+            className="font-mono font-bold truncate"
+            style={{ fontSize: 11, color: S.textPrimary }}
+          >
+            {laneName}
+          </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {need.behindBy > 0 && (
-            <Chip className="text-[11px] text-blue-300 border-blue-500/30 bg-blue-500/10">
-              {need.behindBy} behind
-            </Chip>
+            <span
+              className="font-mono font-bold uppercase"
+              style={{
+                fontSize: 10,
+                letterSpacing: "1px",
+                color: S.info,
+                backgroundColor: "#3B82F618",
+                border: "1px solid #3B82F630",
+                padding: "2px 6px",
+                borderRadius: 0,
+              }}
+            >
+              {need.behindBy} BEHIND
+            </span>
           )}
           {need.conflictPredicted && (
-            <Chip className="text-[11px] text-amber-300 border-amber-500/30 bg-amber-500/10">
-              conflicts
-            </Chip>
+            <span
+              className="font-mono font-bold uppercase"
+              style={{
+                fontSize: 10,
+                letterSpacing: "1px",
+                color: S.warning,
+                backgroundColor: "#F59E0B18",
+                border: "1px solid #F59E0B30",
+                padding: "2px 6px",
+                borderRadius: 0,
+              }}
+            >
+              CONFLICTS
+            </span>
           )}
         </div>
       </button>
@@ -183,10 +238,10 @@ export function RebaseTab({
   };
 
   const urgencyGroups: Array<{ key: UrgencyCategory; title: string; color: string; icon: typeof Warning }> = [
-    { key: "attention", title: "Needs Attention", color: "#f59e0b", icon: Warning },
-    { key: "clean", title: "Clean Rebase", color: "#3b82f6", icon: ArrowsDownUp },
-    { key: "recent", title: "Recently Rebased", color: "#a855f7", icon: Clock },
-    { key: "upToDate", title: "Up to Date", color: "#22c55e", icon: CheckCircle },
+    { key: "attention", title: "Needs Attention", color: S.warning, icon: Warning },
+    { key: "clean", title: "Clean Rebase", color: S.info, icon: ArrowsDownUp },
+    { key: "recent", title: "Recently Rebased", color: S.accent, icon: Clock },
+    { key: "upToDate", title: "Up to Date", color: S.success, icon: CheckCircle },
   ];
 
   const resolverTargetLaneId = React.useMemo(() => {
@@ -205,29 +260,52 @@ export function RebaseTab({
         icon: ArrowsDownUp,
         bodyClassName: "overflow-auto",
         children: (
-          <div className="p-2 space-y-2">
+          <div style={{ backgroundColor: S.mainBg }}>
+            {/* Panel header */}
+            <div
+              style={{
+                padding: "12px 16px",
+                borderBottom: `1px solid ${S.borderDefault}`,
+              }}
+            >
+              <span
+                className="font-mono font-bold uppercase"
+                style={{
+                  fontSize: 10,
+                  letterSpacing: "1px",
+                  color: S.textSecondary,
+                }}
+              >
+                REBASE / DRIFT STATE
+              </span>
+            </div>
+
             {rebaseNeeds.length === 0 ? (
-              <EmptyState
-                title="All lanes up to date"
-                description="No lanes need rebasing. This view auto-populates when lanes fall behind their base branch."
-              />
+              <div style={{ padding: 16 }}>
+                <EmptyState
+                  title="All lanes up to date"
+                  description="No lanes need rebasing. This view auto-populates when lanes fall behind their base branch."
+                />
+              </div>
             ) : (
-              urgencyGroups
-                .filter((g) => grouped[g.key].length > 0)
-                .map((g) => (
-                  <UrgencyGroup
-                    key={g.key}
-                    title={g.title}
-                    count={grouped[g.key].length}
-                    color={g.color}
-                    collapsed={collapsed[g.key]}
-                    onToggle={() => setCollapsed((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}
-                  >
-                    <div className="space-y-0.5 mt-1.5">
-                      {grouped[g.key].map(renderNeedItem)}
-                    </div>
-                  </UrgencyGroup>
-                ))
+              <div style={{ padding: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                {urgencyGroups
+                  .filter((g) => grouped[g.key].length > 0)
+                  .map((g) => (
+                    <UrgencyGroup
+                      key={g.key}
+                      title={g.title}
+                      count={grouped[g.key].length}
+                      color={g.color}
+                      collapsed={collapsed[g.key]}
+                      onToggle={() => setCollapsed((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}
+                    >
+                      <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                        {grouped[g.key].map(renderNeedItem)}
+                      </div>
+                    </UrgencyGroup>
+                  ))}
+              </div>
             )}
           </div>
         ),
@@ -239,81 +317,239 @@ export function RebaseTab({
         icon: Eye,
         bodyClassName: "overflow-auto",
         children: selectedNeed ? (
-          <div className="p-4 space-y-5">
-            {/* Header */}
-            <div className="rounded-lg bg-card/30 p-4">
+          <div style={{ backgroundColor: S.mainBg, padding: 20, display: "flex", flexDirection: "column", gap: 20 }}>
+            {/* ── Header Card ── */}
+            <div
+              style={{
+                backgroundColor: S.cardBg,
+                border: `1px solid ${S.borderDefault}`,
+                borderRadius: 0,
+                padding: 20,
+              }}
+            >
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-fg">
+                  <div
+                    className="font-bold"
+                    style={{
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontSize: 18,
+                      color: S.textPrimary,
+                    }}
+                  >
                     {laneById.get(selectedNeed.laneId)?.name ?? selectedNeed.laneId}
                   </div>
-                  <div className="text-[11px] text-muted-fg/70 font-mono mt-0.5">
+                  <div
+                    className="font-mono"
+                    style={{
+                      fontSize: 11,
+                      color: S.textMuted,
+                      marginTop: 4,
+                    }}
+                  >
                     base: {selectedNeed.baseBranch}
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <Chip
-                    className={cn(
-                      "text-xs",
-                      selectedNeed.behindBy > 0
-                        ? "text-blue-300 border-blue-500/30 bg-blue-500/10"
-                        : "text-emerald-300 border-emerald-500/30 bg-emerald-500/10",
-                    )}
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={rebaseBusy || selectedNeed.behindBy === 0}
+                  onClick={() => void handleRebase(true)}
+                  style={{ borderRadius: 0 }}
+                >
+                  <Sparkle size={14} weight="regular" className="mr-1" />
+                  AI REBASE
+                </Button>
+              </div>
+            </div>
+
+            {/* ── Drift Analysis Card ── */}
+            <div
+              style={{
+                backgroundColor: S.cardBg,
+                border: `1px solid ${S.borderDefault}`,
+                borderRadius: 0,
+                padding: 20,
+              }}
+            >
+              <div
+                className="font-mono font-bold uppercase"
+                style={{
+                  fontSize: 10,
+                  letterSpacing: "1px",
+                  color: S.textSecondary,
+                  marginBottom: 16,
+                }}
+              >
+                DRIFT ANALYSIS
+              </div>
+
+              {/* Stat grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                {/* Behind By */}
+                <div
+                  style={{
+                    backgroundColor: S.headerBg,
+                    borderRadius: 0,
+                    padding: 12,
+                  }}
+                >
+                  <div
+                    className="font-mono font-bold uppercase"
+                    style={{
+                      fontSize: 10,
+                      letterSpacing: "1px",
+                      color: S.textMuted,
+                      marginBottom: 6,
+                    }}
                   >
-                    {selectedNeed.behindBy > 0 ? `${selectedNeed.behindBy} commits behind` : "up to date"}
-                  </Chip>
-                  {selectedNeed.conflictPredicted && (
-                    <Chip className="text-xs text-amber-300 border-amber-500/30 bg-amber-500/10">
-                      conflicts predicted
-                    </Chip>
-                  )}
+                    BEHIND BY
+                  </div>
+                  <div
+                    className="font-mono font-bold"
+                    style={{
+                      fontSize: 16,
+                      color: selectedNeed.behindBy > 5 ? S.warning : S.textPrimary,
+                    }}
+                  >
+                    {selectedNeed.behindBy}
+                    <span
+                      className="font-mono"
+                      style={{ fontSize: 11, color: S.textMuted, marginLeft: 4, fontWeight: 400 }}
+                    >
+                      commits
+                    </span>
+                  </div>
+                </div>
+
+                {/* Conflict Predicted */}
+                <div
+                  style={{
+                    backgroundColor: S.headerBg,
+                    borderRadius: 0,
+                    padding: 12,
+                  }}
+                >
+                  <div
+                    className="font-mono font-bold uppercase"
+                    style={{
+                      fontSize: 10,
+                      letterSpacing: "1px",
+                      color: S.textMuted,
+                      marginBottom: 6,
+                    }}
+                  >
+                    CONFLICT PREDICTED
+                  </div>
+                  <div
+                    className="font-mono font-bold uppercase"
+                    style={{
+                      fontSize: 14,
+                      color: selectedNeed.conflictPredicted ? S.warning : S.success,
+                    }}
+                  >
+                    {selectedNeed.conflictPredicted ? "YES" : "NO"}
+                  </div>
+                </div>
+
+                {/* Linked PR */}
+                <div
+                  style={{
+                    backgroundColor: S.headerBg,
+                    borderRadius: 0,
+                    padding: 12,
+                  }}
+                >
+                  <div
+                    className="font-mono font-bold uppercase"
+                    style={{
+                      fontSize: 10,
+                      letterSpacing: "1px",
+                      color: S.textMuted,
+                      marginBottom: 6,
+                    }}
+                  >
+                    LINKED PR
+                  </div>
+                  <div
+                    className="font-mono font-bold"
+                    style={{
+                      fontSize: 14,
+                      color: selectedNeed.prId ? S.info : S.textMuted,
+                    }}
+                  >
+                    {selectedNeed.prId ? "PR LINKED" : "NONE"}
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Drift analysis */}
-            <div className="rounded-lg bg-card/30 p-4 space-y-3">
-              <div className="text-xs font-medium text-muted-fg/80">Drift Analysis</div>
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                  <div className="text-muted-fg/70">Behind By</div>
-                  <div className={cn("font-mono font-semibold", selectedNeed.behindBy > 5 ? "text-amber-300" : "text-fg")}>
-                    {selectedNeed.behindBy} commits
-                  </div>
+            {/* ── Commits Affecting Rebase (conflicting files) ── */}
+            {selectedNeed.conflictingFiles.length > 0 && (
+              <div
+                style={{
+                  backgroundColor: S.cardBg,
+                  border: `1px solid ${S.borderDefault}`,
+                  borderRadius: 0,
+                  padding: 20,
+                }}
+              >
+                <div
+                  className="font-mono font-bold uppercase"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: "1px",
+                    color: S.textSecondary,
+                    marginBottom: 12,
+                  }}
+                >
+                  COMMITS AFFECTING REBASE
                 </div>
-                <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                  <div className="text-muted-fg/70">Conflict Predicted</div>
-                  <div className={cn("font-semibold", selectedNeed.conflictPredicted ? "text-amber-300" : "text-emerald-300")}>
-                    {selectedNeed.conflictPredicted ? "yes" : "no"}
-                  </div>
-                </div>
-                <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                  <div className="text-muted-fg/70">Linked PR</div>
-                  <div className="text-fg">{selectedNeed.prId ? `PR linked` : "none"}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {selectedNeed.conflictingFiles.map((f) => (
+                    <div
+                      key={f}
+                      className="font-mono"
+                      style={{
+                        backgroundColor: "#F59E0B0A",
+                        border: "1px solid #F59E0B20",
+                        borderRadius: 0,
+                        padding: "8px 12px",
+                        fontSize: 11,
+                        color: "#F5D08B",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <Warning size={12} weight="fill" style={{ color: S.warning, flexShrink: 0 }} />
+                      {f}
+                    </div>
+                  ))}
                 </div>
               </div>
+            )}
 
-              {selectedNeed.conflictingFiles.length > 0 && (
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-fg/70">Predicted conflicting files:</div>
-                  <div className="grid gap-1">
-                    {selectedNeed.conflictingFiles.map((f) => (
-                      <div
-                        key={f}
-                        className="bg-amber-500/5 rounded-md px-2.5 py-1.5 text-xs font-mono text-amber-200/80"
-                      >
-                        {f}
-                      </div>
-                    ))}
-                  </div>
+            {/* ── Resolution Card ── */}
+            <div
+              style={{
+                backgroundColor: S.cardBg,
+                border: `1px solid ${S.borderDefault}`,
+                borderRadius: 0,
+                padding: 20,
+              }}
+            >
+              <div className="flex items-center justify-between gap-2" style={{ marginBottom: 16 }}>
+                <div
+                  className="font-mono font-bold uppercase"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: "1px",
+                    color: S.textSecondary,
+                  }}
+                >
+                  RESOLUTION
                 </div>
-              )}
-            </div>
-
-            {/* Resolution */}
-            <div className="rounded-lg bg-card/30 p-4 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-medium text-muted-fg/80">Resolution</div>
                 <ModelSelector
                   model={resolverModel}
                   reasoningLevel={resolverReasoningLevel}
@@ -321,52 +557,120 @@ export function RebaseTab({
                 />
               </div>
 
+              {/* Action buttons */}
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   variant="primary"
                   disabled={rebaseBusy || selectedNeed.behindBy === 0}
                   onClick={() => void handleRebase(true)}
+                  style={{ borderRadius: 0 }}
                 >
-                  <Sparkle size={14} weight="regular" className="mr-1.5" />
-                  Rebase with AI
+                  <Sparkle size={14} weight="regular" className="mr-1" />
+                  <span
+                    className="font-mono font-bold uppercase"
+                    style={{ fontSize: 10, letterSpacing: "1px" }}
+                  >
+                    REBASE WITH AI
+                  </span>
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={rebaseBusy || selectedNeed.behindBy === 0}
                   onClick={() => void handleRebase(false)}
+                  style={{
+                    borderRadius: 0,
+                    borderColor: S.borderSubtle,
+                  }}
                 >
-                  Manual Rebase
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => void handleDefer()}>
-                  <Clock size={12} className="mr-1" />
-                  Defer 4h
+                  <span
+                    className="font-mono font-bold uppercase"
+                    style={{ fontSize: 10, letterSpacing: "1px" }}
+                  >
+                    MANUAL REBASE
+                  </span>
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  className="text-neutral-300 hover:text-neutral-200"
+                  onClick={() => void handleDefer()}
+                  style={{
+                    borderRadius: 0,
+                    borderColor: S.borderSubtle,
+                  }}
+                >
+                  <Clock size={12} className="mr-1" />
+                  <span
+                    className="font-mono font-bold uppercase"
+                    style={{ fontSize: 10, letterSpacing: "1px" }}
+                  >
+                    DEFER 4H
+                  </span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
                   onClick={() => void handleDismiss()}
+                  style={{
+                    borderRadius: 0,
+                    borderColor: S.borderSubtle,
+                    color: S.textMuted,
+                  }}
                 >
                   <XCircle size={12} className="mr-1" />
-                  Dismiss
+                  <span
+                    className="font-mono font-bold uppercase"
+                    style={{ fontSize: 10, letterSpacing: "1px" }}
+                  >
+                    DISMISS
+                  </span>
                 </Button>
               </div>
 
+              {/* Group context */}
               {selectedNeed.groupContext && (
-                <div className="bg-muted/15 rounded-md px-2.5 py-2 text-xs text-muted-fg">
-                  Part of group: <span className="text-fg font-medium">{selectedNeed.groupContext}</span>
+                <div
+                  style={{
+                    marginTop: 16,
+                    backgroundColor: S.headerBg,
+                    borderRadius: 0,
+                    padding: "8px 12px",
+                    fontSize: 11,
+                    color: S.textMuted,
+                  }}
+                  className="font-mono"
+                >
+                  Part of group:{" "}
+                  <span style={{ color: S.textPrimary, fontWeight: 600 }}>
+                    {selectedNeed.groupContext}
+                  </span>
                 </div>
               )}
             </div>
 
+            {/* ── Error Banner ── */}
             {rebaseError && (
-              <div className="bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-200">
+              <div
+                style={{
+                  backgroundColor: "#EF44440A",
+                  border: `1px solid #EF444430`,
+                  borderRadius: 0,
+                  padding: "10px 14px",
+                  fontSize: 11,
+                  color: "#FCA5A5",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 8,
+                }}
+                className="font-mono"
+              >
+                <XCircle size={14} weight="fill" style={{ color: S.error, flexShrink: 0, marginTop: 1 }} />
                 {rebaseError}
               </div>
             )}
 
+            {/* ── Resolver Modal ── */}
             {resolverOpen && resolverTargetLaneId && (
               <ResolverTerminalModal
                 open={resolverOpen}
@@ -380,7 +684,10 @@ export function RebaseTab({
             )}
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center">
+          <div
+            className="flex h-full items-center justify-center"
+            style={{ backgroundColor: S.mainBg }}
+          >
             <EmptyState title="No lane selected" description="Select a lane to view rebase status and resolve conflicts." />
           </div>
         ),

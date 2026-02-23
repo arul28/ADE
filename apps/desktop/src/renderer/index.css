@@ -1,6 +1,24 @@
 @import "tailwindcss";
 
-/* Geist Variable Fonts */
+/* JetBrains Mono Variable Font (primary mono) */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Space Grotesk Variable Font (primary sans / headlines) */
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('../../node_modules/@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Geist Variable Fonts (fallback) */
 @font-face {
   font-family: 'Geist';
   src: url('../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2') format('woff2');
@@ -17,22 +35,22 @@
 }
 
 @theme {
-  --radius-xl: 8px;
-  --radius-lg: 6px;
-  --radius-md: 4px;
-  --radius-sm: 2px;
+  --radius-xl: 0px;
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
   --radius-full: 9999px;
 
   --pane-gap: 3px;
-  --pane-radius: var(--radius-lg);
+  --pane-radius: 0px;
   --pane-minimized-height: 28px;
 
-  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: "Space Grotesk", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
 
-  --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.4), 0 1px 2px -1px rgba(0, 0, 0, 0.2);
-  --shadow-card-hover: 0 8px 20px -4px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.3);
-  --shadow-float: 0 16px 48px -12px rgba(0, 0, 0, 0.6), 0 4px 12px -4px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 1px 4px -1px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 4px 12px -2px rgba(0, 0, 0, 0.6);
+  --shadow-float: 0 8px 32px -8px rgba(0, 0, 0, 0.7);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -41,34 +59,34 @@
 
 :root,
 [data-theme="dark"] {
-  --color-bg: #0c0e16;
-  --color-fg: #e8eaf0;
-  --color-surface: #121420;
-  --color-card: #171a2a;
-  --color-card-fg: #e8eaf0;
-  --color-card-rgb: 23, 26, 42;
-  --color-secondary: #222640;
-  --color-secondary-fg: #a1a5b8;
-  --color-muted: #1e2138;
-  --color-muted-fg: #6b6f85;
-  --color-border: #262a42;
-  --color-accent: #06d6a0;
-  --color-accent-fg: #012a1f;
-  --color-accent-muted: rgba(6, 214, 160, 0.18);
-  --color-surface-raised: #1c1f34;
-  --color-surface-recessed: #080a12;
-  --color-surface-overlay: #1c1f34;
-  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.5);
-  --shadow-separator: inset 0 0 6px 0 rgba(0, 0, 0, 0.5);
-  --shadow-panel: 0 4px 20px -4px rgba(0, 0, 0, 0.6), 0 1px 4px -1px rgba(0, 0, 0, 0.3);
-  --color-separator: #1a1d30;
-  --color-separator-active: #06d6a0;
-  --border-separator: #262a42;
-  --gradient-surface: linear-gradient(180deg, #141628 0%, #0c0e16 100%);
-  --gradient-panel: linear-gradient(180deg, #1c1f34 0%, #141628 100%);
-  --color-glow: rgba(6, 214, 160, 0.25);
-  --pane-bg: rgba(23, 26, 42, 0.85);
-  --pane-border: rgba(38, 42, 66, 0.5);
+  --color-bg: #0F0D14;
+  --color-fg: #FAFAFA;
+  --color-surface: #13101A;
+  --color-card: #13101A;
+  --color-card-fg: #FAFAFA;
+  --color-card-rgb: 19, 16, 26;
+  --color-secondary: #1E1B26;
+  --color-secondary-fg: #A1A1AA;
+  --color-muted: #1A1720;
+  --color-muted-fg: #71717A;
+  --color-border: #1E1B26;
+  --color-accent: #A78BFA;
+  --color-accent-fg: #0F0D14;
+  --color-accent-muted: rgba(167, 139, 250, 0.18);
+  --color-surface-raised: #1A1720;
+  --color-surface-recessed: #0C0A10;
+  --color-surface-overlay: #1A1720;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
+  --shadow-panel: 0 2px 12px -2px rgba(0, 0, 0, 0.6);
+  --color-separator: #1E1B26;
+  --color-separator-active: #A78BFA;
+  --border-separator: #27272A;
+  --gradient-surface: linear-gradient(180deg, #13101A 0%, #0F0D14 100%);
+  --gradient-panel: linear-gradient(180deg, #1A1720 0%, #13101A 100%);
+  --color-glow: rgba(167, 139, 250, 0.25);
+  --pane-bg: rgba(19, 16, 26, 0.92);
+  --pane-border: rgba(30, 27, 38, 0.5);
   --color-success: #22c55e;
   --color-warning: #f59e0b;
   --color-error: #ef4444;
@@ -124,13 +142,13 @@
    Per-Tab Tint System
    ═══════════════════════════════════════════════════════════ */
 
-.tab-tint-project { --tab-tint-rgb: 6, 214, 160; }
+.tab-tint-project { --tab-tint-rgb: 167, 139, 250; }
 .tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
 .tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
 .tab-tint-work { --tab-tint-rgb: 34, 197, 94; }
 .tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
 .tab-tint-graph { --tab-tint-rgb: 99, 102, 241; }
-.tab-tint-prs { --tab-tint-rgb: 16, 185, 129; }
+.tab-tint-prs { --tab-tint-rgb: 167, 139, 250; }
 .tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
 .tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
 .tab-tint-missions { --tab-tint-rgb: 59, 130, 246; }
@@ -152,7 +170,7 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "ss01";
-  letter-spacing: -0.014em;
+  letter-spacing: 0;
 }
 
 /* Keep xterm glyph metrics isolated from global typography rules. */
@@ -215,12 +233,12 @@ h6 {
 
 [data-theme="dark"] .ade-sidebar,
 :root .ade-sidebar {
-  background: linear-gradient(180deg, rgba(18, 20, 32, 0.95) 0%, rgba(12, 14, 22, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(19, 16, 26, 0.95) 0%, rgba(15, 13, 20, 0.98) 100%);
 }
 
 [data-theme="dark"] .ade-sidebar-clip,
 :root .ade-sidebar-clip {
-  border-right-color: rgba(38, 42, 66, 0.3);
+  border-right-color: rgba(30, 27, 38, 0.3);
 }
 
 /* Phase-2 label animation: fade out immediately, fade in after width expands */
@@ -289,7 +307,7 @@ h6 {
 }
 
 .ade-gutter .ade-gutter-pill {
-  border-radius: 2px;
+  border-radius: 0px;
   background: var(--border-separator);
   opacity: 0;
   transition: opacity 0.1s ease, background-color 0.1s ease;
@@ -340,14 +358,11 @@ h6 {
 
 .ade-floating-pane {
   background: var(--pane-bg);
-  backdrop-filter: blur(20px) saturate(1.3);
-  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-radius: var(--pane-radius);
   border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
-  box-shadow:
-    var(--shadow-card),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -360,7 +375,6 @@ h6 {
   border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.25);
   box-shadow:
     var(--shadow-card-hover),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
 }
 
@@ -368,7 +382,6 @@ h6 {
   border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.3);
   box-shadow:
     var(--shadow-card-hover),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12),
     0 0 24px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.15);
 }
@@ -413,7 +426,7 @@ h6 {
 /* Minimized pane header - accent left edge */
 .ade-floating-pane-header-minimized {
   border-left: 2px solid var(--color-accent);
-  background: linear-gradient(90deg, rgba(6, 214, 160, 0.08) 0%, transparent 40%);
+  background: linear-gradient(90deg, rgba(167, 139, 250, 0.08) 0%, transparent 40%);
   border-bottom: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
   min-height: 28px;
 }
@@ -490,7 +503,7 @@ h6 {
 .ade-pane-gutter:hover,
 .ade-pane-gutter[data-resize-handle-active] {
   background: color-mix(in srgb, var(--color-separator-active) 8%, transparent);
-  border-radius: 4px;
+  border-radius: 0px;
 }
 
 .ade-pane-gutter:hover::before,
@@ -639,21 +652,21 @@ h6 {
    ═══════════════════════════════════════════════════════════ */
 
 .ade-pane {
-  background: rgba(var(--color-card-rgb, 23, 26, 42), 0.7);
-  backdrop-filter: blur(12px) saturate(1.2);
-  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.7);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow-card);
   transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
 }
 .ade-pane:hover {
   border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
-  box-shadow: var(--shadow-card-hover), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: var(--shadow-card-hover);
 }
 .ade-pane:focus-within {
   border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.3);
-  box-shadow: var(--shadow-card-hover), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1), 0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
+  box-shadow: var(--shadow-card-hover), 0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1), 0 0 20px -8px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.12);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -662,11 +675,11 @@ h6 {
 
 /* Glassmorphism surfaces */
 .ade-glass {
-  background: rgba(var(--color-card-rgb, 23, 26, 42), 0.65);
-  backdrop-filter: blur(20px) saturate(1.3);
-  -webkit-backdrop-filter: blur(20px) saturate(1.3);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.65);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #1E1B26;
+  box-shadow: none;
 }
 
 [data-theme="light"] .ade-glass {
@@ -677,8 +690,8 @@ h6 {
 
 /* Glow effect for active/selected items */
 .ade-glow-active {
-  box-shadow: 0 0 12px 2px rgba(var(--tab-tint-rgb, 6, 214, 160), 0.15),
-              0 0 4px 1px rgba(var(--tab-tint-rgb, 6, 214, 160), 0.1);
+  box-shadow: 0 0 12px 2px rgba(var(--tab-tint-rgb, 167, 139, 250), 0.15),
+              0 0 4px 1px rgba(var(--tab-tint-rgb, 167, 139, 250), 0.1);
 }
 
 /* Soft shadow for floating cards (replaces hard borders) */
@@ -700,11 +713,11 @@ h6 {
 
 /* Section card - replaces border-b separated sections */
 .ade-section-card {
-  background: rgba(var(--color-card-rgb, 23, 26, 42), 0.6);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.6);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-card);
   border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
   padding: 12px;
 }
@@ -740,7 +753,7 @@ h6 {
 .ade-input {
   background: var(--color-surface-recessed);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: 0px;
   padding: 6px 10px;
   font-size: 13px;
   color: var(--color-fg);
@@ -882,7 +895,7 @@ select:focus {
   font-size: 11px;
   letter-spacing: 0.02em;
   padding: 2px 8px;
-  border-radius: 9999px;
+  border-radius: 0px;
   background: var(--color-muted);
   color: var(--color-muted-fg);
   border: 1px solid transparent;
@@ -1404,12 +1417,12 @@ button:active, [role="button"]:active {
 :root .ade-tab-bg { opacity: 0.55; }
 [data-theme="light"] .ade-tab-bg { opacity: 0.3; }
 
-/* 1. Project — Organic Depth Field (cyan #06d6a0) */
+/* 1. Project — Organic Depth Field (purple #A78BFA) */
 .ade-tab-bg-project {
   background:
-    radial-gradient(ellipse 130% 80% at 15% 50%, rgba(6, 214, 160, 0.06) 0%, transparent 70%),
-    radial-gradient(ellipse 100% 60% at 85% 25%, rgba(6, 214, 160, 0.04) 0%, transparent 60%),
-    radial-gradient(ellipse 90% 110% at 50% 85%, rgba(6, 214, 160, 0.035) 0%, transparent 50%);
+    radial-gradient(ellipse 130% 80% at 15% 50%, rgba(167, 139, 250, 0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 100% 60% at 85% 25%, rgba(167, 139, 250, 0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 90% 110% at 50% 85%, rgba(167, 139, 250, 0.035) 0%, transparent 50%);
   background-size: 200% 200%;
   animation: ade-gradient-shift 25s ease-in-out infinite;
 }
@@ -1419,8 +1432,8 @@ button:active, [role="button"]:active {
   position: absolute;
   inset: -10%;
   background:
-    radial-gradient(ellipse at 35% 40%, rgba(6, 214, 160, 0.05) 0%, transparent 35%),
-    radial-gradient(ellipse at 65% 65%, rgba(6, 214, 160, 0.035) 0%, transparent 30%);
+    radial-gradient(ellipse at 35% 40%, rgba(167, 139, 250, 0.05) 0%, transparent 35%),
+    radial-gradient(ellipse at 65% 65%, rgba(167, 139, 250, 0.035) 0%, transparent 30%);
   animation: ade-float 16s ease-in-out infinite;
   filter: blur(30px);
 }
@@ -1550,14 +1563,14 @@ button:active, [role="button"]:active {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 20% 30%, rgba(6, 214, 160, 0.08) 0%, transparent 3%),
-    radial-gradient(circle at 60% 20%, rgba(6, 214, 160, 0.06) 0%, transparent 2.5%),
-    radial-gradient(circle at 80% 60%, rgba(6, 214, 160, 0.07) 0%, transparent 3%),
-    radial-gradient(circle at 35% 70%, rgba(6, 214, 160, 0.05) 0%, transparent 2%),
-    radial-gradient(circle at 70% 80%, rgba(6, 214, 160, 0.06) 0%, transparent 2.5%),
-    radial-gradient(circle at 10% 80%, rgba(6, 214, 160, 0.05) 0%, transparent 2%),
-    radial-gradient(circle at 90% 25%, rgba(6, 214, 160, 0.07) 0%, transparent 3%),
-    radial-gradient(circle at 50% 50%, rgba(6, 214, 160, 0.04) 0%, transparent 2%);
+    radial-gradient(circle at 20% 30%, rgba(167, 139, 250, 0.08) 0%, transparent 3%),
+    radial-gradient(circle at 60% 20%, rgba(167, 139, 250, 0.06) 0%, transparent 2.5%),
+    radial-gradient(circle at 80% 60%, rgba(167, 139, 250, 0.07) 0%, transparent 3%),
+    radial-gradient(circle at 35% 70%, rgba(167, 139, 250, 0.05) 0%, transparent 2%),
+    radial-gradient(circle at 70% 80%, rgba(167, 139, 250, 0.06) 0%, transparent 2.5%),
+    radial-gradient(circle at 10% 80%, rgba(167, 139, 250, 0.05) 0%, transparent 2%),
+    radial-gradient(circle at 90% 25%, rgba(167, 139, 250, 0.07) 0%, transparent 3%),
+    radial-gradient(circle at 50% 50%, rgba(167, 139, 250, 0.04) 0%, transparent 2%);
   animation: ade-breathe 8s ease-in-out infinite;
 }
 
@@ -1578,10 +1591,10 @@ button:active, [role="button"]:active {
   animation: ade-particle-drift 30s ease-in-out infinite;
 }
 
-/* 8. PRs — Launch Pad / Upward Emerald Flow (emerald #10b981) */
+/* 8. PRs — Launch Pad / Upward Purple Flow (purple #A78BFA) */
 .ade-tab-bg-prs {
   background:
-    linear-gradient(0deg, rgba(16, 185, 129, 0.025) 0%, transparent 50%);
+    linear-gradient(0deg, rgba(167, 139, 250, 0.025) 0%, transparent 50%);
 }
 
 .ade-tab-bg-prs::before {
@@ -1593,7 +1606,7 @@ button:active, [role="button"]:active {
   height: 100%;
   margin-left: -300px;
   background:
-    linear-gradient(0deg, rgba(16, 185, 129, 0.05) 0%, rgba(16, 185, 129, 0.02) 30%, transparent 65%);
+    linear-gradient(0deg, rgba(167, 139, 250, 0.05) 0%, rgba(167, 139, 250, 0.02) 30%, transparent 65%);
   border-radius: 50% 50% 0 0;
   opacity: 0.7;
   animation: ade-breathe 10s ease-in-out infinite;
@@ -1840,18 +1853,18 @@ button:active, [role="button"]:active {
 
 /* Glass card for conflict/PR panels */
 .ade-glass-card {
-  background: rgba(var(--color-card-rgb, 23, 26, 42), 0.5);
-  backdrop-filter: blur(12px) saturate(1.2);
-  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  background: rgba(var(--color-card-rgb, 19, 16, 26), 0.5);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border: 1px solid rgba(var(--tab-tint-rgb, 113, 113, 122), 0.1);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow-card);
   transition: border-color 150ms ease, box-shadow 200ms ease, transform 150ms ease;
 }
 
 .ade-glass-card:hover {
   border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.22);
-  box-shadow: var(--shadow-card-hover), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: var(--shadow-card-hover);
 }
 
 /* Animated timeline connector */
@@ -1901,7 +1914,7 @@ button:active, [role="button"]:active {
    ═══════════════════════════════════════════════════════════ */
 
 @keyframes ade-flash-cyan {
-  0% { background-color: rgba(6, 214, 160, 0.25); }
+  0% { background-color: rgba(167, 139, 250, 0.25); }
   100% { background-color: transparent; }
 }
 

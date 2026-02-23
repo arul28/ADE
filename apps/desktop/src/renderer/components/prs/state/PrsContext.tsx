@@ -91,8 +91,17 @@ function readPersistedModel(): "codex" | "claude" {
   return "claude";
 }
 
+function readInitialTab(): PrTab {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    if (tab === "normal" || tab === "queue" || tab === "integration" || tab === "rebase") return tab;
+  } catch { /* ignore */ }
+  return "normal";
+}
+
 export function PrsProvider({ children }: { children: React.ReactNode }) {
-  const [activeTab, setActiveTab] = useState<PrTab>("normal");
+  const [activeTab, setActiveTab] = useState<PrTab>(readInitialTab);
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});

@@ -1,42 +1,160 @@
 import React from "react";
-import {
-  GitMerge,
-  Lightning,
-  Sparkle,
-  Trash,
-  Plus,
-  ArrowRight,
-  CheckCircle,
-  Warning,
-  XCircle,
-  Clock,
-  GithubLogo,
-  CaretDown,
-  CaretRight,
-} from "@phosphor-icons/react";
-import { motion, AnimatePresence } from "motion/react";
+import { GitMerge, Lightning, Eye, Sparkle, Trash, ArrowRight, CheckCircle, Warning, XCircle, Clock, GithubLogo } from "@phosphor-icons/react";
 import type {
-  CreateIntegrationPrResult,
   IntegrationProposal,
   LaneSummary,
   MergeMethod,
   PrMergeContext,
   PrWithConflicts,
-  RiskMatrixEntry,
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
+import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
-import { useAppStore } from "../../../state/appStore";
+
+const TILING_TREE: PaneSplit = {
+  type: "split",
+  direction: "horizontal",
+  children: [
+    { node: { type: "pane", id: "list" }, defaultSize: 36, minSize: 20 },
+    { node: { type: "pane", id: "detail" }, defaultSize: 64, minSize: 30 },
+  ],
+};
 
 function normalizeBranchName(ref: string): string {
   const trimmed = ref.trim();
   const branch = trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
   return branch.startsWith("origin/") ? branch.slice("origin/".length) : branch;
 }
+
+/* ---- Outcome dot with design-system colors ---- */
+
+function OutcomeDot({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "pending" }) {
+  const config = {
+    clean:   { icon: CheckCircle, color: "#22C55E" },
+    conflict:{ icon: Warning,     color: "#F59E0B" },
+    blocked: { icon: XCircle,     color: "#EF4444" },
+    pending: { icon: Clock,       color: "#71717A" },
+  }[outcome];
+  const Icon = config.icon;
+  return (
+    <span
+      className="inline-flex items-center justify-center"
+      style={{ width: 20, height: 20, background: `${config.color}18` }}
+    >
+      <Icon size={12} weight="fill" style={{ color: config.color }} />
+    </span>
+  );
+}
+
+/* ---- State badge ---- */
+
+function StateBadge({ state }: { state: string }) {
+  const map: Record<string, { label: string; bg: string; fg: string; border: string }> = {
+    draft:  { label: "DRAFT",  bg: "#A78BFA18", fg: "#A78BFA", border: "#A78BFA30" },
+    open:   { label: "OPEN",   bg: "#3B82F618", fg: "#3B82F6", border: "#3B82F630" },
+    merged: { label: "MERGED", bg: "#22C55E18", fg: "#22C55E", border: "#22C55E30" },
+    closed: { label: "CLOSED", bg: "#71717A18", fg: "#71717A", border: "#71717A30" },
+  };
+  const s = map[state] ?? map.closed;
+  return (
+    <span
+      className="font-mono font-bold tracking-[1px] uppercase"
+      style={{
+        fontSize: 10,
+        padding: "2px 8px",
+        background: s.bg,
+        color: s.fg,
+        border: `1px solid ${s.border}`,
+      }}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+/* ---- Overall outcome badge ---- */
+
+function OutcomeBadge({ outcome }: { outcome: "clean" | "conflict" | "blocked" }) {
+  const map = {
+    clean:    { label: "CLEAN",    bg: "#22C55E18", fg: "#22C55E", border: "#22C55E30" },
+    conflict: { label: "CONFLICT", bg: "#F59E0B18", fg: "#F59E0B", border: "#F59E0B30" },
+    blocked:  { label: "BLOCKED",  bg: "#EF444418", fg: "#EF4444", border: "#EF444430" },
+  };
+  const s = map[outcome];
+  return (
+    <span
+      className="font-mono font-bold tracking-[1px] uppercase"
+      style={{
+        fontSize: 10,
+        padding: "3px 10px",
+        background: s.bg,
+        color: s.fg,
+        border: `1px solid ${s.border}`,
+      }}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+/* ---- Section header ---- */
+
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className="font-mono font-bold uppercase tracking-[1px]"
+      style={{ fontSize: 10, color: "#71717A", marginBottom: 12 }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* ---- Lane chip ---- */
+
+function LaneChip({ name, variant = "default" }: { name: string; variant?: "default" | "accent" }) {
+  const isAccent = variant === "accent";
+  return (
+    <span
+      className="font-mono font-bold uppercase tracking-[1px] inline-flex items-center"
+      style={{
+        fontSize: 10,
+        padding: "4px 10px",
+        background: isAccent ? "#A78BFA18" : "#13101A",
+        color: isAccent ? "#A78BFA" : "#FAFAFA",
+        border: `1px solid ${isAccent ? "#A78BFA30" : "#1E1B26"}`,
+      }}
+    >
+      {name}
+    </span>
+  );
+}
+
+/* ---- Status badge for lane readiness ---- */
+
+function LaneStatusBadge({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "pending" }) {
+  const map = {
+    clean:    { label: "READY",    fg: "#22C55E", bg: "#22C55E18" },
+    conflict: { label: "CONFLICT", fg: "#F59E0B", bg: "#F59E0B18" },
+    blocked:  { label: "BLOCKED",  fg: "#EF4444", bg: "#EF444418" },
+    pending:  { label: "PENDING",  fg: "#71717A", bg: "#71717A18" },
+  };
+  const s = map[outcome];
+  return (
+    <span
+      className="font-mono font-bold uppercase tracking-[1px]"
+      style={{ fontSize: 9, padding: "1px 6px", background: s.bg, color: s.fg }}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+/* ======== Main component ======== */
 
 type IntegrationTabProps = {
   prs: PrWithConflicts[];
@@ -48,773 +166,26 @@ type IntegrationTabProps = {
   onRefresh: () => Promise<void>;
 };
 
-// ---- Sidebar List Item ----
-function SidebarItem({
-  pr,
-  isSelected,
-  mergeContext,
-  laneById,
-  onClick,
-}: {
-  pr: PrWithConflicts;
-  isSelected: boolean;
-  mergeContext: PrMergeContext | undefined;
-  laneById: Map<string, LaneSummary>;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        "group flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left text-xs transition-all duration-150",
-        isSelected
-          ? "border-l-2 border-l-accent bg-accent/8 pl-3"
-          : "border-l-2 border-l-transparent hover:bg-card/40 hover:pl-3.5",
-      )}
-      onClick={onClick}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] text-muted-fg/60">#{pr.githubPrNumber}</span>
-          <span className={cn("truncate font-medium", isSelected ? "text-fg" : "text-fg/80")}>{pr.title}</span>
-        </div>
-        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-fg/60">
-          <span>{mergeContext?.sourceLaneIds.length ?? 0} sources</span>
-          <ArrowRight size={9} weight="bold" className="text-muted-fg/40" />
-          <span className="text-fg/60">{laneById.get(mergeContext?.targetLaneId ?? pr.laneId)?.name ?? "target"}</span>
-        </div>
-      </div>
-      <div className="shrink-0 mt-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
-        <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
-      </div>
-    </button>
-  );
-}
+export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: IntegrationTabProps) {
+  const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
-// ---- Status dot for pipeline steps ----
-function OutcomeDot({ outcome }: { outcome: "clean" | "conflict" | "blocked" | "pending" }) {
-  const config = {
-    clean: { icon: CheckCircle, color: "text-emerald-400", bg: "bg-emerald-400/15" },
-    conflict: { icon: Warning, color: "text-amber-400", bg: "bg-amber-400/15" },
-    blocked: { icon: XCircle, color: "text-red-400", bg: "bg-red-400/15" },
-    pending: { icon: Clock, color: "text-muted-fg/50", bg: "bg-muted/20" },
-  }[outcome];
-  const Icon = config.icon;
-  return (
-    <span className={cn("inline-flex items-center justify-center w-5 h-5 rounded-full", config.bg)}>
-      <Icon size={12} weight="fill" className={config.color} />
-    </span>
-  );
-}
-
-// ---- State chip for PR status ----
-function StateChip({ state }: { state: string }) {
-  const styles: Record<string, string> = {
-    open: "text-emerald-400 bg-emerald-400/10",
-    merged: "text-violet-400 bg-violet-400/10",
-    closed: "text-red-400 bg-red-400/10",
-    draft: "text-muted-fg bg-muted/30",
-  };
-  return (
-    <span className={cn("inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium", styles[state] ?? styles.draft)}>
-      {state}
-    </span>
-  );
-}
-
-// ---- Inline Creation Form ----
-function CreationForm({
-  lanes,
-  onCreated,
-  onCancel,
-}: {
-  lanes: LaneSummary[];
-  onCreated: () => void;
-  onCancel: () => void;
-}) {
-  const appLanes = useAppStore((s) => s.lanes);
-  const primaryLane = React.useMemo(() => appLanes.find((l) => l.laneType === "primary") ?? null, [appLanes]);
-  const nonPrimaryLanes = React.useMemo(() => lanes.filter((l) => l.laneType !== "primary"), [lanes]);
-
-  const [selectedSources, setSelectedSources] = React.useState<string[]>([]);
-  const [integrationName, setIntegrationName] = React.useState("integration");
-  const [prTitle, setPrTitle] = React.useState("");
-  const [prBody, setPrBody] = React.useState("");
-  const [draft, setDraft] = React.useState(false);
-
-  // Risk assessment
-  const [riskRows, setRiskRows] = React.useState<Array<{ laneAId: string; laneBId: string; riskLevel: RiskMatrixEntry["riskLevel"] | "unknown" }>>([]);
-  const [riskLoading, setRiskLoading] = React.useState(false);
-
-  // Simulation
-  const [simulateResult, setSimulateResult] = React.useState<IntegrationProposal | null>(null);
-  const [simulateBusy, setSimulateBusy] = React.useState(false);
-  const [simulated, setSimulated] = React.useState(false);
-
-  // Creation
-  const [creating, setCreating] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  // Config section expanded
-  const [configExpanded, setConfigExpanded] = React.useState(false);
-
-  const pairKey = (a: string, b: string) => (a < b ? `${a}::${b}` : `${b}::${a}`);
-
-  const toggleSource = (laneId: string) => {
-    setSelectedSources((prev) =>
-      prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId],
-    );
-    // Reset simulation when sources change
-    setSimulateResult(null);
-    setSimulated(false);
-  };
-
-  // Fetch risk when sources change (2+ selected)
-  React.useEffect(() => {
-    if (selectedSources.length < 2) {
-      setRiskRows([]);
-      return;
-    }
-    let cancelled = false;
-    setRiskLoading(true);
-    window.ade.conflicts
-      .getBatchAssessment()
-      .then((assessment) => {
-        if (cancelled) return;
-        const matrix = assessment?.matrix ?? [];
-        const matrixByPair = new Map(matrix.map((entry) => [pairKey(entry.laneAId, entry.laneBId), entry]));
-        const rows: typeof riskRows = [];
-        const unique = Array.from(new Set(selectedSources));
-        for (let i = 0; i < unique.length; i++) {
-          for (let j = i + 1; j < unique.length; j++) {
-            const a = unique[i]!;
-            const b = unique[j]!;
-            const match = matrixByPair.get(pairKey(a, b));
-            rows.push({ laneAId: a, laneBId: b, riskLevel: match?.riskLevel ?? "unknown" });
-          }
-        }
-        setRiskRows(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setRiskRows([]);
-      })
-      .finally(() => {
-        if (!cancelled) setRiskLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [selectedSources]);
-
-  const baseBranch = primaryLane?.branchRef ?? "main";
-
-  const handleSimulate = async () => {
-    setSimulateBusy(true);
-    setError(null);
-    setSimulateResult(null);
-    try {
-      const result = await window.ade.prs.simulateIntegration({ sourceLaneIds: selectedSources, baseBranch });
-      setSimulateResult(result);
-      setSimulated(true);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSimulateBusy(false);
-    }
-  };
-
-  const handleCreate = async () => {
-    setCreating(true);
-    setError(null);
-    try {
-      await window.ade.prs.createIntegration({
-        sourceLaneIds: selectedSources,
-        integrationLaneName: integrationName,
-        baseBranch,
-        title: prTitle || `Integration: ${integrationName}`,
-        body: prBody,
-        draft,
-      });
-      onCreated();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const laneMap = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
-      className="flex flex-col gap-6 p-5 overflow-auto h-full"
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-fg">New Integration</h2>
-          <p className="text-xs text-muted-fg/60 mt-0.5">Select source lanes to merge into an integration branch</p>
-        </div>
-        <button
-          onClick={onCancel}
-          className="text-xs text-muted-fg hover:text-fg transition-colors px-2 py-1 rounded hover:bg-muted/20"
-        >
-          Cancel
-        </button>
-      </div>
-
-      {/* Step 1: Source lanes */}
-      <div className="space-y-3">
-        <div className="text-xs font-medium text-muted-fg">Source lanes</div>
-        <div className="grid grid-cols-2 gap-2">
-          {nonPrimaryLanes.map((lane) => {
-            const isSelected = selectedSources.includes(lane.id);
-            return (
-              <button
-                key={lane.id}
-                type="button"
-                onClick={() => toggleSource(lane.id)}
-                className={cn(
-                  "group relative rounded-lg p-3 text-left transition-all duration-150",
-                  isSelected
-                    ? "bg-accent/10 ring-1 ring-accent/30"
-                    : "bg-card/30 hover:bg-card/50",
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  <div className={cn(
-                    "w-2 h-2 rounded-full transition-all duration-200",
-                    isSelected ? "bg-accent scale-125" : "bg-muted-fg/25 group-hover:bg-muted-fg/40",
-                  )} />
-                  <span className={cn("text-xs font-medium truncate", isSelected ? "text-fg" : "text-fg/70")}>
-                    {lane.name}
-                  </span>
-                </div>
-                <div className="mt-1 ml-4 text-[10px] text-muted-fg/50 truncate font-mono">{lane.branchRef}</div>
-              </button>
-            );
-          })}
-        </div>
-        {nonPrimaryLanes.length === 0 && (
-          <div className="text-xs text-muted-fg/50 italic py-4 text-center">No non-primary lanes available</div>
-        )}
-      </div>
-
-      {/* Conflict preview (when 2+ sources selected) */}
-      {selectedSources.length >= 2 && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: "auto" }}
-          exit={{ opacity: 0, height: 0 }}
-          className="space-y-2"
-        >
-          <div className="text-xs font-medium text-muted-fg">Pairwise risk</div>
-          {riskLoading ? (
-            <div className="flex items-center gap-2 py-2">
-              <div className="w-3 h-3 rounded-full border-2 border-accent/40 border-t-accent animate-spin" />
-              <span className="text-[11px] text-muted-fg/60">Checking conflicts...</span>
-            </div>
-          ) : riskRows.length > 0 ? (
-            <div className="space-y-1">
-              {riskRows.map((row) => {
-                const nameA = laneMap.get(row.laneAId)?.name ?? row.laneAId;
-                const nameB = laneMap.get(row.laneBId)?.name ?? row.laneBId;
-                const riskColor = {
-                  high: "text-red-400",
-                  medium: "text-amber-400",
-                  low: "text-emerald-400",
-                  none: "text-emerald-400",
-                  unknown: "text-muted-fg/50",
-                }[row.riskLevel];
-                const riskBg = {
-                  high: "bg-red-400/8",
-                  medium: "bg-amber-400/8",
-                  low: "bg-emerald-400/8",
-                  none: "bg-emerald-400/8",
-                  unknown: "bg-muted/15",
-                }[row.riskLevel];
-                return (
-                  <div key={`${row.laneAId}:${row.laneBId}`} className={cn("rounded-md px-3 py-2 text-xs flex items-center justify-between", riskBg)}>
-                    <div className="flex items-center gap-1.5 text-fg/70 min-w-0">
-                      <span className="truncate">{nameA}</span>
-                      <ArrowRight size={9} weight="bold" className="text-muted-fg/30 shrink-0" />
-                      <span className="truncate">{nameB}</span>
-                    </div>
-                    <span className={cn("capitalize text-[11px] font-medium shrink-0 ml-2", riskColor)}>
-                      {row.riskLevel}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-[11px] text-muted-fg/40 py-1">No risk data available</div>
-          )}
-        </motion.div>
-      )}
-
-      {/* Step 2: Configuration (collapsible) */}
-      {selectedSources.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="space-y-3"
-        >
-          <button
-            type="button"
-            onClick={() => setConfigExpanded(!configExpanded)}
-            className="flex items-center gap-1.5 text-xs font-medium text-muted-fg hover:text-fg transition-colors"
-          >
-            {configExpanded ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
-            Configuration
-          </button>
-
-          <AnimatePresence>
-            {configExpanded && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="rounded-lg bg-card/25 p-4 space-y-3">
-                  <div>
-                    <label className="block text-[11px] text-muted-fg/60 mb-1.5">Integration lane name</label>
-                    <input
-                      type="text"
-                      value={integrationName}
-                      onChange={(e) => setIntegrationName(e.target.value)}
-                      className="w-full rounded-md bg-muted/15 px-3 py-2 text-xs text-fg placeholder:text-muted-fg/30 focus:outline-none focus:ring-1 focus:ring-accent/30 transition-shadow"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-muted-fg/60 mb-1.5">PR title</label>
-                    <input
-                      type="text"
-                      value={prTitle}
-                      onChange={(e) => setPrTitle(e.target.value)}
-                      className="w-full rounded-md bg-muted/15 px-3 py-2 text-xs text-fg placeholder:text-muted-fg/30 focus:outline-none focus:ring-1 focus:ring-accent/30 transition-shadow"
-                      placeholder={`Integration: ${integrationName}`}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-muted-fg/60 mb-1.5">Description</label>
-                    <textarea
-                      value={prBody}
-                      onChange={(e) => setPrBody(e.target.value)}
-                      rows={3}
-                      className="w-full rounded-md bg-muted/15 px-3 py-2 text-xs text-fg placeholder:text-muted-fg/30 focus:outline-none focus:ring-1 focus:ring-accent/30 resize-none transition-shadow"
-                      placeholder="Optional PR description..."
-                    />
-                  </div>
-                  <label className="flex items-center gap-2 text-[11px] text-muted-fg/60 cursor-pointer hover:text-muted-fg transition-colors">
-                    <input type="checkbox" checked={draft} onChange={(e) => setDraft(e.target.checked)} className="rounded" />
-                    Create as draft
-                  </label>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
-      )}
-
-      {/* Simulation results */}
-      {simulateResult && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-2"
-        >
-          <div className="flex items-center gap-2">
-            <div className="text-xs font-medium text-muted-fg">Simulation result</div>
-            <span className={cn(
-              "text-[10px] font-medium rounded-md px-1.5 py-0.5",
-              simulateResult.overallOutcome === "clean" ? "text-emerald-400 bg-emerald-400/10" :
-              simulateResult.overallOutcome === "conflict" ? "text-amber-400 bg-amber-400/10" :
-              "text-red-400 bg-red-400/10",
-            )}>
-              {simulateResult.overallOutcome}
-            </span>
-          </div>
-          <div className="space-y-1">
-            {simulateResult.steps.map((step) => (
-              <div key={step.laneId} className="rounded-md bg-muted/10 px-3 py-2 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <OutcomeDot outcome={step.outcome} />
-                  <span className="text-xs text-fg/80">{step.laneName}</span>
-                </div>
-                <div className="flex items-center gap-3 text-[10px] text-muted-fg/50">
-                  <span className="text-emerald-400/70">+{step.diffStat.insertions}</span>
-                  <span className="text-red-400/70">-{step.diffStat.deletions}</span>
-                  <span>{step.diffStat.filesChanged} files</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-      )}
-
-      {/* Error */}
-      {error && (
-        <div className="rounded-md bg-red-500/8 px-3 py-2 text-xs text-red-300">{error}</div>
-      )}
-
-      {/* Action bar */}
-      {selectedSources.length > 0 && (
-        <div className="flex items-center gap-2 pt-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={simulateBusy || selectedSources.length < 2}
-            onClick={() => void handleSimulate()}
-          >
-            <Lightning size={12} weight="fill" className="mr-1" />
-            {simulateBusy ? "Simulating..." : "Simulate"}
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={creating || selectedSources.length < 2 || !integrationName.trim()}
-            onClick={() => void handleCreate()}
-          >
-            <GitMerge size={12} weight="regular" className="mr-1" />
-            {creating ? "Creating..." : "Create Integration PR"}
-          </Button>
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-// ---- Detail View for existing integration PR ----
-function DetailView({
-  pr,
-  mergeContext,
-  mergeSourcesResolved,
-  resolverTargetLaneId,
-  laneById,
-  onRefresh,
-}: {
-  pr: PrWithConflicts;
-  mergeContext: PrMergeContext | null;
-  mergeSourcesResolved: Array<{ laneId: string; laneName: string }>;
-  resolverTargetLaneId: string | null;
-  laneById: Map<string, LaneSummary>;
-  onRefresh: () => Promise<void>;
-}) {
   const [simulateResult, setSimulateResult] = React.useState<IntegrationProposal | null>(null);
   const [simulateBusy, setSimulateBusy] = React.useState(false);
   const [simulateError, setSimulateError] = React.useState<string | null>(null);
   const [resolverOpen, setResolverOpen] = React.useState(false);
-  const [deleteExpanded, setDeleteExpanded] = React.useState(false);
+  const [deleteConfirm, setDeleteConfirm] = React.useState(false);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
-  const [pipelineExpanded, setPipelineExpanded] = React.useState(true);
-
-  // Reset on PR change
-  React.useEffect(() => {
-    setSimulateResult(null);
-    setSimulateError(null);
-    setDeleteExpanded(false);
-  }, [pr.id]);
-
-  const handleSimulate = async () => {
-    const sourceIds = mergeContext?.sourceLaneIds ?? [pr.laneId];
-    setSimulateBusy(true);
-    setSimulateError(null);
-    setSimulateResult(null);
-    try {
-      const result = await window.ade.prs.simulateIntegration({ sourceLaneIds: sourceIds, baseBranch: pr.baseBranch });
-      setSimulateResult(result);
-    } catch (err: unknown) {
-      setSimulateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSimulateBusy(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    setDeleteBusy(true);
-    try {
-      await window.ade.prs.delete({ prId: pr.id, closeOnGitHub: deleteCloseGh });
-      setDeleteExpanded(false);
-      await onRefresh();
-    } catch (err: unknown) {
-      setSimulateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeleteBusy(false);
-    }
-  };
-
-  const hasConflicts = simulateResult?.overallOutcome === "conflict" || simulateResult?.overallOutcome === "blocked";
-
-  return (
-    <motion.div
-      key={pr.id}
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
-      className="flex flex-col gap-5 p-5 overflow-auto h-full"
-    >
-      {/* Summary header */}
-      <div className="space-y-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2.5">
-              <span className="font-mono text-sm text-muted-fg/50">#{pr.githubPrNumber}</span>
-              <StateChip state={pr.state} />
-            </div>
-            <h2 className="text-base font-semibold text-fg mt-1 leading-snug">{pr.title}</h2>
-          </div>
-          <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
-        </div>
-        <div className="flex items-center gap-3 text-[11px] text-muted-fg/50">
-          <span className="tabular-nums">+{pr.additions} -{pr.deletions}</span>
-          <span>{pr.headBranch}</span>
-          <ArrowRight size={9} weight="bold" />
-          <span>{pr.baseBranch}</span>
-        </div>
-      </div>
-
-      {/* Source lanes pipeline */}
-      <div className="space-y-2">
-        <button
-          type="button"
-          onClick={() => setPipelineExpanded(!pipelineExpanded)}
-          className="flex items-center gap-1.5 text-xs font-medium text-muted-fg hover:text-fg transition-colors"
-        >
-          {pipelineExpanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />}
-          Source lanes
-          <span className="text-muted-fg/40 font-normal ml-1">{mergeSourcesResolved.length} lanes</span>
-        </button>
-
-        <AnimatePresence>
-          {pipelineExpanded && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="overflow-hidden"
-            >
-              <div className="relative pl-4">
-                {/* Vertical connector line */}
-                <div className="absolute left-[7px] top-2 bottom-2 w-px bg-gradient-to-b from-border/30 via-border/20 to-transparent" />
-
-                <div className="space-y-1">
-                  {mergeSourcesResolved.map((source, idx) => {
-                    const simStep = simulateResult?.steps.find((s) => s.laneId === source.laneId);
-                    return (
-                      <div
-                        key={source.laneId}
-                        className="relative flex items-center gap-3 rounded-md bg-card/25 px-3 py-2.5 transition-colors hover:bg-card/35"
-                      >
-                        {/* Node dot on the connector */}
-                        <div className="absolute -left-4 top-1/2 -translate-y-1/2">
-                          {simStep ? (
-                            <OutcomeDot outcome={simStep.outcome} />
-                          ) : (
-                            <div className="w-2.5 h-2.5 rounded-full bg-muted-fg/20 ring-2 ring-bg" />
-                          )}
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium text-fg/80 truncate">{source.laneName}</span>
-                            {simStep && (
-                              <span className={cn(
-                                "text-[10px] font-medium",
-                                simStep.outcome === "clean" ? "text-emerald-400/70" :
-                                simStep.outcome === "conflict" ? "text-amber-400/70" :
-                                "text-red-400/70",
-                              )}>
-                                {simStep.outcome}
-                              </span>
-                            )}
-                          </div>
-                          {simStep && (
-                            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-fg/40">
-                              <span className="text-emerald-400/50">+{simStep.diffStat.insertions}</span>
-                              <span className="text-red-400/50">-{simStep.diffStat.deletions}</span>
-                              <span>{simStep.diffStat.filesChanged} files</span>
-                            </div>
-                          )}
-                          {simStep && simStep.conflictingFiles.length > 0 && (
-                            <div className="mt-1 text-[10px] text-amber-400/60">
-                              {simStep.conflictingFiles.map((f) => f.path).join(", ")}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Target */}
-                <div className="relative mt-1 flex items-center gap-3 rounded-md bg-accent/6 px-3 py-2">
-                  <div className="absolute -left-4 top-1/2 -translate-y-1/2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-accent ring-2 ring-bg" />
-                  </div>
-                  <GitMerge size={12} weight="fill" className="text-accent/60" />
-                  <span className="text-xs font-medium text-accent/80">
-                    {laneById.get(resolverTargetLaneId ?? "")?.name ?? pr.baseBranch}
-                  </span>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* Simulation section */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-3">
-          <Button size="sm" variant="outline" disabled={simulateBusy} onClick={() => void handleSimulate()}>
-            <Lightning size={12} weight="fill" className="mr-1" />
-            {simulateBusy ? "Simulating..." : "Simulate Merge"}
-          </Button>
-          {simulateResult && (
-            <span className={cn(
-              "text-[10px] font-medium rounded-md px-2 py-0.5",
-              simulateResult.overallOutcome === "clean" ? "text-emerald-400 bg-emerald-400/10" :
-              simulateResult.overallOutcome === "conflict" ? "text-amber-400 bg-amber-400/10" :
-              "text-red-400 bg-red-400/10",
-            )}>
-              {simulateResult.overallOutcome}
-            </span>
-          )}
-        </div>
-        {simulateError && (
-          <div className="rounded-md bg-red-500/8 px-3 py-2 text-xs text-red-300">{simulateError}</div>
-        )}
-      </div>
-
-      {/* Conflict zone */}
-      {hasConflicts && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="rounded-lg bg-amber-500/5 p-4 space-y-3"
-        >
-          <div className="flex items-center gap-2">
-            <Warning size={14} weight="fill" className="text-amber-400" />
-            <span className="text-xs font-medium text-amber-300">Conflicts detected</span>
-          </div>
-          <div className="space-y-1">
-            {simulateResult?.steps.filter((s) => s.conflictingFiles.length > 0).map((step) => (
-              <div key={step.laneId} className="text-[11px] text-amber-300/70">
-                <span className="text-fg/60">{step.laneName}:</span>{" "}
-                {step.conflictingFiles.map((f) => f.path).join(", ")}
-              </div>
-            ))}
-          </div>
-          <Button size="sm" variant="primary" onClick={() => setResolverOpen(true)}>
-            <Sparkle size={13} weight="fill" className="mr-1" />
-            Fix with AI
-          </Button>
-        </motion.div>
-      )}
-
-      {/* Actions footer */}
-      <div className="flex items-center gap-2 pt-1">
-        <Button size="sm" variant="outline" onClick={() => void window.ade.prs.openInGitHub(pr.id)}>
-          <GithubLogo size={13} weight="regular" className="mr-1" />
-          Open on GitHub
-        </Button>
-        {!hasConflicts && (
-          <Button size="sm" variant="primary" onClick={() => setResolverOpen(true)}>
-            <Sparkle size={13} weight="fill" className="mr-1" />
-            Resolve with AI
-          </Button>
-        )}
-        <div className="ml-auto">
-          <button
-            type="button"
-            onClick={() => setDeleteExpanded(!deleteExpanded)}
-            className="flex items-center gap-1 text-[11px] text-muted-fg/40 hover:text-red-400/70 transition-colors px-2 py-1 rounded hover:bg-red-400/5"
-          >
-            <Trash size={11} weight="regular" />
-            Remove
-          </button>
-        </div>
-      </div>
-
-      {/* Delete confirmation (inline, not modal) */}
-      <AnimatePresence>
-        {deleteExpanded && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden"
-          >
-            <div className="rounded-lg bg-red-500/5 p-3 space-y-2.5">
-              <div className="text-xs text-red-300/80">Remove this integration PR from ADE?</div>
-              <label className="flex items-center gap-1.5 text-[11px] text-muted-fg/60 cursor-pointer hover:text-muted-fg transition-colors">
-                <input type="checkbox" checked={deleteCloseGh} onChange={(e) => setDeleteCloseGh(e.target.checked)} className="rounded" />
-                Also close on GitHub
-              </label>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={deleteBusy}
-                  onClick={() => void handleDelete()}
-                  className="text-red-300 hover:bg-red-500/10"
-                >
-                  {deleteBusy ? "Removing..." : "Confirm"}
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => setDeleteExpanded(false)}
-                  className="text-[11px] text-muted-fg hover:text-fg transition-colors px-2 py-1"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <ResolverTerminalModal
-        open={resolverOpen}
-        onOpenChange={setResolverOpen}
-        sourceLaneId={mergeSourcesResolved[0]?.laneId ?? pr.laneId}
-        sourceLaneIds={mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((s) => s.laneId) : undefined}
-        targetLaneId={resolverTargetLaneId}
-        cwdLaneId={resolverTargetLaneId}
-        scenario={mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge"}
-        onCompleted={() => void onRefresh()}
-      />
-    </motion.div>
-  );
-}
-
-// ---- Main Integration Tab ----
-export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh }: IntegrationTabProps) {
-  const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-  const [creatingNew, setCreatingNew] = React.useState(false);
 
   const selectedPr = React.useMemo(() => prs.find((p) => p.id === selectedPrId) ?? null, [prs, selectedPrId]);
   const selectedMergeContext = selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null;
 
-  // Auto-select first PR
+  // Auto-select first
   React.useEffect(() => {
     if (prs.length === 0 && selectedPrId === null) return;
     if (selectedPrId && prs.some((p) => p.id === selectedPrId)) return;
     onSelectPr(prs[0]?.id ?? null);
   }, [prs, selectedPrId, onSelectPr]);
-
-  // When entering creation mode, deselect PR
-  React.useEffect(() => {
-    if (creatingNew) onSelectPr(null);
-  }, [creatingNew, onSelectPr]);
-
-  // When a PR is selected, exit creation mode
-  React.useEffect(() => {
-    if (selectedPrId) setCreatingNew(false);
-  }, [selectedPrId]);
 
   const mergeSourcesResolved = React.useMemo(() => {
     if (!selectedPr) return [];
@@ -828,104 +199,538 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     return lanes.find((l) => normalizeBranchName(l.branchRef) === normalizeBranchName(selectedPr.baseBranch))?.id ?? null;
   }, [lanes, selectedPr, selectedMergeContext]);
 
-  return (
-    <div className="flex h-full min-h-0">
-      {/* Left sidebar */}
-      <div className="w-[280px] shrink-0 flex flex-col border-r border-border/10 overflow-hidden">
-        {/* Sidebar header */}
-        <div className="flex items-center justify-between px-4 py-3">
-          <span className="text-xs font-medium text-muted-fg/60">Integrations</span>
-          <button
-            type="button"
-            onClick={() => setCreatingNew(true)}
-            className={cn(
-              "flex items-center gap-1 text-[11px] rounded-md px-2 py-1 transition-all duration-150",
-              creatingNew
-                ? "text-accent bg-accent/10"
-                : "text-muted-fg hover:text-accent hover:bg-accent/5",
-            )}
-          >
-            <Plus size={11} weight="bold" />
-            New
-          </button>
-        </div>
+  const handleSimulate = async () => {
+    if (!selectedPr) return;
+    const sourceIds = selectedMergeContext?.sourceLaneIds ?? [selectedPr.laneId];
+    setSimulateBusy(true); setSimulateError(null); setSimulateResult(null);
+    try {
+      const result = await window.ade.prs.simulateIntegration({ sourceLaneIds: sourceIds, baseBranch: selectedPr.baseBranch });
+      setSimulateResult(result);
+    } catch (err: unknown) {
+      setSimulateError(err instanceof Error ? err.message : String(err));
+    } finally { setSimulateBusy(false); }
+  };
 
-        {/* PR list */}
-        <div className="flex-1 overflow-auto px-2 pb-2">
-          {prs.length === 0 && !creatingNew ? (
-            <div className="flex flex-col items-center justify-center h-full px-4 text-center">
-              <GitMerge size={28} weight="regular" className="text-muted-fg/20 mb-3" />
-              <div className="text-xs text-muted-fg/50">No integration PRs yet</div>
-              <button
-                type="button"
-                onClick={() => setCreatingNew(true)}
-                className="mt-3 text-[11px] text-accent hover:text-accent/80 transition-colors"
-              >
-                Create your first integration
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-0.5">
-              {prs.map((pr) => (
-                <SidebarItem
-                  key={pr.id}
-                  pr={pr}
-                  isSelected={pr.id === selectedPrId && !creatingNew}
-                  mergeContext={mergeContextByPrId[pr.id]}
-                  laneById={laneById}
-                  onClick={() => {
-                    onSelectPr(pr.id);
-                    setCreatingNew(false);
-                  }}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+  React.useEffect(() => { setSimulateResult(null); setSimulateError(null); setDeleteConfirm(false); }, [selectedPrId]);
+
+  const handleDelete = async () => {
+    if (!selectedPr) return;
+    setDeleteBusy(true);
+    try {
+      await window.ade.prs.delete({ prId: selectedPr.id, closeOnGitHub: deleteCloseGh });
+      setDeleteConfirm(false);
+      onSelectPr(null);
+      await onRefresh();
+    } catch (err: unknown) {
+      setSimulateError(err instanceof Error ? err.message : String(err));
+    } finally { setDeleteBusy(false); }
+  };
+
+  const hasConflicts = simulateResult?.overallOutcome === "conflict" || simulateResult?.overallOutcome === "blocked";
+
+  /* ---- Build step outcome map for lane status badges ---- */
+  const stepOutcomeByLaneId = React.useMemo(() => {
+    if (!simulateResult) return new Map<string, "clean" | "conflict" | "blocked" | "pending">();
+    return new Map(simulateResult.steps.map((s) => [s.laneId, s.outcome]));
+  }, [simulateResult]);
+
+  /* ============================================================
+   *  LEFT PANEL — Integration PR List
+   * ============================================================ */
+
+  const listPane = (
+    <div style={{ background: "#0F0D14", height: "100%" }}>
+      {/* Header */}
+      <div
+        style={{
+          padding: "14px 16px 10px",
+          borderBottom: "1px solid #1E1B26",
+          background: "#0C0A10",
+        }}
+      >
+        <span
+          className="font-mono font-bold uppercase tracking-[1px]"
+          style={{ fontSize: 10, color: "#A1A1AA" }}
+        >
+          INTEGRATION PRS
+        </span>
       </div>
 
-      {/* Main area */}
-      <div className="flex-1 min-w-0 overflow-hidden">
-        <AnimatePresence mode="wait">
-          {creatingNew ? (
-            <CreationForm
-              key="creation"
-              lanes={lanes}
-              onCreated={() => {
-                setCreatingNew(false);
-                void onRefresh();
-              }}
-              onCancel={() => {
-                setCreatingNew(false);
-                if (prs.length > 0) onSelectPr(prs[0]!.id);
-              }}
-            />
-          ) : selectedPr ? (
-            <DetailView
-              key={`detail-${selectedPr.id}`}
-              pr={selectedPr}
-              mergeContext={selectedMergeContext}
-              mergeSourcesResolved={mergeSourcesResolved}
-              resolverTargetLaneId={resolverTargetLaneId}
-              laneById={laneById}
-              onRefresh={onRefresh}
-            />
-          ) : (
-            <motion.div
-              key="empty"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex h-full items-center justify-center"
-            >
-              <div className="text-center">
-                <GitMerge size={36} weight="regular" className="text-muted-fg/15 mx-auto mb-3" />
-                <div className="text-sm text-muted-fg/40">Select an integration PR</div>
-                <div className="text-xs text-muted-fg/25 mt-1">or create a new one</div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* List body */}
+      <div style={{ padding: 8, overflowY: "auto", height: "calc(100% - 44px)" }}>
+        {!prs.length ? (
+          <EmptyState
+            title="No integration PRs"
+            description="Use Create PR to set up an integration branch from multiple lanes."
+          />
+        ) : (
+          <div className="flex flex-col" style={{ gap: 2 }}>
+            {prs.map((pr) => {
+              const ctx = mergeContextByPrId[pr.id];
+              const isSelected = pr.id === selectedPrId;
+              return (
+                <button
+                  key={pr.id}
+                  type="button"
+                  className="flex w-full items-start justify-between text-left transition-colors duration-100"
+                  style={{
+                    padding: "10px 12px",
+                    gap: 8,
+                    background: isSelected ? "#A78BFA12" : "transparent",
+                    borderLeft: isSelected ? "3px solid #A78BFA" : "3px solid transparent",
+                  }}
+                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "#13101A"; }}
+                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => onSelectPr(pr.id)}
+                >
+                  <div className="min-w-0 flex-1">
+                    {/* PR number + title */}
+                    <div className="flex items-center" style={{ gap: 6 }}>
+                      <span className="font-mono" style={{ fontSize: 11, color: "#71717A" }}>
+                        #{pr.githubPrNumber}
+                      </span>
+                      <span
+                        className="truncate font-mono font-semibold"
+                        style={{ fontSize: 12, color: "#FAFAFA" }}
+                      >
+                        {pr.title}
+                      </span>
+                    </div>
+
+                    {/* Integration badge + source count + arrow + target */}
+                    <div className="flex items-center" style={{ gap: 6, marginTop: 6 }}>
+                      <span
+                        className="font-mono font-bold uppercase tracking-[1px]"
+                        style={{
+                          fontSize: 9,
+                          padding: "1px 6px",
+                          background: "#A78BFA18",
+                          color: "#A78BFA",
+                          border: "1px solid #A78BFA30",
+                        }}
+                      >
+                        INTEGRATION
+                      </span>
+                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                        {ctx?.sourceLaneIds.length ?? 0} sources
+                      </span>
+                      <ArrowRight size={9} weight="bold" style={{ color: "#52525B" }} />
+                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                        {laneById.get(ctx?.targetLaneId ?? pr.laneId)?.name ?? "target"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Conflict badge */}
+                  <div className="flex items-center shrink-0" style={{ gap: 6 }}>
+                    <PrConflictBadge
+                      riskLevel={pr.conflictAnalysis?.riskLevel ?? null}
+                      overlappingFileCount={pr.conflictAnalysis?.overlapCount}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
+
+  /* ============================================================
+   *  RIGHT PANEL — Integration Detail
+   * ============================================================ */
+
+  const detailPane = selectedPr ? (
+    <div style={{ background: "#0F0D14", height: "100%", overflowY: "auto" }}>
+      <div style={{ padding: 20 }}>
+        {/* ---- Header card ---- */}
+        <div
+          style={{
+            background: "#13101A",
+            border: "1px solid #1E1B26",
+            padding: 20,
+            marginBottom: 20,
+          }}
+        >
+          <div className="flex items-start justify-between" style={{ gap: 12 }}>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <span className="font-mono" style={{ fontSize: 18, color: "#71717A" }}>
+                  #{selectedPr.githubPrNumber}
+                </span>
+                <span
+                  className="truncate font-bold"
+                  style={{ fontSize: 18, color: "#FAFAFA", fontFamily: "'Space Grotesk', sans-serif" }}
+                >
+                  {selectedPr.title}
+                </span>
+              </div>
+              <div className="flex items-center" style={{ gap: 10, marginTop: 8 }}>
+                <span className="font-mono" style={{ fontSize: 11, color: "#71717A" }}>
+                  +{selectedPr.additions} -{selectedPr.deletions}
+                </span>
+                <span className="font-mono" style={{ fontSize: 11, color: "#52525B" }}>
+                  {selectedPr.headBranch}
+                </span>
+                <ArrowRight size={10} weight="bold" style={{ color: "#52525B" }} />
+                <span className="font-mono" style={{ fontSize: 11, color: "#52525B" }}>
+                  {selectedPr.baseBranch}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center shrink-0" style={{ gap: 8 }}>
+              <StateBadge state={selectedPr.state} />
+              <PrConflictBadge
+                riskLevel={selectedPr.conflictAnalysis?.riskLevel ?? null}
+                overlappingFileCount={selectedPr.conflictAnalysis?.overlapCount}
+              />
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={simulateBusy}
+                onClick={() => void handleSimulate()}
+                className="ml-2"
+                style={{ borderRadius: 0 }}
+              >
+                <Lightning size={12} weight="fill" className="mr-1" />
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 10 }}>
+                  {simulateBusy ? "SIMULATING..." : "SIMULATE MERGE"}
+                </span>
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* ---- Source Lanes section ---- */}
+        <div
+          style={{
+            background: "#13101A",
+            border: "1px solid #1E1B26",
+            padding: 16,
+            marginBottom: 20,
+          }}
+        >
+          <SectionHeader>SOURCE LANES</SectionHeader>
+          <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+            {mergeSourcesResolved.map((s) => {
+              const outcome = stepOutcomeByLaneId.get(s.laneId);
+              return (
+                <div key={s.laneId} className="flex items-center" style={{ gap: 6 }}>
+                  <LaneChip name={s.laneName} />
+                  {outcome && <LaneStatusBadge outcome={outcome} />}
+                </div>
+              );
+            })}
+            <ArrowRight size={14} weight="bold" style={{ color: "#52525B", margin: "0 4px" }} />
+            <LaneChip
+              name={laneById.get(resolverTargetLaneId ?? "")?.name ?? "target"}
+              variant="accent"
+            />
+          </div>
+        </div>
+
+        {/* ---- Merge Simulation section ---- */}
+        <div
+          style={{
+            background: "#13101A",
+            border: "1px solid #1E1B26",
+            padding: 16,
+            marginBottom: 20,
+          }}
+        >
+          <SectionHeader>MERGE SIMULATION</SectionHeader>
+
+          {simulateResult ? (
+            <div>
+              {/* Overall outcome */}
+              <div style={{ marginBottom: 16 }}>
+                <OutcomeBadge outcome={simulateResult.overallOutcome} />
+              </div>
+
+              {/* Step-by-step results */}
+              <div className="flex flex-col" style={{ gap: 4 }}>
+                {simulateResult.steps.map((step) => {
+                  const outcomeColor =
+                    step.outcome === "clean" ? "#22C55E" :
+                    step.outcome === "conflict" ? "#F59E0B" :
+                    step.outcome === "blocked" ? "#EF4444" : "#71717A";
+                  return (
+                    <div
+                      key={step.laneId}
+                      style={{
+                        background: `${outcomeColor}08`,
+                        border: `1px solid ${outcomeColor}15`,
+                        padding: "10px 12px",
+                      }}
+                    >
+                      <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                        <div className="flex items-center" style={{ gap: 8 }}>
+                          <OutcomeDot outcome={step.outcome} />
+                          <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#FAFAFA" }}>
+                            {step.laneName}
+                          </span>
+                        </div>
+                        <span
+                          className="font-mono font-bold uppercase tracking-[1px]"
+                          style={{ fontSize: 10, color: outcomeColor }}
+                        >
+                          {step.outcome}
+                        </span>
+                      </div>
+
+                      {/* Diff stats */}
+                      <div className="font-mono" style={{ marginTop: 6, marginLeft: 28, fontSize: 11, color: "#71717A" }}>
+                        <span style={{ color: "#22C55E" }}>+{step.diffStat.insertions}</span>
+                        {" "}
+                        <span style={{ color: "#EF4444" }}>-{step.diffStat.deletions}</span>
+                        <span style={{ color: "#52525B", marginLeft: 8 }}>
+                          {step.diffStat.filesChanged} {step.diffStat.filesChanged === 1 ? "file" : "files"}
+                        </span>
+                      </div>
+
+                      {/* Conflicting files */}
+                      {step.conflictingFiles.length > 0 && (
+                        <div style={{ marginTop: 6, marginLeft: 28 }}>
+                          <span
+                            className="font-mono font-bold uppercase tracking-[1px]"
+                            style={{ fontSize: 9, color: "#F59E0B", marginBottom: 4, display: "block" }}
+                          >
+                            CONFLICTING FILES
+                          </span>
+                          {step.conflictingFiles.map((f) => (
+                            <div key={f.path} className="font-mono" style={{ fontSize: 11, color: "#F59E0B", opacity: 0.8 }}>
+                              {f.path}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="font-mono" style={{ fontSize: 11, color: "#52525B", padding: "12px 0" }}>
+              Run a simulation to preview merge outcomes for each source lane.
+            </div>
+          )}
+
+          {simulateError && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 12px",
+                background: "#EF444410",
+                border: "1px solid #EF444425",
+              }}
+            >
+              <span className="font-mono" style={{ fontSize: 11, color: "#EF4444" }}>{simulateError}</span>
+            </div>
+          )}
+        </div>
+
+        {/* ---- Conflict warning zone ---- */}
+        {hasConflicts && (
+          <div
+            style={{
+              background: "#F59E0B08",
+              border: "1px solid #F59E0B25",
+              padding: 16,
+              marginBottom: 20,
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <Warning size={16} weight="fill" style={{ color: "#F59E0B" }} />
+                <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#F59E0B" }}>
+                  Conflicts detected — resolve before merging
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => setResolverOpen(true)}
+                style={{ borderRadius: 0 }}
+              >
+                <Sparkle size={12} weight="fill" className="mr-1" />
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 10 }}>
+                  FIX WITH AI
+                </span>
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ---- Action bar ---- */}
+        <div style={{ marginBottom: 20 }}>
+          <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+            {/* Open on GitHub - primary */}
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}
+              style={{ borderRadius: 0 }}
+            >
+              <GithubLogo size={14} weight="regular" className="mr-1" />
+              <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 10 }}>
+                OPEN ON GITHUB
+              </span>
+            </Button>
+
+            {/* Resolve with AI - accent outline */}
+            {!hasConflicts && (
+              <button
+                type="button"
+                className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                style={{
+                  fontSize: 10,
+                  height: 28,
+                  padding: "0 10px",
+                  background: "transparent",
+                  color: "#A78BFA",
+                  border: "1px solid #A78BFA30",
+                  cursor: "pointer",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#A78BFA12"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                onClick={() => setResolverOpen(true)}
+              >
+                <Sparkle size={12} weight="regular" style={{ marginRight: 4 }} />
+                RESOLVE WITH AI
+              </button>
+            )}
+
+            {/* Remove PR - red outline */}
+            <button
+              type="button"
+              className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+              style={{
+                fontSize: 10,
+                height: 28,
+                padding: "0 10px",
+                background: "transparent",
+                color: "#EF4444",
+                border: "1px solid #EF444430",
+                cursor: "pointer",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#EF444412"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              onClick={() => setDeleteConfirm(true)}
+            >
+              <Trash size={12} weight="regular" style={{ marginRight: 4 }} />
+              REMOVE PR
+            </button>
+          </div>
+
+          {/* Delete confirmation panel */}
+          {deleteConfirm && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: 16,
+                background: "#EF444408",
+                border: "1px solid #EF444420",
+              }}
+            >
+              <div className="font-mono font-semibold" style={{ fontSize: 12, color: "#EF4444", marginBottom: 10 }}>
+                Remove this integration PR from ADE?
+              </div>
+              <label
+                className="flex items-center font-mono cursor-pointer"
+                style={{ fontSize: 11, color: "#A1A1AA", gap: 6, marginBottom: 12 }}
+              >
+                <input
+                  type="checkbox"
+                  checked={deleteCloseGh}
+                  onChange={(e) => setDeleteCloseGh(e.target.checked)}
+                  style={{ accentColor: "#A78BFA" }}
+                />
+                Also close on GitHub
+              </label>
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <button
+                  type="button"
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 28,
+                    padding: "0 10px",
+                    background: "transparent",
+                    color: "#EF4444",
+                    border: "1px solid #EF444440",
+                    cursor: deleteBusy ? "not-allowed" : "pointer",
+                    opacity: deleteBusy ? 0.5 : 1,
+                  }}
+                  disabled={deleteBusy}
+                  onClick={() => void handleDelete()}
+                >
+                  {deleteBusy ? "REMOVING..." : "CONFIRM REMOVE"}
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 28,
+                    padding: "0 10px",
+                    background: "transparent",
+                    color: "#A1A1AA",
+                    border: "1px solid #27272A",
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#13101A"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => setDeleteConfirm(false)}
+                >
+                  CANCEL
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ---- Resolver modal (unchanged) ---- */}
+        <ResolverTerminalModal
+          open={resolverOpen}
+          onOpenChange={setResolverOpen}
+          sourceLaneId={mergeSourcesResolved[0]?.laneId ?? selectedPr.laneId}
+          sourceLaneIds={mergeSourcesResolved.length > 1 ? mergeSourcesResolved.map((s) => s.laneId) : undefined}
+          targetLaneId={resolverTargetLaneId}
+          cwdLaneId={resolverTargetLaneId}
+          scenario={mergeSourcesResolved.length > 1 ? "integration-merge" : "single-merge"}
+          onCompleted={() => void onRefresh()}
+        />
+      </div>
+    </div>
+  ) : (
+    <div className="flex h-full items-center justify-center" style={{ background: "#0F0D14" }}>
+      <EmptyState
+        title="No integration PR selected"
+        description="Select an integration PR or create one via the Create PR button."
+      />
+    </div>
+  );
+
+  /* ============================================================
+   *  Pane configs for PaneTilingLayout
+   * ============================================================ */
+
+  const paneConfigs: Record<string, PaneConfig> = React.useMemo(() => ({
+    list: {
+      title: "Integration PRs",
+      icon: GitMerge,
+      bodyClassName: "overflow-auto",
+      children: listPane,
+    },
+    detail: {
+      title: selectedPr ? `Integration: #${selectedPr.githubPrNumber}` : "Integration Detail",
+      icon: Eye,
+      bodyClassName: "overflow-auto",
+      children: detailPane,
+    },
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, onSelectPr, onRefresh, stepOutcomeByLaneId]);
+
+  return <PaneTilingLayout layoutId="prs:integration:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

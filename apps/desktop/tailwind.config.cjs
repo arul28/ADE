@@ -4,15 +4,15 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        bg: "hsl(var(--bg))",
-        fg: "hsl(var(--fg))",
-        card: "hsl(var(--card))",
-        "card-fg": "hsl(var(--card-fg))",
-        muted: "hsl(var(--muted))",
-        "muted-fg": "hsl(var(--muted-fg))",
-        border: "hsl(var(--border))",
-        accent: "hsl(var(--accent))",
-        "accent-fg": "hsl(var(--accent-fg))",
+        bg: "var(--color-bg)",
+        fg: "var(--color-fg)",
+        card: "var(--color-card)",
+        "card-fg": "var(--color-card-fg)",
+        muted: "var(--color-muted)",
+        "muted-fg": "var(--color-muted-fg)",
+        border: "var(--color-border)",
+        accent: "var(--color-accent)",
+        "accent-fg": "var(--color-accent-fg)",
         "surface-raised": "var(--color-surface-raised)",
         "surface-recessed": "var(--color-surface-recessed)",
         "surface-overlay": "var(--color-surface-overlay)",
@@ -21,10 +21,10 @@ module.exports = {
         glow: "var(--color-glow)"
       },
       borderRadius: {
-        xl: "var(--radius-xl)",
-        lg: "var(--radius-lg)",
-        md: "var(--radius-md)",
-        sm: "var(--radius-sm)"
+        xl: "0px",
+        lg: "0px",
+        md: "0px",
+        sm: "0px"
       },
       fontFamily: {
         sans: ["var(--font-sans)"],

@@ -1,5 +1,9 @@
 import React from "react";
-import { HashRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, HashRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
+
+// Use BrowserRouter when running in a regular browser (for Figma capture compatibility).
+// The browser mock sets __isBrowserMock when window.ade is stubbed.
+const Router = (window as any).__adeBrowserMock ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { ProjectHomePage } from "../project/ProjectHomePage";
 import { LanesPage } from "../lanes/LanesPage";
@@ -117,7 +121,7 @@ export function App() {
   }, [theme]);
 
   return (
-    <HashRouter>
+    <Router>
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <Routes>
           <Route path="/startup" element={<Navigate to="/project" replace />} />
@@ -140,6 +144,6 @@ export function App() {
           </Route>
         </Routes>
       </div>
-    </HashRouter>
+    </Router>
   );
 }

@@ -125,7 +125,7 @@ export function FloatingPane({
             <button
               type="button"
               className={cn(
-                "flex h-4 w-4 items-center justify-center rounded-sm transition-colors",
+                "flex h-4 w-4 items-center justify-center transition-colors",
                 minimized
                   ? "text-accent"
                   : "text-muted-fg/50 hover:text-fg"

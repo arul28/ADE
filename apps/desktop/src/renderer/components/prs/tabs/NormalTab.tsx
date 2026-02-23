@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, Eye, Sparkle, Trash } from "@phosphor-icons/react";
+import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Clock, CalendarBlank, Plus, Minus, CheckCircle, XCircle, Circle, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   DeletePrResult,
@@ -32,25 +32,27 @@ const TILING_TREE: PaneSplit = {
   ],
 };
 
-function stateChip(state: PrSummary["state"]): { label: string; className: string } {
-  if (state === "draft") return { label: "draft", className: "text-purple-300 border border-purple-500/30 bg-purple-500/10" };
-  if (state === "open") return { label: "open", className: "text-blue-300 border border-blue-500/30 bg-blue-500/10" };
-  if (state === "merged") return { label: "merged", className: "text-emerald-300 border border-emerald-500/30 bg-emerald-500/10" };
-  return { label: "closed", className: "text-neutral-300 border border-neutral-500/30 bg-neutral-500/10" };
+/* ---- Badge helpers ---- */
+
+function stateChip(state: PrSummary["state"]): { label: string; color: string; bg: string; border: string } {
+  if (state === "draft") return { label: "DRAFT", color: "#A78BFA", bg: "#A78BFA18", border: "#A78BFA30" };
+  if (state === "open") return { label: "OPEN", color: "#3B82F6", bg: "#3B82F618", border: "#3B82F630" };
+  if (state === "merged") return { label: "MERGED", color: "#22C55E", bg: "#22C55E18", border: "#22C55E30" };
+  return { label: "CLOSED", color: "#A1A1AA", bg: "#A1A1AA18", border: "#A1A1AA30" };
 }
 
-function checksChip(status: PrSummary["checksStatus"]): { label: string; dotColor: string; className: string } {
-  if (status === "passing") return { label: "passing", dotColor: "bg-emerald-400", className: "text-emerald-300 border border-emerald-500/30 bg-emerald-500/10" };
-  if (status === "failing") return { label: "failing", dotColor: "bg-red-400", className: "text-red-300 border border-red-500/30 bg-red-500/10" };
-  if (status === "pending") return { label: "pending", dotColor: "bg-amber-400", className: "text-amber-300 border border-amber-500/30 bg-amber-500/10" };
-  return { label: "none", dotColor: "bg-neutral-400", className: "text-neutral-300 border border-neutral-500/30 bg-neutral-500/10" };
+function checksChip(status: PrSummary["checksStatus"]): { label: string; color: string; bg: string; border: string } {
+  if (status === "passing") return { label: "CHECKS", color: "#22C55E", bg: "#22C55E18", border: "#22C55E30" };
+  if (status === "failing") return { label: "CHECKS", color: "#EF4444", bg: "#EF444418", border: "#EF444430" };
+  if (status === "pending") return { label: "CHECKS", color: "#F59E0B", bg: "#F59E0B18", border: "#F59E0B30" };
+  return { label: "CHECKS", color: "#71717A", bg: "#71717A18", border: "#71717A30" };
 }
 
-function reviewsChip(status: PrSummary["reviewStatus"]): { label: string; className: string } {
-  if (status === "approved") return { label: "approved", className: "text-emerald-300 border border-emerald-500/30 bg-emerald-500/10" };
-  if (status === "changes_requested") return { label: "changes requested", className: "text-amber-300 border border-amber-500/30 bg-amber-500/10" };
-  if (status === "requested") return { label: "requested", className: "text-blue-300 border border-blue-500/30 bg-blue-500/10" };
-  return { label: "none", className: "text-neutral-300 border border-neutral-500/30 bg-neutral-500/10" };
+function reviewsChip(status: PrSummary["reviewStatus"]): { label: string; color: string; bg: string; border: string } {
+  if (status === "approved") return { label: "APPROVED", color: "#22C55E", bg: "#22C55E18", border: "#22C55E30" };
+  if (status === "changes_requested") return { label: "CHANGES", color: "#F59E0B", bg: "#F59E0B18", border: "#F59E0B30" };
+  if (status === "requested") return { label: "REVIEW", color: "#3B82F6", bg: "#3B82F618", border: "#3B82F630" };
+  return { label: "REVIEW", color: "#71717A", bg: "#71717A18", border: "#71717A30" };
 }
 
 function formatTimestamp(iso: string): string {
@@ -64,6 +66,65 @@ function normalizeBranchName(ref: string): string {
   const branch = trimmed.startsWith("refs/heads/") ? trimmed.slice("refs/heads/".length) : trimmed;
   return branch.startsWith("origin/") ? branch.slice("origin/".length) : branch;
 }
+
+/* ---- Inline style constants ---- */
+
+const LABEL_STYLE: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  fontFamily: "JetBrains Mono, monospace",
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  color: "#71717A",
+};
+
+function InlineBadge({ label, color, bg, border }: { label: string; color: string; bg: string; border: string }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "2px 8px",
+        fontSize: 10,
+        fontWeight: 700,
+        fontFamily: "JetBrains Mono, monospace",
+        textTransform: "uppercase",
+        letterSpacing: "1px",
+        color,
+        background: bg,
+        border: `1px solid ${border}`,
+        borderRadius: 0,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/* ---- Check status icon ---- */
+
+function CheckStatusIcon({ check }: { check: PrCheck }) {
+  if (check.status === "completed") {
+    if (check.conclusion === "success") return <CheckCircle size={14} weight="fill" style={{ color: "#22C55E" }} />;
+    if (check.conclusion === "failure") return <XCircle size={14} weight="fill" style={{ color: "#EF4444" }} />;
+    if (check.conclusion === "skipped" || check.conclusion === "cancelled") return <Circle size={14} weight="regular" style={{ color: "#71717A" }} />;
+    return <CheckCircle size={14} weight="regular" style={{ color: "#A1A1AA" }} />;
+  }
+  if (check.status === "in_progress") return <Circle size={14} weight="fill" style={{ color: "#F59E0B" }} />;
+  return <Circle size={14} weight="regular" style={{ color: "#71717A" }} />;
+}
+
+/* ---- Review status label ---- */
+
+function reviewStateLabel(state: PrReview["state"]): { label: string; color: string } {
+  if (state === "approved") return { label: "APPROVED", color: "#22C55E" };
+  if (state === "changes_requested") return { label: "CHANGES REQUESTED", color: "#F59E0B" };
+  if (state === "commented") return { label: "COMMENTED", color: "#3B82F6" };
+  if (state === "dismissed") return { label: "DISMISSED", color: "#71717A" };
+  return { label: "PENDING", color: "#A1A1AA" };
+}
+
+/* ---- Props ---- */
 
 type NormalTabProps = {
   prs: PrWithConflicts[];
@@ -135,37 +196,64 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
       title: "Normal PRs",
       bodyClassName: "overflow-auto",
       children: (
-        <div className="p-2 space-y-1">
+        <div style={{ background: "#0F0D14", minHeight: "100%" }}>
+          {/* Panel header label */}
+          <div style={{ padding: "14px 16px 8px 16px" }}>
+            <span style={LABEL_STYLE}>NORMAL PRS</span>
+          </div>
+
           {!prs.length ? (
-            <EmptyState title="No normal PRs" description="Create a PR from a lane or link an existing GitHub PR." />
+            <div style={{ padding: "16px" }}>
+              <EmptyState title="No normal PRs" description="Create a PR from a lane or link an existing GitHub PR." />
+            </div>
           ) : (
-            <div className="flex flex-col gap-0.5">
+            <div style={{ display: "flex", flexDirection: "column" }}>
               {prs.map((pr) => {
                 const laneName = laneById.get(pr.laneId)?.name ?? pr.laneId;
                 const isSelected = pr.id === selectedPrId;
+                const sc = stateChip(pr.state);
+                const cc = checksChip(pr.checksStatus);
                 return (
                   <button
                     key={pr.id}
                     type="button"
-                    className={cn(
-                      "flex w-full items-start justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-colors duration-100",
-                      isSelected
-                        ? "border-l-2 border-l-accent bg-accent/8"
-                        : "border-l-2 border-l-transparent hover:bg-card/40"
-                    )}
                     onClick={() => onSelectPr(pr.id)}
+                    style={{
+                      display: "flex",
+                      width: "100%",
+                      alignItems: "flex-start",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      padding: "10px 14px",
+                      textAlign: "left",
+                      fontSize: 12,
+                      border: "none",
+                      borderLeft: isSelected ? "3px solid #A78BFA" : "3px solid transparent",
+                      background: isSelected ? "#A78BFA12" : "transparent",
+                      cursor: "pointer",
+                      borderBottom: "1px solid #1E1B26",
+                      transition: "background 100ms",
+                    }}
+                    onMouseEnter={(e) => { if (!isSelected) (e.currentTarget as HTMLButtonElement).style.background = "#13101A"; }}
+                    onMouseLeave={(e) => { if (!isSelected) (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] text-muted-fg/70">#{pr.githubPrNumber}</span>
-                        <span className="truncate font-semibold text-fg">{pr.title}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#71717A" }}>
+                          #{pr.githubPrNumber}
+                        </span>
+                        <span style={{ fontWeight: 600, color: "#FAFAFA", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {pr.title}
+                        </span>
                       </div>
-                      <div className="mt-1 text-[11px] text-muted-fg/75 truncate">{laneName}</div>
+                      <div style={{ marginTop: 4, fontSize: 11, color: "#71717A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {laneName}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, marginTop: 2 }}>
                       <PrConflictBadge riskLevel={pr.conflictAnalysis?.riskLevel ?? null} overlappingFileCount={pr.conflictAnalysis?.overlapCount} />
-                      <Chip className={cn("text-[11px] px-1.5", checksChip(pr.checksStatus).className)}>{checksChip(pr.checksStatus).label}</Chip>
-                      <Chip className={cn("text-[11px] px-1.5", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
+                      <InlineBadge {...cc} />
+                      <InlineBadge {...sc} />
                     </div>
                   </button>
                 );
@@ -180,126 +268,434 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
       icon: Eye,
       bodyClassName: "overflow-auto",
       children: selectedPr ? (
-        <div className="p-4 space-y-5">
-          {/* Header */}
-          <div className="rounded-lg bg-card/30 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-lg text-muted-fg/70">#{selectedPr.githubPrNumber}</span>
-                  <span className="text-lg font-bold text-fg truncate">{selectedPr.title}</span>
+        <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 20, background: "#0F0D14" }}>
+
+          {/* ===== TOP HEADER CARD ===== */}
+          <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 16, color: "#71717A" }}>
+                    #{selectedPr.githubPrNumber}
+                  </span>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: "#FAFAFA", fontFamily: "Space Grotesk, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {selectedPr.title}
+                  </span>
                 </div>
-                <div className="mt-1 text-xs text-muted-fg/70 font-mono">{selectedPr.repoOwner}/{selectedPr.repoName}</div>
+                <div style={{ marginTop: 6, fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#71717A" }}>
+                  {selectedPr.repoOwner}/{selectedPr.repoName}
+                </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Chip className={cn("text-xs px-2", stateChip(selectedPr.state).className)}>{stateChip(selectedPr.state).label}</Chip>
-                <Chip className={cn("text-xs px-2", checksChip(selectedPr.checksStatus).className)}>{checksChip(selectedPr.checksStatus).label}</Chip>
-                <Chip className={cn("text-xs px-2", reviewsChip(selectedPr.reviewStatus).className)}>{reviewsChip(selectedPr.reviewStatus).label}</Chip>
-              </div>
-            </div>
-          </div>
-
-          {/* Metadata */}
-          <div className="rounded-lg bg-card/30 p-4 space-y-3">
-            <div className="text-xs font-medium text-muted-fg/80">PR Metadata</div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                <div className="text-muted-fg/70">Base</div>
-                <div className="font-mono text-fg">{selectedPr.baseBranch}</div>
-              </div>
-              <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                <div className="text-muted-fg/70">Head</div>
-                <div className="font-mono text-fg">{selectedPr.headBranch}</div>
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-4">
-              <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                <div className="text-muted-fg/70">Additions</div>
-                <div className="font-mono text-emerald-300">+{selectedPr.additions}</div>
-              </div>
-              <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                <div className="text-muted-fg/70">Deletions</div>
-                <div className="font-mono text-red-300">-{selectedPr.deletions}</div>
-              </div>
-              <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                <div className="text-muted-fg/70">Created</div>
-                <div className="text-fg tabular-nums">{formatTimestamp(selectedPr.createdAt)}</div>
-              </div>
-              <div className="bg-muted/15 rounded-md p-2.5 text-xs">
-                <div className="text-muted-fg/70">Updated</div>
-                <div className="text-fg tabular-nums">{formatTimestamp(selectedPr.updatedAt)}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                <InlineBadge {...stateChip(selectedPr.state)} />
+                <InlineBadge {...checksChip(selectedPr.checksStatus)} />
+                <InlineBadge {...reviewsChip(selectedPr.reviewStatus)} />
               </div>
             </div>
           </div>
 
-          {/* GitHub Signals - horizontal row */}
-          <div className="rounded-lg bg-card/30 p-4 space-y-3">
-            <div className="text-xs font-medium text-muted-fg/80">GitHub Signals</div>
-            {detailBusy ? <div className="text-xs text-muted-fg">Loading...</div> : null}
-            <div className="flex items-center gap-4 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="text-muted-fg/70">Mergeable</span>
-                <span className={cn("font-semibold", detailStatus?.isMergeable ? "text-emerald-300" : "text-red-300")}>
-                  {detailStatus ? (detailStatus.isMergeable ? "yes" : "no") : "unknown"}
-                </span>
+          {/* ===== PR METADATA ===== */}
+          <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 20 }}>
+            <div style={{ ...LABEL_STYLE, marginBottom: 14 }}>PR METADATA</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <div style={{ background: "#0C0A10", padding: 12 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>BASE</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#FAFAFA", display: "flex", alignItems: "center", gap: 6 }}>
+                  <GitBranch size={14} style={{ color: "#A78BFA" }} />
+                  {selectedPr.baseBranch}
+                </div>
               </div>
-              <span className="text-border/40">|</span>
-              <div className="flex items-center gap-2">
-                <span className="text-muted-fg/70">Conflicts</span>
-                <span className={cn("font-semibold", detailStatus?.mergeConflicts ? "text-red-300" : "text-emerald-300")}>
-                  {detailStatus ? (detailStatus.mergeConflicts ? "yes" : "no") : "unknown"}
-                </span>
+              <div style={{ background: "#0C0A10", padding: 12 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>HEAD</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#FAFAFA", display: "flex", alignItems: "center", gap: 6 }}>
+                  <GitBranch size={14} style={{ color: "#A78BFA" }} />
+                  {selectedPr.headBranch}
+                </div>
               </div>
-              <span className="text-border/40">|</span>
-              <div className="flex items-center gap-2">
-                <span className="text-muted-fg/70">Behind base</span>
-                <span className={cn("font-semibold", (detailStatus?.behindBaseBy ?? 0) > 0 ? "text-amber-300" : "text-fg")}>
-                  {detailStatus?.behindBaseBy ?? 0}
-                </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+              <div style={{ background: "#0C0A10", padding: 12 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>CREATED</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#FAFAFA", fontVariantNumeric: "tabular-nums" }}>
+                  {formatTimestamp(selectedPr.createdAt)}
+                </div>
+              </div>
+              <div style={{ background: "#0C0A10", padding: 12 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>UPDATED</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#FAFAFA", fontVariantNumeric: "tabular-nums" }}>
+                  {formatTimestamp(selectedPr.updatedAt)}
+                </div>
+              </div>
+              <div style={{ background: "#0C0A10", padding: 12 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>ADDITIONS</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#22C55E", display: "flex", alignItems: "center", gap: 4 }}>
+                  <Plus size={12} weight="bold" />
+                  {selectedPr.additions}
+                </div>
+              </div>
+              <div style={{ background: "#0C0A10", padding: 12 }}>
+                <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>DELETIONS</div>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#EF4444", display: "flex", alignItems: "center", gap: 4 }}>
+                  <Minus size={12} weight="bold" />
+                  {selectedPr.deletions}
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Actions - clean button row */}
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="primary" onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}>Open on GitHub</Button>
-              <Button size="sm" variant="outline" onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selectedPr.laneId)}`)}>View lane</Button>
-              <Button size="sm" variant="outline" disabled={actionBusy} onClick={() => setResolverOpen(true)}>
-                <Sparkle size={14} weight="regular" className="mr-1.5" />Resolve with AI
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setDeleteConfirm(true)} className="text-red-300 hover:text-red-200 hover:border-red-500/40">
-                <Trash size={14} weight="regular" className="mr-1.5" />Remove PR
-              </Button>
+          {/* ===== GITHUB SIGNALS ===== */}
+          <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 20 }}>
+            <div style={{ ...LABEL_STYLE, marginBottom: 14 }}>GITHUB SIGNALS</div>
+            {detailBusy ? (
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#71717A" }}>Loading...</div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+                {/* Mergeable */}
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "10px 0" }}>
+                  <span style={LABEL_STYLE}>MERGEABLE</span>
+                  <span style={{
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: detailStatus?.isMergeable ? "#22C55E" : detailStatus ? "#EF4444" : "#71717A",
+                  }}>
+                    {detailStatus ? (detailStatus.isMergeable ? "YES" : "NO") : "---"}
+                  </span>
+                </div>
+                <div style={{ width: 1, height: 36, background: "#1E1B26" }} />
+                {/* Conflicts */}
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "10px 0" }}>
+                  <span style={LABEL_STYLE}>CONFLICTS</span>
+                  <span style={{
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: detailStatus?.mergeConflicts ? "#EF4444" : detailStatus ? "#22C55E" : "#71717A",
+                  }}>
+                    {detailStatus ? (detailStatus.mergeConflicts ? "YES" : "NO") : "---"}
+                  </span>
+                </div>
+                <div style={{ width: 1, height: 36, background: "#1E1B26" }} />
+                {/* Behind base */}
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "10px 0" }}>
+                  <span style={LABEL_STYLE}>BEHIND BASE</span>
+                  <span style={{
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: (detailStatus?.behindBaseBy ?? 0) > 0 ? "#F59E0B" : detailStatus ? "#FAFAFA" : "#71717A",
+                  }}>
+                    {detailStatus?.behindBaseBy ?? 0}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ===== CI CHECKS ===== */}
+          <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 20 }}>
+            <div style={{ ...LABEL_STYLE, marginBottom: 14 }}>CI CHECKS</div>
+            {detailBusy ? (
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#71717A" }}>Loading...</div>
+            ) : detailChecks.length === 0 ? (
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#52525B" }}>No checks found</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                {detailChecks.map((check, idx) => (
+                  <div
+                    key={`${check.name}-${idx}`}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "8px 0",
+                      borderBottom: idx < detailChecks.length - 1 ? "1px solid #1E1B26" : "none",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <CheckStatusIcon check={check} />
+                      <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#FAFAFA" }}>
+                        {check.name}
+                      </span>
+                    </div>
+                    <span style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      fontFamily: "JetBrains Mono, monospace",
+                      textTransform: "uppercase",
+                      letterSpacing: "1px",
+                      color: check.conclusion === "success" ? "#22C55E"
+                        : check.conclusion === "failure" ? "#EF4444"
+                        : check.status === "in_progress" ? "#F59E0B"
+                        : "#71717A",
+                    }}>
+                      {check.conclusion ?? check.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ===== REVIEWS ===== */}
+          <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 20 }}>
+            <div style={{ ...LABEL_STYLE, marginBottom: 14 }}>REVIEWS</div>
+            {detailBusy ? (
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#71717A" }}>Loading...</div>
+            ) : detailReviews.length === 0 ? (
+              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#52525B" }}>No reviews yet</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                {detailReviews.map((review, idx) => {
+                  const rs = reviewStateLabel(review.state);
+                  return (
+                    <div
+                      key={`${review.reviewer}-${idx}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "8px 0",
+                        borderBottom: idx < detailReviews.length - 1 ? "1px solid #1E1B26" : "none",
+                      }}
+                    >
+                      <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#FAFAFA" }}>
+                        {review.reviewer}
+                      </span>
+                      <span style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        fontFamily: "JetBrains Mono, monospace",
+                        textTransform: "uppercase",
+                        letterSpacing: "1px",
+                        color: rs.color,
+                      }}>
+                        {rs.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ===== ACTION BAR ===== */}
+          <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 16 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              {/* Merge button - green primary when PR is open */}
+              {(selectedPr.state === "open" || selectedPr.state === "draft") && (
+                <button
+                  type="button"
+                  disabled={actionBusy || selectedPr.state !== "open"}
+                  onClick={() => void handleMerge()}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    height: 32,
+                    padding: "0 14px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    fontFamily: "JetBrains Mono, monospace",
+                    textTransform: "uppercase",
+                    letterSpacing: "1px",
+                    color: "#0F0D14",
+                    background: "#22C55E",
+                    border: "none",
+                    cursor: actionBusy || selectedPr.state !== "open" ? "not-allowed" : "pointer",
+                    opacity: actionBusy || selectedPr.state !== "open" ? 0.4 : 1,
+                    transition: "opacity 100ms",
+                  }}
+                >
+                  <GitMerge size={14} weight="bold" />
+                  {actionBusy ? "MERGING..." : "MERGE PR"}
+                </button>
+              )}
+
+              {/* View Diff / Open on GitHub */}
+              <button
+                type="button"
+                onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 32,
+                  padding: "0 14px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "JetBrains Mono, monospace",
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  color: "#FAFAFA",
+                  background: "transparent",
+                  border: "1px solid #27272A",
+                  cursor: "pointer",
+                }}
+              >
+                <Eye size={14} weight="regular" />
+                VIEW DIFF
+              </button>
+
+              {/* View lane */}
+              <button
+                type="button"
+                onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selectedPr.laneId)}`)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 32,
+                  padding: "0 14px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "JetBrains Mono, monospace",
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  color: "#FAFAFA",
+                  background: "transparent",
+                  border: "1px solid #27272A",
+                  cursor: "pointer",
+                }}
+              >
+                <ArrowRight size={14} weight="regular" />
+                VIEW LANE
+              </button>
+
+              {/* Rerun with AI */}
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setResolverOpen(true)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 32,
+                  padding: "0 14px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "JetBrains Mono, monospace",
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  color: "#A78BFA",
+                  background: "transparent",
+                  border: "1px solid #A78BFA30",
+                  cursor: actionBusy ? "not-allowed" : "pointer",
+                  opacity: actionBusy ? 0.4 : 1,
+                }}
+              >
+                <Sparkle size={14} weight="regular" />
+                RERUN WITH AI
+              </button>
+
+              {/* Remove PR - danger */}
+              <button
+                type="button"
+                onClick={() => setDeleteConfirm(true)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 32,
+                  padding: "0 14px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "JetBrains Mono, monospace",
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  color: "#EF4444",
+                  background: "transparent",
+                  border: "1px solid #EF444430",
+                  cursor: "pointer",
+                  marginLeft: "auto",
+                }}
+              >
+                <Trash size={14} weight="regular" />
+                REMOVE PR
+              </button>
             </div>
-            {deleteConfirm ? (
-              <div className="bg-red-500/5 rounded-lg p-3 space-y-2.5">
-                <div className="text-xs font-medium text-red-200">Remove this PR from ADE?</div>
-                <label className="flex items-center gap-1.5 text-xs text-muted-fg cursor-pointer">
-                  <input type="checkbox" checked={deleteCloseGh} onChange={(e) => setDeleteCloseGh(e.target.checked)} className="rounded" />
+
+            {/* Delete confirmation */}
+            {deleteConfirm && (
+              <div style={{ marginTop: 12, background: "#EF444408", border: "1px solid #EF444420", padding: 14 }}>
+                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, fontWeight: 600, color: "#EF4444", marginBottom: 10 }}>
+                  Remove this PR from ADE?
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: "#A1A1AA", cursor: "pointer", marginBottom: 10 }}>
+                  <input type="checkbox" checked={deleteCloseGh} onChange={(e) => setDeleteCloseGh(e.target.checked)} />
                   Also close on GitHub
                 </label>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="outline" disabled={deleteBusy} onClick={() => void handleDelete()} className="text-red-300 border-red-500/40 hover:bg-red-500/15">
-                    {deleteBusy ? "Removing..." : "Confirm Remove"}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => setDeleteConfirm(false)}>Cancel</Button>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    disabled={deleteBusy}
+                    onClick={() => void handleDelete()}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      height: 28,
+                      padding: "0 12px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      fontFamily: "JetBrains Mono, monospace",
+                      textTransform: "uppercase",
+                      letterSpacing: "1px",
+                      color: "#EF4444",
+                      background: "transparent",
+                      border: "1px solid #EF444440",
+                      cursor: deleteBusy ? "not-allowed" : "pointer",
+                      opacity: deleteBusy ? 0.4 : 1,
+                    }}
+                  >
+                    {deleteBusy ? "REMOVING..." : "CONFIRM REMOVE"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirm(false)}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      height: 28,
+                      padding: "0 12px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      fontFamily: "JetBrains Mono, monospace",
+                      textTransform: "uppercase",
+                      letterSpacing: "1px",
+                      color: "#A1A1AA",
+                      background: "transparent",
+                      border: "1px solid #27272A",
+                      cursor: "pointer",
+                    }}
+                  >
+                    CANCEL
+                  </button>
                 </div>
               </div>
-            ) : null}
-            {(selectedPr.state === "open" || selectedPr.state === "draft") ? (
-              <div className="flex items-center gap-2 pt-1">
-                <Button size="sm" variant="primary" disabled={actionBusy || selectedPr.state !== "open"} onClick={() => void handleMerge()}>
-                  {actionBusy ? "Merging..." : "Merge PR"}
-                </Button>
+            )}
+
+            {/* Error display */}
+            {actionError && (
+              <div style={{ marginTop: 10, background: "#EF444408", border: "1px solid #EF444420", padding: "8px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#EF4444" }}>
+                {actionError}
               </div>
-            ) : null}
-            {actionError ? <div className="bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-200">{actionError}</div> : null}
-            {actionResult ? (
-              <div className={cn("rounded-lg px-3 py-2 text-xs", actionResult.success ? "bg-emerald-500/8 text-emerald-200" : "bg-red-500/5 text-red-200")}>
+            )}
+
+            {/* Success/failure result */}
+            {actionResult && (
+              <div style={{
+                marginTop: 10,
+                background: actionResult.success ? "#22C55E08" : "#EF444408",
+                border: `1px solid ${actionResult.success ? "#22C55E20" : "#EF444420"}`,
+                padding: "8px 12px",
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 11,
+                color: actionResult.success ? "#22C55E" : "#EF4444",
+              }}>
                 {actionResult.success ? `Merged PR #${actionResult.prNumber}` : `Failed: ${actionResult.error ?? "unknown"}`}
               </div>
-            ) : null}
+            )}
           </div>
 
           <ResolverTerminalModal
@@ -313,7 +709,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
           />
         </div>
       ) : (
-        <div className="flex h-full items-center justify-center">
+        <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", background: "#0F0D14" }}>
           <EmptyState title="No PR selected" description="Select a PR to inspect checks, comments, and merge workflow." />
         </div>
       ),

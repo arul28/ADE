@@ -1,6 +1,5 @@
 import React from "react";
 import { ArrowsDownUp, GitMerge, GitPullRequest, ListNumbers, Plus, ArrowsClockwise } from "@phosphor-icons/react";
-import { motion } from "motion/react";
 import type { MergeMethod, PrMergeContext, PrWithConflicts } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -14,11 +13,11 @@ import { CreatePrModal } from "./CreatePrModal";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
-const TAB_DEFS: Array<{ id: PrTab; label: string; icon: React.ElementType }> = [
-  { id: "normal", label: "Normal", icon: GitPullRequest },
-  { id: "queue", label: "Queue", icon: ListNumbers },
-  { id: "integration", label: "Integration", icon: GitMerge },
-  { id: "rebase", label: "Rebase", icon: ArrowsDownUp },
+const TAB_DEFS: Array<{ id: PrTab; num: string; label: string; icon: React.ElementType }> = [
+  { id: "normal", num: "01", label: "NORMAL", icon: GitPullRequest },
+  { id: "queue", num: "02", label: "QUEUE", icon: ListNumbers },
+  { id: "integration", num: "03", label: "INTEGRATION", icon: GitMerge },
+  { id: "rebase", num: "04", label: "REBASE", icon: ArrowsDownUp },
 ];
 
 function classifyPr(pr: PrWithConflicts, ctx: PrMergeContext | null): "normal" | "queue" | "integration" {
@@ -82,38 +81,45 @@ function PRsPageInner() {
   // Show loading skeleton on initial load (no cached PRs yet)
   if (loading && prs.length === 0) {
     return (
-      <div className="flex h-full min-w-0 flex-col bg-bg items-center justify-center gap-3">
-        <div className="animate-pulse flex flex-col items-center gap-2">
-          <div className="h-4 w-48 rounded bg-muted/30" />
-          <div className="h-3 w-32 rounded bg-muted/20" />
-          <div className="mt-4 grid gap-2 w-72">
-            <div className="h-10 rounded-lg bg-muted/15" />
-            <div className="h-10 rounded-lg bg-muted/15" />
-            <div className="h-10 rounded-lg bg-muted/15" />
+      <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
+        <div className="flex flex-col items-center justify-center flex-1 gap-3">
+          <div className="animate-pulse flex flex-col items-center gap-2">
+            <div className="h-4 w-48 bg-[#1E1B26]" />
+            <div className="h-3 w-32 bg-[#1E1B26]/60" />
+            <div className="mt-4 grid gap-2 w-72">
+              <div className="h-10 bg-[#13101A]" />
+              <div className="h-10 bg-[#13101A]" />
+              <div className="h-10 bg-[#13101A]" />
+            </div>
           </div>
+          <div className="text-[10px] font-mono uppercase tracking-[1px] text-[#71717A]">LOADING PRS...</div>
         </div>
-        <div className="text-xs text-muted-fg/60">Loading PRs...</div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-bg">
-      {/* Header - soft gradient fade instead of rigid border */}
-      <div className="relative flex items-center gap-5 px-5 py-3">
-        {/* Subtle gradient bottom edge */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-border/25 to-transparent" />
-
-        <div className="flex items-center gap-2.5">
-          <div className="text-sm font-bold text-fg tracking-tight">PRs</div>
-          <span className="text-xs text-muted-fg/50 tabular-nums">{prs.length} linked</span>
+    <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
+      {/* Header — 64px, industrial design */}
+      <div className="flex items-center gap-6 h-16 px-6 shrink-0" style={{ borderBottom: "1px solid #1E1B26" }}>
+        {/* Title block */}
+        <div className="flex items-center gap-3">
+          <GitPullRequest size={18} weight="bold" className="text-[#A78BFA]" />
+          <span className="text-[16px] font-bold tracking-[-0.3px] text-[#FAFAFA]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+            PULL REQUESTS
+          </span>
+          <span
+            className="px-2.5 py-1 text-[9px] font-mono font-bold uppercase tracking-[1px] text-[#A78BFA]"
+            style={{ background: "#A78BFA18", border: "1px solid #A78BFA30" }}
+          >
+            {prs.length} LINKED
+          </span>
         </div>
 
-        {/* Floating tab bar - no card wrapper */}
-        <div role="tablist" aria-label="PR categories" className="flex items-center gap-1">
+        {/* Tab bar — numbered tabs */}
+        <div role="tablist" aria-label="PR categories" className="flex items-center gap-0.5">
           {TAB_DEFS.map((tab) => {
             const isActive = activeTab === tab.id;
-            const Icon = tab.icon;
             const count = tabCounts[tab.id];
             return (
               <button
@@ -123,68 +129,78 @@ function PRsPageInner() {
                 aria-selected={isActive}
                 aria-controls={`pr-tabpanel-${tab.id}`}
                 id={`pr-tab-${tab.id}`}
-                className={cn(
-                  "relative px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-1.5",
-                  isActive
-                    ? "text-accent"
-                    : "text-muted-fg hover:text-fg hover:bg-muted/25",
-                )}
+                className="relative flex items-center gap-2 px-4 py-2.5 text-[10px] font-mono font-bold uppercase tracking-[1px] transition-colors duration-150"
+                style={isActive ? {
+                  background: "#A78BFA18",
+                  borderLeft: "2px solid #A78BFA",
+                  color: "#FAFAFA",
+                } : {
+                  background: "transparent",
+                  borderLeft: "2px solid transparent",
+                  color: "#71717A",
+                }}
                 onClick={() => setActiveTab(tab.id)}
+                onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.color = "#A1A1AA"; }}
+                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.color = "#71717A"; }}
               >
-                {isActive && (
-                  <motion.div
-                    layoutId="pr-tab-indicator"
-                    className="absolute inset-0 rounded-md bg-accent/10"
-                    transition={{ type: "spring", bounce: 0.15, duration: 0.4 }}
-                  />
+                <span style={{ color: isActive ? "#A78BFA" : "#52525B" }}>{tab.num}</span>
+                <span>{tab.label}</span>
+                {count > 0 && (
+                  <span
+                    className="tabular-nums text-[9px] min-w-[16px] text-center px-1.5 py-0.5"
+                    style={isActive ? {
+                      background: "#A78BFA30",
+                      color: "#A78BFA",
+                    } : {
+                      background: "#27272A",
+                      color: "#71717A",
+                    }}
+                  >
+                    {count}
+                  </span>
                 )}
-                <span className="relative z-10 flex items-center gap-1.5">
-                  <Icon size={13} weight={isActive ? "fill" : "regular"} />
-                  <span>{tab.label}</span>
-                  {count > 0 && (
-                    <span className={cn(
-                      "tabular-nums text-[10px] min-w-[16px] text-center rounded-full px-1 py-px",
-                      isActive ? "bg-accent/20 text-accent" : "bg-muted/30 text-muted-fg/60",
-                    )}>
-                      {count}
-                    </span>
-                  )}
-                </span>
               </button>
             );
           })}
         </div>
 
-        <div className="ml-auto flex items-center gap-2.5">
+        {/* Right actions */}
+        <div className="ml-auto flex items-center gap-3">
           <select
             value={mergeMethod}
             onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
-            className="h-7 rounded-md bg-muted/20 px-2 text-xs text-muted-fg hover:text-fg transition-colors focus:outline-none focus:ring-1 focus:ring-accent/30"
+            className="h-8 px-3 text-[10px] font-mono font-bold uppercase tracking-[1px] text-[#A1A1AA] focus:outline-none transition-colors"
+            style={{ background: "#0C0A10", border: "1px solid #27272A" }}
             title="Default merge method"
           >
-            <option value="squash">squash</option>
-            <option value="merge">merge</option>
-            <option value="rebase">rebase</option>
+            <option value="squash">SQUASH</option>
+            <option value="merge">MERGE</option>
+            <option value="rebase">REBASE</option>
           </select>
-          <Button size="sm" variant="primary" onClick={() => setCreatePrOpen(true)}>
-            <Plus size={14} weight="bold" className="mr-0.5" />
-            Create PR
-          </Button>
+          <button
+            onClick={() => setCreatePrOpen(true)}
+            className="flex items-center gap-2 h-8 px-5 text-[10px] font-mono font-bold uppercase tracking-[1px] text-[#0F0D14] transition-all duration-100 hover:brightness-110 active:scale-[0.97]"
+            style={{ background: "#A78BFA" }}
+          >
+            <Plus size={14} weight="bold" />
+            NEW PR
+          </button>
           <button
             onClick={() => void refresh()}
             disabled={loading}
             className={cn(
-              "flex items-center justify-center h-7 w-7 rounded-md text-muted-fg hover:text-fg hover:bg-muted/25 transition-all duration-200",
-              loading && "animate-spin text-accent",
+              "flex items-center justify-center h-8 w-8 text-[#71717A] hover:text-[#FAFAFA] transition-colors duration-150",
+              loading && "animate-spin text-[#A78BFA]",
             )}
+            style={{ border: "1px solid #27272A" }}
             title="Refresh"
           >
-            <ArrowsClockwise size={14} weight="regular" />
+            <ArrowsClockwise size={14} weight="bold" />
           </button>
         </div>
       </div>
 
-      {/* Active tab */}
+      {/* Active tab panel */}
       {activeTab === "normal" && (
         <div role="tabpanel" id="pr-tabpanel-normal" aria-labelledby="pr-tab-normal" className="min-h-0 flex-1">
           <NormalTab
