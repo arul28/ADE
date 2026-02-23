@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Warning as AlertTriangle,
   BookOpenText,
+  ArrowSquareOut,
   CaretDown as ChevronDown,
   CaretRight as ChevronRight,
   FileZip as FileArchive,
@@ -30,6 +31,7 @@ import type {
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
+import { LaneTerminalsPanel } from "../lanes/LaneTerminalsPanel";
 import { useAppStore } from "../../state/appStore";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
@@ -71,6 +73,42 @@ type TextPromptState = {
   validate?: (value: string) => string | null;
   resolve: (value: string | null) => void;
 };
+
+type EditorViewMode = "edit" | "diff" | "conflict";
+type EditorThemeMode = "dark" | "light";
+type ExternalEditorTarget = "finder" | "vscode" | "cursor" | "zed";
+
+type FilesPageSessionState = {
+  workspaceId: string;
+  allowPrimaryEdit: boolean;
+  selectedNodePath: string | null;
+  openTabs: OpenTab[];
+  activeTabPath: string | null;
+  mode: EditorViewMode;
+  searchQuery: string;
+  editorTheme: EditorThemeMode;
+};
+
+const filesPageSessionByProject = new Map<string, FilesPageSessionState>();
+const FILES_EDITOR_THEME_KEY = "ade.files.editorTheme";
+
+function readStoredEditorTheme(): EditorThemeMode {
+  try {
+    const raw = window.localStorage.getItem(FILES_EDITOR_THEME_KEY);
+    if (raw === "light" || raw === "dark") return raw;
+  } catch {
+    // ignore
+  }
+  return "dark";
+}
+
+function persistEditorTheme(theme: EditorThemeMode): void {
+  try {
+    window.localStorage.setItem(FILES_EDITOR_THEME_KEY, theme);
+  } catch {
+    // ignore
+  }
+}
 
 let monacoInit: Promise<typeof import("monaco-editor")> | null = null;
 
@@ -231,12 +269,12 @@ const FILES_TILING_TREE: PaneSplit = {
         children: [
           {
             node: { type: "pane", id: "editor" },
-            defaultSize: 65,
+            defaultSize: 68,
             minSize: 25
           },
           {
-            node: { type: "pane", id: "search" },
-            defaultSize: 35,
+            node: { type: "pane", id: "terminals" },
+            defaultSize: 32,
             minSize: 10
           }
         ]
@@ -251,32 +289,35 @@ export function FilesPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
+  const initialSession = filesPageSessionByProject.get(projectRootPath);
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
-  const [workspaceId, setWorkspaceId] = useState<string>("");
-  const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
+  const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(initialSession?.allowPrimaryEdit ?? false);
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
+  const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
   const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; key: string } | null>(null);
 
-  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
-  const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
-  const [mode, setMode] = useState<"edit" | "diff" | "conflict">("edit");
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
+  const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
+  const [mode, setMode] = useState<EditorViewMode>(initialSession?.mode ?? "edit");
+  const [editorTheme, setEditorTheme] = useState<EditorThemeMode>(initialSession?.editorTheme ?? readStoredEditorTheme());
 
   const [quickOpen, setQuickOpen] = useState("");
   const [quickOpenResults, setQuickOpenResults] = useState<FilesQuickOpenItem[]>([]);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
 
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialSession?.searchQuery ?? "");
   const [searchResults, setSearchResults] = useState<FilesSearchTextMatch[]>([]);
-  const [showSearch, setShowSearch] = useState(false);
 
   const [resolvedConflictKeys, setResolvedConflictKeys] = useState<Set<string>>(new Set());
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<"loading" | "ready" | "failed">("loading");
   // PaneTilingLayout mounts panes async, so the editor host can appear after the first effect pass.
@@ -288,18 +329,78 @@ export function FilesPage() {
   const modelKeyRef = useRef<string | null>(null);
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
+  const currentProjectRootRef = useRef(projectRootPath);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const openInMenuRef = useRef<HTMLDivElement | null>(null);
   const setEditorHostRef = useCallback((node: HTMLDivElement | null) => {
     setEditorHostEl(node);
   }, []);
 
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
-  const activeDirty = Boolean(activeTab && activeTab.content !== activeTab.savedContent);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
+
+  useEffect(() => {
+    if (currentProjectRootRef.current === projectRootPath) return;
+    currentProjectRootRef.current = projectRootPath;
+    const session = filesPageSessionByProject.get(projectRootPath);
+    setWorkspaceId(session?.workspaceId ?? "");
+    setAllowPrimaryEdit(session?.allowPrimaryEdit ?? false);
+    setSelectedNodePath(session?.selectedNodePath ?? null);
+    setOpenTabs(session?.openTabs.map((tab) => ({ ...tab })) ?? []);
+    setActiveTabPath(session?.activeTabPath ?? null);
+    setMode(session?.mode ?? "edit");
+    setSearchQuery(session?.searchQuery ?? "");
+    setEditorTheme(session?.editorTheme ?? readStoredEditorTheme());
+  }, [projectRootPath]);
 
   const hasUnsavedTabs = useMemo(
     () => openTabs.some((tab) => tab.content !== tab.savedContent),
     [openTabs]
+  );
+
+  useEffect(() => {
+    filesPageSessionByProject.set(projectRootPath, {
+      workspaceId,
+      allowPrimaryEdit,
+      selectedNodePath,
+      openTabs: openTabs.map((tab) => ({ ...tab })),
+      activeTabPath,
+      mode,
+      searchQuery,
+      editorTheme
+    });
+  }, [projectRootPath, workspaceId, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
+
+  useEffect(() => {
+    persistEditorTheme(editorTheme);
+  }, [editorTheme]);
+
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      if (openInMenuRef.current && !openInMenuRef.current.contains(event.target as Node)) {
+        setOpenInMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, []);
+
+  const openActivePathInExternalTool = useCallback(
+    async (target: ExternalEditorTarget) => {
+      if (!activeWorkspace || !activeTabPath) return;
+      setOpenInMenuOpen(false);
+      try {
+        await window.ade.app.openPathInEditor({
+          rootPath: activeWorkspace.rootPath,
+          relativePath: activeTabPath,
+          target
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [activeWorkspace, activeTabPath]
   );
 
   const requestTextInput = useCallback(
@@ -629,7 +730,15 @@ export function FilesPage() {
     window.ade.files.listWorkspaces()
       .then((items) => {
         setWorkspaces(items);
-        setWorkspaceId((current) => current || items[0]?.id || "");
+        setWorkspaceId((current) => {
+          if (current && items.some((workspace) => workspace.id === current)) return current;
+          if (current) {
+            setOpenTabs([]);
+            setActiveTabPath(null);
+            setSelectedNodePath(null);
+          }
+          return items[0]?.id ?? "";
+        });
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
@@ -680,7 +789,7 @@ export function FilesPage() {
       if (e.key === "Escape") {
         setContextMenu(null);
         if (showQuickOpen) setShowQuickOpen(false);
-        if (showSearch) setShowSearch(false);
+        if (openInMenuOpen) setOpenInMenuOpen(false);
         return;
       }
 
@@ -704,7 +813,8 @@ export function FilesPage() {
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        setShowSearch(true);
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
         return;
       }
 
@@ -720,7 +830,7 @@ export function FilesPage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveActive, activeTabPath, closeTab, renamePath, selectedNodePath, showQuickOpen, showSearch]);
+  }, [saveActive, activeTabPath, closeTab, renamePath, selectedNodePath, showQuickOpen, openInMenuOpen]);
 
   useEffect(() => {
     if (!quickOpen.trim()) {
@@ -734,7 +844,7 @@ export function FilesPage() {
   }, [quickOpen, workspaceId, showQuickOpen]);
 
   useEffect(() => {
-    if (!showSearch || !searchQuery.trim()) {
+    if (!searchQuery.trim()) {
       setSearchResults([]);
       return;
     }
@@ -744,7 +854,7 @@ export function FilesPage() {
         .catch(() => setSearchResults([]));
     }, 150);
     return () => clearTimeout(timer);
-  }, [searchQuery, workspaceId, showSearch]);
+  }, [searchQuery, workspaceId]);
 
   useEffect(() => {
     if (mode !== "edit") return;
@@ -762,7 +872,8 @@ export function FilesPage() {
         automaticLayout: true,
         minimap: { enabled: true },
         fontSize: 13,
-        readOnly: !canEdit
+        readOnly: !canEdit,
+        theme: editorTheme === "light" ? "vs" : "vs-dark"
       });
       editorRef.current = editor;
       editor.onDidChangeModelContent(() => {
@@ -799,7 +910,13 @@ export function FilesPage() {
       modelKeyRef.current = null;
       editorRef.current = null;
     };
-  }, [mode, editorHostEl]);
+  }, [mode, editorHostEl, canEdit, editorTheme]);
+
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    monaco.editor.setTheme(editorTheme === "light" ? "vs" : "vs-dark");
+  }, [editorTheme]);
 
   useEffect(() => {
     if (!editorRef.current || mode !== "edit") return;
@@ -941,6 +1058,16 @@ export function FilesPage() {
   const breadcrumbs = activeTabPath ? activeTabPath.split("/") : [];
   const conflictHunks = activeTab ? parseConflictHunks(activeTab.content) : [];
   const laneIdForDiff = activeWorkspace?.laneId;
+  const hasConflictMarkers = conflictHunks.length > 0;
+  const activeContextNode = activeContextPath ? nodeByPath.get(activeContextPath) ?? null : null;
+  const activeContextChangeStatus = activeContextNode?.changeStatus ?? null;
+  const editorSurfaceClass = editorTheme === "light" ? "bg-white text-slate-900" : "bg-[#0f111a] text-[#d6deeb]";
+  const editorModeHint =
+    mode === "edit"
+      ? "Code view: edit the file directly."
+      : mode === "diff"
+        ? "Changes view: compare this file against unstaged, staged, or commit versions."
+        : "Merge view: resolve conflict markers in this file.";
 
   const applyConflictResolution = (hunk: ConflictHunk, choice: "ours" | "theirs" | "both") => {
     if (!activeTab) return;
@@ -985,8 +1112,55 @@ export function FilesPage() {
           </Button>
         </div>
       ),
-      bodyClassName: "overflow-auto",
-      children: renderTree(tree)
+      bodyClassName: "flex min-h-0 flex-col overflow-hidden",
+      children: (
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="border-b border-border/10 px-2 py-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border/15 bg-surface-recessed px-2">
+              <Search size={14} weight="regular" className="text-muted-fg" />
+              <input
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search in workspace (Ctrl/Cmd+Shift+F)"
+                className="h-7 w-full bg-transparent text-xs text-fg outline-none placeholder:text-muted-fg/50"
+              />
+              {searchQuery.trim() ? (
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-fg hover:text-fg"
+                  onClick={() => setSearchQuery("")}
+                >
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            <div className="mt-2 flex items-center justify-end">
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" onClick={() => setShowQuickOpen(true)}>
+                Quick Open
+              </Button>
+            </div>
+          </div>
+          {searchQuery.trim() ? (
+            <div className="max-h-[38%] shrink-0 overflow-auto border-b border-border/10 bg-card/30 p-1">
+              {searchResults.map((item, idx) => (
+                <button
+                  key={`${item.path}:${item.line}:${idx}`}
+                  className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-muted/40"
+                  onClick={() => {
+                    openFile(item.path).catch(() => {});
+                  }}
+                >
+                  <div className="truncate font-medium">{item.path}:{item.line}:{item.column}</div>
+                  <div className="truncate text-muted-fg">{item.preview}</div>
+                </button>
+              ))}
+              {!searchResults.length ? <div className="px-2 py-2 text-xs text-muted-fg">No matches</div> : null}
+            </div>
+          ) : null}
+          <div className="min-h-0 flex-1 overflow-auto">{renderTree(tree)}</div>
+        </div>
+      )
     },
     editor: {
       title: "Editor",
@@ -995,9 +1169,46 @@ export function FilesPage() {
       minimizable: true,
       headerActions: (
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("edit")}>Edit</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("diff")}>Diff</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("conflict")}>Conflict</Button>
+          <div className="inline-flex items-center gap-1 rounded-md border border-border/20 bg-card/40 p-0.5">
+            <Button
+              size="sm"
+              variant={mode === "edit" ? "primary" : "ghost"}
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setMode("edit")}
+              title="Code view for normal editing"
+            >
+              Code
+            </Button>
+            <Button
+              size="sm"
+              variant={mode === "diff" ? "primary" : "ghost"}
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setMode("diff")}
+              title={laneIdForDiff && activeTabPath ? "Changes view for this file" : "Select a lane workspace and open a file to view changes"}
+              disabled={!laneIdForDiff || !activeTabPath}
+            >
+              Changes
+            </Button>
+            <Button
+              size="sm"
+              variant={mode === "conflict" ? "primary" : "ghost"}
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setMode("conflict")}
+              title={hasConflictMarkers ? "Conflict resolution view" : "No conflict markers found in this file"}
+              disabled={!activeTabPath}
+            >
+              Merge
+            </Button>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => setEditorTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+            title="Toggle editor theme (light/dark)"
+          >
+            {editorTheme === "dark" ? "Light editor" : "Dark editor"}
+          </Button>
           <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => saveActive().catch(() => {})} disabled={!activeTab || !canEdit || activeTab.isBinary}>
             <Save size={12} weight="regular" className="mr-0.5" />
             Save
@@ -1025,16 +1236,28 @@ export function FilesPage() {
 
           {/* Breadcrumb + git actions */}
           <div className="flex items-center justify-between border-b border-border/10 px-3 py-1 text-xs text-muted-fg shrink-0">
-            <div>{breadcrumbs.length ? breadcrumbs.join(" > ") : "No file selected"}</div>
+            <div className="truncate">{breadcrumbs.length ? breadcrumbs.join(" > ") : "No file selected"}</div>
             <div className="flex items-center gap-2">
               {activeContextPath && activeContextNodeType === "file" && laneIdForDiff ? (
                 <>
-                  <Button size="sm" variant="ghost" onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Stage</Button>
-                  <Button size="sm" variant="ghost" onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Unstage</Button>
-                  <Button size="sm" variant="ghost" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Discard</Button>
+                  <span className="text-[11px] text-muted-fg/80">
+                    Git for file{activeContextChangeStatus ? ` (${activeContextChangeStatus})` : ""}
+                  </span>
+                  <Button size="sm" variant="ghost" title="Add this file's current changes to the next commit (git add)." onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+                    Add to Commit
+                  </Button>
+                  <Button size="sm" variant="ghost" title="Remove this file from staged changes (git reset)." onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+                    Remove from Commit
+                  </Button>
+                  <Button size="sm" variant="ghost" title="Discard unstaged changes in this file. This cannot be undone." onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+                    Discard Local
+                  </Button>
                 </>
               ) : null}
             </div>
+          </div>
+          <div className="shrink-0 border-b border-border/10 px-3 py-1 text-[11px] text-muted-fg">
+            {editorModeHint}
           </div>
 
           {/* Editor content */}
@@ -1055,13 +1278,13 @@ export function FilesPage() {
                         prev.map((tab) => (tab.path === activeTab.path ? { ...tab, content: e.target.value } : tab))
                       );
                     }}
-                    className="h-full w-full resize-none bg-bg p-3 font-mono text-xs outline-none"
+                    className={cx("h-full w-full resize-none p-3 font-mono text-xs outline-none", editorSurfaceClass)}
                   />
                 ) : null}
               </div>
             ) : mode === "diff" ? (
               laneIdForDiff && activeTabPath ? (
-                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} />
+                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} theme={editorTheme} />
               ) : (
                 <div className="p-4 text-sm text-muted-fg">Diff mode requires a lane workspace and an open file.</div>
               )
@@ -1099,7 +1322,7 @@ export function FilesPage() {
                       if (!activeTab) return;
                       setOpenTabs((prev) => prev.map((tab) => (tab.path === activeTab.path ? { ...tab, content: e.target.value } : tab)));
                     }}
-                    className="h-full w-full resize-none bg-bg p-3 font-mono text-xs outline-none"
+                    className={cx("h-full w-full resize-none p-3 font-mono text-xs outline-none", editorSurfaceClass)}
                   />
                 </div>
               </div>
@@ -1108,56 +1331,37 @@ export function FilesPage() {
         </div>
       )
     },
-    search: {
-      title: "Search",
-      icon: Search,
-      meta: searchResults.length > 0 ? `${searchResults.length} results` : undefined,
+    terminals: {
+      title: "Terminals",
+      icon: TerminalSquare,
+      meta: laneIdForDiff ? `lane ${activeWorkspace?.name ?? ""}` : "Pick a lane workspace to run terminals",
       minimizable: true,
       headerActions: (
-        <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setShowQuickOpen(true)}>
-          Quick Open
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-5 px-1 text-[11px]"
+          onClick={() => {
+            if (!laneIdForDiff) return;
+            navigate(`/terminals?laneId=${encodeURIComponent(laneIdForDiff)}`);
+          }}
+          disabled={!laneIdForDiff}
+          title={laneIdForDiff ? "Open this lane in the dedicated Terminals tab" : "Select a lane workspace to open terminals"}
+        >
+          Open Tab
         </Button>
       ),
-      bodyClassName: "flex flex-col",
+      bodyClassName: "h-full overflow-hidden",
       children: (
-        <div className="flex flex-col h-full min-h-0 p-2">
-          <div className="flex items-center gap-2 rounded-lg border border-border/15 bg-surface-recessed px-2 shrink-0">
-            <Search size={14} weight="regular" className="text-muted-fg" />
-            <input
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                if (!showSearch) setShowSearch(true);
-              }}
-              placeholder="Search in files..."
-              className="h-7 w-full bg-transparent text-xs text-fg outline-none placeholder:text-muted-fg/50"
-            />
-          </div>
-          <div className="mt-2 flex-1 min-h-0 overflow-auto rounded-lg">
-            {searchResults.map((item, idx) => (
-              <button
-                key={`${item.path}:${item.line}:${idx}`}
-                className="block w-full px-2 py-1.5 text-left text-xs hover:bg-muted/40 rounded"
-                onClick={() => {
-                  openFile(item.path).catch(() => {});
-                }}
-              >
-                <div className="font-medium truncate">{item.path}:{item.line}:{item.column}</div>
-                <div className="text-muted-fg truncate">{item.preview}</div>
-              </button>
-            ))}
-            {searchQuery.trim() && !searchResults.length ? <div className="px-2 py-2 text-xs text-muted-fg">No matches</div> : null}
-            {!searchQuery.trim() ? <div className="px-2 py-2 text-xs text-muted-fg/60 italic">Type to search across files</div> : null}
-          </div>
-        </div>
+        <LaneTerminalsPanel overrideLaneId={laneIdForDiff ?? null} />
       )
     }
   }), [
     tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab,
-    breadcrumbs, mode, canEdit, editorStatus, laneIdForDiff, activeContextPath,
-    activeContextNodeType, searchQuery, searchResults, showSearch, conflictHunks,
+    breadcrumbs, mode, canEdit, editorStatus, laneIdForDiff, activeContextPath, activeContextChangeStatus,
+    activeContextNodeType, searchQuery, searchResults, conflictHunks, editorTheme, editorSurfaceClass, editorModeHint, hasConflictMarkers,
     resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
-    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen
+    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate
   ]);
 
   return (
@@ -1191,6 +1395,50 @@ export function FilesPage() {
               {allowPrimaryEdit ? "Disable edits" : "Trust and enable edits"}
             </Button>
           ) : null}
+          <div className="relative" ref={openInMenuRef}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setOpenInMenuOpen((prev) => !prev)}
+              disabled={!activeWorkspace || !activeTabPath}
+              title={activeTabPath ? "Open current file in an external app" : "Open a file first"}
+            >
+              <ArrowSquareOut size={12} weight="regular" />
+              Open in...
+            </Button>
+            {openInMenuOpen ? (
+              <div className="absolute right-0 top-full z-50 mt-1 min-w-[210px] rounded border border-border/50 bg-[--color-surface-overlay] p-0.5 shadow-float">
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60"
+                  onClick={() => void openActivePathInExternalTool("finder")}
+                >
+                  {revealLabel}
+                </button>
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60"
+                  onClick={() => void openActivePathInExternalTool("vscode")}
+                >
+                  Open in VS Code
+                </button>
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60"
+                  onClick={() => void openActivePathInExternalTool("cursor")}
+                >
+                  Open in Cursor
+                </button>
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60"
+                  onClick={() => void openActivePathInExternalTool("zed")}
+                >
+                  Open in Zed
+                </button>
+              </div>
+            ) : null}
+          </div>
           <Button size="sm" variant="outline" onClick={() => navigate("/lanes")}>Jump to Lanes</Button>
           <Button size="sm" variant="outline" onClick={() => navigate("/conflicts")}>Jump to Conflicts</Button>
         </div>
@@ -1234,7 +1482,7 @@ export function FilesPage() {
       {/* Context menu overlay */}
       {contextMenu ? (
         <div
-          className="fixed z-40 min-w-[190px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
+          className="fixed z-40 min-w-[190px] rounded-md border border-border/50 bg-card p-0.5 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
@@ -1247,9 +1495,9 @@ export function FilesPage() {
               })}>Open Diff</button>
               {laneIdForWorkspace ? (
                 <>
-                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => stagePath(contextMenu.nodePath))}>Stage</button>
-                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => unstagePath(contextMenu.nodePath))}>Unstage</button>
-                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => discardPath(contextMenu.nodePath))}>Discard</button>
+                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => stagePath(contextMenu.nodePath))}>Add to Commit</button>
+                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => unstagePath(contextMenu.nodePath))}>Remove from Commit</button>
+                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => discardPath(contextMenu.nodePath))}>Discard Local</button>
                 </>
               ) : null}
             </>
@@ -1257,7 +1505,9 @@ export function FilesPage() {
 
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
             setContextMenu(null);
-            navigator.clipboard.writeText(contextMenu.nodePath).catch(() => {});
+            window.ade.app.writeClipboardText(contextMenu.nodePath).catch((err) => {
+              setError(err instanceof Error ? err.message : String(err));
+            });
           }}>Copy Path</button>
           <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
             setContextMenu(null);
@@ -1350,7 +1600,7 @@ export function FilesPage() {
   );
 }
 
-function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
+function FilesDiffPanel({ laneId, path, theme }: { laneId: string; path: string; theme: EditorThemeMode }) {
   const [mode, setMode] = useState<"unstaged" | "staged" | "commit">("unstaged");
   const [diff, setDiff] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1410,9 +1660,9 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border/10 px-2 py-1">
-        <Button size="sm" variant="outline" onClick={() => setMode("unstaged")}>Unstaged</Button>
-        <Button size="sm" variant="outline" onClick={() => setMode("staged")}>Staged</Button>
-        <Button size="sm" variant="outline" onClick={() => setMode("commit")}>Commit</Button>
+        <Button size="sm" variant={mode === "unstaged" ? "primary" : "outline"} onClick={() => setMode("unstaged")}>Working Tree</Button>
+        <Button size="sm" variant={mode === "staged" ? "primary" : "outline"} onClick={() => setMode("staged")}>Staged</Button>
+        <Button size="sm" variant={mode === "commit" ? "primary" : "outline"} onClick={() => setMode("commit")}>Commit</Button>
 
         {mode === "commit" ? (
           <select
@@ -1432,7 +1682,7 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
       </div>
 
       {error ? <div className="p-3 text-xs text-red-400">{error}</div> : null}
-      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView diff={diff} className="h-full" /> : null}</div>
+      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView diff={diff} className="h-full" theme={theme} /> : null}</div>
     </div>
   );
 }
