@@ -63,6 +63,7 @@ export function createPrPollingService({
   let initialized = false;
   let consecutiveFailures = 0;
   let nextDelayOverrideMs: number | null = null;
+  let lastPrFingerprint = "";
 
   const lastByPrId = new Map<
     string,
@@ -100,12 +101,24 @@ export function createPrPollingService({
       if (existing.length === 0) {
         consecutiveFailures = 0;
         initialized = true;
-        onEvent({ type: "prs-updated", polledAt, prs: [] });
+        if (lastPrFingerprint !== "[]") {
+          onEvent({ type: "prs-updated", polledAt, prs: [] });
+          lastPrFingerprint = "[]";
+        }
         return;
       }
 
       const prs = await prService.refresh();
-      onEvent({ type: "prs-updated", polledAt, prs });
+
+      // Only notify the renderer when PR data actually changed —
+      // avoids unnecessary re-render cascades on every poll tick.
+      const fingerprint = JSON.stringify(
+        prs.map((p) => [p.id, p.state, p.checksStatus, p.reviewStatus, p.title, p.githubPrNumber, p.updatedAt])
+      );
+      if (fingerprint !== lastPrFingerprint) {
+        onEvent({ type: "prs-updated", polledAt, prs });
+        lastPrFingerprint = fingerprint;
+      }
 
       if (!initialized) {
         lastByPrId.clear();

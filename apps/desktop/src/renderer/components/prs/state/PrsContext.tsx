@@ -100,6 +100,11 @@ function readInitialTab(): PrTab {
   return "normal";
 }
 
+/** Shallow-compare two JSON-serializable values to avoid unnecessary re-renders. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<PrTab>(readInitialTab);
   const [prs, setPrs] = useState<PrWithConflicts[]>([]);
@@ -157,22 +162,31 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         }
       }),
     );
-    setMergeContextByPrId(contexts);
+    setMergeContextByPrId((prev) => (jsonEqual(prev, contexts) ? prev : contexts));
   }, []);
+
+  // Track whether the initial data load has completed
+  const initialLoadDone = React.useRef(false);
 
   // Core refresh (guarded against concurrent calls)
   const refresh = useCallback(async () => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
-    setLoading(true);
+    // Only show the loading indicator during the initial fetch —
+    // background refreshes should NOT flash loading state.
+    const isInitial = !initialLoadDone.current;
+    if (isInitial) setLoading(true);
     setError(null);
     try {
       const [prList, laneList] = await Promise.all([
         window.ade.prs.listWithConflicts(),
         window.ade.lanes.list(),
       ]);
-      setPrs(prList);
-      setLanes(laneList);
+
+      // Stable-reference updates: only replace state when data actually changed
+      // to avoid unnecessary re-render cascades in child components.
+      setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
+      setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
 
       // Clear selectedPrId if the PR no longer exists
       setSelectedPrId((prev) => {
@@ -185,6 +199,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+      initialLoadDone.current = true;
       refreshInFlight.current = false;
     }
   }, [loadMergeContexts]);
