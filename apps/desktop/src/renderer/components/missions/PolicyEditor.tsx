@@ -91,6 +91,13 @@ function detectPreset(policy: MissionExecutionPolicy): PresetKey {
 
 const selectClass = "h-7 rounded border border-border/30 bg-card px-1.5 text-xs text-fg outline-none focus:border-accent/40";
 
+const CODEX_MODELS = ["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-max", "codex-mini-latest", "o4-mini", "o3"];
+
+function isCodexModel(m?: string): boolean {
+  if (!m) return false;
+  return m === "codex" || CODEX_MODELS.includes(m);
+}
+
 function PhaseRow({
   label,
   mode,
@@ -98,6 +105,8 @@ function PhaseRow({
   onModeChange,
   model,
   onModelChange,
+  reasoningEffort,
+  onReasoningEffortChange,
   showModel
 }: {
   label: string;
@@ -106,8 +115,25 @@ function PhaseRow({
   onModeChange: (value: string) => void;
   model?: PhaseModelChoice;
   onModelChange?: (value: PhaseModelChoice) => void;
+  reasoningEffort?: string;
+  onReasoningEffortChange?: (value: string) => void;
   showModel: boolean;
 }) {
+  const codex = isCodexModel(model);
+  const thinkingLevels = codex
+    ? [
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+        { value: "extra_high", label: "Extra High" }
+      ]
+    : [
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+        { value: "max", label: "Max" }
+      ];
+
   return (
     <div className="flex items-center gap-2 py-1">
       <span className="w-24 shrink-0 text-xs text-muted-fg">{label}</span>
@@ -122,17 +148,41 @@ function PhaseRow({
       </select>
       {showModel && onModelChange ? (
         <select
-          className={cn(selectClass, "w-20")}
+          className={cn(selectClass, "w-28")}
           value={model ?? "codex"}
           onChange={(e) => onModelChange(e.target.value as PhaseModelChoice)}
         >
-          <option value="codex">Codex</option>
-          <option value="claude">Claude</option>
+          <optgroup label="Claude">
+            <option value="opus-4-6">Claude Opus 4.6</option>
+            <option value="sonnet-4-6">Claude Sonnet 4.6</option>
+            <option value="sonnet-4-5">Claude Sonnet 4.5</option>
+            <option value="haiku-4-5">Claude Haiku 4.5</option>
+          </optgroup>
+          <optgroup label="Codex">
+            <option value="gpt-5.3-codex">GPT 5.3 Codex</option>
+            <option value="gpt-5.2-codex">GPT 5.2 Codex</option>
+            <option value="gpt-5.1-codex-max">GPT 5.1 Codex Max</option>
+            <option value="codex-mini-latest">Codex Mini</option>
+            <option value="o4-mini">O4 Mini</option>
+            <option value="o3">O3</option>
+          </optgroup>
+        </select>
+      ) : (
+        <div className="w-28" />
+      )}
+      {showModel && onReasoningEffortChange ? (
+        <select
+          className={cn(selectClass, "w-20")}
+          value={reasoningEffort ?? "medium"}
+          onChange={(e) => onReasoningEffortChange(e.target.value)}
+        >
+          {thinkingLevels.map((lvl) => (
+            <option key={lvl.value} value={lvl.value}>{lvl.label}</option>
+          ))}
         </select>
       ) : (
         <div className="w-20" />
       )}
-      <div className="w-20 text-[11px] text-muted-fg">Dedicated</div>
     </div>
   );
 }
@@ -148,9 +198,10 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
 
   const updatePhase = useCallback(<K extends keyof MissionExecutionPolicy>(
     phase: K,
-    update: Partial<MissionExecutionPolicy[K]>
+    update: Partial<MissionExecutionPolicy[K] & Record<string, unknown>>
   ) => {
-    onChange({ ...value, [phase]: { ...value[phase], ...update } });
+    const prev = value[phase];
+    onChange({ ...value, [phase]: typeof prev === "object" && prev !== null ? { ...prev, ...update } : update });
   }, [value, onChange]);
 
   return (
@@ -177,8 +228,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
         <div className="flex items-center gap-2 pb-1 border-b border-border/10 mb-1">
           <span className="w-24 text-[11px] text-muted-fg font-medium">Phase</span>
           <span className="flex-1 text-[11px] text-muted-fg font-medium">Mode</span>
-          <span className="w-20 text-[11px] text-muted-fg font-medium">Model</span>
-          <span className="w-20 text-[11px] text-muted-fg font-medium">Worker</span>
+          <span className="w-28 text-[11px] text-muted-fg font-medium">Model</span>
+          <span className="w-20 text-[11px] text-muted-fg font-medium">Thinking</span>
         </div>
 
         <PhaseRow
@@ -192,6 +243,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={(v) => updatePhase("planning", { mode: v as PlanningPhaseMode })}
           model={value.planning.model}
           onModelChange={(v) => updatePhase("planning", { model: v })}
+          reasoningEffort={value.planning.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("planning", { reasoningEffort: v })}
           showModel={value.planning.mode !== "off"}
         />
 
@@ -202,6 +255,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={() => {}}
           model={value.implementation.model}
           onModelChange={(v) => updatePhase("implementation", { model: v })}
+          reasoningEffort={value.implementation.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("implementation", { reasoningEffort: v })}
           showModel
         />
 
@@ -216,6 +271,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={(v) => updatePhase("testing", { mode: v as TestingPhaseMode })}
           model={value.testing.model}
           onModelChange={(v) => updatePhase("testing", { model: v })}
+          reasoningEffort={value.testing.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("testing", { reasoningEffort: v })}
           showModel={value.testing.mode !== "none"}
         />
 
@@ -230,6 +287,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={(v) => updatePhase("validation", { mode: v as GatePhaseMode })}
           model={value.validation.model}
           onModelChange={(v) => updatePhase("validation", { model: v })}
+          reasoningEffort={value.validation.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("validation", { reasoningEffort: v })}
           showModel={value.validation.mode !== "off"}
         />
 
@@ -244,6 +303,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={(v) => updatePhase("codeReview", { mode: v as GatePhaseMode })}
           model={value.codeReview.model}
           onModelChange={(v) => updatePhase("codeReview", { model: v })}
+          reasoningEffort={value.codeReview.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("codeReview", { reasoningEffort: v })}
           showModel={value.codeReview.mode !== "off"}
         />
 
@@ -258,6 +319,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={(v) => updatePhase("testReview", { mode: v as GatePhaseMode })}
           model={value.testReview.model}
           onModelChange={(v) => updatePhase("testReview", { model: v })}
+          reasoningEffort={value.testReview.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("testReview", { reasoningEffort: v })}
           showModel={value.testReview.mode !== "off"}
         />
 
@@ -271,6 +334,8 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           onModeChange={(v) => updatePhase("integration", { mode: v as IntegrationPhaseMode })}
           model={value.integration.model}
           onModelChange={(v) => updatePhase("integration", { model: v })}
+          reasoningEffort={value.integration.reasoningEffort}
+          onReasoningEffortChange={(v) => updatePhase("integration", { reasoningEffort: v })}
           showModel={value.integration.mode !== "off"}
         />
 
@@ -369,6 +434,21 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
             />
             Allow completion with risk
           </label>
+        </div>
+
+        <div className="flex items-center gap-2 pt-1 border-t border-border/10 mt-1">
+          <label className="flex items-center gap-1.5 text-xs text-muted-fg cursor-pointer">
+            <input
+              type="checkbox"
+              checked={value.useAgentTeams ?? false}
+              onChange={(e) => onChange({ ...value, useAgentTeams: e.target.checked })}
+              className="rounded"
+            />
+            Agent Teams
+          </label>
+          <span className="text-[11px] text-muted-fg/70">
+            Enable multiple AI agents working in parallel
+          </span>
         </div>
       </div>
     </div>

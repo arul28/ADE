@@ -3,7 +3,7 @@ import { useAppStore } from "../../state/appStore";
 import { LaneRow } from "./LaneRow";
 import { PaneHeader } from "../ui/PaneHeader";
 import { Button } from "../ui/Button";
-import { ArrowsClockwise } from "@phosphor-icons/react";
+import { ArrowsClockwise, CaretRight, CaretDown, FolderSimple } from "@phosphor-icons/react";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import type { LaneSummary } from "../../../shared/types";
@@ -109,6 +109,30 @@ export function LaneList({
     return out;
   }, [visibleLanes]);
 
+  const grouped = useMemo(() => {
+    const folders = new Map<string, LaneSummary[]>();
+    const ungrouped: LaneSummary[] = [];
+    for (const lane of visibleLanes) {
+      if (lane.folder) {
+        const list = folders.get(lane.folder) ?? [];
+        list.push(lane);
+        folders.set(lane.folder, list);
+      } else {
+        ungrouped.push(lane);
+      }
+    }
+    return { folders, ungrouped };
+  }, [visibleLanes]);
+
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const toggleFolder = (name: string) => {
+    setCollapsedFolders(prev => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+  };
+
   return (
     <div className="flex h-full flex-col">
       <PaneHeader
@@ -154,7 +178,40 @@ export function LaneList({
           />
         ) : (
           <div className="space-y-2">
-            {visibleLanes.map((lane) => (
+            {[...grouped.folders.entries()].map(([folderName, folderLanes]) => {
+              const isCollapsed = collapsedFolders.has(folderName);
+              return (
+                <div key={`folder:${folderName}`}>
+                  <button
+                    type="button"
+                    className="mb-1 flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs font-medium text-muted-fg hover:bg-muted/30 hover:text-fg transition-colors"
+                    onClick={() => toggleFolder(folderName)}
+                  >
+                    {isCollapsed ? <CaretRight size={14} /> : <CaretDown size={14} />}
+                    <FolderSimple size={14} />
+                    <span className="truncate">{folderName}</span>
+                    <span className="ml-auto shrink-0 text-[11px] text-muted-fg/60">{folderLanes.length}</span>
+                  </button>
+                  {!isCollapsed && folderLanes.map((lane) => (
+                    <LaneRow
+                      key={lane.id}
+                      lane={lane}
+                      selected={selectedIdSet.has(lane.id)}
+                      primary={lane.id === effectivePrimaryId}
+                      isLastSibling={isLastSiblingByLaneId.get(lane.id) ?? false}
+                      onSelect={(args) => {
+                        if (onLaneSelect) {
+                          onLaneSelect(lane.id, args);
+                          return;
+                        }
+                        selectLane(lane.id);
+                      }}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+            {grouped.ungrouped.map((lane) => (
               <LaneRow
                 key={lane.id}
                 lane={lane}
