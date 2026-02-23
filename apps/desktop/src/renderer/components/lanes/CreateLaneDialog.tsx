@@ -92,7 +92,7 @@ export function CreateLaneDialog({
                     </option>
                   ))}
                 </select>
-                <div className="text-[10px] text-muted-fg/70 px-1">
+                <div className="text-[11px] text-muted-fg/70 px-1">
                   Lane will be created from primary/{createBaseBranch || "..."}
                 </div>
               </div>

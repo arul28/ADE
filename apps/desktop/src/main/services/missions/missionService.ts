@@ -316,12 +316,17 @@ function toPlannerRunFromEvent(row: MissionEventRow): MissionPlannerRun | null {
   const validationErrors = Array.isArray(payload.validationErrors)
     ? payload.validationErrors.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
     : [];
+  const rawResolvedEngine = String(payload.resolvedEngine ?? "").trim();
+  const resolvedEngine: MissionPlannerRun["resolvedEngine"] =
+    rawResolvedEngine === "claude_cli" || rawResolvedEngine === "codex_cli"
+      ? rawResolvedEngine
+      : null;
   return {
     id: runId,
     missionId: row.mission_id,
     requestedEngine: String(payload.requestedEngine ?? "auto") as MissionPlannerRun["requestedEngine"],
-    resolvedEngine: String(payload.resolvedEngine ?? "deterministic_fallback") as MissionPlannerRun["resolvedEngine"],
-    status: payload.degraded === true ? "fallback" : "succeeded",
+    resolvedEngine,
+    status: resolvedEngine != null && payload.degraded !== true ? "succeeded" : "skipped",
     degraded: payload.degraded === true,
     reasonCode: typeof payload.reasonCode === "string" ? (payload.reasonCode as MissionPlannerRun["reasonCode"]) : null,
     reasonDetail: typeof payload.reasonDetail === "string" ? payload.reasonDetail : null,
@@ -1056,11 +1061,11 @@ export function createMissionService({
           : {
               id: null,
               requestedEngine: args.plannerEngine ?? "auto",
-              resolvedEngine: "deterministic_fallback",
-              status: "fallback",
-              degraded: true,
+              resolvedEngine: null,
+              status: "skipped",
+              degraded: false,
               reasonCode: "planner_unavailable",
-              reasonDetail: "Planner run was not provided. Used deterministic fallback planner.",
+              reasonDetail: "Planner run was not provided.",
               planHash: null,
               normalizedPlanHash: null,
               commandPreview: null,
@@ -1171,8 +1176,8 @@ export function createMissionService({
           plannerStepCount: stepsToPersist.length,
           plannerKeywords: legacyPlan.keywords,
           plannerEngineRequested: plannerRun?.requestedEngine ?? args.plannerEngine ?? "auto",
-          plannerEngineResolved: plannerRun?.resolvedEngine ?? "deterministic_fallback",
-          plannerDegraded: plannerRun?.degraded ?? true,
+          plannerEngineResolved: plannerRun?.resolvedEngine ?? null,
+          plannerDegraded: plannerRun?.degraded ?? false,
           executorPolicy
         }
       });
@@ -1182,9 +1187,7 @@ export function createMissionService({
           missionId: id,
           eventType: "mission_plan_generated",
           actor: "system",
-          summary: plannerRun.degraded
-            ? `Planner fallback used (${plannerRun.reasonCode ?? "unknown_reason"}).`
-            : `Planner completed with ${plannerRun.resolvedEngine}.`,
+          summary: `Planner completed with ${plannerRun.resolvedEngine ?? "unknown"}.`,
           payload: {
             plannerRunId: plannerRun.id,
             requestedEngine: plannerRun.requestedEngine,

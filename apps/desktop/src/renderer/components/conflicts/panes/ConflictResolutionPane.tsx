@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles, Wrench, Wand2 } from "lucide-react";
+import { Sparkle, Wrench, MagicWand } from "@phosphor-icons/react";
 import { useAppStore } from "../../../state/appStore";
 import { useConflictsState, useConflictsDispatch } from "../state/ConflictsContext";
 import {
@@ -202,7 +202,7 @@ export function ConflictResolutionPane() {
         {policyDraft ? (
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             <div>
-              <div className="mb-1 text-[11px] text-muted-fg">Where to apply changes</div>
+              <div className="mb-1 text-xs text-muted-fg">Where to apply changes</div>
               <select
                 className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
                 value={policyDraft.changeTarget}
@@ -219,7 +219,7 @@ export function ConflictResolutionPane() {
             </div>
 
             <div>
-              <div className="mb-1 text-[11px] text-muted-fg">Post-resolution action</div>
+              <div className="mb-1 text-xs text-muted-fg">Post-resolution action</div>
               <select
                 className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
                 value={policyDraft.postResolution}
@@ -236,7 +236,7 @@ export function ConflictResolutionPane() {
             </div>
 
             <div>
-              <div className="mb-1 text-[11px] text-muted-fg">PR behavior</div>
+              <div className="mb-1 text-xs text-muted-fg">PR behavior</div>
               <select
                 className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
                 value={policyDraft.prBehavior}
@@ -253,7 +253,7 @@ export function ConflictResolutionPane() {
             </div>
 
             <div>
-              <div className="mb-1 text-[11px] text-muted-fg">AI autonomy</div>
+              <div className="mb-1 text-xs text-muted-fg">AI autonomy</div>
               <select
                 className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
                 value={policyDraft.autonomy}
@@ -270,7 +270,7 @@ export function ConflictResolutionPane() {
 
             {policyDraft.autonomy === "auto_apply" ? (
               <div className="md:col-span-2">
-                <div className="mb-1 text-[11px] text-muted-fg">Confidence threshold (0-1)</div>
+                <div className="mb-1 text-xs text-muted-fg">Confidence threshold (0-1)</div>
                 <input
                   className="h-8 w-full rounded border border-border bg-card/70 px-2 text-xs"
                   value={policyDraft.autoApplyThreshold}
@@ -283,7 +283,7 @@ export function ConflictResolutionPane() {
           </div>
         ) : null}
 
-        {policyError ? <div className="text-[11px] text-red-500">{policyError}</div> : null}
+        {policyError ? <div className="text-xs text-red-500">{policyError}</div> : null}
       </div>
 
       {/* 1. Worktree Selection + ADE AI Suggestion */}
@@ -304,7 +304,7 @@ export function ConflictResolutionPane() {
                 )}
               >
                 <div className="font-medium text-fg">Work in {choice === "target" ? "target" : "source"}</div>
-                <div className="mt-0.5 truncate text-[10px] text-muted-fg">{lane?.name ?? "—"}</div>
+                <div className="mt-0.5 truncate text-[11px] text-muted-fg">{lane?.name ?? "—"}</div>
               </button>
             );
           })}
@@ -312,15 +312,15 @@ export function ConflictResolutionPane() {
 
         {/* ADE AI suggestion */}
         {resolverTargetSuggestionLoading && (
-          <div className="flex items-center gap-2 text-[11px] text-muted-fg">
+          <div className="flex items-center gap-2 text-xs text-muted-fg">
             <Spinner className="h-3 w-3" />
             ADE AI is analyzing...
           </div>
         )}
         {resolverTargetSuggestion && !resolverTargetSuggestionLoading && (
-          <div className="rounded-lg bg-accent/5 border border-accent/20 px-3 py-2 text-[11px]">
+          <div className="rounded-lg bg-accent/5 border border-accent/20 px-3 py-2 text-xs">
             <div className="flex items-center gap-1.5 font-medium text-accent">
-              <Wand2 className="h-3 w-3" />
+              <MagicWand size={12} />
               ADE AI suggests: Work in {resolverTargetSuggestion.suggestion}
             </div>
             <div className="mt-1 text-muted-fg">{resolverTargetSuggestion.reason}</div>
@@ -361,7 +361,7 @@ export function ConflictResolutionPane() {
       {/* 3. Manual Resolution */}
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-xs font-medium text-fg">
-          <Wrench className="h-3.5 w-3.5 text-muted-fg" />
+          <Wrench size={14} className="text-muted-fg" />
           Manual Resolution
         </div>
         <GitCommandPreview commands={manualCommands} />
@@ -370,7 +370,7 @@ export function ConflictResolutionPane() {
       {/* 4. AI Resolution */}
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-xs font-medium text-fg">
-          <Sparkles className="h-3.5 w-3.5 text-accent" />
+          <Sparkle size={14} className="text-accent" />
           AI Resolution
         </div>
         <div className="flex gap-2">
@@ -386,7 +386,7 @@ export function ConflictResolutionPane() {
         {/* Proposals list */}
         {proposals.length > 0 && (
           <div className="space-y-1">
-            <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wide">
+            <div className="text-[11px] font-medium text-muted-fg uppercase tracking-wide">
               Proposals ({proposals.length})
             </div>
             {proposals.map((p) => (
@@ -396,7 +396,7 @@ export function ConflictResolutionPane() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-medium text-fg">{p.status}</span>
-                  <span className="text-[10px] text-muted-fg">{new Date(p.createdAt).toLocaleString()}</span>
+                  <span className="text-[11px] text-muted-fg">{new Date(p.createdAt).toLocaleString()}</span>
                 </div>
               </div>
             ))}

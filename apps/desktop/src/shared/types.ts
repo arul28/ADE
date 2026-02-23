@@ -2423,8 +2423,7 @@ export type MissionExecutorPolicy = "codex" | "claude" | "both";
 
 export type MissionPlannerResolvedEngine =
   | "claude_cli"
-  | "codex_cli"
-  | "deterministic_fallback";
+  | "codex_cli";
 
 export type MissionPlannerReasonCode =
   | "planner_unavailable"
@@ -2494,6 +2493,7 @@ export type PlannerPlan = {
     complexity: PlannerMissionComplexity;
     strategy: PlannerMissionStrategy;
     parallelismCap: number;
+    parallelismRationale?: string;
   };
   assumptions: string[];
   risks: string[];
@@ -2521,8 +2521,8 @@ export type MissionPlannerRun = {
   id: string;
   missionId: string;
   requestedEngine: MissionPlannerEngine;
-  resolvedEngine: MissionPlannerResolvedEngine;
-  status: "succeeded" | "fallback";
+  resolvedEngine: MissionPlannerResolvedEngine | null;
+  status: "succeeded" | "skipped";
   degraded: boolean;
   reasonCode: MissionPlannerReasonCode | null;
   reasonDetail: string | null;
@@ -2643,6 +2643,8 @@ export type CreateMissionArgs = {
   autopilotExecutor?: OrchestratorExecutorKind;
   missionDepth?: MissionDepthTier;
   executionPolicy?: Partial<MissionExecutionPolicy>;
+  orchestratorModel?: string;
+  thinkingBudgets?: Record<string, number>;
 };
 
 export type PlanMissionArgs = {
@@ -3769,8 +3771,13 @@ export type PlanningPhaseMode = "off" | "auto" | "manual_review";
 export type TestingPhaseMode = "none" | "post_implementation" | "tdd";
 export type GatePhaseMode = "required" | "optional" | "off";
 export type IntegrationPhaseMode = "off" | "auto";
-export type MergePhaseMode = "off" | "manual" | "auto_if_green";
+export type MergePhaseMode = "off";
 export type PhaseModelChoice = "claude" | "codex";
+
+export type PrStrategy =
+  | { kind: "integration"; targetBranch?: string; draft?: boolean }
+  | { kind: "per-lane"; targetBranch?: string; draft?: boolean }
+  | { kind: "manual" };
 
 export type MissionExecutionPolicy = {
   planning: { mode: PlanningPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
@@ -3780,8 +3787,11 @@ export type MissionExecutionPolicy = {
   codeReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
   testReview: { mode: GatePhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
   integration: { mode: IntegrationPhaseMode; model?: PhaseModelChoice; reasoningEffort?: string };
-  merge: { mode: MergePhaseMode };
+  merge: { mode: "off" };
   completion: { allowCompletionWithRisk: boolean };
+  recoveryLoop?: RecoveryLoopPolicy;
+  integrationPr?: IntegrationPrPolicy;
+  prStrategy?: PrStrategy;
 };
 
 export type CompletionDiagnostic = {
@@ -3842,7 +3852,7 @@ export type GetModelCapabilitiesResult = {
 export type OrchestratorChatMessage = {
   id: string;
   missionId: string;
-  role: "user" | "orchestrator" | "worker";
+  role: "user" | "orchestrator" | "worker" | "agent";
   content: string;
   timestamp: string;
   stepKey?: string | null;
@@ -3881,6 +3891,13 @@ export type OrchestratorChatTarget =
       stepKey?: string | null;
       attemptId?: string | null;
       sessionId?: string | null;
+      laneId?: string | null;
+    }
+  | {
+      kind: "agent";
+      sourceAttemptId: string;
+      targetAttemptId: string;
+      runId?: string | null;
       laneId?: string | null;
     };
 
@@ -3939,6 +3956,14 @@ export type SendOrchestratorThreadMessageArgs = {
   threadId?: string | null;
   target?: OrchestratorChatTarget;
   visibilityMode?: OrchestratorChatVisibilityMode;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type SendAgentMessageArgs = {
+  missionId: string;
+  fromAttemptId: string;
+  toAttemptId: string;
+  content: string;
   metadata?: Record<string, unknown> | null;
 };
 
@@ -4047,7 +4072,6 @@ export type MissionMetricToggle =
   | "code_review"
   | "test_review"
   | "integration"
-  | "merge"
   | "cost"
   | "tokens"
   | "retries"
@@ -4082,4 +4106,407 @@ export type GetMissionMetricsArgs = {
 export type SetMissionMetricsConfigArgs = {
   missionId: string;
   toggles: MissionMetricToggle[];
+};
+
+// ─────────────────────────────────────────────────────
+// Phase 3: Orchestrator Capability Types
+// Role Isolation, Team Synthesis, Recovery Loops,
+// Context Brokerage, Execution Plan Preview
+// ─────────────────────────────────────────────────────
+
+/**
+ * Worker roles enforced across planner/scheduler/executor.
+ * Implementation and review/test-review MUST NOT run in the
+ * same worker identity/session for the same mission run.
+ */
+export type OrchestratorWorkerRole =
+  | "planning"
+  | "implementation"
+  | "testing"
+  | "code_review"
+  | "test_review"
+  | "integration"
+  | "merge";
+
+/**
+ * Defines which roles are mutually exclusive within a single
+ * worker session. Used by the role-isolation validator.
+ */
+export type RoleIsolationRule = {
+  /** Roles that cannot coexist in the same worker session */
+  mutuallyExclusive: [OrchestratorWorkerRole, OrchestratorWorkerRole];
+  /** Whether to auto-correct (split) or hard-reject invalid plans */
+  enforcement: "auto_correct" | "reject";
+  /** Human-readable reason for the isolation rule */
+  reason: string;
+};
+
+/**
+ * The default set of role isolation rules.
+ * Source: Anthropic sub-agent docs recommend strict role boundaries
+ * to prevent context contamination between implementers and reviewers.
+ */
+export const DEFAULT_ROLE_ISOLATION_RULES: RoleIsolationRule[] = [
+  {
+    mutuallyExclusive: ["implementation", "code_review"],
+    enforcement: "auto_correct",
+    reason: "Implementers must not review their own code."
+  },
+  {
+    mutuallyExclusive: ["implementation", "test_review"],
+    enforcement: "auto_correct",
+    reason: "Implementers must not review their own test results."
+  },
+  {
+    mutuallyExclusive: ["testing", "test_review"],
+    enforcement: "auto_correct",
+    reason: "Test authors must not review their own test results."
+  },
+  {
+    mutuallyExclusive: ["code_review", "implementation"],
+    enforcement: "auto_correct",
+    reason: "Reviewers must not implement code they reviewed."
+  }
+];
+
+/**
+ * Result of validating a plan against role isolation rules.
+ */
+export type RoleIsolationValidation = {
+  valid: boolean;
+  violations: Array<{
+    rule: RoleIsolationRule;
+    affectedStepIds: string[];
+    correctionApplied: boolean;
+    correctionDetail?: string;
+  }>;
+  correctedPlan?: boolean;
+};
+
+/**
+ * Run-level team manifest produced by the team synthesis pass.
+ * Machine-readable record of who does what in this run.
+ */
+export type TeamManifest = {
+  runId: string;
+  missionId: string;
+  synthesizedAt: string;
+  /** Why these roles were chosen */
+  rationale: string;
+  /** Mission complexity assessment driving team decisions */
+  complexity: TeamComplexityAssessment;
+  /** Individual worker role assignments */
+  workers: TeamWorkerAssignment[];
+  /** Max concurrent workers for this run */
+  parallelismCap: number;
+  /** Whether any workers can safely run in parallel */
+  parallelLanes: string[][];
+  /** Telemetry: why N workers, why these roles */
+  decisionLog: TeamDecisionEntry[];
+};
+
+export type TeamComplexityAssessment = {
+  domain: "frontend" | "backend" | "fullstack" | "infra" | "mixed";
+  estimatedScope: "small" | "medium" | "large" | "very_large";
+  parallelizable: boolean;
+  requiresIntegration: boolean;
+  /** Number of distinct file-ownership zones detected */
+  fileZoneCount: number;
+  /** Whether prompt explicitly requests thoroughness */
+  thoroughnessRequested: boolean;
+};
+
+export type TeamWorkerAssignment = {
+  workerId: string;
+  role: OrchestratorWorkerRole;
+  /** Which steps this worker handles */
+  assignedStepKeys: string[];
+  /** Lane this worker operates in */
+  laneId: string | null;
+  /** Executor to use */
+  executorKind: OrchestratorExecutorKind;
+  /** Model override for this worker */
+  model?: string;
+};
+
+export type TeamDecisionEntry = {
+  timestamp: string;
+  decision: string;
+  reason: string;
+  source: "policy" | "complexity" | "prompt" | "dag_shape" | "override";
+};
+
+/**
+ * Recovery loop policy for quality gates.
+ * When review/test fails, orchestrator spawns fix steps,
+ * then mandatory re-review/re-test, capped by maxIterations.
+ */
+export type RecoveryLoopPolicy = {
+  /** Enable automatic recovery loops */
+  enabled: boolean;
+  /** Max fix-review-test cycles before stopping */
+  maxIterations: number;
+  /** What to do when max iterations reached */
+  onExhaustion: "fail" | "intervention" | "complete_with_risk";
+  /** Anti-thrash: minimum confidence delta required between iterations */
+  minConfidenceDelta?: number;
+  /** Anti-thrash: escalate after N consecutive failures with no progress */
+  escalateAfterStagnant?: number;
+};
+
+export const DEFAULT_RECOVERY_LOOP_POLICY: RecoveryLoopPolicy = {
+  enabled: true,
+  maxIterations: 3,
+  onExhaustion: "intervention",
+  minConfidenceDelta: 0.1,
+  escalateAfterStagnant: 2
+};
+
+/**
+ * Tracks a single recovery loop iteration.
+ */
+export type RecoveryLoopIteration = {
+  iteration: number;
+  triggerStepId: string;
+  triggerPhase: string;
+  failureReason: string;
+  fixStepId: string | null;
+  reReviewStepId: string | null;
+  reTestStepId: string | null;
+  outcome: "fixed" | "still_failing" | "escalated" | "max_iterations";
+  confidence?: number;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+/**
+ * Full recovery loop state for a run.
+ */
+export type RecoveryLoopState = {
+  runId: string;
+  iterations: RecoveryLoopIteration[];
+  currentIteration: number;
+  exhausted: boolean;
+  stopReason: string | null;
+};
+
+/**
+ * Context view defines what context a worker role receives.
+ * Reviewers get immutable artifacts, not implementer scratch state.
+ */
+export type OrchestratorContextView = "implementation" | "review" | "test_review";
+
+/**
+ * Context view policy controlling what context is assembled for each role.
+ */
+export type ContextViewPolicy = {
+  view: OrchestratorContextView;
+  /** Whether the context is read-only (no write claims allowed) */
+  readOnly: boolean;
+  /** Include mutable implementer scratch context */
+  includeScratchContext: boolean;
+  /** Include immutable artifacts/handoffs */
+  includeArtifacts: boolean;
+  /** Include test/check results */
+  includeCheckResults: boolean;
+  /** Include upstream handoff summaries */
+  includeHandoffSummaries: boolean;
+  /** Include full file diffs or just summaries */
+  diffMode: "full" | "summary" | "none";
+};
+
+export const DEFAULT_CONTEXT_VIEW_POLICIES: Record<OrchestratorContextView, ContextViewPolicy> = {
+  implementation: {
+    view: "implementation",
+    readOnly: false,
+    includeScratchContext: true,
+    includeArtifacts: true,
+    includeCheckResults: true,
+    includeHandoffSummaries: true,
+    diffMode: "full"
+  },
+  review: {
+    view: "review",
+    readOnly: true,
+    includeScratchContext: false,
+    includeArtifacts: true,
+    includeCheckResults: true,
+    includeHandoffSummaries: true,
+    diffMode: "full"
+  },
+  test_review: {
+    view: "test_review",
+    readOnly: true,
+    includeScratchContext: false,
+    includeArtifacts: true,
+    includeCheckResults: true,
+    includeHandoffSummaries: true,
+    diffMode: "summary"
+  }
+};
+
+/**
+ * Integration PR policy: controls whether and how
+ * the orchestrator creates integration PRs at run completion.
+ */
+export type IntegrationPrPolicy = {
+  /** Whether to create integration PRs */
+  enabled: boolean;
+  /** Create integration lane to merge parallel lanes */
+  createIntegrationLane: boolean;
+  /** Resolve merge conflicts before opening PR */
+  autoResolveConflicts: boolean;
+  /** Open PR as draft */
+  draft: boolean;
+  /** Base branch for integration PR */
+  baseBranch?: string;
+};
+
+export const DEFAULT_INTEGRATION_PR_POLICY: IntegrationPrPolicy = {
+  enabled: true,
+  createIntegrationLane: true,
+  autoResolveConflicts: true,
+  draft: true
+};
+
+/**
+ * Execution plan preview shown to users before/during run.
+ * Simple view into orchestration decisions without advanced settings.
+ */
+export type ExecutionPlanPreview = {
+  runId: string;
+  missionId: string;
+  generatedAt: string;
+  /** High-level strategy chosen */
+  strategy: string;
+  /** Inferred phases with details */
+  phases: ExecutionPlanPhase[];
+  /** Team manifest summary */
+  teamSummary: {
+    workerCount: number;
+    parallelLanes: number;
+    roles: OrchestratorWorkerRole[];
+  };
+  /** Recovery policy in effect */
+  recoveryPolicy: RecoveryLoopPolicy;
+  /** Integration PR plan */
+  integrationPrPlan: IntegrationPrPolicy;
+  /** Whether the preview matches the actual running plan */
+  aligned: boolean;
+  /** Drift details if re-planning occurred */
+  driftNotes: string[];
+};
+
+export type ExecutionPlanPhase = {
+  phase: string;
+  enabled: boolean;
+  stepCount: number;
+  steps: ExecutionPlanStepPreview[];
+  model: string;
+  executorKind: OrchestratorExecutorKind;
+  gatePolicy: string;
+  recoveryEnabled: boolean;
+};
+
+export type ExecutionPlanStepPreview = {
+  stepKey: string;
+  title: string;
+  role: OrchestratorWorkerRole;
+  executorKind: OrchestratorExecutorKind;
+  model: string;
+  laneId: string | null;
+  dependencies: string[];
+  gateType: string | null;
+  recoveryOnFailure: boolean;
+};
+
+/**
+ * Slash command metadata for proper invocation.
+ * Slash commands are translated to full prompts rather than
+ * being passed raw via -p flag.
+ */
+export type SlashCommandStep = {
+  command: string;
+  /** Full prompt translation for the slash command */
+  translatedPrompt: string;
+  /** Whether this runs in interactive mode */
+  interactive: boolean;
+  /** Original raw command text */
+  rawCommand: string;
+};
+
+/**
+ * Maps known slash commands to their prompt translations.
+ * This ensures slash commands work correctly when invoked
+ * by the orchestrator via Claude CLI -p flag.
+ */
+// ── Usage Dashboard Types ────────────────────────────
+export type UsageModelBreakdown = {
+  provider: string;
+  model: string;
+  sessions: number;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  costEstimateUsd: number;
+};
+
+export type UsageRecentSession = {
+  id: string;
+  feature: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  success: boolean;
+  timestamp: string;
+};
+
+export type UsageActiveSession = {
+  id: string;
+  feature: string;
+  provider: string;
+  model: string;
+  startedAt: string;
+  elapsedMs: number;
+};
+
+export type UsageMissionBreakdown = {
+  missionId: string;
+  missionTitle: string;
+  totalTokens: number;
+  costEstimateUsd: number;
+};
+
+export type AggregatedUsageStats = {
+  summary: {
+    totalSessions: number;
+    activeSessions: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalDurationMs: number;
+    totalCostEstimateUsd: number;
+  };
+  byModel: UsageModelBreakdown[];
+  recentSessions: UsageRecentSession[];
+  activeSessions: UsageActiveSession[];
+  missionBreakdown: UsageMissionBreakdown[];
+};
+
+export type GetAggregatedUsageArgs = {
+  since?: string | null;
+  limit?: number;
+  missionId?: string | null;
+};
+
+export const SLASH_COMMAND_TRANSLATIONS: Record<string, { prompt: string; interactive: boolean }> = {
+  "/automate": {
+    prompt: "Run the /automate skill. This means: analyze the current project state, identify work that needs to be done based on the mission context, and execute it autonomously using agent teams. Use the Skill tool to invoke the 'automate' skill if available, otherwise carry out the automation workflow directly.",
+    interactive: false
+  },
+  "/finalize": {
+    prompt: "Run the /finalize skill. This means: perform end-of-cycle documentation audit - scan the codebase, verify docs are up to date, update the implementation plan, and run local checks. Use the Skill tool to invoke the 'finalize' skill if available, otherwise carry out the finalization workflow directly.",
+    interactive: false
+  }
 };

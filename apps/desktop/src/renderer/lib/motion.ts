@@ -4,18 +4,33 @@
  */
 import type { Transition, Variants } from "motion/react";
 
+/* ── Spring Physics Constants (UI Overhaul) ── */
+
+export const springs = {
+  /** Snappy — buttons, toggles, quick state changes */
+  snappy: { type: "spring" as const, stiffness: 500, damping: 30 },
+  /** Default — most UI transitions */
+  default: { type: "spring" as const, stiffness: 300, damping: 25 },
+  /** Gentle — page transitions, large movements */
+  gentle: { type: "spring" as const, stiffness: 150, damping: 20 },
+  /** Bouncy — celebratory moments, completion animations */
+  bouncy: { type: "spring" as const, stiffness: 400, damping: 15 },
+  /** Slow — ambient background transitions, camera movements */
+  slow: { type: "spring" as const, stiffness: 50, damping: 15 },
+} as const;
+
 /* ── Transitions ── */
 
 export const springSnappy: Transition = {
   type: "spring",
-  stiffness: 300,
-  damping: 20,
+  stiffness: 500,
+  damping: 30,
 };
 
 export const springGentle: Transition = {
   type: "spring",
-  stiffness: 260,
-  damping: 25,
+  stiffness: 150,
+  damping: 20,
 };
 
 export const easeOut150: Transition = {
@@ -57,6 +72,24 @@ export const staggerContainerSlow: Variants = {
 export const staggerItem: Variants = {
   initial: { opacity: 0, y: 8 },
   animate: { opacity: 1, y: 0, transition: easeOut150 },
+};
+
+/* ── Stagger Patterns (UI Overhaul) ── */
+
+export const staggerContainerFast: Variants = {
+  hidden: {},
+  visible: {
+    transition: { staggerChildren: 0.03, delayChildren: 0.05 }
+  }
+};
+
+export const staggerItemSpring: Variants = {
+  hidden: { opacity: 0, y: 6 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: springs.default
+  }
 };
 
 /* ── Card / Interactive Variants ── */

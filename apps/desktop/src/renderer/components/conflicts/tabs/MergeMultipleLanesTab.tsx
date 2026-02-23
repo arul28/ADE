@@ -1,5 +1,5 @@
 import React from "react";
-import { Layers, GitMerge, Sparkles } from "lucide-react";
+import { Stack, GitMerge, Sparkle } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
 import { LaneListPane } from "../panes/LaneListPane";
 import { MultiMergePreviewPane } from "../panes/MultiMergePreviewPane";
@@ -20,7 +20,7 @@ export function MergeMultipleLanesTab() {
     () => ({
       lanes: {
         title: "Lanes",
-        icon: Layers,
+        icon: Stack,
         children: <LaneListPane />,
       },
       "multi-merge": {
@@ -31,7 +31,7 @@ export function MergeMultipleLanesTab() {
       },
       resolution: {
         title: "Resolution",
-        icon: Sparkles,
+        icon: Sparkle,
         children: <ConflictResolutionPane />,
       },
     }),

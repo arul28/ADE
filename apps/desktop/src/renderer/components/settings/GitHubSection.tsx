@@ -229,7 +229,7 @@ export function GitHubSection() {
       </div>
 
       <div className="rounded-lg border border-border bg-card/70 p-3">
-        <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">PR Polling</div>
+        <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">PR Polling</div>
         <div className="flex items-center gap-2">
           <input
             type="number"
@@ -273,7 +273,7 @@ export function GitHubSection() {
       </div>
 
       <div className="rounded-lg border border-border bg-card/70 p-3">
-        <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Lane Auto-Rebase</div>
+        <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">Lane Auto-Rebase</div>
         <label className="flex items-center gap-2">
           <input
             type="checkbox"

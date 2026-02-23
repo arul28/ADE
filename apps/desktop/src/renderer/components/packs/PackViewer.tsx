@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { ArrowsClockwise } from "@phosphor-icons/react";
 import type { PackSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -346,7 +346,7 @@ export function PackViewer({ laneId }: { laneId: string | null }) {
 
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" title="Refresh pack" onClick={() => refreshCombined().catch(() => {})} disabled={refreshBusy}>
-            <RefreshCw className={cn("h-4 w-4", refreshBusy && "animate-spin")} />
+            <ArrowsClockwise size={16} weight="regular" className={cn(refreshBusy && "animate-spin")} />
             {refreshBusy ? "Refreshing" : "Refresh"}
           </Button>
           <Button variant="outline" size="sm" onClick={() => navigate("/settings")}>

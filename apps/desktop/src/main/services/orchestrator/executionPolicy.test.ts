@@ -1,12 +1,25 @@
 import { describe, expect, it } from "vitest";
-import type { MissionExecutionPolicy, OrchestratorStep, OrchestratorStepStatus } from "../../../shared/types";
+import type {
+  MissionExecutionPolicy,
+  OrchestratorStep,
+  OrchestratorStepStatus,
+  OrchestratorWorkerRole,
+  RecoveryLoopPolicy,
+  RecoveryLoopState,
+  RecoveryLoopIteration
+} from "../../../shared/types";
 import {
   DEFAULT_EXECUTION_POLICY,
   depthTierToPolicy,
   resolveExecutionPolicy,
   evaluateRunCompletion,
   stepTypeToPhase,
-  phaseModelToExecutorKind
+  phaseModelToExecutorKind,
+  roleForStepType,
+  validateRoleIsolation,
+  synthesizeTeam,
+  contextViewForRole,
+  evaluateRecoveryLoop
 } from "./executionPolicy";
 
 function makeStep(overrides: Partial<OrchestratorStep> & { id: string; status: OrchestratorStepStatus }): OrchestratorStep {
@@ -51,7 +64,7 @@ describe("executionPolicy", () => {
       expect(policy.testing.mode).toBe("post_implementation");
       expect(policy.validation.mode).toBe("optional");
       expect(policy.codeReview.mode).toBe("off");
-      expect(policy.merge.mode).toBe("manual");
+      expect(policy.merge.mode).toBe("off");
       expect(policy.completion.allowCompletionWithRisk).toBe(true);
     });
 
@@ -61,7 +74,7 @@ describe("executionPolicy", () => {
       expect(policy.testing.mode).toBe("post_implementation");
       expect(policy.validation.mode).toBe("required");
       expect(policy.codeReview.mode).toBe("required");
-      expect(policy.merge.mode).toBe("manual");
+      expect(policy.merge.mode).toBe("off");
       expect(policy.completion.allowCompletionWithRisk).toBe(false);
     });
   });
@@ -92,9 +105,11 @@ describe("executionPolicy", () => {
 
     it("project config fills in when no mission-level override", () => {
       const policy = resolveExecutionPolicy({
-        projectConfig: { merge: { mode: "auto_if_green" } }
+        projectConfig: { testing: { mode: "tdd" } }
       });
-      expect(policy.merge.mode).toBe("auto_if_green");
+      // Merge is always forced to "off"
+      expect(policy.merge.mode).toBe("off");
+      expect(policy.testing.mode).toBe("tdd");
       // Other fields come from default
       expect(policy.planning.mode).toBe("auto");
     });
@@ -240,19 +255,18 @@ describe("executionPolicy", () => {
       expect(result.completionReady).toBe(true);
     });
 
-    it("reports not complete when merge step is blocked", () => {
+    it("merge phase is never required (always off)", () => {
       const policy: MissionExecutionPolicy = {
         ...DEFAULT_EXECUTION_POLICY,
-        merge: { mode: "manual" }
+        merge: { mode: "off" }
       };
       const steps = [
-        makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
-        makeStep({ id: "s2", status: "blocked", metadata: { stepType: "merge", blockedSticky: true } })
+        makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
       ];
       const result = evaluateRunCompletion(steps, policy);
-      // Blocked step means the merge phase is in-progress, not complete
-      expect(result.completionReady).toBe(false);
-      expect(result.diagnostics.some((d) => d.phase === "merge" && d.code === "phase_in_progress")).toBe(true);
+      // Merge is skipped by policy, not blocking
+      expect(result.diagnostics.some((d) => d.phase === "merge" && d.code === "phase_skipped_by_policy")).toBe(true);
+      expect(result.completionReady).toBe(true);
     });
 
     it("returns failed when required phase has failed steps", () => {
@@ -270,21 +284,6 @@ describe("executionPolicy", () => {
       expect(result.completionReady).toBe(true);
     });
 
-    it("correctly handles merge phase requirement", () => {
-      const policy: MissionExecutionPolicy = {
-        ...DEFAULT_EXECUTION_POLICY,
-        merge: { mode: "auto_if_green" },
-        completion: { allowCompletionWithRisk: true }
-      };
-      // All impl succeeded, but no merge step
-      const steps = [
-        makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } })
-      ];
-      const result = evaluateRunCompletion(steps, policy);
-      expect(result.riskFactors).toContain("merge_required_but_missing");
-      expect(result.status).toBe("succeeded_with_risk");
-    });
-
     it("reports running when steps are still in progress", () => {
       const steps = [
         makeStep({ id: "s1", status: "succeeded", metadata: { stepType: "code" } }),
@@ -294,5 +293,515 @@ describe("executionPolicy", () => {
       expect(result.status).toBe("running");
       expect(result.completionReady).toBe(false);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// roleForStepType
+// ─────────────────────────────────────────────────────
+
+describe("roleForStepType", () => {
+  it('maps "analysis" to "planning"', () => {
+    expect(roleForStepType("analysis")).toBe("planning");
+  });
+
+  it('maps "code" to "implementation"', () => {
+    expect(roleForStepType("code")).toBe("implementation");
+  });
+
+  it('maps "implementation" to "implementation"', () => {
+    expect(roleForStepType("implementation")).toBe("implementation");
+  });
+
+  it('maps "test" to "testing"', () => {
+    expect(roleForStepType("test")).toBe("testing");
+  });
+
+  it('maps "validation" to "testing"', () => {
+    expect(roleForStepType("validation")).toBe("testing");
+  });
+
+  it('maps "review" to "code_review"', () => {
+    expect(roleForStepType("review")).toBe("code_review");
+  });
+
+  it('maps "test_review" to "test_review"', () => {
+    expect(roleForStepType("test_review")).toBe("test_review");
+  });
+
+  it('maps "review_test" to "test_review"', () => {
+    expect(roleForStepType("review_test")).toBe("test_review");
+  });
+
+  it('maps "integration" to "integration"', () => {
+    expect(roleForStepType("integration")).toBe("integration");
+  });
+
+  it('maps "merge" to "merge"', () => {
+    expect(roleForStepType("merge")).toBe("merge");
+  });
+
+  it("returns null for unknown step types", () => {
+    expect(roleForStepType("unknown")).toBeNull();
+    expect(roleForStepType("foobar")).toBeNull();
+  });
+
+  it("uses taskType as fallback when stepType is empty", () => {
+    expect(roleForStepType("", "analysis")).toBe("planning");
+    expect(roleForStepType("", "code")).toBe("implementation");
+    expect(roleForStepType("", "test")).toBe("testing");
+    expect(roleForStepType("", "review")).toBe("code_review");
+    expect(roleForStepType("", "test_review")).toBe("test_review");
+    expect(roleForStepType("", "integration")).toBe("integration");
+    expect(roleForStepType("", "merge")).toBe("merge");
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// validateRoleIsolation
+// ─────────────────────────────────────────────────────
+
+describe("validateRoleIsolation", () => {
+  it("returns valid for a plan with separate workers per role", () => {
+    const steps = [
+      { stepKey: "s1", role: "implementation" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "code_review" as OrchestratorWorkerRole, workerId: "w2" },
+      { stepKey: "s3", role: "testing" as OrchestratorWorkerRole, workerId: "w3" }
+    ];
+    const result = validateRoleIsolation(steps);
+    expect(result.valid).toBe(true);
+    expect(result.violations).toHaveLength(0);
+  });
+
+  it("detects implementation + code_review on same worker with auto_correct", () => {
+    const steps = [
+      { stepKey: "s1", role: "implementation" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "code_review" as OrchestratorWorkerRole, workerId: "w1" }
+    ];
+    const result = validateRoleIsolation(steps);
+    // auto_correct splits the conflict, so valid is true but violations recorded
+    expect(result.valid).toBe(true);
+    expect(result.violations.length).toBeGreaterThan(0);
+    expect(result.violations.some((v) => v.correctionApplied)).toBe(true);
+    expect(result.correctedPlan).toBe(true);
+  });
+
+  it("detects implementation + test_review on same worker", () => {
+    const steps = [
+      { stepKey: "s1", role: "implementation" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "test_review" as OrchestratorWorkerRole, workerId: "w1" }
+    ];
+    const result = validateRoleIsolation(steps);
+    expect(result.violations.length).toBeGreaterThan(0);
+    const violation = result.violations.find(
+      (v) =>
+        v.rule.mutuallyExclusive.includes("implementation") &&
+        v.rule.mutuallyExclusive.includes("test_review")
+    );
+    expect(violation).toBeDefined();
+    expect(violation!.correctionApplied).toBe(true);
+  });
+
+  it("detects testing + test_review on same worker", () => {
+    const steps = [
+      { stepKey: "s1", role: "testing" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "test_review" as OrchestratorWorkerRole, workerId: "w1" }
+    ];
+    const result = validateRoleIsolation(steps);
+    expect(result.violations.length).toBeGreaterThan(0);
+    const violation = result.violations.find(
+      (v) =>
+        v.rule.mutuallyExclusive.includes("testing") &&
+        v.rule.mutuallyExclusive.includes("test_review")
+    );
+    expect(violation).toBeDefined();
+  });
+
+  it("auto_correct splits conflicting steps into different workers", () => {
+    const steps = [
+      { stepKey: "s1", role: "implementation" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "code_review" as OrchestratorWorkerRole, workerId: "w1" }
+    ];
+    const result = validateRoleIsolation(steps);
+    expect(result.valid).toBe(true);
+    expect(result.correctedPlan).toBe(true);
+    // The violation detail should mention splitting into a new worker
+    const violation = result.violations[0];
+    expect(violation.correctionApplied).toBe(true);
+    expect(violation.correctionDetail).toContain("Split");
+    expect(violation.correctionDetail).toContain("w1");
+  });
+
+  it("detects multiple violations at once", () => {
+    const steps = [
+      { stepKey: "s1", role: "implementation" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "code_review" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s3", role: "testing" as OrchestratorWorkerRole, workerId: "w2" },
+      { stepKey: "s4", role: "test_review" as OrchestratorWorkerRole, workerId: "w2" }
+    ];
+    const result = validateRoleIsolation(steps);
+    // Should detect violations for both w1 and w2
+    expect(result.violations.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("returns valid for an empty steps array", () => {
+    const result = validateRoleIsolation([]);
+    expect(result.valid).toBe(true);
+    expect(result.violations).toHaveLength(0);
+  });
+
+  it("uses reject enforcement when rule specifies it", () => {
+    const rejectRule = {
+      mutuallyExclusive: ["implementation", "code_review"] as [OrchestratorWorkerRole, OrchestratorWorkerRole],
+      enforcement: "reject" as const,
+      reason: "Hard rejection"
+    };
+    const steps = [
+      { stepKey: "s1", role: "implementation" as OrchestratorWorkerRole, workerId: "w1" },
+      { stepKey: "s2", role: "code_review" as OrchestratorWorkerRole, workerId: "w1" }
+    ];
+    const result = validateRoleIsolation(steps, [rejectRule]);
+    expect(result.valid).toBe(false);
+    expect(result.violations[0].correctionApplied).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// synthesizeTeam
+// ─────────────────────────────────────────────────────
+
+describe("synthesizeTeam", () => {
+  const basePolicy: MissionExecutionPolicy = { ...DEFAULT_EXECUTION_POLICY };
+
+  function makeTeamStep(overrides: {
+    stepKey: string;
+    role: OrchestratorWorkerRole;
+    laneId?: string | null;
+  }) {
+    return {
+      stepKey: overrides.stepKey,
+      title: `Step ${overrides.stepKey}`,
+      role: overrides.role,
+      laneId: overrides.laneId ?? null,
+      executorKind: "codex"
+    };
+  }
+
+  it("small mission (<=3 steps) gets parallelismCap of 2", () => {
+    const steps = [
+      makeTeamStep({ stepKey: "s1", role: "implementation" }),
+      makeTeamStep({ stepKey: "s2", role: "testing" })
+    ];
+    const result = synthesizeTeam({ steps, policy: basePolicy, promptHints: {} });
+    expect(result.parallelismCap).toBe(2);
+  });
+
+  it("medium mission (4-8 steps) gets parallelismCap of 4", () => {
+    const steps = Array.from({ length: 5 }, (_, i) =>
+      makeTeamStep({ stepKey: `s${i}`, role: "implementation" })
+    );
+    const result = synthesizeTeam({ steps, policy: basePolicy, promptHints: {} });
+    expect(result.parallelismCap).toBe(4);
+  });
+
+  it("large mission (9-15 steps) gets parallelismCap of 8", () => {
+    const steps = Array.from({ length: 10 }, (_, i) =>
+      makeTeamStep({ stepKey: `s${i}`, role: "implementation" })
+    );
+    const result = synthesizeTeam({ steps, policy: basePolicy, promptHints: {} });
+    expect(result.parallelismCap).toBe(8);
+  });
+
+  it("very large mission (>15 steps) gets parallelismCap of 16", () => {
+    const steps = Array.from({ length: 21 }, (_, i) =>
+      makeTeamStep({ stepKey: `s${i}`, role: "implementation" })
+    );
+    const result = synthesizeTeam({ steps, policy: basePolicy, promptHints: {} });
+    expect(result.parallelismCap).toBe(16);
+  });
+
+  it("thoroughness hint increases parallelismCap by 2", () => {
+    const steps = [
+      makeTeamStep({ stepKey: "s1", role: "implementation" }),
+      makeTeamStep({ stepKey: "s2", role: "testing" })
+    ];
+    const result = synthesizeTeam({
+      steps,
+      policy: basePolicy,
+      promptHints: { thoroughness: true }
+    });
+    // small (2) + thoroughness (2) = 4
+    expect(result.parallelismCap).toBe(4);
+  });
+
+  it("explicit parallelismCap override is respected", () => {
+    const steps = [
+      makeTeamStep({ stepKey: "s1", role: "implementation" }),
+      makeTeamStep({ stepKey: "s2", role: "testing" })
+    ];
+    const result = synthesizeTeam({
+      steps,
+      policy: basePolicy,
+      promptHints: { parallelismCap: 12 }
+    });
+    expect(result.parallelismCap).toBe(12);
+  });
+
+  it("workers are grouped by role + laneId", () => {
+    const steps = [
+      makeTeamStep({ stepKey: "s1", role: "implementation", laneId: "lane-a" }),
+      makeTeamStep({ stepKey: "s2", role: "implementation", laneId: "lane-a" }),
+      makeTeamStep({ stepKey: "s3", role: "implementation", laneId: "lane-b" }),
+      makeTeamStep({ stepKey: "s4", role: "testing", laneId: "lane-a" })
+    ];
+    const result = synthesizeTeam({ steps, policy: basePolicy, promptHints: {} });
+    // Expect 3 workers: implementation/lane-a, implementation/lane-b, testing/lane-a
+    expect(result.workers).toHaveLength(3);
+    const implLaneA = result.workers.find(
+      (w) => w.role === "implementation" && w.laneId === "lane-a"
+    );
+    expect(implLaneA).toBeDefined();
+    expect(implLaneA!.assignedStepKeys).toEqual(["s1", "s2"]);
+    const implLaneB = result.workers.find(
+      (w) => w.role === "implementation" && w.laneId === "lane-b"
+    );
+    expect(implLaneB).toBeDefined();
+    expect(implLaneB!.assignedStepKeys).toEqual(["s3"]);
+    const testLaneA = result.workers.find(
+      (w) => w.role === "testing" && w.laneId === "lane-a"
+    );
+    expect(testLaneA).toBeDefined();
+    expect(testLaneA!.assignedStepKeys).toEqual(["s4"]);
+  });
+
+  it("plannerCap overrides scope heuristic", () => {
+    const result = synthesizeTeam({
+      steps: [makeTeamStep({ stepKey: "s1", role: "implementation" })],
+      policy: basePolicy,
+      promptHints: { plannerCap: 12 }
+    });
+    expect(result.parallelismCap).toBe(12);
+  });
+
+  it("plannerCap is clamped at 32", () => {
+    const result = synthesizeTeam({
+      steps: [makeTeamStep({ stepKey: "s1", role: "implementation" })],
+      policy: basePolicy,
+      promptHints: { plannerCap: 100 }
+    });
+    expect(result.parallelismCap).toBeLessThanOrEqual(32);
+  });
+
+  it("plannerCap outside valid range falls back to scope heuristic", () => {
+    const result = synthesizeTeam({
+      steps: [makeTeamStep({ stepKey: "s1", role: "implementation" })],
+      policy: basePolicy,
+      promptHints: { plannerCap: 0 }
+    });
+    // Single step = small scope = 2
+    expect(result.parallelismCap).toBe(2);
+  });
+
+  it("rationale and decision log are populated", () => {
+    const steps = [
+      makeTeamStep({ stepKey: "s1", role: "implementation" }),
+      makeTeamStep({ stepKey: "s2", role: "testing" })
+    ];
+    const result = synthesizeTeam({ steps, policy: basePolicy, promptHints: {} });
+    expect(result.rationale).toBeTruthy();
+    expect(result.rationale).toContain("worker");
+    expect(result.decisionLog.length).toBeGreaterThan(0);
+    // Every decision log entry has required fields
+    for (const entry of result.decisionLog) {
+      expect(entry.timestamp).toBeTruthy();
+      expect(entry.decision).toBeTruthy();
+      expect(entry.reason).toBeTruthy();
+      expect(entry.source).toBeTruthy();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// contextViewForRole
+// ─────────────────────────────────────────────────────
+
+describe("contextViewForRole", () => {
+  it('returns "implementation" for implementation role', () => {
+    expect(contextViewForRole("implementation")).toBe("implementation");
+  });
+
+  it('returns "implementation" for planning role', () => {
+    expect(contextViewForRole("planning")).toBe("implementation");
+  });
+
+  it('returns "review" for code_review role', () => {
+    expect(contextViewForRole("code_review")).toBe("review");
+  });
+
+  it('returns "review" for test_review role', () => {
+    expect(contextViewForRole("test_review")).toBe("review");
+  });
+
+  it('returns "implementation" for testing role', () => {
+    expect(contextViewForRole("testing")).toBe("implementation");
+  });
+
+  it('returns "implementation" for integration role', () => {
+    expect(contextViewForRole("integration")).toBe("implementation");
+  });
+
+  it('returns "implementation" for merge role', () => {
+    expect(contextViewForRole("merge")).toBe("implementation");
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// evaluateRecoveryLoop
+// ─────────────────────────────────────────────────────
+
+describe("evaluateRecoveryLoop", () => {
+  function makeIteration(overrides: Partial<RecoveryLoopIteration> & { outcome: RecoveryLoopIteration["outcome"] }): RecoveryLoopIteration {
+    return {
+      iteration: overrides.iteration ?? 1,
+      triggerStepId: overrides.triggerStepId ?? "step-1",
+      triggerPhase: overrides.triggerPhase ?? "testing",
+      failureReason: overrides.failureReason ?? "test failed",
+      fixStepId: overrides.fixStepId ?? null,
+      reReviewStepId: overrides.reReviewStepId ?? null,
+      reTestStepId: overrides.reTestStepId ?? null,
+      outcome: overrides.outcome,
+      confidence: overrides.confidence,
+      startedAt: overrides.startedAt ?? "2026-02-20T00:00:00.000Z",
+      completedAt: overrides.completedAt ?? "2026-02-20T00:01:00.000Z"
+    };
+  }
+
+  const enabledPolicy: RecoveryLoopPolicy = {
+    enabled: true,
+    maxIterations: 3,
+    onExhaustion: "fail",
+    escalateAfterStagnant: 2
+  };
+
+  it("should retry when under max iterations", () => {
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [makeIteration({ outcome: "still_failing", iteration: 1 })],
+      currentIteration: 1,
+      exhausted: false,
+      stopReason: null
+    };
+    const result = evaluateRecoveryLoop(state, enabledPolicy);
+    expect(result.shouldRetry).toBe(true);
+    expect(result.action).toBe("fix");
+    expect(result.reason).toContain("retrying");
+  });
+
+  it("should stop when max iterations reached", () => {
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [
+        makeIteration({ outcome: "still_failing", iteration: 1 }),
+        makeIteration({ outcome: "still_failing", iteration: 2 }),
+        makeIteration({ outcome: "still_failing", iteration: 3 })
+      ],
+      currentIteration: 3,
+      exhausted: false,
+      stopReason: null
+    };
+    const result = evaluateRecoveryLoop(state, enabledPolicy);
+    expect(result.shouldRetry).toBe(false);
+    expect(result.action).toBe("stop");
+    expect(result.reason).toContain("Max iterations");
+  });
+
+  it("should escalate after stagnant failures", () => {
+    const policy: RecoveryLoopPolicy = {
+      enabled: true,
+      maxIterations: 5,
+      onExhaustion: "intervention",
+      escalateAfterStagnant: 2
+    };
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [
+        makeIteration({ outcome: "still_failing", iteration: 1 }),
+        makeIteration({ outcome: "still_failing", iteration: 2 })
+      ],
+      currentIteration: 2,
+      exhausted: false,
+      stopReason: null
+    };
+    const result = evaluateRecoveryLoop(state, policy);
+    expect(result.shouldRetry).toBe(false);
+    expect(result.action).toBe("escalate");
+    expect(result.reason).toContain("Stagnation");
+  });
+
+  it("disabled policy returns shouldRetry: false", () => {
+    const disabledPolicy: RecoveryLoopPolicy = {
+      enabled: false,
+      maxIterations: 3,
+      onExhaustion: "fail"
+    };
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [],
+      currentIteration: 0,
+      exhausted: false,
+      stopReason: null
+    };
+    const result = evaluateRecoveryLoop(state, disabledPolicy);
+    expect(result.shouldRetry).toBe(false);
+    expect(result.action).toBe("stop");
+    expect(result.reason).toContain("disabled");
+  });
+
+  it('returns "fix" action when retry is allowed', () => {
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [],
+      currentIteration: 0,
+      exhausted: false,
+      stopReason: null
+    };
+    const result = evaluateRecoveryLoop(state, enabledPolicy);
+    expect(result.shouldRetry).toBe(true);
+    expect(result.action).toBe("fix");
+  });
+
+  it("escalates when max iterations reached and onExhaustion is intervention", () => {
+    const policy: RecoveryLoopPolicy = {
+      enabled: true,
+      maxIterations: 2,
+      onExhaustion: "intervention"
+    };
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [
+        makeIteration({ outcome: "still_failing", iteration: 1 }),
+        makeIteration({ outcome: "still_failing", iteration: 2 })
+      ],
+      currentIteration: 2,
+      exhausted: false,
+      stopReason: null
+    };
+    const result = evaluateRecoveryLoop(state, policy);
+    expect(result.shouldRetry).toBe(false);
+    expect(result.action).toBe("escalate");
+    expect(result.reason).toContain("Escalating");
+  });
+
+  it("stops when exhausted flag is already set", () => {
+    const state: RecoveryLoopState = {
+      runId: "run-1",
+      iterations: [],
+      currentIteration: 1,
+      exhausted: true,
+      stopReason: "max iterations reached"
+    };
+    const result = evaluateRecoveryLoop(state, enabledPolicy);
+    expect(result.shouldRetry).toBe(false);
+    expect(result.reason).toContain("exhausted");
   });
 });

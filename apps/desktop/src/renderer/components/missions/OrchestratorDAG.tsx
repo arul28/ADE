@@ -196,15 +196,19 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
   if (steps.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded border border-border/20 bg-card/60 p-6 text-[11px] text-muted-fg">
+      <div className="flex items-center justify-center rounded border border-border/20 bg-card/60 p-6 text-xs text-muted-fg">
         No steps to display
       </div>
     );
   }
 
   return (
-    <div className="overflow-auto rounded border border-border/20 bg-card/60">
+    <div
+      className="overflow-auto rounded border border-border/20 bg-card/60"
+      style={{ perspective: '1200px', perspectiveOrigin: '50% 40%' }}
+    >
       <svg
+        style={{ transformStyle: 'preserve-3d' }}
         width={svgWidth}
         height={svgHeight}
         viewBox={`0 0 ${svgWidth} ${svgHeight}`}
@@ -236,6 +240,9 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
           const isMergeNode = MERGE_NODE_KINDS.has(phaseKind);
           const isGateNode = phaseKind === "review" || phaseKind === "validation";
 
+          const isFailed = node.step.status === "failed";
+          const isSucceeded = node.step.status === "succeeded";
+
           return (
             <g
               key={node.step.id}
@@ -244,27 +251,55 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
               onMouseEnter={() => setHoveredId(node.step.id)}
               onMouseLeave={() => setHoveredId(null)}
               className="cursor-pointer"
+              style={{
+                transformStyle: 'preserve-3d',
+                transition: 'transform 200ms ease',
+                transform: isHovered ? 'translateZ(10px) scale(1.05)' : 'none'
+              }}
             >
-              {/* Running pulse animation */}
+              {/* Running: spinning ring (thin blue border, 4s rotation) */}
               {isRunning && (
-                <rect
-                  x={-2}
-                  y={-2}
-                  width={NODE_W + 4}
-                  height={NODE_H + 4}
-                  rx={10}
-                  fill="none"
-                  stroke={statusColor}
-                  strokeWidth={2}
-                  opacity={0.4}
-                >
-                  <animate
-                    attributeName="opacity"
-                    values="0.4;0.1;0.4"
-                    dur="1.5s"
-                    repeatCount="indefinite"
-                  />
-                </rect>
+                <g>
+                  <rect
+                    x={-3}
+                    y={-3}
+                    width={NODE_W + 6}
+                    height={NODE_H + 6}
+                    rx={11}
+                    fill="none"
+                    stroke="#3b82f6"
+                    strokeWidth={1.5}
+                    strokeDasharray="12 8"
+                    opacity={0.7}
+                  >
+                    <animateTransform
+                      attributeName="transform"
+                      type="rotate"
+                      from={`0 ${(NODE_W + 6) / 2} ${(NODE_H + 6) / 2}`}
+                      to={`360 ${(NODE_W + 6) / 2} ${(NODE_H + 6) / 2}`}
+                      dur="4s"
+                      repeatCount="indefinite"
+                    />
+                  </rect>
+                  <rect
+                    x={-2}
+                    y={-2}
+                    width={NODE_W + 4}
+                    height={NODE_H + 4}
+                    rx={10}
+                    fill="none"
+                    stroke={statusColor}
+                    strokeWidth={2}
+                    opacity={0.4}
+                  >
+                    <animate
+                      attributeName="opacity"
+                      values="0.4;0.1;0.4"
+                      dur="1.5s"
+                      repeatCount="indefinite"
+                    />
+                  </rect>
+                </g>
               )}
 
               {/* Phase tint background */}
@@ -344,6 +379,22 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
               >
                 {node.step.status}
               </text>
+
+              {/* Completed: green check icon */}
+              {isSucceeded && (
+                <g transform={`translate(${NODE_W - 18}, 2)`}>
+                  <circle cx={7} cy={7} r={7} fill="#22c55e" opacity={0.2} />
+                  <text x={7} y={11} textAnchor="middle" fill="#22c55e" fontSize={10} fontWeight={700}>{"\u2713"}</text>
+                </g>
+              )}
+
+              {/* Failed: red X icon */}
+              {isFailed && (
+                <g transform={`translate(${NODE_W - 18}, 2)`}>
+                  <circle cx={7} cy={7} r={7} fill="#ef4444" opacity={0.2} />
+                  <text x={7} y={11} textAnchor="middle" fill="#ef4444" fontSize={10} fontWeight={700}>{"\u2717"}</text>
+                </g>
+              )}
 
               {/* Attempt count badge */}
               {node.attemptCount > 0 && (

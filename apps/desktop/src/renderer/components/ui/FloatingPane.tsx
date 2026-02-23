@@ -1,6 +1,6 @@
 import React from "react";
-import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { CaretDown, CaretRight, DotsSixVertical } from "@phosphor-icons/react";
+import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { cn } from "./cn";
 import type { DropEdge } from "./paneTreeOps";
 
@@ -46,7 +46,7 @@ export function FloatingPane({
 }: {
   id: string;
   title: string;
-  icon?: LucideIcon;
+  icon?: PhosphorIcon;
   meta?: React.ReactNode;
   headerActions?: React.ReactNode;
   minimized?: boolean;
@@ -119,7 +119,7 @@ export function FloatingPane({
       >
         <div className="flex items-center gap-1 min-w-0">
           {isDraggable ? (
-            <GripVertical className="h-2.5 w-2.5 text-muted-fg/30 shrink-0 cursor-grab" />
+            <DotsSixVertical size={10} weight="regular" className="text-muted-fg/30 shrink-0 cursor-grab" />
           ) : null}
           {minimizable ? (
             <button
@@ -138,16 +138,16 @@ export function FloatingPane({
               title={minimized ? "Expand pane" : "Minimize pane"}
             >
               {minimized ? (
-                <ChevronRight className="h-3 w-3" />
+                <CaretRight size={12} weight="regular" />
               ) : (
-                <ChevronDown className="h-3 w-3" />
+                <CaretDown size={12} weight="regular" />
               )}
             </button>
           ) : null}
           {Icon ? (
-            <Icon className={cn(
+            <Icon size={minimized ? 14 : 12} weight="regular" className={cn(
               "shrink-0",
-              minimized ? "h-3.5 w-3.5 text-fg/70" : "h-3 w-3 text-muted-fg/50"
+              minimized ? "text-fg/70" : "text-muted-fg/50"
             )} />
           ) : null}
           <span className={cn("ade-pane-title truncate")}>{title}</span>

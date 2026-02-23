@@ -1,6 +1,6 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GitPullRequest, Layers, GitMerge } from "lucide-react";
+import { GitPullRequest, Stack as Layers, GitMerge } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -173,7 +173,7 @@ export function CreatePrModal({
                       "border-border bg-card/50 hover:bg-card/80 hover:border-accent/30"
                     )}
                   >
-                    <Icon className="h-5 w-5 text-accent shrink-0" />
+                    <Icon size={20} weight="regular" className="text-accent shrink-0" />
                     <div>
                       <div className="text-sm font-medium text-fg">{m.label}</div>
                       <div className="text-xs text-muted-fg">{m.desc}</div>
@@ -245,7 +245,7 @@ export function CreatePrModal({
                             onChange={() => toggleStackedLane(lane.id)}
                           />
                           <span className="truncate font-medium text-fg">{lane.name}</span>
-                          <span className="ml-auto text-[10px] text-muted-fg">{lane.branchRef}</span>
+                          <span className="ml-auto text-[11px] text-muted-fg">{lane.branchRef}</span>
                         </label>
                       ))}
                     </div>
@@ -327,7 +327,7 @@ export function CreatePrModal({
                       )} />
                       <div>
                         <div className="font-medium text-fg">{m.label}</div>
-                        <div className="mt-0.5 text-[10px] text-muted-fg">{m.desc}</div>
+                        <div className="mt-0.5 text-[11px] text-muted-fg">{m.desc}</div>
                       </div>
                     </button>
                   ))}

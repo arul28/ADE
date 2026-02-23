@@ -254,7 +254,9 @@ import type {
   ListOrchestratorLaneDecisionsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
-  SetMissionMetricsConfigArgs
+  SetMissionMetricsConfigArgs,
+  ExecutionPlanPreview,
+  SendAgentMessageArgs
 } from "../shared/types";
 
 export {};
@@ -367,6 +369,9 @@ declare global {
         listLaneDecisions: (args: ListOrchestratorLaneDecisionsArgs) => Promise<OrchestratorLaneDecision[]>;
         getMissionMetrics: (args: GetMissionMetricsArgs) => Promise<{ config: MissionMetricsConfig | null; samples: MissionMetricSample[] }>;
         setMissionMetricsConfig: (args: SetMissionMetricsConfigArgs) => Promise<MissionMetricsConfig>;
+        getExecutionPlanPreview: (args: { runId: string }) => Promise<ExecutionPlanPreview | null>;
+        sendAgentMessage: (args: SendAgentMessageArgs) => Promise<OrchestratorChatMessage>;
+        getAggregatedUsage: (args: import("../shared/types").GetAggregatedUsageArgs) => Promise<import("../shared/types").AggregatedUsageStats>;
         onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => () => void;
         onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => () => void;
       };

@@ -3,19 +3,19 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Brain,
-  ChevronDown,
-  ChevronRight,
-  AlertTriangle,
+  CaretDown,
+  CaretRight,
+  Warning,
   Terminal,
   FileCode,
   Wrench,
-  CheckCircle2,
+  CheckCircle,
   XCircle,
-  Loader2,
+  SpinnerGap,
   Circle,
-  CheckCheck,
+  Checks,
   ListChecks
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
@@ -125,16 +125,16 @@ function StatusDot({ status }: { status: "running" | "completed" | "failed" }) {
 }
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" }) {
-  if (status === "completed") return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />;
-  if (status === "failed") return <XCircle className="h-3.5 w-3.5 text-red-400" />;
-  return <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />;
+  if (status === "completed") return <CheckCircle size={14} weight="regular" className="text-emerald-400" />;
+  if (status === "failed") return <XCircle size={14} weight="regular" className="text-red-400" />;
+  return <SpinnerGap size={14} weight="regular" className="animate-spin text-sky-400" />;
 }
 
 function PlanStepIcon({ status }: { status: string }) {
-  if (status === "completed") return <CheckCheck className="h-3.5 w-3.5 text-emerald-400" />;
-  if (status === "failed") return <XCircle className="h-3.5 w-3.5 text-red-400" />;
-  if (status === "in_progress") return <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />;
-  return <Circle className="h-3 w-3 text-muted-fg" />;
+  if (status === "completed") return <Checks size={14} weight="regular" className="text-emerald-400" />;
+  if (status === "failed") return <XCircle size={14} weight="regular" className="text-red-400" />;
+  if (status === "in_progress") return <SpinnerGap size={14} weight="regular" className="animate-spin text-sky-400" />;
+  return <Circle size={12} weight="regular" className="text-muted-fg" />;
 }
 
 function MarkdownBlock({ markdown }: { markdown: string }) {
@@ -194,7 +194,7 @@ function CollapsibleCard({
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px]"
         onClick={() => setOpen((v) => !v)}
       >
-        {open ? <ChevronDown className="h-3 w-3 text-muted-fg" /> : <ChevronRight className="h-3 w-3 text-muted-fg" />}
+        {open ? <CaretDown size={12} weight="regular" className="text-muted-fg" /> : <CaretRight size={12} weight="regular" className="text-muted-fg" />}
         <div className="flex flex-1 flex-wrap items-center gap-2">{summary}</div>
       </button>
       {open ? <div className="border-t border-border/20 px-3 pb-2.5 pt-2">{children}</div> : null}
@@ -261,12 +261,12 @@ function renderEvent(envelope: RenderEnvelope) {
     return (
       <div className="flex justify-end">
         <div className="max-w-[88%] rounded-2xl border border-accent/25 bg-accent/[0.08] px-4 py-2.5 text-xs leading-relaxed text-card-fg shadow-card">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-accent/70">You</div>
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-accent/70">You</div>
           <div className="whitespace-pre-wrap break-words">{event.text}</div>
           {event.attachments?.length ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {event.attachments.map((attachment, index) => (
-                <Chip key={`${attachment.path}:${index}`} className="bg-accent/15 text-[10px] text-fg/80">
+                <Chip key={`${attachment.path}:${index}`} className="bg-accent/15 text-[11px] text-fg/80">
                   {attachment.type}: {attachment.path}
                 </Chip>
               ))}
@@ -282,7 +282,7 @@ function renderEvent(envelope: RenderEnvelope) {
     return (
       <div className="flex justify-start">
         <div className="max-w-[92%] rounded-2xl border-l-2 border-l-sky-500/50 border-y border-r border-y-border/20 border-r-border/20 bg-card/60 px-4 py-2.5 text-xs leading-relaxed text-fg/90 shadow-[0_1px_4px_rgba(0,0,0,0.1)]">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-sky-400/70">Agent</div>
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-sky-400/70">Agent</div>
           <MarkdownBlock markdown={event.text} />
         </div>
       </div>
@@ -296,11 +296,11 @@ function renderEvent(envelope: RenderEnvelope) {
 
     const commandHeader = (
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
-        <Terminal className="h-3.5 w-3.5 text-amber-500/70" />
+        <Terminal size={14} weight="regular" className="text-amber-500/70" />
         <span className="font-semibold text-fg/80">Command</span>
         <StatusDot status={event.status} />
         <span className="text-muted-fg/80">{event.status}</span>
-        {event.exitCode != null ? <Chip className="text-[10px]">exit {event.exitCode}</Chip> : null}
+        {event.exitCode != null ? <Chip className="text-[11px]">exit {event.exitCode}</Chip> : null}
         {event.durationMs != null ? <span className="text-muted-fg/60">{Math.max(0, event.durationMs)}ms</span> : null}
       </div>
     );
@@ -343,11 +343,11 @@ function renderEvent(envelope: RenderEnvelope) {
     const hasDiff = event.diff.trim().length > 0;
     const summary = (
       <div className="flex flex-wrap items-center gap-2 text-[11px]">
-        <FileCode className="h-3.5 w-3.5 text-emerald-400/70" />
+        <FileCode size={14} weight="regular" className="text-emerald-400/70" />
         <span className="font-semibold text-fg/80">File change</span>
         <StatusDot status={event.status ?? "running"} />
-        <Chip className="text-[10px]">{event.kind}</Chip>
-        <span className="truncate font-mono text-[10px] text-muted-fg/80">{event.path}</span>
+        <Chip className="text-[11px]">{event.kind}</Chip>
+        <span className="truncate font-mono text-[11px] text-muted-fg/80">{event.path}</span>
       </div>
     );
 
@@ -371,7 +371,7 @@ function renderEvent(envelope: RenderEnvelope) {
     return (
       <div className="rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-3 shadow-[0_1px_4px_rgba(0,0,0,0.08)]">
         <div className="mb-2.5 flex items-center gap-2 text-[11px]">
-          <ListChecks className="h-3.5 w-3.5 text-violet-400/70" />
+          <ListChecks size={14} weight="regular" className="text-violet-400/70" />
           <span className="font-semibold text-fg/80">Plan</span>
         </div>
         <div className="space-y-1.5 text-[11px]">
@@ -405,7 +405,7 @@ function renderEvent(envelope: RenderEnvelope) {
         defaultOpen={false}
         summary={
           <div className="flex items-center gap-2 text-[11px]">
-            <Brain className="h-3.5 w-3.5 text-purple-400/70" />
+            <Brain size={14} weight="regular" className="text-purple-400/70" />
             <span className="font-medium text-purple-500/80">Thinking</span>
           </div>
         }
@@ -425,9 +425,9 @@ function renderEvent(envelope: RenderEnvelope) {
         defaultOpen={false}
         summary={
           <div className="flex items-center gap-2 text-[11px]">
-            <Wrench className="h-3.5 w-3.5 text-sky-400/70" />
+            <Wrench size={14} weight="regular" className="text-sky-400/70" />
             <span className="font-semibold text-fg/80">Tool call</span>
-            <span className="font-mono text-[10px] text-accent/70">{event.tool}</span>
+            <span className="font-mono text-[11px] text-accent/70">{event.tool}</span>
           </div>
         }
         className="border-border/25 bg-card/50"
@@ -448,10 +448,10 @@ function renderEvent(envelope: RenderEnvelope) {
           <div className="flex items-center gap-2 text-[11px]">
             <StatusIcon status={event.status ?? "completed"} />
             <span className="font-semibold text-fg/80">Tool result</span>
-            <span className="font-mono text-[10px] text-accent/70">{event.tool}</span>
+            <span className="font-mono text-[11px] text-accent/70">{event.tool}</span>
             {event.status ? (
               <span className={cn(
-                "text-[10px]",
+                "text-[11px]",
                 event.status === "completed" ? "text-emerald-400/80" : event.status === "failed" ? "text-red-400/80" : "text-sky-400/80"
               )}>
                 {event.status}
@@ -473,26 +473,26 @@ function renderEvent(envelope: RenderEnvelope) {
     return (
       <div className="rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-500/[0.08] to-amber-400/[0.04] p-3 shadow-card">
         <div className="mb-1.5 flex items-center gap-2 text-[11px]">
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+          <Warning size={14} weight="regular" className="text-amber-500" />
           <span className="font-semibold text-fg/90">Approval required</span>
         </div>
         <div className="text-[11px] text-fg/80">{event.description}</div>
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            className="rounded-md border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-[10px] font-medium text-fg transition-colors hover:bg-amber-500/25"
+            className="rounded-md border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-fg transition-colors hover:bg-amber-500/25"
           >
             Accept
           </button>
           <button
             type="button"
-            className="rounded-md border border-amber-500/20 bg-transparent px-2.5 py-1 text-[10px] font-medium text-fg/80 transition-colors hover:bg-amber-500/10"
+            className="rounded-md border border-amber-500/20 bg-transparent px-2.5 py-1 text-[11px] font-medium text-fg/80 transition-colors hover:bg-amber-500/10"
           >
             Accept Session
           </button>
           <button
             type="button"
-            className="rounded-md border border-amber-500/20 bg-transparent px-2.5 py-1 text-[10px] font-medium text-fg/80 transition-colors hover:bg-amber-500/10"
+            className="rounded-md border border-amber-500/20 bg-transparent px-2.5 py-1 text-[11px] font-medium text-fg/80 transition-colors hover:bg-amber-500/10"
           >
             Decline
           </button>
@@ -506,7 +506,7 @@ function renderEvent(envelope: RenderEnvelope) {
     return (
       <div className="rounded-xl border border-red-500/30 bg-gradient-to-r from-red-500/[0.08] to-red-400/[0.04] p-3 shadow-card">
         <div className="mb-1.5 flex items-center gap-2 text-[11px]">
-          <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
+          <Warning size={14} weight="regular" className="text-red-500" />
           <span className="font-semibold text-fg/90">Error</span>
         </div>
         <div className="whitespace-pre-wrap break-words text-[11px] text-fg/85">{event.message}</div>
@@ -598,7 +598,7 @@ export function AgentChatMessageList({
             return (
               <div key={envelope.key} className="space-y-1.5">
                 {showTurnDivider ? (
-                  <div className="flex items-center gap-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg/60">
+                  <div className="flex items-center gap-2 py-1 text-[11px] uppercase tracking-wider text-muted-fg/60">
                     <div className="h-px flex-1 bg-border/20" />
                     <span>Turn · {formatTime(envelope.timestamp)}</span>
                     <div className="h-px flex-1 bg-border/20" />

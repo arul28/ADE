@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Folder, FolderSearch, Plus, Search, Trash2, X } from "lucide-react";
-import { Button } from "../ui/Button";
+import { Folder, FolderOpen, Plus, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
+
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import type { RecentProjectSummary } from "../../../shared/types";
@@ -77,21 +77,29 @@ export function TopBar({
   }, [switchProjectToPath]);
 
   return (
-    <header className="flex h-[38px] items-center gap-2.5 ade-panel-header px-3 bg-bg border-b border-border/40">
+    <header className="flex h-[40px] items-center gap-3 px-3.5 bg-surface-raised border-b border-border/30">
       {/* Branding */}
-      <div className="font-mono text-[11px] font-semibold tracking-widest shrink-0 text-accent uppercase">ADE</div>
+      <div className="shrink-0 select-none text-[14px] font-bold tracking-[0.05em] text-accent">
+        ADE
+      </div>
 
-      <div className="h-3 w-px bg-border/20 shrink-0" />
+      {/* Divider */}
+      <div className="h-4 w-px shrink-0 bg-border/30" />
 
       {/* Project tabs */}
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none">
         {recentProjects.length === 0 && !project ? (
           <button
             type="button"
-            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono text-muted-fg hover:bg-muted/30 hover:text-fg transition-colors"
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-3 py-1",
+              "text-[11px] font-mono text-muted-fg",
+              "hover:bg-accent/10 hover:text-fg",
+              "transition-all duration-150"
+            )}
             onClick={handleOpenNew}
           >
-            <Folder className="h-3 w-3" />
+            <Folder size={12} weight="regular" />
             Open a project
           </button>
         ) : (
@@ -104,19 +112,30 @@ export function TopBar({
                 <div
                   key={rp.rootPath}
                   className={cn(
-                    "group inline-flex max-w-[180px] shrink-0 items-center gap-1 rounded px-2 py-1 text-[11px] font-mono transition-colors",
+                    "group inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-mono transition-all duration-150",
                     isMissing
-                      ? "opacity-40 text-muted-fg"
+                      ? "bg-red-500/8 text-red-400/60 hover:bg-red-500/12"
                       : isCurrent
-                        ? "bg-accent/8 text-fg border-b border-accent"
-                        : "text-muted-fg hover:bg-muted/30 hover:text-fg cursor-pointer"
+                        ? "bg-accent text-accent-fg shadow-sm"
+                        : "text-muted-fg hover:bg-muted/40 hover:text-fg cursor-pointer"
                   )}
                   onClick={() => {
                     if (!isMissing) handleSwitchProject(rp.rootPath);
                   }}
                   title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
                 >
-                  <Folder className={cn("h-2.5 w-2.5 shrink-0", isMissing && "text-red-400")} />
+                  <Folder
+                    size={12}
+                    weight="regular"
+                    className={cn(
+                      "shrink-0",
+                      isMissing
+                        ? "text-red-400/70"
+                        : isCurrent
+                          ? "text-accent-fg/80"
+                          : "text-muted-fg/60"
+                    )}
+                  />
                   {isCurrent && terminalAttention.indicator !== "none" ? (
                     <span
                       title={
@@ -126,44 +145,59 @@ export function TopBar({
                       }
                       className={cn(
                         "h-1.5 w-1.5 shrink-0 rounded-full",
-                        terminalAttention.indicator === "running-needs-attention" ? "bg-amber-400" : "bg-emerald-500"
+                        terminalAttention.indicator === "running-needs-attention"
+                          ? "bg-amber-400 shadow-[0_0_4px_rgba(251,191,36,0.6)]"
+                          : "bg-emerald-400 shadow-[0_0_4px_rgba(52,211,153,0.5)]"
                       )}
                     />
                   ) : null}
-                  <span className={cn("truncate", isMissing && "line-through")}>{rp.displayName}</span>
+                  <span
+                    className={cn(
+                      "truncate",
+                      isMissing && "line-through decoration-red-400/50"
+                    )}
+                  >
+                    {rp.displayName}
+                  </span>
                   {isMissing ? (
-                    <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                       <span
-                        className="inline-flex h-4 w-4 items-center justify-center rounded-md hover:bg-muted/70 cursor-pointer"
+                        className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-red-500/15 cursor-pointer transition-colors duration-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRelocate(rp.rootPath);
                         }}
                         title="Relocate project"
                       >
-                        <FolderSearch className="h-2.5 w-2.5" />
+                        <FolderOpen size={12} weight="regular" />
                       </span>
                       <span
-                        className="inline-flex h-4 w-4 items-center justify-center rounded-md hover:bg-red-500/20 cursor-pointer"
+                        className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-red-500/20 cursor-pointer transition-colors duration-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRemoveTab(rp.rootPath);
                         }}
                         title="Remove from list"
                       >
-                        <Trash2 className="h-2.5 w-2.5 text-red-400" />
+                        <Trash size={12} weight="regular" className="text-red-400" />
                       </span>
                     </span>
                   ) : canClose ? (
                     <span
-                      className="inline-flex h-4 w-4 items-center justify-center rounded-md opacity-0 group-hover:opacity-100 hover:bg-muted/70 transition-opacity"
+                      className={cn(
+                        "inline-flex h-4 w-4 items-center justify-center rounded-full",
+                        "opacity-0 group-hover:opacity-100 transition-all duration-150",
+                        isCurrent
+                          ? "hover:bg-accent-fg/20"
+                          : "hover:bg-muted/60"
+                      )}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleRemoveTab(rp.rootPath);
                       }}
                       title="Remove from tabs"
                     >
-                      <X className="h-2.5 w-2.5" />
+                      <X size={12} weight="regular" />
                     </span>
                   ) : null}
                 </div>
@@ -172,23 +206,47 @@ export function TopBar({
           </>
         )}
 
-        {/* Add project tab */}
+        {/* Add project button */}
         <button
           type="button"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-fg/40 hover:bg-muted/20 hover:text-fg transition-colors"
+          className={cn(
+            "inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center rounded-full",
+            "text-muted-fg/40 hover:bg-accent/10 hover:text-accent",
+            "transition-all duration-150"
+          )}
           onClick={handleOpenNew}
           title="Open another project"
         >
-          <Plus className="h-3 w-3" />
+          <Plus size={12} weight="regular" />
         </button>
       </div>
 
       {/* Command palette */}
-      <Button variant="ghost" size="sm" className="shrink-0 rounded gap-1" onClick={onOpenCommandPalette} title="Command palette">
-        <Search className="h-3 w-3" />
-        <span className="hidden sm:inline font-mono text-[10px]">Commands</span>
-        <span className="hidden md:inline font-mono text-[9px] text-muted-fg/50">{commandHint}</span>
-      </Button>
+      <button
+        type="button"
+        className={cn(
+          "shrink-0 inline-flex items-center gap-1.5 rounded",
+          "h-[26px] px-2.5",
+          "border border-border/40 bg-transparent",
+          "text-muted-fg hover:text-fg hover:border-accent/30 hover:bg-muted/20",
+          "transition-all duration-150"
+        )}
+        onClick={onOpenCommandPalette}
+        title="Command palette"
+      >
+        <MagnifyingGlass size={13} weight="regular" className="shrink-0 opacity-50" />
+        <span className="hidden sm:inline text-xs">Commands</span>
+        <span
+          className={cn(
+            "hidden md:inline font-mono text-[10px]",
+            "rounded px-1 py-px",
+            "bg-muted/40 text-muted-fg/60",
+            "border border-border/30"
+          )}
+        >
+          {commandHint}
+        </span>
+      </button>
     </header>
   );
 }

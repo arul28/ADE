@@ -121,7 +121,7 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   mission_planning: {
     provider: "claude",
     model: "sonnet",
-    timeoutMs: 45_000,
+    timeoutMs: 300_000,
     permissionMode: "read-only"
   },
   initial_context: {

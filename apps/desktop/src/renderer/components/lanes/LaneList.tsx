@@ -3,7 +3,7 @@ import { useAppStore } from "../../state/appStore";
 import { LaneRow } from "./LaneRow";
 import { PaneHeader } from "../ui/PaneHeader";
 import { Button } from "../ui/Button";
-import { RefreshCw } from "lucide-react";
+import { ArrowsClockwise } from "@phosphor-icons/react";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import type { LaneSummary } from "../../../shared/types";
@@ -125,7 +125,7 @@ export function LaneList({
               });
             }}
           >
-            <RefreshCw className="h-4 w-4" />
+            <ArrowsClockwise size={16} />
           </Button>
         }
       />
@@ -180,7 +180,7 @@ export function LaneList({
                 key={`stack:${lane.id}`}
                 type="button"
                 className={cn(
-                  "relative flex w-full items-center justify-between rounded-lg px-1 py-1 text-left text-[11px] transition-colors",
+                  "relative flex w-full items-center justify-between rounded-lg px-1 py-1 text-left text-xs transition-colors",
                   selectedIdSet.has(lane.id) ? "bg-accent/10 text-fg shadow-card" : "text-muted-fg hover:bg-muted/30 hover:text-fg"
                 )}
                 onClick={() => {
@@ -214,7 +214,7 @@ export function LaneList({
                   />
                   <span className="truncate">{lane.name}</span>
                 </span>
-                <span className="ml-2 shrink-0 font-mono text-[10px]">
+                <span className="ml-2 shrink-0 font-mono text-[11px]">
                   {lane.status.ahead}↑ {lane.status.behind}↓
                 </span>
               </button>

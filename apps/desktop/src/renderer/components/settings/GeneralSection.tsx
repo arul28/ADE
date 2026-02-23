@@ -5,113 +5,49 @@ import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 
-const THEME_META: Record<
-  ThemeId,
-  { label: string; colors: { bg: string; fg: string; card: string; muted: string; border: string; accent: string; accentSecondary: string } }
-> = {
-  "e-paper": {
-    label: "E-Paper",
-    colors: {
-      bg: "#fdfbf7",
-      fg: "#201a14",
-      card: "#fdfbf7",
-      muted: "#efe8dd",
-      border: "#d3cfc6",
-      accent: "#c22323",
-      accentSecondary: "#ddd1be"
-    }
+const THEME_META: Record<ThemeId, { label: string; description: string; colors: { bg: string; fg: string; accent: string; card: string; border: string } }> = {
+  dark: {
+    label: "Dark",
+    description: "After-hours office. Cyan glows against dark surfaces.",
+    colors: { bg: "#0f0f11", fg: "#e4e4e7", accent: "#06d6a0", card: "#18181b", border: "#27272a" }
   },
-  bloomberg: {
-    label: "Bloomberg",
-    colors: {
-      bg: "#0a0a0a",
-      fg: "#ffc87a",
-      card: "#16110a",
-      muted: "#1f180f",
-      border: "#403121",
-      accent: "#ff7a00",
-      accentSecondary: "#4f3c1f"
-    }
-  },
-  github: {
-    label: "GitHub",
-    colors: {
-      bg: "#0d1117",
-      fg: "#c9d1d9",
-      card: "#111b2c",
-      muted: "#1d2a3a",
-      border: "#2f3b49",
-      accent: "#58a6ff",
-      accentSecondary: "#1f6feb"
-    }
-  },
-  rainbow: {
-    label: "Rainbow",
-    colors: {
-      bg: "#1b1f23",
-      fg: "#e6edf3",
-      card: "#222737",
-      muted: "#2a3342",
-      border: "#525e72",
-      accent: "#fb7185",
-      accentSecondary: "#c084fc"
-    }
-  },
-  sky: {
-    label: "Sky",
-    colors: {
-      bg: "#f0f6ff",
-      fg: "#1e3a8a",
-      card: "#f7faff",
-      muted: "#dbeafe",
-      border: "#b7d5ff",
-      accent: "#2563eb",
-      accentSecondary: "#14b8a6"
-    }
-  },
-  pats: {
-    label: "Pats",
-    colors: {
-      bg: "#001a36",
-      fg: "#edf4ff",
-      card: "#001a34",
-      muted: "#163f66",
-      border: "#c60c30",
-      accent: "#c60c30",
-      accentSecondary: "#0d426b"
-    }
+  light: {
+    label: "Light",
+    description: "Morning office. Sunlit, clean, crisp accent.",
+    colors: { bg: "#f5f5f6", fg: "#0f0f11", accent: "#049068", card: "#ffffff", border: "#d4d4d8" }
   }
 };
 
 function ThemeSwatch({ themeId, selected, onClick }: { themeId: ThemeId; selected: boolean; onClick: () => void }) {
-  const { label, colors } = THEME_META[themeId];
+  const { label, description, colors } = THEME_META[themeId];
   return (
     <button
       onClick={onClick}
       className={cn(
-        "group relative flex flex-col items-center gap-1.5 rounded-lg p-2 transition-all",
-        "hover:bg-muted/40",
-        selected && "ring-2 ring-accent ring-offset-1"
+        "group relative flex items-center gap-3 rounded-lg p-3 transition-all border",
+        selected
+          ? "border-accent bg-accent/5 ring-1 ring-accent/30"
+          : "border-border hover:border-border/80 hover:bg-muted/20"
       )}
-      style={{ "--tw-ring-offset-color": "var(--color-bg)" } as React.CSSProperties}
       title={label}
     >
       <div
-        className="h-12 w-12 rounded-md border overflow-hidden"
+        className="h-14 w-20 shrink-0 rounded-md border overflow-hidden"
         style={{ backgroundColor: colors.bg, borderColor: colors.border }}
       >
-        <div className="h-2 w-full" style={{ backgroundColor: colors.card }} />
-        <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accent }} />
-        <div className="mx-auto mt-1 h-1.5 w-8 rounded-full" style={{ backgroundColor: colors.accentSecondary }} />
-        <div className="mx-1 mt-1 space-y-0.5">
-          <div className="h-0.5 w-6 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.6 }} />
-          <div className="h-0.5 w-4 rounded-full" style={{ backgroundColor: colors.muted, opacity: 0.75 }} />
-          <div className="h-0.5 w-5 rounded-full" style={{ backgroundColor: colors.muted, opacity: 0.55 }} />
+        <div className="h-2.5 w-full" style={{ backgroundColor: colors.card }} />
+        <div className="mx-auto mt-1.5 h-1.5 w-12 rounded-full" style={{ backgroundColor: colors.accent }} />
+        <div className="mx-1.5 mt-1.5 space-y-1">
+          <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.5 }} />
+          <div className="h-0.5 w-7 rounded-full" style={{ backgroundColor: colors.fg, opacity: 0.3 }} />
         </div>
       </div>
-      <span className="text-[10px] font-medium leading-none">{label}</span>
+      <div className="text-left">
+        <div className="text-sm font-medium">{label}</div>
+        <div className="text-xs text-muted-fg mt-0.5">{description}</div>
+      </div>
       {selected && (
-        <div className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent text-accent-fg text-[8px] font-bold">
+        <div className="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-accent-fg text-[10px] font-bold">
           ✓
         </div>
       )}
@@ -427,7 +363,7 @@ export function GeneralSection() {
       ) : null}
       <div>
         <div className="text-sm font-semibold">Theme</div>
-        <div className="mt-2 flex flex-wrap gap-1">
+        <div className="mt-2 flex gap-3">
           {THEME_IDS.map((id) => (
             <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
           ))}

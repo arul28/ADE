@@ -1,25 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle,
+  Warning as AlertTriangle,
   BookOpenText,
-  ChevronDown,
-  ChevronRight,
-  FileArchive,
-  FileBraces,
-  FileCog,
-  FileCode2,
+  CaretDown as ChevronDown,
+  CaretRight as ChevronRight,
+  FileZip as FileArchive,
+  FileCss as FileBraces,
+  GearSix as FileCog,
+  FileTs as FileCode2,
   FileImage,
-  FilePlus2,
-  FileSpreadsheet,
+  FilePlus as FilePlus2,
   FileText,
   Folder,
   FolderOpen,
   FolderPlus,
-  Save,
-  Search,
-  Sparkles,
-  TerminalSquare
-} from "lucide-react";
+  FloppyDisk as Save,
+  MagnifyingGlass as Search,
+  Sparkle as Sparkles,
+  Terminal as TerminalSquare,
+  FileXls as FileSpreadsheet,
+} from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
   FileTreeNode,
@@ -157,7 +157,7 @@ function parentDirOfPath(filePath: string): string {
   return normalized.slice(0, idx);
 }
 
-function getFileIcon(fileName: string): { icon: React.ComponentType<{ className?: string }>; className: string } {
+function getFileIcon(fileName: string): { icon: React.ComponentType<any>; className: string } {
   const lower = fileName.toLowerCase();
   const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
 
@@ -171,31 +171,31 @@ function getFileIcon(fileName: string): { icon: React.ComponentType<{ className?
     ext === ".mjs" ||
     ext === ".cjs"
   ) {
-    return { icon: FileCode2, className: "text-sky-500" };
+    return { icon: FileCode2, className: "text-sky-400/80" };
   }
   if (ext === ".json" || ext === ".jsonc") {
-    return { icon: FileBraces, className: "text-emerald-500" };
+    return { icon: FileBraces, className: "text-emerald-400/80" };
   }
   if (ext === ".yml" || ext === ".yaml" || ext === ".toml" || ext === ".ini") {
-    return { icon: FileCog, className: "text-orange-500" };
+    return { icon: FileCog, className: "text-orange-400/80" };
   }
   if (ext === ".md" || ext === ".mdx") {
-    return { icon: BookOpenText, className: "text-amber-500" };
+    return { icon: BookOpenText, className: "text-amber-400/80" };
   }
   if (ext === ".css" || ext === ".scss" || ext === ".sass" || ext === ".less") {
-    return { icon: FileCode2, className: "text-indigo-500" };
+    return { icon: FileCode2, className: "text-indigo-400/80" };
   }
   if (ext === ".sh" || ext === ".bash" || ext === ".zsh" || ext === ".fish" || ext === ".ps1") {
-    return { icon: TerminalSquare, className: "text-teal-500" };
+    return { icon: TerminalSquare, className: "text-teal-400/80" };
   }
   if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".gif" || ext === ".webp" || ext === ".svg" || ext === ".ico") {
-    return { icon: FileImage, className: "text-fuchsia-500" };
+    return { icon: FileImage, className: "text-fuchsia-400/80" };
   }
   if (ext === ".zip" || ext === ".tar" || ext === ".gz" || ext === ".tgz" || ext === ".rar" || ext === ".7z") {
-    return { icon: FileArchive, className: "text-rose-500" };
+    return { icon: FileArchive, className: "text-rose-400/80" };
   }
   if (ext === ".csv" || ext === ".tsv" || ext === ".xls" || ext === ".xlsx") {
-    return { icon: FileSpreadsheet, className: "text-green-600" };
+    return { icon: FileSpreadsheet, className: "text-green-400/80" };
   }
   return { icon: FileText, className: "text-muted-fg" };
 }
@@ -279,14 +279,18 @@ export function FilesPage() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<"loading" | "ready" | "failed">("loading");
+  // PaneTilingLayout mounts panes async, so the editor host can appear after the first effect pass.
+  const [editorHostEl, setEditorHostEl] = useState<HTMLDivElement | null>(null);
 
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<import("monaco-editor").editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<import("monaco-editor").editor.ITextModel | null>(null);
   const modelKeyRef = useRef<string | null>(null);
-  const editorHostRef = useRef<HTMLDivElement | null>(null);
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
+  const setEditorHostRef = useCallback((node: HTMLDivElement | null) => {
+    setEditorHostEl(node);
+  }, []);
 
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
@@ -744,15 +748,15 @@ export function FilesPage() {
 
   useEffect(() => {
     if (mode !== "edit") return;
-    if (!editorHostRef.current) return;
+    if (!editorHostEl) return;
     if (editorRef.current) return;
 
     let disposed = false;
     setEditorStatus("loading");
     loadMonaco().then((monaco) => {
-      if (disposed || !editorHostRef.current) return;
+      if (disposed) return;
       monacoRef.current = monaco;
-      const editor = monaco.editor.create(editorHostRef.current, {
+      const editor = monaco.editor.create(editorHostEl, {
         value: "",
         language: "plaintext",
         automaticLayout: true,
@@ -795,7 +799,7 @@ export function FilesPage() {
       modelKeyRef.current = null;
       editorRef.current = null;
     };
-  }, [mode, canEdit]);
+  }, [mode, editorHostEl]);
 
   useEffect(() => {
     if (!editorRef.current || mode !== "edit") return;
@@ -914,18 +918,18 @@ export function FilesPage() {
               {isActive ? <span className="absolute inset-y-1 left-0 w-[2px] rounded bg-accent" /> : null}
               {node.type === "directory" ? (
                 <>
-                  {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" />}
-                  {isExpanded ? <FolderOpen className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" /> : <Folder className="h-3.5 w-3.5 text-muted-fg/90 transition-colors group-hover:text-fg" />}
+                  {isExpanded ? <ChevronDown size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" /> : <ChevronRight size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" />}
+                  {isExpanded ? <FolderOpen size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" /> : <Folder size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" />}
                 </>
               ) : (
                 <>
                   <span className="w-3.5" />
-                  {FileIcon ? <FileIcon className={cx("h-3.5 w-3.5", fileIcon?.className)} /> : <FileText className="h-3.5 w-3.5 text-muted-fg" />}
+                  {FileIcon ? <FileIcon size={14} weight="regular" className={fileIcon?.className} /> : <FileText size={14} weight="regular" className="text-muted-fg" />}
                 </>
               )}
               <span className="truncate">{node.name}</span>
               {node.type === "directory" && node.changeStatus ? <span className={cx("ml-auto h-1.5 w-1.5 rounded-full", statusClasses.dot)} /> : null}
-              {node.type === "file" && node.changeStatus ? <span className={cx("ml-auto text-[10px]", statusClasses.text)}>{node.changeStatus}</span> : null}
+              {node.type === "file" && node.changeStatus ? <span className={cx("ml-auto text-[11px]", statusClasses.text)}>{node.changeStatus}</span> : null}
             </button>
             {node.type === "directory" && isExpanded && node.children?.length ? renderTree(node.children, level + 1) : null}
           </div>
@@ -974,10 +978,10 @@ export function FilesPage() {
       headerActions: (
         <div className="flex items-center gap-1">
           <Button size="sm" variant="ghost" title="New file" className="h-5 w-5 p-0" onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
-            <FilePlus2 className="h-3 w-3" />
+            <FilePlus2 size={12} weight="regular" />
           </Button>
           <Button size="sm" variant="ghost" title="New folder" className="h-5 w-5 p-0" onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
-            <FolderPlus className="h-3 w-3" />
+            <FolderPlus size={12} weight="regular" />
           </Button>
         </div>
       ),
@@ -991,11 +995,11 @@ export function FilesPage() {
       minimizable: true,
       headerActions: (
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setMode("edit")}>Edit</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setMode("diff")}>Diff</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setMode("conflict")}>Conflict</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => saveActive().catch(() => {})} disabled={!activeTab || !canEdit || activeTab.isBinary}>
-            <Save className="h-3 w-3 mr-0.5" />
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("edit")}>Edit</Button>
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("diff")}>Diff</Button>
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("conflict")}>Conflict</Button>
+          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => saveActive().catch(() => {})} disabled={!activeTab || !canEdit || activeTab.isBinary}>
+            <Save size={12} weight="regular" className="mr-0.5" />
             Save
           </Button>
         </div>
@@ -1008,7 +1012,7 @@ export function FilesPage() {
             {openTabs.map((tab) => {
               const dirty = tab.content !== tab.savedContent;
               return (
-                <div key={tab.path} className={cx("flex items-center gap-1 rounded-lg border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-muted/70" : "border-border/40 bg-card/40")}>
+                <div key={tab.path} className={cx("flex items-center gap-1 rounded-lg border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-card border-b-2 border-b-accent" : "border-border/40 bg-card/40")}>
                   <button className="max-w-[220px] truncate text-left" onClick={() => setActiveTabPath(tab.path)}>
                     {tab.path.split("/").pop()}
                     {dirty ? " \u2022" : ""}
@@ -1037,7 +1041,7 @@ export function FilesPage() {
           <div className="min-h-0 flex-1">
             {mode === "edit" ? (
               <div className="h-full">
-                <div ref={editorHostRef} className={cx("h-full", editorStatus === "failed" && "hidden")} />
+                <div ref={setEditorHostRef} className={cx("h-full", editorStatus === "failed" && "hidden")} />
                 {editorStatus === "loading" ? (
                   <div className="flex h-full items-center justify-center text-sm text-muted-fg">Loading editor...</div>
                 ) : null}
@@ -1075,7 +1079,7 @@ export function FilesPage() {
                         <div key={hunk.key} className={cx("rounded border bg-card/40 p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
                           <div className="flex items-center justify-between">
                             <span>Lines {hunk.startLine}-{hunk.endLine}</span>
-                            {resolved ? <span className="inline-flex items-center gap-1 text-emerald-300"><Sparkles className="h-3 w-3" />Resolved</span> : null}
+                            {resolved ? <span className="inline-flex items-center gap-1 text-emerald-300"><Sparkles size={12} weight="regular" />Resolved</span> : null}
                           </div>
                           <div className="mt-1 flex gap-1">
                             <Button size="sm" variant="outline" onClick={() => applyConflictResolution(hunk, "ours")}>Accept Ours</Button>
@@ -1110,7 +1114,7 @@ export function FilesPage() {
       meta: searchResults.length > 0 ? `${searchResults.length} results` : undefined,
       minimizable: true,
       headerActions: (
-        <Button size="sm" variant="ghost" className="h-5 px-1 text-[10px]" onClick={() => setShowQuickOpen(true)}>
+        <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setShowQuickOpen(true)}>
           Quick Open
         </Button>
       ),
@@ -1118,7 +1122,7 @@ export function FilesPage() {
       children: (
         <div className="flex flex-col h-full min-h-0 p-2">
           <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2 shrink-0">
-            <Search className="h-3.5 w-3.5 text-muted-fg" />
+            <Search size={14} weight="regular" className="text-muted-fg" />
             <input
               value={searchQuery}
               onChange={(e) => {
@@ -1174,8 +1178,8 @@ export function FilesPage() {
             ))}
           </select>
           {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-            <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-900">
-              <AlertTriangle className="h-3 w-3" />
+            <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-2 py-0.5 text-xs text-amber-900">
+              <AlertTriangle size={12} weight="regular" />
               Primary workspace is read-only
             </span>
           ) : null}
@@ -1273,7 +1277,7 @@ export function FilesPage() {
         <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/40 pt-20">
           <div className="w-[640px] rounded bg-[--color-surface-overlay] border border-border/50 p-3 shadow-float">
             <div className="flex items-center gap-2 rounded-lg bg-muted/30 px-2">
-              <Search className="h-4 w-4 text-muted-fg" />
+              <Search size={16} weight="regular" className="text-muted-fg" />
               <input
                 autoFocus
                 value={quickOpen}

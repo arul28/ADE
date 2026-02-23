@@ -1,6 +1,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Activity, ArrowRight, Calendar, Clock, Download, FileText, Hash, RefreshCw, Tag } from "lucide-react";
+import {
+  Pulse as Activity,
+  ArrowRight,
+  Calendar,
+  Clock,
+  DownloadSimple as Download,
+  FileText,
+  Hash,
+  ArrowClockwise as RefreshCw,
+  Tag,
+} from "@phosphor-icons/react";
 import type { OperationRecord } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -197,7 +207,7 @@ export function HistoryPage() {
     <>
       <div className="grid grid-cols-1 gap-3 border-b border-border/15 px-4 py-3 md:grid-cols-3">
         <label className="space-y-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/70">Lane</div>
+          <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/70">Lane</div>
           <select
             className="h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             value={laneFilter}
@@ -212,7 +222,7 @@ export function HistoryPage() {
           </select>
         </label>
         <label className="space-y-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/70">Kind</div>
+          <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/70">Kind</div>
           <select
             className="h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             value={kindFilter}
@@ -227,7 +237,7 @@ export function HistoryPage() {
           </select>
         </label>
         <label className="space-y-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/70">Status</div>
+          <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/70">Status</div>
           <select
             className="h-8 w-full rounded-lg border border-border/30 bg-muted/20 px-2 text-xs text-fg outline-none transition-colors focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
             value={statusFilter}
@@ -242,19 +252,19 @@ export function HistoryPage() {
         </label>
       </div>
       {exportError ? (
-        <div className="border-b border-border/15 px-4 py-2 text-[11px] text-red-300">{exportError}</div>
+        <div className="border-b border-border/15 px-4 py-2 text-xs text-red-300">{exportError}</div>
       ) : null}
       {exportNotice ? (
-        <div className="border-b border-border/15 px-4 py-2 text-[11px] text-muted-fg">{exportNotice}</div>
+        <div className="border-b border-border/15 px-4 py-2 text-xs text-muted-fg">{exportNotice}</div>
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
         {filtered.length === 0 ? (
-          <EmptyState title="No operations yet" description="Git and pack operations will appear here as they run." />
+          <EmptyState title="No history yet" description="Operations will be recorded as you work." />
         ) : (
           <div className="relative ml-2.5">
             {/* Vertical timeline connector line */}
-            <div className="absolute left-0 top-2 bottom-2 w-px bg-border/30" />
+            <div className="absolute left-0 top-2 bottom-2 w-px bg-border/40" />
             <div className="space-y-1">
               {filtered.map((row) => (
                 <div key={row.id} className="relative pl-5">
@@ -282,10 +292,11 @@ export function HistoryPage() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="truncate text-xs font-semibold">{describeOperation(row, parseMetadata(row.metadataJson)).title}</div>
-                      <Chip className={`shrink-0 text-[10px] ${statusTone(row.status)}`}>{row.status}</Chip>
+                      <Chip className={`shrink-0 text-[11px] ${statusTone(row.status)}`}>{row.status}</Chip>
                     </div>
-                    <div className="mt-1 truncate text-[11px] text-muted-fg">
-                      {describeOperation(row, parseMetadata(row.metadataJson)).detail} · {toRelativeTime(row.startedAt)}
+                    <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-fg">
+                      <span className="truncate">{describeOperation(row, parseMetadata(row.metadataJson)).detail}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-muted-fg">{toRelativeTime(row.startedAt)}</span>
                     </div>
                   </button>
                 </div>
@@ -305,14 +316,14 @@ export function HistoryPage() {
         <div className="space-y-4 text-xs">
           {/* Summary card - prominent */}
           <div className="rounded bg-card/80 shadow-card p-4">
-            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">Summary</div>
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">Summary</div>
             <div className="mt-2 text-sm font-bold leading-snug">{described?.title ?? selected.kind}</div>
-            <div className="mt-1.5 text-[11px] leading-relaxed text-muted-fg">{described?.detail ?? (selected.laneName ?? "project")}</div>
+            <div className="mt-1.5 text-xs leading-relaxed text-muted-fg">{described?.detail ?? (selected.laneName ?? "project")}</div>
           </div>
 
           {/* Error message with red left border accent */}
           {metaError ? (
-            <div className="rounded border-l-[3px] border-l-red-500/70 bg-red-500/8 p-3 text-[11px] leading-relaxed text-red-300">
+            <div className="rounded border-l-[3px] border-l-red-500/70 bg-red-500/8 p-3 text-xs leading-relaxed text-red-300">
               {metaError}
             </div>
           ) : null}
@@ -320,38 +331,38 @@ export function HistoryPage() {
           {/* 2x2 info grid with icons */}
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
-                <Tag className="h-3 w-3" />
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+                <Tag size={12} weight="regular" />
                 Kind
               </div>
               <div className="mt-1.5 font-semibold">{selected.kind}</div>
             </div>
             <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
-                <Activity className="h-3 w-3" />
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+                <Activity size={12} weight="regular" />
                 Status
               </div>
               <div className={`mt-1.5 font-semibold ${statusTone(selected.status)}`}>{selected.status}</div>
             </div>
             <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
-                <Clock className="h-3 w-3" />
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+                <Clock size={12} weight="regular" />
                 Started
               </div>
-              <div className="mt-1.5">{new Date(selected.startedAt).toLocaleString()}</div>
+              <div className="mt-1.5 font-mono text-[11px] text-muted-fg">{new Date(selected.startedAt).toLocaleString()}</div>
             </div>
             <div className="rounded bg-card/60 shadow-card p-3">
-              <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
-                <Calendar className="h-3 w-3" />
+              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+                <Calendar size={12} weight="regular" />
                 Ended
               </div>
-              <div className="mt-1.5">{selected.endedAt ? new Date(selected.endedAt).toLocaleString() : <span className="text-amber-400">running</span>}</div>
+              <div className="mt-1.5 font-mono text-[11px] text-muted-fg">{selected.endedAt ? new Date(selected.endedAt).toLocaleString() : <span className="text-amber-400">running</span>}</div>
             </div>
           </div>
 
           {/* Lane section */}
           <div className="rounded bg-card/60 shadow-card p-3">
-            <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">Lane</div>
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">Lane</div>
             <div className="mt-1.5 font-semibold">{selected.laneName ?? "project"}</div>
             {selected.laneId ? (
               <div className="mt-3 flex flex-wrap gap-2">
@@ -377,30 +388,30 @@ export function HistoryPage() {
 
           {/* SHA Transition with code block before -> after visual */}
           <div className="rounded bg-card/60 shadow-card p-3">
-            <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60">
-              <Hash className="h-3 w-3" />
+            <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">
+              <Hash size={12} weight="regular" />
               SHA Transition
             </div>
             <div className="mt-3 flex items-center gap-2">
               <div className="min-w-0 flex-1 rounded-lg bg-muted/30 px-2.5 py-1.5">
-                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Before</div>
-                <div className="mt-0.5 truncate font-mono text-[11px]">{selected.preHeadSha ?? "(none)"}</div>
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/50">Before</div>
+                <div className="mt-0.5 truncate font-mono text-xs">{selected.preHeadSha ?? "(none)"}</div>
               </div>
-              <ArrowRight className="h-4 w-4 shrink-0 text-muted-fg/40" />
+              <ArrowRight size={16} weight="regular" className="shrink-0 text-muted-fg/40" />
               <div className="min-w-0 flex-1 rounded-lg bg-muted/30 px-2.5 py-1.5">
-                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">After</div>
-                <div className="mt-0.5 truncate font-mono text-[11px]">{selected.postHeadSha ?? "(none)"}</div>
+                <div className="text-[11px] font-medium uppercase tracking-wider text-muted-fg/50">After</div>
+                <div className="mt-0.5 truncate font-mono text-xs">{selected.postHeadSha ?? "(none)"}</div>
               </div>
             </div>
           </div>
 
           {/* Metadata (raw) with better summary styling */}
           <details className="group rounded bg-card/60 shadow-card">
-            <summary className="cursor-pointer select-none px-3 py-2.5 text-[10px] font-medium uppercase tracking-wider text-muted-fg/60 transition-colors hover:text-muted-fg">
+            <summary className="cursor-pointer select-none px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-muted-fg/60 transition-colors hover:text-muted-fg">
               Metadata (raw)
             </summary>
             <div className="border-t border-border/20 px-3 pb-3 pt-2">
-              <pre className="overflow-auto rounded-lg bg-muted/20 p-2.5 font-mono text-[11px] leading-relaxed">
+              <pre className="overflow-auto rounded-lg bg-muted/20 p-2.5 font-mono text-xs leading-relaxed">
                 {metadata ? JSON.stringify(metadata, null, 2) : "(none)"}
               </pre>
             </div>
@@ -418,28 +429,28 @@ export function HistoryPage() {
       headerActions: (
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title="Refresh" onClick={() => refresh().catch(() => {})}>
-            <RefreshCw className="h-4 w-4" />
+            <RefreshCw size={16} weight="regular" />
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 px-1.5 text-[10px]"
+            className="h-6 px-1.5 text-[11px]"
             title="Export filtered events as JSON"
             disabled={exportBusy !== null}
             onClick={() => void exportOperations("json")}
           >
-            <Download className="mr-1 h-3 w-3" />
+            <Download size={12} weight="regular" className="mr-1" />
             {exportBusy === "json" ? "JSON..." : "JSON"}
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            className="h-6 px-1.5 text-[10px]"
+            className="h-6 px-1.5 text-[11px]"
             title="Export filtered events as CSV"
             disabled={exportBusy !== null}
             onClick={() => void exportOperations("csv")}
           >
-            <Download className="mr-1 h-3 w-3" />
+            <Download size={12} weight="regular" className="mr-1" />
             {exportBusy === "csv" ? "CSV..." : "CSV"}
           </Button>
         </div>

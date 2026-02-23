@@ -1,5 +1,5 @@
 import React from "react";
-import { RefreshCw, Plus, Save } from "lucide-react";
+import { ArrowsClockwise, Plus, FloppyDisk } from "@phosphor-icons/react";
 import type { TerminalLaunchProfile, TerminalProfilesSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -96,11 +96,11 @@ export function TerminalProfilesSection() {
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void refresh()}>
-            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            <ArrowsClockwise size={16} weight="regular" className={cn(loading && "animate-spin")} />
             Refresh
           </Button>
           <Button size="sm" disabled={saving || !snapshot} onClick={() => void save()}>
-            <Save className="h-4 w-4" />
+            <FloppyDisk size={16} weight="regular" />
             {saving ? "Saving…" : "Save"}
           </Button>
         </div>
@@ -186,7 +186,7 @@ export function TerminalProfilesSection() {
             </div>
             <div className="mt-2 flex justify-end">
               <Button size="sm" variant="outline" onClick={addProfile} disabled={!snapshot}>
-                <Plus className="h-4 w-4" />
+                <Plus size={16} weight="regular" />
                 Add
               </Button>
             </div>

@@ -88,7 +88,7 @@ const terminalThemes: Record<"light" | "dark", XtermTheme> = {
 };
 
 function isDarkTheme(theme: ThemeId): boolean {
-  return theme === "bloomberg" || theme === "github" || theme === "rainbow" || theme === "pats";
+  return theme === "dark";
 }
 
 function cloneHealth(health: TerminalHealthCounters): TerminalHealthCounters {

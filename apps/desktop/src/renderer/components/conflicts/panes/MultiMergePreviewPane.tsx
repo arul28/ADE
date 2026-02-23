@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowDown, ArrowUp, Check, Circle, Loader2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Circle, SpinnerGap, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../../state/appStore";
 import { useConflictsState, useConflictsDispatch } from "../state/ConflictsContext";
 import { LaneDropdown } from "../shared/LaneDropdown";
@@ -169,7 +169,7 @@ export function MultiMergePreviewPane() {
                   className="rounded border-border"
                 />
                 <span className="truncate font-medium text-fg">{lane.name}</span>
-                <span className="ml-auto text-[10px] text-muted-fg">
+                <span className="ml-auto text-[11px] text-muted-fg">
                   {status?.status ?? "unknown"}
                 </span>
               </label>
@@ -199,33 +199,33 @@ export function MultiMergePreviewPane() {
                 >
                   <span className="w-5 text-center text-muted-fg">{idx + 1}</span>
                   {isCompleted ? (
-                    <Check className="h-3 w-3 text-emerald-500" />
+                    <Check size={12} className="text-emerald-500" />
                   ) : isActive ? (
-                    <Loader2 className="h-3 w-3 animate-spin text-accent" />
+                    <SpinnerGap size={12} className="animate-spin text-accent" />
                   ) : (
-                    <Circle className="h-3 w-3 text-muted-fg/40" />
+                    <Circle size={12} className="text-muted-fg/40" />
                   )}
                   <span className="truncate font-medium text-fg">{lane?.name ?? id}</span>
-                  <span className="ml-auto text-[10px] text-muted-fg">{status?.status ?? ""}</span>
+                  <span className="ml-auto text-[11px] text-muted-fg">{status?.status ?? ""}</span>
                   <button
                     onClick={() => moveSource(idx, "up")}
                     disabled={idx === 0}
                     className="p-0.5 text-muted-fg hover:text-fg disabled:opacity-30"
                   >
-                    <ArrowUp className="h-3 w-3" />
+                    <ArrowUp size={12} />
                   </button>
                   <button
                     onClick={() => moveSource(idx, "down")}
                     disabled={idx === multiMergeSourceLaneIds.length - 1}
                     className="p-0.5 text-muted-fg hover:text-fg disabled:opacity-30"
                   >
-                    <ArrowDown className="h-3 w-3" />
+                    <ArrowDown size={12} />
                   </button>
                   <button
                     onClick={() => toggleSource(id)}
                     className="p-0.5 text-muted-fg hover:text-red-500"
                   >
-                    <X className="h-3 w-3" />
+                    <X size={12} />
                   </button>
                 </div>
               );

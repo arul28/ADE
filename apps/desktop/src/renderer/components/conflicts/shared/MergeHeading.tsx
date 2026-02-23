@@ -1,5 +1,5 @@
 import React from "react";
-import { GitMerge } from "lucide-react";
+import { GitMerge } from "@phosphor-icons/react";
 import type { LaneSummary } from "../../../../shared/types";
 import { LaneDropdown } from "./LaneDropdown";
 
@@ -27,7 +27,7 @@ export function MergeHeading({
         onChange={onSourceChange}
         placeholder="Source lane..."
       />
-      <GitMerge className="h-5 w-5 text-muted-fg" />
+      <GitMerge size={20} className="text-muted-fg" />
       <span>into</span>
       <LaneDropdown
         lanes={lanes}

@@ -33,24 +33,24 @@ function parseCsvList(raw: string): string[] {
 }
 
 function stateChip(state: PrSummary["state"]): { label: string; className: string } {
-  if (state === "draft") return { label: "draft", className: "text-purple-200 border-purple-700/60 bg-purple-900/20" };
-  if (state === "open") return { label: "open", className: "text-sky-200 border-sky-700/60 bg-sky-900/20" };
-  if (state === "merged") return { label: "merged", className: "text-emerald-200 border-emerald-700/60 bg-emerald-900/20" };
-  return { label: "closed", className: "text-muted-fg border-border bg-card/30" };
+  if (state === "draft") return { label: "draft", className: "text-purple-400 border border-purple-500/20 bg-purple-500/12" };
+  if (state === "open") return { label: "open", className: "text-blue-400 border border-blue-500/20 bg-blue-500/12" };
+  if (state === "merged") return { label: "merged", className: "text-emerald-400 border border-emerald-500/20 bg-emerald-500/12" };
+  return { label: "closed", className: "text-neutral-400 border border-neutral-500/20 bg-neutral-500/12" };
 }
 
 function checksChip(status: PrSummary["checksStatus"]): { label: string; className: string } {
-  if (status === "passing") return { label: "checks: passing", className: "text-emerald-200 border-emerald-700/60 bg-emerald-900/20" };
-  if (status === "failing") return { label: "checks: failing", className: "text-red-200 border-red-700/60 bg-red-900/20" };
-  if (status === "pending") return { label: "checks: pending", className: "text-amber-200 border-amber-700/60 bg-amber-900/20" };
-  return { label: "checks: none", className: "text-muted-fg border-border bg-card/30" };
+  if (status === "passing") return { label: "passing", className: "text-emerald-400 border border-emerald-500/20 bg-emerald-500/12" };
+  if (status === "failing") return { label: "failing", className: "text-red-400 border border-red-500/20 bg-red-500/12" };
+  if (status === "pending") return { label: "pending", className: "text-amber-400 border border-amber-500/20 bg-amber-500/12" };
+  return { label: "none", className: "text-neutral-400 border border-neutral-500/20 bg-neutral-500/12" };
 }
 
 function reviewsChip(status: PrSummary["reviewStatus"]): { label: string; className: string } {
-  if (status === "approved") return { label: "reviews: approved", className: "text-emerald-200 border-emerald-700/60 bg-emerald-900/20" };
-  if (status === "changes_requested") return { label: "reviews: changes requested", className: "text-amber-200 border-amber-700/60 bg-amber-900/20" };
-  if (status === "requested") return { label: "reviews: requested", className: "text-sky-200 border-sky-700/60 bg-sky-900/20" };
-  return { label: "reviews: none", className: "text-muted-fg border-border bg-card/30" };
+  if (status === "approved") return { label: "approved", className: "text-emerald-400 border border-emerald-500/20 bg-emerald-500/12" };
+  if (status === "changes_requested") return { label: "changes requested", className: "text-amber-400 border border-amber-500/20 bg-amber-500/12" };
+  if (status === "requested") return { label: "requested", className: "text-blue-400 border border-blue-500/20 bg-blue-500/12" };
+  return { label: "none", className: "text-neutral-400 border border-neutral-500/20 bg-neutral-500/12" };
 }
 
 export function LanePrPanel({ laneId }: { laneId: string | null }) {
@@ -271,7 +271,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
         <div className="flex items-center justify-between gap-2">
           <div>
             <div className="text-xs font-semibold text-fg">Pull Request</div>
-            <div className="text-[11px] text-muted-fg">lane: {lane.name}</div>
+            <div className="text-xs text-muted-fg">lane: {lane.name}</div>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" className="h-7" onClick={() => navigate("/settings")}>
@@ -294,7 +294,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             <div className="rounded shadow-card bg-card/50 p-3">
               <div className="mb-2 text-xs font-semibold text-fg">Create PR</div>
               <div className="grid gap-2">
-                <label className="text-[11px] text-muted-fg">
+                <label className="text-xs text-muted-fg">
                   Title
                   <input
                     value={createDraft.title}
@@ -302,7 +302,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     className="mt-1 h-8 w-full rounded bg-muted/30 px-2 text-xs outline-none focus:ring-1 focus:ring-accent"
                   />
                 </label>
-                <label className="text-[11px] text-muted-fg">
+                <label className="text-xs text-muted-fg">
                   Base branch
                   <input
                     value={createDraft.baseBranch ?? ""}
@@ -311,14 +311,14 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     placeholder={defaultBaseBranch}
                   />
                 </label>
-                <div className="text-[11px] text-muted-fg">
+                <div className="text-xs text-muted-fg">
                   Head branch: <span className="font-medium text-fg">{defaultHeadBranch}</span>
                 </div>
-                <div className="rounded bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">
+                <div className="rounded bg-muted/20 px-2 py-1 text-xs text-muted-fg">
                   PR will be: <span className="font-medium text-fg">{defaultHeadBranch}</span>{" "}
                   → <span className="font-medium text-fg">{createDraft.baseBranch || defaultBaseBranch}</span>
                 </div>
-                <label className="text-[11px] text-muted-fg">
+                <label className="text-xs text-muted-fg">
                   Body (markdown)
                   <textarea
                     value={createDraft.body}
@@ -328,7 +328,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                   />
                 </label>
                 <div className="grid gap-2 md:grid-cols-2">
-                  <label className="text-[11px] text-muted-fg">
+                  <label className="text-xs text-muted-fg">
                     Labels (comma-separated)
                     <input
                       value={labelsDraft}
@@ -337,7 +337,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                       placeholder="bug, enhancement"
                     />
                   </label>
-                  <label className="text-[11px] text-muted-fg">
+                  <label className="text-xs text-muted-fg">
                     Reviewers (comma-separated)
                     <input
                       value={reviewersDraft}
@@ -347,7 +347,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
                     />
                   </label>
                 </div>
-                <label className="inline-flex items-center gap-2 text-[11px] text-muted-fg">
+                <label className="inline-flex items-center gap-2 text-xs text-muted-fg">
                   <input
                     type="checkbox"
                     checked={createDraft.draft}
@@ -396,14 +396,14 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-fg truncate">{pr.title || `PR #${pr.githubPrNumber}`}</span>
-            <Chip className={cn("text-[10px] px-1.5", state.className)}>{state.label}</Chip>
+            <Chip className={cn("text-xs px-1.5", state.className)}>{state.label}</Chip>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <Chip className={cn("text-[10px] px-1.5", checksState.className)}>{checksState.label}</Chip>
-            <Chip className={cn("text-[10px] px-1.5", reviewState.className)}>{reviewState.label}</Chip>
-            <span className="text-[10px] text-muted-fg">#{pr.githubPrNumber}</span>
-            <span className="text-[10px] text-muted-fg">base: {pr.baseBranch}</span>
-            <span className="text-[10px] text-muted-fg">head: {pr.headBranch}</span>
+            <Chip className={cn("text-xs px-1.5", checksState.className)}>{checksState.label}</Chip>
+            <Chip className={cn("text-xs px-1.5", reviewState.className)}>{reviewState.label}</Chip>
+            <span className="text-xs text-muted-fg">#{pr.githubPrNumber}</span>
+            <span className="text-xs text-muted-fg">base: {pr.baseBranch}</span>
+            <span className="text-xs text-muted-fg">head: {pr.headBranch}</span>
           </div>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -428,7 +428,7 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
             <select
               value={mergeMethod}
               onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
-              className="h-7 rounded bg-muted/30 px-2 text-[11px]"
+              className="h-7 rounded bg-muted/30 px-2 text-xs"
               title="Merge method"
             >
               <option value="squash">squash</option>
@@ -450,17 +450,17 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
       ) : null}
 
       {status ? (
-        <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
           <div className="rounded shadow-card bg-card/50 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Mergeable</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Mergeable</div>
             <div className="font-semibold text-fg">{status.isMergeable ? "yes" : "no"}</div>
           </div>
           <div className="rounded shadow-card bg-card/50 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Conflicts</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Conflicts</div>
             <div className="font-semibold text-fg">{status.mergeConflicts ? "yes" : "no"}</div>
           </div>
           <div className="rounded shadow-card bg-card/50 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Behind Base</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Behind Base</div>
             <div className="font-semibold text-fg">{status.behindBaseBy}</div>
           </div>
         </div>
@@ -468,19 +468,19 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
 
       <div className="mt-2 grid flex-1 min-h-0 grid-cols-1 gap-2 overflow-auto">
         <div className="rounded shadow-card bg-card/30">
-          <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Checks</div>
+          <div className="px-2 py-1 text-xs font-medium tracking-widest uppercase text-muted-fg">Checks</div>
           <div className="divide-y divide-border/10">
             {checks.map((check) => (
-              <div key={check.name} className="px-2 py-1.5 text-[11px]">
+              <div key={check.name} className="px-2 py-1.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <div className="truncate text-fg">{check.name}</div>
                   <div className="flex items-center gap-2">
-                    <div className="text-[10px] text-muted-fg">{check.conclusion ?? check.status}</div>
+                    <div className="text-xs text-muted-fg">{check.conclusion ?? check.status}</div>
                     {check.detailsUrl ? (
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="h-6 px-2 text-[10px]"
+                        className="h-6 px-2 text-xs"
                         onClick={() => void window.ade.app.openExternal(check.detailsUrl!)}
                       >
                         Open
@@ -494,15 +494,15 @@ export function LanePrPanel({ laneId }: { laneId: string | null }) {
           </div>
         </div>
         <div className="rounded shadow-card bg-card/30">
-          <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Reviews</div>
+          <div className="px-2 py-1 text-xs font-medium tracking-widest uppercase text-muted-fg">Reviews</div>
           <div className="divide-y divide-border/10">
             {reviews.map((review, idx) => (
-              <div key={`${review.reviewer}:${idx}`} className="px-2 py-1.5 text-[11px]">
+              <div key={`${review.reviewer}:${idx}`} className="px-2 py-1.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <div className="truncate text-fg">{review.reviewer}</div>
-                  <div className="text-[10px] text-muted-fg">{review.state}</div>
+                  <div className="text-xs text-muted-fg">{review.state}</div>
                 </div>
-                {review.body ? <div className="mt-1 line-clamp-2 text-[10px] text-muted-fg">{review.body}</div> : null}
+                {review.body ? <div className="mt-1 line-clamp-2 text-xs text-muted-fg">{review.body}</div> : null}
               </div>
             ))}
             {!reviews.length ? <div className="px-2 py-2 text-xs text-muted-fg">No reviews found.</div> : null}

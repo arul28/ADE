@@ -1,6 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { RefreshCw, Plus, Play, History as HistoryIcon, ShieldCheck, Sparkles, FlaskConical, Save } from "lucide-react";
+import {
+  ArrowClockwise as RefreshCw,
+  Plus,
+  Play,
+  ClockCounterClockwise as HistoryIcon,
+  ShieldCheck,
+  Sparkle as Sparkles,
+  Flask as FlaskConical,
+  FloppyDisk as Save,
+} from "@phosphor-icons/react";
 import type {
   AgentTool,
   AutomationDraftConfirmationRequirement,
@@ -197,10 +206,10 @@ function HistoryDialog({
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="truncate text-xs font-semibold">{run.triggerType}</div>
-                          <Chip className={cn("text-[10px]", statusTone(run.status))}>{run.status}</Chip>
+                          <Chip className={cn("text-[11px]", statusTone(run.status))}>{run.status}</Chip>
                         </div>
-                        <div className="mt-1 text-[11px] text-muted-fg">{formatWhen(run.startedAt)}</div>
-                        <div className="mt-1 text-[11px] text-muted-fg">
+                        <div className="mt-1 text-xs text-muted-fg">{formatWhen(run.startedAt)}</div>
+                        <div className="mt-1 text-xs text-muted-fg">
                           {run.actionsCompleted}/{run.actionsTotal} actions
                           {run.errorMessage ? ` · ${run.errorMessage}` : ""}
                         </div>
@@ -227,11 +236,11 @@ function HistoryDialog({
                         <div className="font-semibold text-fg">
                           #{action.actionIndex + 1} {action.actionType}
                         </div>
-                        <Chip className={cn("text-[10px]", statusTone(action.status))}>{action.status}</Chip>
+                        <Chip className={cn("text-[11px]", statusTone(action.status))}>{action.status}</Chip>
                       </div>
                       {action.errorMessage ? <div className="mt-1 text-xs text-red-300">{action.errorMessage}</div> : null}
                       {action.output ? (
-                        <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-[11px] leading-relaxed text-fg">
+                        <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-xs leading-relaxed text-fg">
                           {action.output}
                         </pre>
                       ) : null}
@@ -271,7 +280,7 @@ function ConfirmationsChecklist({
             <div className="min-w-0">
               <div className={cn("font-semibold", r.severity === "danger" ? "text-red-200" : "text-amber-200")}>{r.title}</div>
               <div className="text-muted-fg">{r.message}</div>
-              <div className="mt-0.5 text-[11px] text-muted-fg">
+              <div className="mt-0.5 text-xs text-muted-fg">
                 key: <span className="font-mono">{r.key}</span>
               </div>
             </div>
@@ -328,7 +337,7 @@ function RuleEditor({
     <div className="space-y-3">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <label className="space-y-1">
-          <div className="text-[11px] text-muted-fg">Name</div>
+          <div className="text-xs text-muted-fg">Name</div>
           <input
             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
             value={draft.name}
@@ -347,7 +356,7 @@ function RuleEditor({
         <div className="text-xs font-semibold">Trigger</div>
         <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
           <label className="space-y-1">
-            <div className="text-[11px] text-muted-fg">Type</div>
+            <div className="text-xs text-muted-fg">Type</div>
             <select
               className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
               value={draft.trigger.type}
@@ -362,7 +371,7 @@ function RuleEditor({
 
           {draft.trigger.type === "schedule" ? (
             <label className="space-y-1 md:col-span-2">
-              <div className="text-[11px] text-muted-fg">Cron</div>
+              <div className="text-xs text-muted-fg">Cron</div>
               <input
                 className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                 value={draft.trigger.cron ?? ""}
@@ -372,7 +381,7 @@ function RuleEditor({
             </label>
           ) : (
             <label className="space-y-1 md:col-span-2">
-              <div className="text-[11px] text-muted-fg">Branch (optional)</div>
+              <div className="text-xs text-muted-fg">Branch (optional)</div>
               <input
                 className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                 value={draft.trigger.branch ?? ""}
@@ -418,7 +427,7 @@ function RuleEditor({
                     {action.type === "run-tests" ? (
                       <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
                         <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Suite</div>
+                          <div className="text-xs text-muted-fg">Suite</div>
                           <select
                             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
                             value={action.suite ?? ""}
@@ -437,7 +446,7 @@ function RuleEditor({
                     {action.type === "run-command" ? (
                       <div className="mt-2 space-y-2">
                         <label className="space-y-1 block">
-                          <div className="text-[11px] text-muted-fg">Command</div>
+                          <div className="text-xs text-muted-fg">Command</div>
                           <textarea
                             className="min-h-[84px] w-full rounded-lg bg-muted/30 p-2 text-xs font-mono"
                             value={action.command ?? ""}
@@ -446,7 +455,7 @@ function RuleEditor({
                           />
                         </label>
                         <label className="space-y-1 block">
-                          <div className="text-[11px] text-muted-fg">cwd (optional)</div>
+                          <div className="text-xs text-muted-fg">cwd (optional)</div>
                           <input
                             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                             value={action.cwd ?? ""}
@@ -457,10 +466,10 @@ function RuleEditor({
                       </div>
                     ) : null}
                     <details className="mt-2">
-                      <summary className="cursor-pointer text-[11px] text-muted-fg">Advanced</summary>
+                      <summary className="cursor-pointer text-xs text-muted-fg">Advanced</summary>
                       <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
                         <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Condition</div>
+                          <div className="text-xs text-muted-fg">Condition</div>
                           <input
                             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                             value={action.condition ?? ""}
@@ -469,7 +478,7 @@ function RuleEditor({
                           />
                         </label>
                         <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Timeout (ms)</div>
+                          <div className="text-xs text-muted-fg">Timeout (ms)</div>
                           <input
                             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                             value={action.timeoutMs ?? ""}
@@ -478,7 +487,7 @@ function RuleEditor({
                           />
                         </label>
                         <label className="space-y-1">
-                          <div className="text-[11px] text-muted-fg">Retry</div>
+                          <div className="text-xs text-muted-fg">Retry</div>
                           <input
                             className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                             value={action.retry ?? ""}
@@ -520,7 +529,7 @@ function RuleEditor({
 
       <div className="flex items-center justify-end gap-2">
         <Button size="sm" variant="primary" disabled={saving} onClick={onSave}>
-          <Save className="h-4 w-4" />
+          <Save size={16} weight="regular" />
           Save
         </Button>
       </div>
@@ -672,7 +681,7 @@ function CreateWithNaturalLanguageDialog({
                 />
                 <div className="mt-2 flex items-center justify-end">
                   <Button size="sm" variant="primary" disabled={!canGenerate} onClick={() => void generate()}>
-                    <Sparkles className={cn("h-4 w-4", busy && "animate-spin")} />
+                    <Sparkles size={16} weight="regular" className={cn(busy && "animate-spin")} />
                     Generate draft
                   </Button>
                 </div>
@@ -701,7 +710,7 @@ function CreateWithNaturalLanguageDialog({
                   </label>
                 </div>
 
-                <div className="mt-2 rounded bg-muted/20 p-2 text-[11px] text-muted-fg">
+                <div className="mt-2 rounded bg-muted/20 p-2 text-xs text-muted-fg">
                   {provider === "codex" ? (
                     <>
                       <div>
@@ -733,7 +742,7 @@ function CreateWithNaturalLanguageDialog({
                 {provider === "codex" ? (
                   <div className="mt-3 grid grid-cols-1 gap-2">
                     <label className="space-y-1">
-                      <div className="text-[11px] text-muted-fg">Sandbox</div>
+                      <div className="text-xs text-muted-fg">Sandbox</div>
                       <select
                         className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
                         value={plannerCodex.codex.sandbox}
@@ -745,7 +754,7 @@ function CreateWithNaturalLanguageDialog({
                       </select>
                     </label>
                     <label className="space-y-1">
-                      <div className="text-[11px] text-muted-fg">Ask for approval</div>
+                      <div className="text-xs text-muted-fg">Ask for approval</div>
                       <select
                         className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
                         value={plannerCodex.codex.askForApproval}
@@ -770,7 +779,7 @@ function CreateWithNaturalLanguageDialog({
                     <details className="rounded bg-muted/20 p-2">
                       <summary className="cursor-pointer text-xs text-muted-fg">Advanced</summary>
                       <label className="mt-2 block space-y-1">
-                        <div className="text-[11px] text-muted-fg">Additional writable dirs (--add-dir)</div>
+                        <div className="text-xs text-muted-fg">Additional writable dirs (--add-dir)</div>
                         <textarea
                           className="min-h-[72px] w-full rounded-lg bg-muted/30 p-2 text-xs font-mono"
                           value={plannerCodex.codex.additionalWritableDirs.join("\n")}
@@ -806,7 +815,7 @@ function CreateWithNaturalLanguageDialog({
                 ) : (
                   <div className="mt-3 grid grid-cols-1 gap-2">
                     <label className="space-y-1">
-                      <div className="text-[11px] text-muted-fg">Permission mode</div>
+                      <div className="text-xs text-muted-fg">Permission mode</div>
                       <select
                         className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs"
                         value={plannerClaude.claude.permissionMode}
@@ -840,7 +849,7 @@ function CreateWithNaturalLanguageDialog({
                     <details className="rounded bg-muted/20 p-2">
                       <summary className="cursor-pointer text-xs text-muted-fg">Advanced</summary>
                       <label className="mt-2 block space-y-1">
-                        <div className="text-[11px] text-muted-fg">Allowed tools (--allowedTools)</div>
+                        <div className="text-xs text-muted-fg">Allowed tools (--allowedTools)</div>
                         <input
                           className="h-8 w-full rounded-lg bg-muted/30 px-2 text-xs font-mono"
                           value={plannerClaude.claude.allowedTools.join(",")}
@@ -860,7 +869,7 @@ function CreateWithNaturalLanguageDialog({
                         />
                       </label>
                       <label className="mt-2 block space-y-1">
-                        <div className="text-[11px] text-muted-fg">Additional allowed dirs (--add-dir)</div>
+                        <div className="text-xs text-muted-fg">Additional allowed dirs (--add-dir)</div>
                         <textarea
                           className="min-h-[72px] w-full rounded-lg bg-muted/30 p-2 text-xs font-mono"
                           value={plannerClaude.claude.additionalAllowedDirs.join("\n")}
@@ -899,7 +908,7 @@ function CreateWithNaturalLanguageDialog({
               {parseResult?.plannerCommandPreview ? (
                 <div className="rounded shadow-card bg-card/40 p-2">
                   <div className="text-xs font-semibold">Planner Command Preview</div>
-                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-[11px] leading-relaxed">
+                  <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-2 text-xs leading-relaxed">
                     {parseResult.plannerCommandPreview}
                   </pre>
                 </div>
@@ -920,7 +929,7 @@ function CreateWithNaturalLanguageDialog({
                             <span className="text-muted-fg">(confidence {r.confidence.toFixed(2)})</span>
                           </div>
                           {r.candidates.length ? (
-                            <div className="mt-1 text-[11px] text-muted-fg">
+                            <div className="mt-1 text-xs text-muted-fg">
                               candidates:{" "}
                               {r.candidates
                                 .slice(0, 4)
@@ -965,7 +974,7 @@ function CreateWithNaturalLanguageDialog({
 
               <div className="flex items-center justify-end gap-2">
                 <Button size="sm" variant="outline" disabled={!draft || saveBusy} onClick={() => void validateAndSave()}>
-                  <Save className={cn("h-4 w-4", saveBusy && "animate-spin")} />
+                  <Save size={16} weight="regular" className={cn(saveBusy && "animate-spin")} />
                   Save automation
                 </Button>
               </div>
@@ -982,7 +991,7 @@ function CreateWithNaturalLanguageDialog({
                     <div className="min-w-0">
                       <div className="text-xs font-semibold">Draft</div>
                       {parseResult ? (
-                        <div className="mt-0.5 text-[11px] text-muted-fg">
+                        <div className="mt-0.5 text-xs text-muted-fg">
                           confidence: <span className="font-mono">{parseResult.confidence.toFixed(2)}</span>
                         </div>
                       ) : null}
@@ -1190,11 +1199,11 @@ export function AutomationsPage() {
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
-              <Plus className="h-4 w-4" />
+              <Plus size={16} weight="regular" />
               Create
             </Button>
             <Button variant="ghost" size="sm" onClick={() => refresh().catch(() => {})}>
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              <RefreshCw size={16} weight="regular" className={cn(loading && "animate-spin")} />
             </Button>
           </div>
         </div>
@@ -1210,7 +1219,7 @@ export function AutomationsPage() {
 
           <div className="min-h-0 flex-1 overflow-auto p-3">
             {filtered.length === 0 ? (
-            <EmptyState title="No automations" description="Create a rule to run local workflows on triggers." />
+            <EmptyState title="No automations configured" description="Describe a rule and ADE will run it for you." />
             ) : (
               <div className="space-y-2">
               {filtered.map((rule) => {
@@ -1226,23 +1235,35 @@ export function AutomationsPage() {
                     )}
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <div className="truncate text-xs font-semibold text-fg">{rule.name}</div>
-                          <Chip className={cn("text-[10px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
+                          <Chip className={cn("text-[11px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
                             {rule.running ? "running" : rule.lastRunStatus ?? "never"}
                           </Chip>
                         </div>
-                        <div className="mt-0.5 text-[11px] text-muted-fg truncate">
-                          trigger: <span className="font-mono">{rule.trigger.type}</span>
-                          {rule.trigger.type === "schedule" && rule.trigger.cron ? ` (${rule.trigger.cron})` : ""}
-                          {rule.trigger.branch ? ` · branch: ${rule.trigger.branch}` : ""}
+                        {/* Trigger -> Condition -> Action flow */}
+                        <div className="mt-2 flex items-center gap-0 text-[11px]">
+                          <div className="rounded bg-orange-500/10 px-1.5 py-0.5 font-mono text-orange-600 leading-none">
+                            {rule.trigger.type}{rule.trigger.type === "schedule" && rule.trigger.cron ? ` ${rule.trigger.cron}` : ""}
+                          </div>
+                          {rule.trigger.branch ? (
+                            <>
+                              <div className="w-3 border-t border-border/40" />
+                              <div className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-amber-600 leading-none">
+                                {rule.trigger.branch}
+                              </div>
+                            </>
+                          ) : null}
+                          <div className="w-3 border-t border-border/40" />
+                          <div className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-emerald-600 leading-none truncate">
+                            {summarizeActions(rule)}
+                          </div>
                         </div>
-                        <div className="mt-0.5 text-[11px] text-muted-fg truncate">actions: {summarizeActions(rule)}</div>
-                        <div className="mt-0.5 text-[11px] text-muted-fg truncate">last run: {formatWhen(rule.lastRunAt)}</div>
+                        <div className="mt-1.5 text-xs text-muted-fg truncate">last run: {formatWhen(rule.lastRunAt)}</div>
                       </div>
                       <div className="shrink-0 flex items-center gap-2">
-                        <label className="flex items-center gap-1 text-[11px] text-muted-fg">
+                        <label className="flex items-center gap-1 text-xs text-muted-fg">
                           <input
                             type="checkbox"
                             checked={rule.enabled}
@@ -1275,15 +1296,15 @@ export function AutomationsPage() {
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" disabled={!selectedRule || configTrustRequired} onClick={() => void runNow()}>
-              <Play className="h-4 w-4" />
+              <Play size={16} weight="regular" />
               Run now
             </Button>
             <Button size="sm" variant="outline" disabled={!selectedRule} onClick={() => setHistoryOpen(true)}>
-              <HistoryIcon className="h-4 w-4" />
+              <HistoryIcon size={16} weight="regular" />
               History
             </Button>
             <Button size="sm" variant="outline" disabled={!draft} onClick={() => void simulate()}>
-              <FlaskConical className="h-4 w-4" />
+              <FlaskConical size={16} weight="regular" />
               Simulate
             </Button>
           </div>
@@ -1294,7 +1315,7 @@ export function AutomationsPage() {
             <div className="mb-3 rounded bg-amber-500/10 px-3 py-2 text-xs text-amber-900">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
-                  <ShieldCheck className="mt-0.5 h-4 w-4" />
+                  <ShieldCheck size={16} weight="regular" className="mt-0.5" />
                   <div>Shared config changed and is untrusted. Automation execution is blocked until you confirm.</div>
                 </div>
                 <Button size="sm" variant="outline" onClick={() => void trustShared()}>
@@ -1354,7 +1375,7 @@ export function AutomationsPage() {
                 </Button>
               </Dialog.Close>
             </div>
-            <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-3 text-[11px] leading-relaxed">
+            <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/20 p-3 text-xs leading-relaxed">
               {simulateText || "(no simulation output)"}
             </pre>
           </Dialog.Content>

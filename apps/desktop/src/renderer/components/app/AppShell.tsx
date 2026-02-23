@@ -9,6 +9,7 @@ import { Button } from "../ui/Button";
 import type { ContextStatus, PackEvent, PrEventPayload, TerminalSessionSummary } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
+import { cn } from "../ui/cn";
 
 type PrToast = {
   id: string;
@@ -45,6 +46,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const project = useAppStore((s) => s.project);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
@@ -263,6 +265,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const normalized = primary.replace(/\bMod\b/g, isMac ? "Cmd" : "Ctrl");
     return normalized;
   }, [commandPaletteBinding]);
+
+  const tintClass = useMemo(() => {
+    const tintMap: Record<string, string> = {
+      "/project": "tab-tint-project",
+      "/lanes": "tab-tint-lanes",
+      "/files": "tab-tint-files",
+      "/work": "tab-tint-work",
+      "/conflicts": "tab-tint-conflicts",
+      "/graph": "tab-tint-graph",
+      "/prs": "tab-tint-prs",
+      "/history": "tab-tint-history",
+      "/automations": "tab-tint-automations",
+      "/missions": "tab-tint-missions",
+      "/settings": "tab-tint-settings",
+    };
+    return tintMap[location.pathname] ?? "";
+  }, [location.pathname]);
 
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
@@ -487,11 +506,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ) : null}
 
       <div className="flex-1 flex min-h-0">
-        <aside className="w-[148px] shrink-0 flex flex-col py-2 pl-1.5 pr-0.5 z-10 border-r border-border/20">
-          <TabNav />
+        <aside
+          className="ade-sidebar shrink-0 flex flex-col py-2 pl-1.5 pr-0.5 z-10 border-r border-border/20 bg-bg"
+          onMouseEnter={() => setSidebarExpanded(true)}
+          onMouseLeave={() => setSidebarExpanded(false)}
+        >
+          <TabNav expanded={sidebarExpanded} />
         </aside>
 
-        <main className="relative flex min-h-0 min-w-0 flex-1">
+        <main className={cn("relative flex min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
           <div className="relative z-[1] h-full min-h-0 w-full">
             {children}

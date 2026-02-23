@@ -487,7 +487,7 @@ export function GenerateDocsModal({
                           }`}
                         >
                           <div className="font-medium">{opt.label}</div>
-                          <div className="text-[10px] text-muted-fg">{opt.desc}</div>
+                          <div className="text-[11px] text-muted-fg">{opt.desc}</div>
                         </button>
                       ))}
                     </div>
@@ -511,7 +511,7 @@ export function GenerateDocsModal({
                           }`}
                         >
                           <div className="font-medium">{opt.label}</div>
-                          <div className="text-[10px] text-muted-fg">{opt.desc}</div>
+                          <div className="text-[11px] text-muted-fg">{opt.desc}</div>
                         </button>
                       ))}
                     </div>
@@ -551,7 +551,7 @@ export function GenerateDocsModal({
                         }`}
                       >
                         <div className="font-medium">{opt.label}</div>
-                        <div className="text-[10px] text-muted-fg">{opt.desc}</div>
+                        <div className="text-[11px] text-muted-fg">{opt.desc}</div>
                       </button>
                     ))}
                   </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { planMissionOnce, plannerPlanToMissionSteps, validateAndCanonicalizePlannerPlan } from "./missionPlanningService";
+import { planMissionOnce, plannerPlanToMissionSteps, validateAndCanonicalizePlannerPlan, MissionPlanningError } from "./missionPlanningService";
 import { buildDeterministicMissionPlan } from "./missionPlanner";
 import type { MissionExecutionPolicy } from "../../../shared/types";
 
@@ -296,6 +296,41 @@ describe("missionPlanningService planner contract", () => {
     expect(validationErrors.some((entry) => entry.includes("uninformative description"))).toBe(true);
   });
 
+  it("parallelismCap up to 32 is preserved from planner output", () => {
+    const { plan } = validateAndCanonicalizePlannerPlan({
+      schemaVersion: "1.0",
+      missionSummary: {
+        title: "Big Parallel Mission",
+        objective: "Test parallelism",
+        domain: "backend",
+        complexity: "high",
+        strategy: "parallel-first",
+        parallelismCap: 24,
+        parallelismRationale: "24 independent microservices"
+      },
+      assumptions: [],
+      risks: [],
+      steps: [{
+        stepId: "s1",
+        name: "Build services",
+        description: "Build all microservices in parallel",
+        taskType: "code",
+        executorHint: "codex",
+        preferredScope: "project",
+        requiresContextProfiles: [],
+        dependencies: [],
+        artifactHints: [],
+        claimPolicy: { scope: "lane" },
+        maxAttempts: 3,
+        retryPolicy: "same_worker",
+        outputContract: { expectedSignals: ["code_written"], handoffTo: [] }
+      }],
+      handoffPolicy: { externalConflictDefault: "intervention" }
+    });
+    expect(plan.missionSummary.parallelismCap).toBe(24);
+    expect(plan.missionSummary.parallelismRationale).toBe("24 independent microservices");
+  });
+
   it("does not translate abstract planner lane hints into coarse claim locks", () => {
     const { plan } = validateAndCanonicalizePlannerPlan({
       schemaVersion: "1.0",
@@ -344,7 +379,7 @@ describe("missionPlanningService planner contract", () => {
     expect(policy?.claimScopes ?? []).toHaveLength(0);
   });
 
-  it("falls back deterministically when AI planner returns malformed JSON", async () => {
+  it("throws MissionPlanningError when AI planner returns malformed JSON", async () => {
     const aiIntegrationService = {
       getAvailability: () => ({ claude: true, codex: false }),
       getMode: () => "ready",
@@ -354,26 +389,34 @@ describe("missionPlanningService planner contract", () => {
       })
     };
 
-    const result = await planMissionOnce({
+    await expect(planMissionOnce({
       title: "Malformed plan",
       prompt: "Plan a deterministic migration rollout.",
       laneId: null,
       plannerEngine: "auto",
       projectRoot: "/Users/arul/ADE/apps/desktop",
       aiIntegrationService: aiIntegrationService as never
-    });
+    })).rejects.toThrow(MissionPlanningError);
 
-    expect(result.run.status).toBe("fallback");
-    expect(result.run.degraded).toBe(true);
-    expect(result.run.resolvedEngine).toBe("deterministic_fallback");
-    expect(result.run.reasonCode).toBe("planner_parse_error");
-    expect(result.run.attempts).toHaveLength(1);
-    expect(result.run.attempts[0]?.reasonCode).toBe("planner_parse_error");
-    expect(result.plan.steps.length).toBeGreaterThan(0);
+    try {
+      await planMissionOnce({
+        title: "Malformed plan",
+        prompt: "Plan a deterministic migration rollout.",
+        laneId: null,
+        plannerEngine: "auto",
+        projectRoot: "/Users/arul/ADE/apps/desktop",
+        aiIntegrationService: aiIntegrationService as never
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MissionPlanningError);
+      const planError = error as MissionPlanningError;
+      expect(planError.reasonCode).toBe("planner_parse_error");
+      expect(planError.attempts).toBe(1);
+    }
   });
 
-  it("falls back with planner_unavailable when no planner adapter is available", async () => {
-    const result = await planMissionOnce({
+  it("throws MissionPlanningError with planner_unavailable when no planner adapter is available", async () => {
+    await expect(planMissionOnce({
       title: "Unavailable planner",
       prompt: "Create rollout plan.",
       laneId: null,
@@ -383,14 +426,27 @@ describe("missionPlanningService planner contract", () => {
         getAvailability: () => ({ claude: false, codex: false }),
         getMode: () => "ready"
       } as never
-    });
+    })).rejects.toThrow(MissionPlanningError);
 
-    expect(result.run.status).toBe("fallback");
-    expect(result.run.degraded).toBe(true);
-    expect(result.run.resolvedEngine).toBe("deterministic_fallback");
-    expect(result.run.reasonCode).toBe("planner_unavailable");
-    expect(result.run.reasonDetail).toContain("unavailable");
-    expect(result.run.attempts).toHaveLength(0);
+    try {
+      await planMissionOnce({
+        title: "Unavailable planner",
+        prompt: "Create rollout plan.",
+        laneId: null,
+        plannerEngine: "auto",
+        projectRoot: "/Users/arul/ADE/apps/desktop",
+        aiIntegrationService: {
+          getAvailability: () => ({ claude: false, codex: false }),
+          getMode: () => "ready"
+        } as never
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MissionPlanningError);
+      const planError = error as MissionPlanningError;
+      expect(planError.reasonCode).toBe("planner_unavailable");
+      expect(planError.reasonDetail).toContain("unavailable");
+      expect(planError.attempts).toBe(0);
+    }
   });
 });
 
@@ -467,29 +523,13 @@ describe("policy-driven planner DAG", () => {
     expect(reviewStep).toBeUndefined();
   });
 
-  it("merge.mode=manual emits manual merge step with blockedSticky", () => {
+  it("merge phase is always off — no merge step emitted", () => {
     const plan = buildDeterministicMissionPlan({
       prompt: "Add a new API endpoint for users",
-      policy: { ...BASE_POLICY, merge: { mode: "manual" } }
+      policy: { ...BASE_POLICY, merge: { mode: "off" } }
     });
     const mergeStep = plan.steps.find((s) => s.kind === "merge");
-    expect(mergeStep).toBeTruthy();
-    expect(mergeStep!.title).toContain("awaiting approval");
-    expect(mergeStep!.metadata?.mergeMode).toBe("manual");
-    expect(mergeStep!.metadata?.blockedSticky).toBe(true);
-    expect(mergeStep!.metadata?.executorKind).toBe("manual");
-  });
-
-  it("merge.mode=auto_if_green emits auto merge step", () => {
-    const plan = buildDeterministicMissionPlan({
-      prompt: "Add a new API endpoint for users",
-      policy: { ...BASE_POLICY, merge: { mode: "auto_if_green" } }
-    });
-    const mergeStep = plan.steps.find((s) => s.kind === "merge");
-    expect(mergeStep).toBeTruthy();
-    expect(mergeStep!.title).toContain("Auto-merge");
-    expect(mergeStep!.metadata?.mergeMode).toBe("auto_if_green");
-    expect(mergeStep!.metadata?.blockedSticky).toBeUndefined();
+    expect(mergeStep).toBeUndefined();
   });
 
   it("merge.mode=off does not emit merge step", () => {

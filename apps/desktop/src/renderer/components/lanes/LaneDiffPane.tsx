@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { FolderOpen, Save } from "lucide-react";
+import { FolderOpen, FloppyDisk } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
@@ -94,12 +94,12 @@ export function LaneDiffPane({
     return (
       <div className="h-full flex flex-col">
         <div className="flex items-center justify-between gap-2 px-2 py-1 bg-card/30 shrink-0">
-          <div className="min-w-0 flex items-center gap-2 text-[11px]">
+          <div className="min-w-0 flex items-center gap-2 text-xs">
             <span className="text-muted-fg">Commit</span>
             <span className="font-mono text-fg">{selectedCommit.shortSha}</span>
             <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
           </div>
-          <Chip className="text-[10px]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
+          <Chip className="text-[11px]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
         </div>
         <div className="flex-1 min-h-0">
           <Group
@@ -111,8 +111,8 @@ export function LaneDiffPane({
               <div className="flex h-full min-h-0 flex-col">
                 <div className="flex items-center justify-between bg-card/30 px-2 py-1 shrink-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-muted-fg/70">Files</span>
-                    <Chip className="h-4 px-1 text-[10px]">{commitFiles.length}</Chip>
+                    <span className="text-xs text-muted-fg/70">Files</span>
+                    <Chip className="h-4 px-1 text-[11px]">{commitFiles.length}</Chip>
                   </div>
                 </div>
                 <div className="flex-1 min-h-0 overflow-auto p-1 space-y-0.5">
@@ -122,7 +122,7 @@ export function LaneDiffPane({
                         key={file}
                         type="button"
                         className={cn(
-                          "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] transition-colors",
+                          "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs transition-colors",
                           selectedCommitFilePath === file
                             ? "bg-accent/10 text-fg shadow-card"
                             : "text-muted-fg hover:bg-muted/30 hover:text-fg"
@@ -134,7 +134,7 @@ export function LaneDiffPane({
                       </button>
                     ))
                   ) : (
-                    <div className="p-3 text-center text-[11px] text-muted-fg opacity-60 italic">
+                    <div className="p-3 text-center text-xs text-muted-fg opacity-60 italic">
                       Loading files...
                     </div>
                   )}
@@ -164,7 +164,7 @@ export function LaneDiffPane({
     return (
       <div className="h-full flex flex-col">
         <div className="flex items-center justify-between px-2 py-1 bg-card/30 shrink-0">
-          <div className="flex items-center gap-2 text-[11px]">
+          <div className="flex items-center gap-2 text-xs">
             <span className="text-muted-fg">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
             <span className="text-muted-fg">/</span>
             <span className="font-semibold">{diff.path}</span>
@@ -174,11 +174,11 @@ export function LaneDiffPane({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-5 px-1 text-[10px]"
+                className="h-5 px-1 text-[11px]"
                 onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
                 title="Open in Files tab"
               >
-                <FolderOpen className="h-3 w-3 mr-0.5" />
+                <FolderOpen size={12} className="mr-0.5" />
                 Files
               </Button>
             ) : null}
@@ -186,7 +186,7 @@ export function LaneDiffPane({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-5 px-1 text-[10px]"
+                className="h-5 px-1 text-[11px]"
                 disabled={busyAction != null}
                 onClick={() => {
                   const text = diffRef.current?.getModifiedValue();
@@ -203,7 +203,7 @@ export function LaneDiffPane({
                     .finally(() => setBusyAction(null));
                 }}
               >
-                <Save className="h-3 w-3 mr-0.5" />
+                <FloppyDisk size={12} className="mr-0.5" />
                 Save
               </Button>
             ) : null}

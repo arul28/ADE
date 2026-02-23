@@ -83,3 +83,117 @@ describe("missionPlanner deterministic fan-out", () => {
     expect(titles).toContain("UI: show lane id, step status, and worker heartbeat age in the Missions detail panel.");
   });
 });
+
+describe("missionPlanner slash command translation", () => {
+  it("translates /automate into a step with instructions and no startupCommand", () => {
+    const prompt = "/automate";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const cmdStep = plan.steps.find((step) => step.metadata.slashCommand === "/automate");
+    expect(cmdStep).toBeTruthy();
+    expect(cmdStep!.metadata.stepType).toBe("command");
+    expect(cmdStep!.metadata.instructions).toEqual(expect.stringContaining("Run the /automate skill"));
+    expect(cmdStep!.metadata.startupCommand).toBeUndefined();
+    expect(cmdStep!.metadata.slashCommand).toBe("/automate");
+  });
+
+  it("translates /finalize into a step with instructions and no startupCommand", () => {
+    const prompt = "/finalize";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const cmdStep = plan.steps.find((step) => step.metadata.slashCommand === "/finalize");
+    expect(cmdStep).toBeTruthy();
+    expect(cmdStep!.metadata.stepType).toBe("command");
+    expect(cmdStep!.metadata.instructions).toEqual(expect.stringContaining("Run the /finalize skill"));
+    expect(cmdStep!.metadata.startupCommand).toBeUndefined();
+    expect(cmdStep!.metadata.slashCommand).toBe("/finalize");
+  });
+
+  it("passes unknown /foobar through with startupCommand (untranslated)", () => {
+    const prompt = "/foobar";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const cmdStep = plan.steps.find((step) => step.metadata.slashCommand === "/foobar");
+    expect(cmdStep).toBeTruthy();
+    expect(cmdStep!.metadata.stepType).toBe("command");
+    expect(cmdStep!.metadata.startupCommand).toBe("/foobar");
+    expect(cmdStep!.metadata.instructions).toBeUndefined();
+  });
+
+  it("places slash command steps after preceding implementation steps in the dependency chain", () => {
+    const prompt = [
+      "- Implement the backend API route.",
+      "/automate"
+    ].join("\n");
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const cmdStep = plan.steps.find((step) => step.metadata.slashCommand === "/automate");
+    expect(cmdStep).toBeTruthy();
+    // The command step should depend on the step immediately before it (the last non-slash step)
+    const cmdDeps = dependencyIndices(cmdStep!);
+    expect(cmdDeps.length).toBeGreaterThan(0);
+    // Its dependency index should be less than its own index (sequenced after prior steps)
+    expect(cmdDeps.every((dep) => dep < cmdStep!.index)).toBe(true);
+  });
+
+  it("creates multiple command steps when prompt contains multiple slash commands", () => {
+    const prompt = [
+      "- Implement the backend API route.",
+      "/automate",
+      "/finalize"
+    ].join("\n");
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const cmdSteps = plan.steps.filter((step) => step.metadata.stepType === "command");
+    expect(cmdSteps).toHaveLength(2);
+    const slashCmds = cmdSteps.map((step) => step.metadata.slashCommand);
+    expect(slashCmds).toContain("/automate");
+    expect(slashCmds).toContain("/finalize");
+    // Both should have translated instructions, no startupCommand
+    for (const step of cmdSteps) {
+      expect(step.metadata.instructions).toBeDefined();
+      expect(step.metadata.startupCommand).toBeUndefined();
+    }
+  });
+});
+
+describe("missionPlanner role assignment", () => {
+  it('assigns role "planning" to analysis steps', () => {
+    // Use a long prompt with analysis keywords to trigger the analysis step
+    const prompt = "Analyze the codebase structure and investigate the architecture patterns used across the project for a thorough review of the system.";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const analysisStep = plan.steps.find((step) => step.kind === "analysis");
+    expect(analysisStep).toBeTruthy();
+    expect(analysisStep!.metadata.role).toBe("planning");
+  });
+
+  it('assigns role "implementation" to implementation steps', () => {
+    const prompt = "Implement the backend API route.";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const implStep = plan.steps.find((step) => step.kind === "implementation");
+    expect(implStep).toBeTruthy();
+    expect(implStep!.metadata.role).toBe("implementation");
+  });
+
+  it('assigns role "testing" to validation steps', () => {
+    const prompt = "Implement the backend API route.";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const validationStep = plan.steps.find((step) => step.kind === "validation");
+    expect(validationStep).toBeTruthy();
+    expect(validationStep!.metadata.role).toBe("testing");
+  });
+
+  it('assigns role "integration" to integration steps', () => {
+    const prompt = [
+      "- Implement the backend API route.",
+      "- Implement the frontend UI component."
+    ].join("\n");
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const integrationStep = plan.steps.find((step) => step.kind === "integration");
+    expect(integrationStep).toBeTruthy();
+    expect(integrationStep!.metadata.role).toBe("integration");
+  });
+
+  it('assigns role "merge" to summary steps', () => {
+    const prompt = "Implement the backend API route.";
+    const plan = buildDeterministicMissionPlan({ prompt });
+    const summaryStep = plan.steps.find((step) => step.kind === "summary");
+    expect(summaryStep).toBeTruthy();
+    expect(summaryStep!.metadata.role).toBe("merge");
+  });
+});

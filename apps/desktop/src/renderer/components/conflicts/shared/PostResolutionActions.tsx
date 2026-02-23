@@ -1,5 +1,5 @@
 import React from "react";
-import { CheckCircle2, XCircle, AlertTriangle, FileText } from "lucide-react";
+import { CheckCircle, XCircle, Warning, FileText } from "@phosphor-icons/react";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 
@@ -16,7 +16,7 @@ function StatusBadge({ status }: { status: PostResolutionActionsProps["status"] 
 
   const config = {
     completed: {
-      icon: CheckCircle2,
+      icon: CheckCircle,
       label: "Completed",
       className: "bg-green-500/10 text-green-600 border-green-500/30"
     },
@@ -26,7 +26,7 @@ function StatusBadge({ status }: { status: PostResolutionActionsProps["status"] 
       className: "bg-red-500/10 text-red-600 border-red-500/30"
     },
     cancelled: {
-      icon: AlertTriangle,
+      icon: Warning,
       label: "Cancelled",
       className: "bg-amber-500/10 text-amber-600 border-amber-500/30"
     }
@@ -41,7 +41,7 @@ function StatusBadge({ status }: { status: PostResolutionActionsProps["status"] 
         config.className
       )}
     >
-      <Icon className="h-3.5 w-3.5" />
+      <Icon size={14} />
       {config.label}
     </span>
   );
@@ -72,7 +72,7 @@ export function PostResolutionActions({
                   key={file}
                   className="flex items-center gap-1.5 text-xs text-muted-fg"
                 >
-                  <FileText className="h-3 w-3 shrink-0" />
+                  <FileText size={12} className="shrink-0" />
                   <span className="truncate font-mono">{file}</span>
                 </li>
               ))}

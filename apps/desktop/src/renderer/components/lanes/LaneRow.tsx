@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, Archive, ExternalLink, GitBranch, GitMerge, Layers3, Pencil, TerminalSquare, Trash2 } from "lucide-react";
+import { Warning, Archive, ArrowSquareOut, GitBranch, GitMerge, Stack, PencilSimple, Terminal, Trash } from "@phosphor-icons/react";
 import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -122,17 +122,17 @@ export function LaneRow({
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <GitBranch className={cn("h-3.5 w-3.5", selected ? "text-accent" : "text-muted-fg")} />
-            <span className="truncate font-serif text-base font-semibold tracking-tight text-fg">{lane.name}</span>
+            <GitBranch size={14} className={cn(selected ? "text-accent" : "text-muted-fg")} />
+            <span className="truncate font-sans text-base font-semibold tracking-tight text-fg">{lane.name}</span>
             <span className="rounded-lg bg-muted/40 px-1.5 py-0.5 text-xs text-muted-fg/70">{lane.laneType}</span>
             {lane.parentLaneId ? (
-              <span className="inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[10px] uppercase text-muted-fg">
-                <Layers3 className="h-3 w-3" />
+              <span className="inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[11px] uppercase text-muted-fg">
+                <Stack size={12} />
                 d{lane.stackDepth}
               </span>
             ) : null}
-            {isPrimaryLane ? <span className="rounded-lg bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase text-emerald-700">home</span> : null}
-            <span className={cn("inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[10px] uppercase text-muted-fg transition-colors duration-400", statusAnimClass)}>
+            {isPrimaryLane ? <span className="rounded-lg bg-emerald-500/15 px-1.5 py-0.5 text-[11px] uppercase text-emerald-700">home</span> : null}
+            <span className={cn("inline-flex items-center gap-1 rounded-lg bg-muted/40 px-1.5 py-0.5 text-[11px] uppercase text-muted-fg transition-colors duration-400", statusAnimClass)}>
               <span className={cn("inline-block h-2 w-2 rounded-full", conflictDotClass(conflictStatus?.status))} />
               {conflictStatus?.status ?? "unknown"}
             </span>
@@ -146,7 +146,7 @@ export function LaneRow({
                 <span
                   key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
                   className={cn(
-                    "rounded-lg px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                    "rounded-lg px-1.5 py-0.5 text-[11px] uppercase tracking-wide",
                     chip.kind === "high-risk"
                       ? "bg-red-900/30 text-red-200"
                       : "bg-amber-900/20 text-amber-200"
@@ -169,14 +169,14 @@ export function LaneRow({
                 title="Simulate merge"
                 onClick={(e) => e.stopPropagation()}
               >
-                <GitMerge className="h-3.5 w-3.5" />
+                <GitMerge size={14} />
               </Button>
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
               <Dialog.Content className="fixed left-1/2 top-[18%] z-50 w-[min(860px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <Dialog.Title className="text-lg font-serif font-bold">Merge Simulation</Dialog.Title>
+                  <Dialog.Title className="text-lg font-sans font-bold">Merge Simulation</Dialog.Title>
                   <Dialog.Close asChild>
                     <Button variant="ghost" size="sm">
                       Esc
@@ -204,7 +204,7 @@ export function LaneRow({
                 .catch(() => { });
             }}
           >
-            <TerminalSquare className="h-3.5 w-3.5" />
+            <Terminal size={14} />
           </Button>
 
           <Button
@@ -217,7 +217,7 @@ export function LaneRow({
               window.ade.lanes.openFolder({ laneId: lane.id }).catch(() => { });
             }}
           >
-            <ExternalLink className="h-3.5 w-3.5" />
+            <ArrowSquareOut size={14} />
           </Button>
 
           <Dialog.Root
@@ -235,7 +235,7 @@ export function LaneRow({
                 title="Rename lane"
                 onClick={(e) => e.stopPropagation()}
               >
-                <Pencil className="h-3.5 w-3.5" />
+                <PencilSimple size={14} />
               </Button>
             </Dialog.Trigger>
             <Dialog.Portal>
@@ -296,7 +296,7 @@ export function LaneRow({
                   title="Archive lane"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <Archive className="h-3.5 w-3.5" />
+                  <Archive size={14} />
                 </Button>
               </Dialog.Trigger>
               <Dialog.Portal>
@@ -355,7 +355,7 @@ export function LaneRow({
                   title="Delete lane from disk and git"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash size={14} />
                 </Button>
               </Dialog.Trigger>
               <Dialog.Portal>
@@ -363,7 +363,7 @@ export function LaneRow({
                 <Dialog.Content className="fixed left-1/2 top-[14%] z-50 w-[min(720px,calc(100vw-24px))] -translate-x-1/2 rounded bg-bg border border-border/40 p-3 shadow-float focus:outline-none">
                   <div className="mb-4 flex items-start justify-between gap-3">
                     <Dialog.Title className="flex items-center gap-2 text-lg font-semibold text-red-300">
-                      <AlertTriangle className="h-5 w-5" />
+                      <Warning size={20} />
                       Delete Lane Permanently
                     </Dialog.Title>
                     <Dialog.Close asChild>
@@ -444,7 +444,7 @@ export function LaneRow({
         </div>
       </div>
 
-      <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border/10 pt-2 text-[10px] font-mono uppercase tracking-wider text-muted-fg">
+      <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border/10 pt-2 text-[11px] font-mono uppercase tracking-wider text-muted-fg">
         <div className="flex flex-col">
           <span className="opacity-50">{lane.parentLaneId ? "Vs Parent" : "Pull"}</span>
           <span className={cn("font-bold", lane.status.ahead > 0 || lane.status.behind > 0 ? "text-accent" : "text-fg")}>

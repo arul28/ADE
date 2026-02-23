@@ -61,9 +61,9 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-fg">Lane Conflicts</span>
           {tone ? (
-            <Chip className={cn("text-[10px] px-1.5", tone.className)}>{tone.label}</Chip>
+            <Chip className={cn("text-[11px] px-1.5", tone.className)}>{tone.label}</Chip>
           ) : (
-            <Chip className="text-[10px] px-1.5">{loading ? "loading…" : "unknown"}</Chip>
+            <Chip className="text-[11px] px-1.5">{loading ? "loading…" : "unknown"}</Chip>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -77,17 +77,17 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
       </div>
 
       {status ? (
-        <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
           <div className="rounded border border-border bg-card/50 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Overlaps</div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-fg">Overlaps</div>
             <div className="font-semibold text-fg">{status.overlappingFileCount}</div>
           </div>
           <div className="rounded border border-border bg-card/50 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Peers</div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-fg">Peers</div>
             <div className="font-semibold text-fg">{status.peerConflictCount}</div>
           </div>
           <div className="rounded border border-border bg-card/50 p-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-fg">Predicted</div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-fg">Predicted</div>
             <div className="font-semibold text-fg">{status.lastPredictedAt ? new Date(status.lastPredictedAt).toLocaleString() : "—"}</div>
           </div>
         </div>
@@ -96,14 +96,14 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
       {error ? <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">{error}</div> : null}
 
       <div className="mt-2 flex-1 min-h-0 overflow-auto rounded border border-border bg-card/30">
-        <div className="border-b border-border px-2 py-1 text-[10px] uppercase tracking-wider text-muted-fg">Overlaps</div>
+        <div className="border-b border-border px-2 py-1 text-[11px] uppercase tracking-wider text-muted-fg">Overlaps</div>
         <div className="divide-y divide-border">
           {overlaps.map((overlap) => (
-            <div key={overlap.peerId ?? "base"} className="px-2 py-2 text-[11px]">
+            <div key={overlap.peerId ?? "base"} className="px-2 py-2 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate font-semibold text-fg">{overlap.peerName}</div>
-                  <div className="truncate text-[10px] text-muted-fg">
+                  <div className="truncate text-[11px] text-muted-fg">
                     risk: {overlap.riskLevel} · files: {overlap.files.length}
                   </div>
                 </div>
@@ -111,12 +111,12 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
               {overlap.files.length ? (
                 <div className="mt-1 max-h-[120px] overflow-auto rounded border border-border bg-bg/40 p-1">
                   {overlap.files.slice(0, 12).map((file) => (
-                    <div key={file.path} className="truncate font-mono text-[10px] text-muted-fg" title={file.path}>
+                    <div key={file.path} className="truncate font-mono text-[11px] text-muted-fg" title={file.path}>
                       {file.path}
                     </div>
                   ))}
                   {overlap.files.length > 12 ? (
-                    <div className="px-1 py-0.5 text-[10px] text-muted-fg">+{overlap.files.length - 12} more…</div>
+                    <div className="px-1 py-0.5 text-[11px] text-muted-fg">+{overlap.files.length - 12} more…</div>
                   ) : null}
                 </div>
               ) : null}

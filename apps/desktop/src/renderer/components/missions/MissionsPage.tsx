@@ -1,28 +1,30 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
-  Clock3,
-  Loader2,
+  Clock,
+  SpinnerGap,
   Play,
   Plus,
-  RefreshCw,
+  ArrowsClockwise,
   Rocket,
-  Search,
-  Send,
-  Square,
-  Terminal,
+  MagnifyingGlass,
+  PaperPlaneTilt,
+  Stop,
+  TerminalWindow,
   X,
-  Activity,
+  Pulse,
   GitBranch,
-  LayoutGrid,
-  Network,
-  CheckCircle2,
-  Zap,
-  MessageSquare,
-  Bot,
+  SquaresFour,
+  Graph,
+  CheckCircle,
+  Lightning,
+  ChatCircle,
+  Robot,
   Shield,
-  CircleDot,
-  Settings
-} from "lucide-react";
+  CircleHalf,
+  GearSix,
+  Hash,
+  CaretDown
+} from "@phosphor-icons/react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
   MissionDetail,
@@ -46,18 +48,22 @@ import type {
   MissionMetricSample,
   ProjectConfigSnapshot,
   StartOrchestratorRunFromMissionArgs,
-  SteerMissionResult
+  SteerMissionResult,
+  ExecutionPlanPreview as ExecutionPlanPreviewType,
+  PrStrategy
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
-import { WorkerTranscriptPane } from "./WorkerTranscriptPane";
 import { PolicyEditor, PRESET_STANDARD } from "./PolicyEditor";
 import { CompletionBanner } from "./CompletionBanner";
 import { PhaseProgressBar } from "./PhaseProgressBar";
 import { MissionPolicyBadge } from "./MissionPolicyBadge";
+import { ExecutionPlanPreview } from "./ExecutionPlanPreview";
+import { UsageDashboard } from "./UsageDashboard";
+import { AgentChannels } from "./AgentChannels";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 
@@ -126,11 +132,12 @@ const EXECUTOR_BADGE_CLASSES: Record<string, string> = {
   manual: "bg-blue-500/20 text-blue-300"
 };
 
-type WorkspaceTab = "board" | "dag" | "activity" | "transcript" | "chat";
+type WorkspaceTab = "board" | "dag" | "channels" | "activity" | "usage";
 type PlannerProvider = "auto" | "claude" | "codex";
 
 type MissionSettingsDraft = {
   defaultExecutionPolicy: MissionExecutionPolicy;
+  defaultPrStrategy: PrStrategy;
   defaultPlannerProvider: PlannerProvider;
   requirePlanReview: boolean;
   claudePermissionMode: string;
@@ -142,6 +149,7 @@ type MissionSettingsDraft = {
 
 const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultExecutionPolicy: PRESET_STANDARD,
+  defaultPrStrategy: { kind: "integration", targetBranch: "main", draft: true },
   defaultPlannerProvider: "auto",
   requirePlanReview: false,
   claudePermissionMode: "acceptEdits",
@@ -355,16 +363,16 @@ function narrativeForEvent(ev: { eventType: string; reason: string; stepId?: str
   return ev.reason || "Event recorded";
 }
 
-/** Pick a lucide icon component for a timeline event type. */
-function iconForEventType(eventType: string): React.ComponentType<{ className?: string }> {
+/** Pick a Phosphor icon component for a timeline event type. */
+function iconForEventType(eventType: string): React.ElementType {
   if (eventType.startsWith("run_") || eventType === "run_status_changed") return Rocket;
-  if (eventType.startsWith("step_") || eventType === "step_status_changed") return CircleDot;
-  if (eventType.startsWith("attempt_")) return Bot;
+  if (eventType.startsWith("step_") || eventType === "step_status_changed") return CircleHalf;
+  if (eventType.startsWith("attempt_")) return Robot;
   if (eventType.startsWith("claim_")) return Shield;
-  if (eventType.startsWith("autopilot")) return Zap;
+  if (eventType.startsWith("autopilot")) return Lightning;
   if (eventType.startsWith("context_")) return GitBranch;
-  if (eventType === "user_directive") return MessageSquare;
-  return Activity;
+  if (eventType === "user_directive") return ChatCircle;
+  return Pulse;
 }
 
 /** CSS color class for a timeline event type icon. */
@@ -412,7 +420,6 @@ const METRIC_TOGGLE_ORDER: MissionMetricToggle[] = [
   "code_review",
   "test_review",
   "integration",
-  "merge",
   "cost",
   "tokens",
   "retries",
@@ -429,7 +436,6 @@ const METRIC_TOGGLE_LABELS: Record<MissionMetricToggle, string> = {
   code_review: "Code Review",
   test_review: "Test Review",
   integration: "Integration",
-  merge: "Merge",
   cost: "Cost",
   tokens: "Tokens",
   retries: "Retries",
@@ -437,6 +443,30 @@ const METRIC_TOGGLE_LABELS: Record<MissionMetricToggle, string> = {
   context_pressure: "Context Pressure",
   interventions: "Interventions"
 };
+
+type MetricPresetGroup = {
+  label: string;
+  tooltip: string;
+  toggles: MissionMetricToggle[];
+};
+
+const METRIC_PRESET_GROUPS: MetricPresetGroup[] = [
+  {
+    label: "Performance",
+    tooltip: "Token usage, cost estimates, and context window pressure",
+    toggles: ["tokens", "cost", "context_pressure"]
+  },
+  {
+    label: "Quality",
+    tooltip: "Retry counts, resource claims, and human interventions",
+    toggles: ["retries", "claims", "interventions"]
+  },
+  {
+    label: "Progress",
+    tooltip: "Phase-level progress: planning through integration",
+    toggles: ["planning", "implementation", "testing", "validation", "code_review", "test_review", "integration"]
+  }
+];
 
 const WORKER_STATUS_CLASSES: Record<string, string> = {
   spawned: "bg-blue-500/20 text-blue-300 border-blue-500/30",
@@ -957,7 +987,7 @@ function MissionChat({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-border/20 lg:border-b-0 lg:border-r lg:border-border/20">
         <div className="border-b border-border/20 px-3 py-2">
           <div className="flex items-center gap-2">
-            <MessageSquare className="h-3.5 w-3.5 text-accent" />
+            <ChatCircle size={14} weight="regular" className="text-accent" />
             <div className="text-[11px] font-semibold text-fg">
               {selectedThread?.title ?? "Select a thread"}
             </div>
@@ -992,7 +1022,7 @@ function MissionChat({
               )}>
                 {msg.role !== "user" && (
                   <div className="mb-1 flex items-center gap-1 text-[9px] text-muted-fg">
-                    {msg.role === "orchestrator" ? <Bot className="h-3 w-3" /> : <Terminal className="h-3 w-3" />}
+                    {msg.role === "orchestrator" ? <Robot className="h-3 w-3" /> : <TerminalWindow className="h-3 w-3" />}
                     <span>{msg.role === "orchestrator" ? "Orchestrator" : "Worker"}</span>
                     {msg.stepKey ? <span>{"\u2022"} {msg.stepKey}</span> : null}
                   </div>
@@ -1055,7 +1085,7 @@ function MissionChat({
               onClick={() => void handleSend()}
               disabled={!selectedThread || !input.trim() || sending}
             >
-              {sending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              {sending ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <PaperPlaneTilt className="h-3 w-3" />}
               Send
             </Button>
           </div>
@@ -1105,22 +1135,44 @@ function MissionChat({
         <div className="border-t border-border/20 px-3 py-2">
           <div className="flex items-center justify-between">
             <div className="text-[11px] font-semibold text-fg">Mission Metrics</div>
-            {savingMetrics ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-fg" /> : null}
+            {savingMetrics ? <SpinnerGap className="h-3.5 w-3.5 animate-spin text-muted-fg" /> : null}
           </div>
         </div>
         <div className="max-h-[44%] overflow-y-auto p-2">
-          <div className="space-y-1.5">
-            {METRIC_TOGGLE_ORDER.map((toggle) => (
-              <label key={toggle} className="flex items-center justify-between rounded border border-border/20 bg-zinc-800/35 px-2 py-1.5 text-[10px]">
-                <span className="text-fg">{METRIC_TOGGLE_LABELS[toggle]}</span>
-                <input
-                  type="checkbox"
-                  checked={enabledMetricSet.has(toggle)}
-                  onChange={() => void handleToggleMetric(toggle)}
+          <div className="flex flex-wrap gap-1">
+            {METRIC_PRESET_GROUPS.map((group) => {
+              const allEnabled = group.toggles.every((t) => enabledMetricSet.has(t));
+              return (
+                <button
+                  key={group.label}
+                  title={group.tooltip}
                   disabled={savingMetrics}
-                />
-              </label>
-            ))}
+                  onClick={async () => {
+                    if (savingMetrics) return;
+                    const current = metricsConfig?.toggles?.length ? metricsConfig.toggles : METRIC_TOGGLE_ORDER;
+                    const next = allEnabled
+                      ? current.filter((t) => !group.toggles.includes(t))
+                      : [...new Set([...current, ...group.toggles])];
+                    if (next.length === 0) return;
+                    setSavingMetrics(true);
+                    try {
+                      const updated = await window.ade.orchestrator.setMissionMetricsConfig({ missionId, toggles: next });
+                      setMetricsConfig(updated);
+                    } finally {
+                      setSavingMetrics(false);
+                    }
+                  }}
+                  className={cn(
+                    "rounded px-2 py-1 text-[10px] font-medium transition-colors border",
+                    allEnabled
+                      ? "bg-accent/20 text-accent border-accent/40"
+                      : "bg-zinc-800/40 text-muted-fg border-border/20 hover:bg-zinc-800/60"
+                  )}
+                >
+                  {group.label}
+                </button>
+              );
+            })}
           </div>
           <div className="mt-2 rounded border border-border/20 bg-zinc-900/55 p-2">
             <div className="text-[10px] font-medium text-muted-fg">Latest Samples</div>
@@ -1153,6 +1205,18 @@ type CreateDraft = {
   laneId: string;
   priority: MissionPriority;
   executionPolicy: MissionExecutionPolicy;
+  orchestratorModel: string;
+  thinkingBudgets: Record<string, number>;
+  prStrategy: PrStrategy;
+  prTargetBranch: string;
+  prDraft: boolean;
+};
+
+const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
+  "claude-sonnet": 16384,
+  "claude-opus": 32768,
+  "claude-haiku": 4096,
+  "codex": 16384
 };
 
 function CreateMissionDialog({
@@ -1175,7 +1239,12 @@ function CreateMissionDialog({
     prompt: "",
     laneId: "",
     priority: "normal",
-    executionPolicy: defaultExecutionPolicy
+    executionPolicy: defaultExecutionPolicy,
+    orchestratorModel: "sonnet",
+    thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
+    prStrategy: { kind: "integration", targetBranch: "main", draft: true },
+    prTargetBranch: "main",
+    prDraft: true
   });
 
   useEffect(() => {
@@ -1185,7 +1254,12 @@ function CreateMissionDialog({
       prompt: "",
       laneId: "",
       priority: "normal",
-      executionPolicy: defaultExecutionPolicy
+      executionPolicy: defaultExecutionPolicy,
+      orchestratorModel: "sonnet",
+      thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
+      prStrategy: { kind: "integration", targetBranch: "main", draft: true },
+      prTargetBranch: "main",
+      prDraft: true
     });
   }, [open, defaultExecutionPolicy]);
 
@@ -1202,7 +1276,7 @@ function CreateMissionDialog({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-lg rounded-lg border border-border/40 bg-zinc-900 shadow-2xl"
+        className="w-full max-w-2xl rounded-lg border border-border/40 bg-zinc-900 shadow-2xl max-h-[90vh] overflow-y-auto"
       >
         <div className="flex items-center justify-between border-b border-border/20 px-5 py-3">
           <div className="flex items-center gap-2">
@@ -1271,6 +1345,104 @@ function CreateMissionDialog({
 
           </div>
 
+          {/* Orchestrator Model */}
+          <label className="block space-y-1">
+            <span className="text-[11px] font-medium text-muted-fg">Orchestrator Model</span>
+            <select
+              value={draft.orchestratorModel}
+              onChange={(e) => setDraft((p) => ({ ...p, orchestratorModel: e.target.value }))}
+              className="h-8 w-full rounded-lg border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+            >
+              <option value="sonnet">Claude Sonnet (default)</option>
+              <option value="opus">Claude Opus</option>
+              <option value="haiku">Claude Haiku</option>
+            </select>
+          </label>
+
+          {/* Thinking Budgets */}
+          <div className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-fg">Thinking Budgets</span>
+            <div className="grid grid-cols-2 gap-2">
+              {Object.entries(draft.thinkingBudgets).map(([model, budget]) => (
+                <label key={model} className="flex items-center gap-2 text-[10px]">
+                  <span className="text-muted-fg w-[90px] shrink-0">{model.replace("claude-", "Claude ").replace("codex", "Codex")}</span>
+                  <input
+                    type="number"
+                    step={1024}
+                    value={budget}
+                    onChange={(e) => setDraft((p) => ({
+                      ...p,
+                      thinkingBudgets: { ...p.thinkingBudgets, [model]: Number(e.target.value) || 0 }
+                    }))}
+                    className="h-7 w-full rounded border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+                  />
+                  <span className="text-muted-fg/60 text-[9px] shrink-0">tokens</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* PR Strategy */}
+          <div className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-fg">PR Strategy</span>
+            <div className="flex gap-1">
+              {(["integration", "per-lane", "manual"] as const).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => {
+                    const base = kind === "manual"
+                      ? { kind: "manual" as const }
+                      : { kind, targetBranch: draft.prTargetBranch, draft: draft.prDraft };
+                    setDraft((p) => ({ ...p, prStrategy: base }));
+                  }}
+                  className={cn(
+                    "rounded px-2.5 py-1 text-[10px] font-medium border transition-colors",
+                    draft.prStrategy.kind === kind
+                      ? "bg-accent/20 text-accent border-accent/40"
+                      : "bg-zinc-800/40 text-muted-fg border-border/20 hover:bg-zinc-800/60"
+                  )}
+                >
+                  {kind === "integration" ? "Integration PR" : kind === "per-lane" ? "Per-Lane PRs" : "Manual"}
+                </button>
+              ))}
+            </div>
+            {draft.prStrategy.kind !== "manual" && (
+              <div className="flex items-center gap-3 mt-1">
+                <label className="flex items-center gap-1.5 text-[10px]">
+                  <span className="text-muted-fg">Target branch</span>
+                  <input
+                    value={draft.prTargetBranch}
+                    onChange={(e) => {
+                      const branch = e.target.value;
+                      setDraft((p) => ({
+                        ...p,
+                        prTargetBranch: branch,
+                        prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
+                      }));
+                    }}
+                    className="h-6 w-24 rounded border border-border/30 bg-zinc-800 px-2 text-xs text-fg outline-none focus:border-accent/40"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-[10px] text-muted-fg">
+                  <input
+                    type="checkbox"
+                    checked={draft.prDraft}
+                    onChange={(e) => {
+                      const isDraft = e.target.checked;
+                      setDraft((p) => ({
+                        ...p,
+                        prDraft: isDraft,
+                        prStrategy: { ...p.prStrategy, draft: isDraft } as PrStrategy
+                      }));
+                    }}
+                  />
+                  Draft PR
+                </label>
+              </div>
+            )}
+          </div>
+
           {/* Execution Policy */}
           <div className="space-y-1">
             <span className="text-[11px] font-medium text-muted-fg">Execution Policy</span>
@@ -1289,7 +1461,7 @@ function CreateMissionDialog({
             onClick={handleLaunch}
             disabled={busy || !draft.prompt.trim()}
           >
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+            {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
             Launch
           </Button>
         </div>
@@ -1331,7 +1503,7 @@ function MissionSettingsDialog({
       >
         <div className="flex items-center justify-between border-b border-border/20 px-5 py-3">
           <div className="flex items-center gap-2">
-            <Settings className="h-4 w-4 text-accent" />
+            <GearSix className="h-4 w-4 text-accent" />
             <h2 className="text-sm font-semibold text-fg">Mission Settings</h2>
           </div>
           <button onClick={onClose} className="text-muted-fg hover:text-fg transition-colors">
@@ -1500,6 +1672,9 @@ export default function MissionsPage() {
   const [steeringLog, setSteeringLog] = useState<SteeringEntry[]>([]);
   const graphRefreshTimerRef = useRef<number | null>(null);
 
+  /* ── Execution plan preview state ── */
+  const [executionPlanPreview, setExecutionPlanPreview] = useState<ExecutionPlanPreviewType | null>(null);
+
   /* ── Elapsed time ticker ── */
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -1557,9 +1732,14 @@ export default function MissionsPage() {
     const effectiveDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(effectivePolicySource, PRESET_STANDARD);
     const localDefaultExecutionPolicy = mergeExecutionPolicyWithDefaults(localPolicySource, effectiveDefaultExecutionPolicy);
 
+    const orchLocal = localOrchestrator as Record<string, unknown>;
+    const orchEffective = effectiveOrchestrator as Record<string, unknown>;
+    const effectivePrStrategy = (orchLocal.defaultPrStrategy ?? orchEffective.defaultPrStrategy ?? { kind: "integration", targetBranch: "main", draft: true }) as PrStrategy;
+
     setMissionSettingsSnapshot(snapshot);
     setMissionSettingsDraft({
       defaultExecutionPolicy: localDefaultExecutionPolicy,
+      defaultPrStrategy: effectivePrStrategy,
       defaultPlannerProvider: toPlannerProvider(
         readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
       ),
@@ -1608,6 +1788,7 @@ export default function MissionsPage() {
       const nextOrchestrator: Record<string, unknown> = {
         ...localOrchestrator,
         defaultExecutionPolicy: missionSettingsDraft.defaultExecutionPolicy,
+        defaultPrStrategy: missionSettingsDraft.defaultPrStrategy,
         defaultPlannerProvider: normalizedPlannerProvider,
         requirePlanReview: missionSettingsDraft.requirePlanReview
       };
@@ -1725,6 +1906,15 @@ export default function MissionsPage() {
     }, delayMs);
   }, [loadOrchestratorGraph]);
 
+  const loadExecutionPlanPreview = useCallback(async (runId: string) => {
+    try {
+      const preview = await window.ade.orchestrator.getExecutionPlanPreview({ runId });
+      setExecutionPlanPreview(preview);
+    } catch {
+      setExecutionPlanPreview(null);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshMissionList({ preserveSelection: true });
   }, [refreshMissionList]);
@@ -1741,15 +1931,27 @@ export default function MissionsPage() {
       }
       setSelectedMission(null);
       setRunGraph(null);
+      setExecutionPlanPreview(null);
       setSteeringLog([]);
       setChatJumpTarget(null);
       return;
     }
     setSteeringLog([]);
     setChatJumpTarget(null);
+    setExecutionPlanPreview(null);
     void loadMissionDetail(selectedMissionId);
     void loadOrchestratorGraph(selectedMissionId);
   }, [selectedMissionId, loadMissionDetail, loadOrchestratorGraph]);
+
+  /* ── Load execution plan preview when run graph changes ── */
+  useEffect(() => {
+    const activeRunId = runGraph?.run.id ?? null;
+    if (!activeRunId) {
+      setExecutionPlanPreview(null);
+      return;
+    }
+    void loadExecutionPlanPreview(activeRunId);
+  }, [runGraph?.run.id, loadExecutionPlanPreview]);
 
   useEffect(() => {
     const unsub = window.ade.missions.onEvent((payload) => {
@@ -1821,7 +2023,9 @@ export default function MissionsPage() {
         prompt,
         laneId: resolvedLaneId || undefined,
         priority: draft.priority,
-        executionPolicy: draft.executionPolicy,
+        executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
+        orchestratorModel: draft.orchestratorModel || undefined,
+        thinkingBudgets: draft.thinkingBudgets,
         autostart: true,
         launchMode: "autopilot",
         autopilotExecutor: "codex"
@@ -1971,7 +2175,7 @@ export default function MissionsPage() {
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-accent" />
+        <SpinnerGap className="h-6 w-6 animate-spin text-accent" />
       </div>
     );
   }
@@ -1994,7 +2198,7 @@ export default function MissionsPage() {
                 className="rounded p-1 text-muted-fg hover:text-fg hover:bg-muted/20 transition-colors"
                 title="Refresh"
               >
-                {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {refreshing ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <ArrowsClockwise className="h-3.5 w-3.5" />}
               </button>
               <button
                 onClick={() => {
@@ -2006,7 +2210,7 @@ export default function MissionsPage() {
                 className="rounded p-1 text-muted-fg hover:text-fg hover:bg-muted/20 transition-colors"
                 title="Mission Settings"
               >
-                <Settings className="h-3.5 w-3.5" />
+                <GearSix className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setCreateOpen(true)}
@@ -2021,12 +2225,12 @@ export default function MissionsPage() {
           {/* Search */}
           <div className="px-3 py-2">
             <div className="relative">
-              <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
+              <MagnifyingGlass className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
               <input
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
                 placeholder="Search missions..."
-                className="h-7 w-full rounded border border-border/20 bg-zinc-800/60 pl-7 pr-2 text-[11px] text-fg outline-none focus:border-accent/30"
+                className="h-7 w-full rounded border border-border/20 bg-zinc-800/60 pl-7 pr-2 text-xs text-fg outline-none focus:border-accent/30"
               />
             </div>
           </div>
@@ -2034,14 +2238,26 @@ export default function MissionsPage() {
           {/* Mission list */}
           <div className="flex-1 overflow-y-auto px-2 pb-2">
             {filteredMissions.length === 0 ? (
-              <div className="px-2 py-8 text-center text-[11px] text-muted-fg/60">
-                {missions.length === 0 ? "No missions yet" : "No matches"}
+              <div className="px-2 py-8 text-center text-xs text-muted-fg/60">
+                {missions.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <Rocket size={28} weight="regular" className="text-blue-400/40" />
+                    <p>No missions yet. Missions coordinate your AI agents to accomplish complex tasks.</p>
+                    <button
+                      onClick={() => setCreateOpen(true)}
+                      className="mt-1 rounded-lg bg-blue-500/15 border border-blue-500/30 px-3 py-1.5 text-xs font-medium text-blue-300 hover:bg-blue-500/25 transition-colors"
+                    >
+                      Start Mission
+                    </button>
+                  </div>
+                ) : "No matches"}
               </div>
             ) : (
               <div className="space-y-1">
                 {filteredMissions.map((m) => {
                   const isSelected = m.id === selectedMissionId;
                   const progress = m.totalSteps > 0 ? Math.round((m.completedSteps / m.totalSteps) * 100) : 0;
+                  const isActive = m.status === "in_progress" || m.status === "planning";
                   return (
                     <button
                       key={m.id}
@@ -2050,13 +2266,14 @@ export default function MissionsPage() {
                         "w-full text-left rounded-lg px-2.5 py-2 transition-colors",
                         isSelected
                           ? "bg-accent/15 border border-accent/30"
-                          : "hover:bg-zinc-800/60 border border-transparent"
+                          : "hover:bg-zinc-800/60 border border-transparent",
+                        isActive && !isSelected && "ade-glow-pulse-blue"
                       )}
                     >
                       <div className="flex items-start gap-2">
                         <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", STATUS_DOT_COLORS[m.status])} />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-[11px] font-medium text-fg">{m.title}</div>
+                          <div className="truncate text-xs font-medium text-fg">{m.title}</div>
                           <div className="mt-0.5 flex items-center gap-1.5">
                             <span className={cn("rounded px-1 py-0.5 text-[9px] font-medium border", STATUS_BADGE_CLASSES[m.status])}>
                               {STATUS_LABELS[m.status]}
@@ -2090,10 +2307,10 @@ export default function MissionsPage() {
           {!selectedMissionId ? (
             /* No selection empty state */
             <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-fg">
-              <Rocket className="h-10 w-10 opacity-20" />
+              <Rocket size={40} weight="regular" className="opacity-20" />
               <p className="text-sm">Select a mission or create a new one</p>
               <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)}>
-                <Plus className="h-3.5 w-3.5" />
+                <Plus size={14} weight="regular" />
                 New Mission
               </Button>
             </div>
@@ -2123,7 +2340,7 @@ export default function MissionsPage() {
                     )}
                   </div>
                   <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted-fg">
-                    <span><Clock3 className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null)}</span>
+                    <span><Clock className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null)}</span>
                     {selectedMission?.laneName && (
                       <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
                     )}
@@ -2137,7 +2354,7 @@ export default function MissionsPage() {
                 <div className="flex items-center gap-1.5">
                   {canStartOrRerun && (
                     <Button variant="primary" size="sm" onClick={handleStartRun} disabled={runBusy}>
-                      {runBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                      {runBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
                       {runGraph ? "Rerun" : "Start"}
                     </Button>
                   )}
@@ -2149,7 +2366,7 @@ export default function MissionsPage() {
                   )}
                   {canCancelRun && (
                     <Button variant="outline" size="sm" onClick={handleCancelRun} disabled={runBusy}>
-                      <Square className="h-3 w-3" />
+                      <Stop className="h-3 w-3" />
                       Cancel
                     </Button>
                   )}
@@ -2176,17 +2393,17 @@ export default function MissionsPage() {
               {/* ── Tab Navigation ── */}
               <div className="flex items-center gap-0.5 border-b border-border/20 bg-zinc-900/30 px-4">
                 {([
-                  { key: "board" as WorkspaceTab, label: "Board", icon: LayoutGrid },
-                  { key: "dag" as WorkspaceTab, label: "DAG", icon: Network },
-                  { key: "activity" as WorkspaceTab, label: "Activity", icon: Activity },
-                  { key: "transcript" as WorkspaceTab, label: "Transcript", icon: Terminal },
-                  { key: "chat" as WorkspaceTab, label: "Chat", icon: MessageSquare }
+                  { key: "board" as WorkspaceTab, label: "Board", icon: SquaresFour },
+                  { key: "dag" as WorkspaceTab, label: "DAG", icon: Graph },
+                  { key: "channels" as WorkspaceTab, label: "Channels", icon: Hash },
+                  { key: "activity" as WorkspaceTab, label: "Activity", icon: Pulse },
+                  { key: "usage" as WorkspaceTab, label: "Usage", icon: Lightning }
                 ]).map((tab) => (
                   <button
                     key={tab.key}
                     onClick={() => setActiveTab(tab.key)}
                     className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium transition-colors border-b-2",
+                      "flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors border-b-2",
                       activeTab === tab.key
                         ? "border-accent text-fg"
                         : "border-transparent text-muted-fg hover:text-fg"
@@ -2198,7 +2415,7 @@ export default function MissionsPage() {
                 ))}
               </div>
 
-              {/* ── Completion Banner + Phase Progress ── */}
+              {/* ── Completion Banner + Phase Progress + Execution Plan Preview ── */}
               {runGraph && (
                 <div className="px-4 pt-3 space-y-2">
                   <CompletionBanner
@@ -2206,11 +2423,14 @@ export default function MissionsPage() {
                     evaluation={runGraph.completionEvaluation}
                   />
                   <PhaseProgressBar steps={runGraph.steps} />
+                  {isActiveMission && (
+                    <ExecutionPlanPreview preview={executionPlanPreview} />
+                  )}
                 </div>
               )}
 
               {/* ── Tab Content ── */}
-              <div className={cn("flex-1 min-h-0", activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
+              <div className={cn("flex-1 min-h-0", activeTab === "channels" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
                 {activeTab === "board" && (
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -2226,10 +2446,9 @@ export default function MissionsPage() {
                       attempts={selectedStepAttempts}
                       allSteps={runGraph?.steps ?? []}
                       claims={runGraph?.claims ?? []}
-                      onOpenTranscript={() => setActiveTab("transcript")}
                       onOpenWorkerThread={(target) => {
                         setChatJumpTarget(target);
-                        setActiveTab("chat");
+                        setActiveTab("channels");
                       }}
                     />
                   </div>
@@ -2249,10 +2468,9 @@ export default function MissionsPage() {
                       attempts={selectedStepAttempts}
                       allSteps={runGraph?.steps ?? []}
                       claims={runGraph?.claims ?? []}
-                      onOpenTranscript={() => setActiveTab("transcript")}
                       onOpenWorkerThread={(target) => {
                         setChatJumpTarget(target);
-                        setActiveTab("chat");
+                        setActiveTab("channels");
                       }}
                     />
                   </div>
@@ -2271,14 +2489,7 @@ export default function MissionsPage() {
                   </div>
                 )}
 
-                {activeTab === "transcript" && (
-                  <WorkerTranscriptPane
-                    attempts={runGraph?.attempts ?? []}
-                    steps={runGraph?.steps}
-                  />
-                )}
-
-                {activeTab === "chat" && selectedMissionId && (
+                {activeTab === "channels" && selectedMissionId && (
                   <MissionChat
                     missionId={selectedMissionId}
                     runId={runGraph?.run.id ?? null}
@@ -2286,10 +2497,14 @@ export default function MissionsPage() {
                     onJumpHandled={() => setChatJumpTarget(null)}
                   />
                 )}
+
+                {activeTab === "usage" && selectedMission && (
+                  <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
+                )}
               </div>
 
-              {/* ── Bottom Steering Bar (hidden on Chat tab since chat subsumes steering) ── */}
-              {isActiveMission && activeTab !== "chat" && (
+              {/* ── Bottom Steering Bar (hidden on Channels tab since channels subsume steering) ── */}
+              {isActiveMission && activeTab !== "channels" && (
                 <div className="border-t border-border/20 bg-zinc-900/60 px-4 py-2.5">
                   {steerAck && (
                     <div className="mb-2 rounded border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] text-emerald-300 flex items-center justify-between">
@@ -2313,7 +2528,7 @@ export default function MissionsPage() {
                       onClick={() => void handleSteer()}
                       disabled={steerBusy || !steerInput.trim()}
                     >
-                      {steerBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                      {steerBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <PaperPlaneTilt className="h-3 w-3" />}
                       Send
                     </Button>
                   </div>
@@ -2372,7 +2587,7 @@ function ActivityNarrativeHeader({
   if (!runGraph) {
     return (
       <div className="rounded-lg border border-border/20 bg-zinc-800/40 px-3 py-3 text-center">
-        <div className="text-[11px] text-muted-fg">No orchestrator run yet. Start a run to see activity.</div>
+        <div className="text-xs text-muted-fg">No orchestrator run yet. Start a run to see activity.</div>
       </div>
     );
   }
@@ -2452,17 +2667,17 @@ function ActivityNarrativeHeader({
         )}
 
         <div className="space-y-1">
-          <div className="flex items-center gap-1.5 text-[11px] text-fg/90">
-            <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0" />
+          <div className="flex items-center gap-1.5 text-xs text-fg/90">
+            <CheckCircle size={12} weight="regular" className="text-emerald-400 shrink-0" />
             <span>{progressLine}</span>
           </div>
-          <div className="flex items-center gap-1.5 text-[11px] text-fg/80">
-            <Bot className="h-3 w-3 text-violet-400 shrink-0" />
+          <div className="flex items-center gap-1.5 text-xs text-fg/80">
+            <Robot size={12} weight="regular" className="text-violet-400 shrink-0" />
             <span>{workersLine}</span>
           </div>
           {lastActionLine && (
-            <div className="flex items-center gap-1.5 text-[11px] text-fg/70">
-              <Zap className="h-3 w-3 text-amber-400 shrink-0" />
+            <div className="flex items-center gap-1.5 text-xs text-fg/70">
+              <Lightning size={12} weight="regular" className="text-amber-400 shrink-0" />
               <span className="truncate">{lastActionLine}</span>
             </div>
           )}
@@ -2477,7 +2692,7 @@ function ActivityNarrativeHeader({
             {/* Show steering directives first */}
             {steeringLog.map((d, i) => (
               <div key={`steer-${i}`} className="flex items-start gap-2">
-                <MessageSquare className="h-3 w-3 text-cyan-400 shrink-0 mt-0.5" />
+                <ChatCircle size={12} weight="regular" className="text-cyan-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <span className="text-[11px] text-cyan-300">User directive: {d.directive}</span>
                   <span className="ml-2 text-[10px] text-muted-fg">{relativeWhen(d.appliedAt)}</span>
@@ -2515,19 +2730,19 @@ function StepDetailPanel({
   attempts,
   allSteps,
   claims,
-  onOpenTranscript,
   onOpenWorkerThread
 }: {
   step: OrchestratorStep | null;
   attempts: OrchestratorAttempt[];
   allSteps: OrchestratorStep[];
   claims: OrchestratorClaim[];
-  onOpenTranscript: () => void;
   onOpenWorkerThread: (target: OrchestratorChatTarget) => void;
 }) {
+  const [showFullOutput, setShowFullOutput] = useState(false);
+
   if (!step) {
     return (
-      <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[300px] lg:shrink-0">
+      <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
         <div className="text-[11px] font-semibold text-fg">Step Details</div>
         <p className="mt-2 text-[11px] text-muted-fg">Select a card in Board or a node in DAG to inspect worker progress.</p>
       </aside>
@@ -2548,9 +2763,15 @@ function StepDetailPanel({
     .filter((dep): dep is OrchestratorStep => Boolean(dep))
     .map((dep) => dep.title.trim() || dep.stepKey);
   const latestHeartbeatAt = resolveStepHeartbeatAt({ step, attempts, claims });
+  const resultEnvelope = latestAttempt && isRecord(latestAttempt.metadata)
+    ? latestAttempt.metadata.resultEnvelope
+    : undefined;
+  const resultText = typeof resultEnvelope === "string"
+    ? resultEnvelope
+    : isRecord(resultEnvelope) ? JSON.stringify(resultEnvelope, null, 2) : null;
 
   return (
-    <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[300px] lg:shrink-0">
+    <aside className="rounded-lg border border-border/20 bg-zinc-800/35 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full">
       <div className="flex items-center justify-between">
         <div className="text-[11px] font-semibold text-fg">Step Details</div>
         <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium", STEP_STATUS_COLORS[step.status] ?? "bg-muted/20 text-muted-fg")}>
@@ -2560,7 +2781,7 @@ function StepDetailPanel({
 
       <div className="mt-2">
         <div className="text-xs font-medium text-fg">{step.title}</div>
-        <div className="mt-1 text-[10px] text-muted-fg leading-snug">{stepIntentSummary(step)}</div>
+        <div className="mt-1 min-h-[28px] text-[10px] text-muted-fg leading-snug">{stepIntentSummary(step)}</div>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
@@ -2645,12 +2866,23 @@ function StepDetailPanel({
         )}
       </div>
 
-      <button
-        onClick={onOpenTranscript}
-        className="mt-3 w-full rounded border border-border/30 bg-zinc-900/60 px-2 py-1.5 text-[10px] font-medium text-fg transition-colors hover:bg-zinc-800/80"
-      >
-        Open Worker Transcript
-      </button>
+      {resultText && (
+        <div className="mt-3 rounded border border-border/20 bg-zinc-900/50 px-2 py-2 text-[10px]">
+          <button
+            onClick={() => setShowFullOutput(!showFullOutput)}
+            className="flex items-center gap-1 text-muted-fg hover:text-fg transition-colors w-full"
+          >
+            <CaretDown className={cn("h-3 w-3 transition-transform", showFullOutput && "rotate-180")} />
+            <span className="font-medium">View Full Output</span>
+          </button>
+          {showFullOutput && (
+            <pre className="mt-2 max-h-[300px] overflow-auto rounded bg-zinc-900/80 p-2 text-[10px] font-mono text-zinc-300 whitespace-pre-wrap break-all">
+              {resultText}
+            </pre>
+          )}
+        </div>
+      )}
+
       {latestAttempt && (
         <button
           onClick={() => onOpenWorkerThread({
@@ -2662,9 +2894,9 @@ function StepDetailPanel({
             sessionId: latestAttempt.executorSessionId ?? null,
             laneId: step.laneId ?? null
           })}
-          className="mt-2 w-full rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent/20"
+          className="mt-3 w-full rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent/20"
         >
-          Jump To Worker Thread
+          Jump To Worker Channel
         </button>
       )}
     </aside>
@@ -2689,8 +2921,8 @@ function BoardTab({
   if (!hasAnySteps) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-muted-fg">
-        <LayoutGrid className="h-8 w-8 opacity-20 mb-2" />
-        <p className="text-[11px]">No steps yet. Start a run to see the board.</p>
+        <SquaresFour size={32} weight="regular" className="opacity-20 mb-2" />
+        <p className="text-xs">No steps yet. Start a run to see the board.</p>
       </div>
     );
   }
@@ -2706,7 +2938,7 @@ function BoardTab({
           >
             {/* Column header */}
             <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
-              <span className="text-[11px] font-semibold text-fg">{col.label}</span>
+              <span className="text-xs font-semibold text-fg">{col.label}</span>
               <span className={cn(
                 "rounded-full px-1.5 py-0.5 text-[9px] font-medium",
                 steps.length > 0 ? "bg-accent/15 text-accent" : "bg-muted/10 text-muted-fg"
@@ -2740,8 +2972,8 @@ function BoardTab({
                         : "border-border/20 bg-zinc-900/60 hover:bg-zinc-800/60"
                     )}
                   >
-                    <div className="text-[11px] font-medium text-fg truncate">{step.title}</div>
-                    <div className="mt-0.5 text-[10px] text-muted-fg leading-snug h-[28px] overflow-hidden">
+                    <div className="text-xs font-medium text-fg truncate">{step.title}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-fg leading-snug h-[28px] overflow-hidden">
                       {stepIntentSummary(step)}
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 flex-wrap">

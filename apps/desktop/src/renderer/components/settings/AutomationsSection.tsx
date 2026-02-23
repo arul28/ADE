@@ -1,6 +1,6 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { RefreshCw } from "lucide-react";
+import { ArrowsClockwise } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import type { AutomationRuleSummary, AutomationRun, AutomationRunDetail } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -114,7 +114,7 @@ export function AutomationsSection() {
           </div>
         </div>
         <Button size="sm" variant="outline" disabled={loading} onClick={() => void refresh()}>
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          <ArrowsClockwise size={16} weight="regular" className={cn(loading && "animate-spin")} />
           Refresh
         </Button>
       </div>
@@ -133,7 +133,7 @@ export function AutomationsSection() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <div className="truncate text-xs font-semibold text-fg">{rule.name}</div>
-                    <Chip className={cn("text-[10px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
+                    <Chip className={cn("text-[11px]", statusTone(rule.running ? "running" : rule.lastRunStatus))}>
                       {rule.running ? "running" : rule.lastRunStatus ?? "never"}
                     </Chip>
                   </div>
@@ -222,7 +222,7 @@ export function AutomationsSection() {
                           >
                             <div className="flex items-center justify-between gap-2">
                               <div className="truncate text-xs font-semibold">{run.triggerType}</div>
-                              <Chip className={cn("text-[10px]", statusTone(run.status))}>{run.status}</Chip>
+                              <Chip className={cn("text-[11px]", statusTone(run.status))}>{run.status}</Chip>
                             </div>
                             <div className="mt-1 text-[11px] text-muted-fg">{formatWhen(run.startedAt)}</div>
                             <div className="mt-1 text-[11px] text-muted-fg">
@@ -252,7 +252,7 @@ export function AutomationsSection() {
                             <div className="font-semibold text-fg">
                               #{action.actionIndex + 1} {action.actionType}
                             </div>
-                            <Chip className={cn("text-[10px]", statusTone(action.status))}>{action.status}</Chip>
+                            <Chip className={cn("text-[11px]", statusTone(action.status))}>{action.status}</Chip>
                           </div>
                           {action.errorMessage ? (
                             <div className="mt-1 text-xs text-red-300">{action.errorMessage}</div>

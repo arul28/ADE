@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Settings, GitBranch, BookOpenText, Wand2, TerminalSquare, Keyboard } from "lucide-react";
+import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { GeneralSection } from "../settings/GeneralSection";
 import { GitHubSection } from "../settings/GitHubSection";
@@ -7,14 +7,16 @@ import { ContextSection } from "../settings/ContextSection";
 import { AutomationsSection } from "../settings/AutomationsSection";
 import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
 import { KeybindingsSection } from "../settings/KeybindingsSection";
+import { UsageDashboard } from "../missions/UsageDashboard";
 
 const SECTIONS = [
-  { id: "general", label: "General", icon: Settings },
+  { id: "general", label: "General", icon: GearSix },
   { id: "github", label: "GitHub", icon: GitBranch },
   { id: "context", label: "Context & Docs", icon: BookOpenText },
-  { id: "automations", label: "Automations", icon: Wand2 },
-  { id: "terminals", label: "Terminals", icon: TerminalSquare },
+  { id: "automations", label: "Automations", icon: Robot },
+  { id: "terminals", label: "Terminals", icon: Terminal },
   { id: "keybindings", label: "Keybindings", icon: Keyboard },
+  { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -39,7 +41,7 @@ export function SettingsPage() {
                 : "text-muted-fg hover:bg-muted/30 hover:text-fg"
             )}
           >
-            <s.icon className="h-4 w-4 shrink-0" />
+            <s.icon size={16} weight="regular" className="shrink-0" />
             {s.label}
           </button>
         ))}
@@ -53,6 +55,7 @@ export function SettingsPage() {
         {section === "automations" && <AutomationsSection />}
         {section === "terminals" && <TerminalProfilesSection />}
         {section === "keybindings" && <KeybindingsSection />}
+        {section === "usage" && <UsageDashboard missionId={null} />}
       </div>
     </div>
   );

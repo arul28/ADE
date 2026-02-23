@@ -1,7 +1,9 @@
 import React from "react";
 import { useSearchParams } from "react-router-dom";
+import { CheckCircle } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { EmptyState } from "../ui/EmptyState";
 import { ConflictsProvider, useConflictsState, useConflictsDispatch } from "./state/ConflictsContext";
 import { MergeOneLaneTab } from "./tabs/MergeOneLaneTab";
 import { MergeMultipleLanesTab } from "./tabs/MergeMultipleLanesTab";
@@ -51,6 +53,19 @@ function ConflictsPageInner() {
 
     appliedDeepLinkRef.current = paramsKey;
   }, [searchParams, lanes, dispatch]);
+
+  if (lanes.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <EmptyState
+          title="No conflicts detected"
+          description="Your branches are clean. Create lanes and start working to see conflict analysis here."
+        >
+          <CheckCircle size={28} className="text-emerald-500 mb-1" />
+        </EmptyState>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">

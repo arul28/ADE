@@ -272,7 +272,10 @@ export const IPC = {
   orchestratorGetContextCheckpoint: "ade.orchestrator.getContextCheckpoint",
   orchestratorListLaneDecisions: "ade.orchestrator.listLaneDecisions",
   orchestratorGetMissionMetrics: "ade.orchestrator.getMissionMetrics",
-  orchestratorSetMissionMetricsConfig: "ade.orchestrator.setMissionMetricsConfig"
+  orchestratorSetMissionMetricsConfig: "ade.orchestrator.setMissionMetricsConfig",
+  orchestratorGetExecutionPlanPreview: "ade.orchestrator.getExecutionPlanPreview",
+  orchestratorSendAgentMessage: "ade.orchestrator.sendAgentMessage",
+  getAggregatedUsage: "ade.usage.getAggregated"
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

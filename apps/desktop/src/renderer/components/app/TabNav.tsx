@@ -1,31 +1,49 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
-import { Bug, FileCode2, GitPullRequest, History, LayoutGrid, Network, Play, Rocket, Settings, TerminalSquare, Wand2 } from "lucide-react";
+import {
+  PlayCircle,
+  GitBranch,
+  FileCode,
+  Terminal,
+  GitMerge,
+  Graph,
+  GitPullRequest,
+  ClockCounterClockwise,
+  Robot,
+  Strategy,
+  GearSix,
+} from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { layoutTransition } from "../../lib/motion";
 
-const items = [
-  { to: "/project", label: "Run", icon: Play },
-  { to: "/lanes", label: "Lanes", icon: LayoutGrid },
-  { to: "/files", label: "Files", icon: FileCode2 },
-  { to: "/work", label: "Work", icon: TerminalSquare },
-  { to: "/conflicts", label: "Conflicts", icon: Bug },
-  { to: "/graph", label: "Graph", icon: Network },
+const mainItems = [
+  { to: "/project", label: "Run", icon: PlayCircle },
+  { to: "/lanes", label: "Lanes", icon: GitBranch },
+  { to: "/files", label: "Files", icon: FileCode },
+  { to: "/work", label: "Work", icon: Terminal },
+  { to: "/conflicts", label: "Conflicts", icon: GitMerge },
+  { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
-  { to: "/history", label: "History", icon: History },
-  { to: "/automations", label: "Automations", icon: Wand2 },
-  { to: "/missions", label: "Missions", icon: Rocket },
-  { to: "/settings", label: "Settings", icon: Settings }
+  { to: "/history", label: "History", icon: ClockCounterClockwise },
+  { to: "/automations", label: "Automations", icon: Robot },
+  { to: "/missions", label: "Missions", icon: Strategy },
 ] as const;
 
-export function TabNav() {
+const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
+
+interface TabNavProps {
+  expanded?: boolean;
+}
+
+export function TabNav({ expanded = true }: TabNavProps) {
   const project = useAppStore((s) => s.project);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
   const location = useLocation();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [tooltip, setTooltip] = useState<{ label: string; top: number } | null>(null);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -39,66 +57,147 @@ export function TabNav() {
     setContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
 
+  const handleMouseEnter = useCallback(
+    (e: React.MouseEvent, label: string) => {
+      if (expanded) return;
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      setTooltip({ label, top: rect.top + rect.height / 2 });
+    },
+    [expanded],
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    setTooltip(null);
+  }, []);
+
+  const renderItem = (
+    it: { to: string; label: string; icon: React.ElementType },
+  ) => {
+    const isActive = location.pathname === it.to;
+
+    return (
+      <NavLink
+        key={it.to}
+        to={it.to}
+        title={expanded ? undefined : it.label}
+        onMouseEnter={(e) => handleMouseEnter(e, it.label)}
+        onMouseLeave={handleMouseLeave}
+        className={cn(
+          "relative flex items-center w-full h-8 rounded-md transition-colors duration-100 group",
+          "text-muted-fg/70 hover:text-fg hover:bg-muted/30",
+          expanded ? "gap-2.5 px-2.5" : "justify-center px-0",
+        )}
+      >
+        {/* Active indicator bar */}
+        {isActive && (
+          <motion.div
+            layoutId="tab-indicator"
+            className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-accent"
+            transition={layoutTransition}
+          />
+        )}
+
+        {/* Icon wrapper */}
+        <span className="relative inline-flex items-center shrink-0">
+          <it.icon
+            size={expanded ? 16 : 20}
+            weight="regular"
+            className={cn(
+              "transition-all duration-150 shrink-0",
+              isActive ? "text-accent" : "group-hover:text-fg/70",
+            )}
+          />
+          {/* Terminal attention dot */}
+          {it.to === "/work" && terminalAttention.indicator !== "none" ? (
+            <span
+              title={
+                terminalAttention.indicator === "running-needs-attention"
+                  ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                  : "All active terminals running"
+              }
+              className={cn(
+                "absolute -right-1 -top-1 h-2 w-2 rounded-full",
+                terminalAttention.indicator === "running-needs-attention"
+                  ? "bg-amber-400"
+                  : "bg-emerald-500",
+              )}
+            />
+          ) : null}
+        </span>
+
+        {/* Label with opacity transition */}
+        <span
+          className={cn(
+            "text-xs font-medium tracking-normal truncate whitespace-nowrap transition-opacity duration-150",
+            isActive && "text-fg font-medium",
+            expanded ? "opacity-100" : "opacity-0 w-0 overflow-hidden",
+          )}
+        >
+          {it.label}
+        </span>
+      </NavLink>
+    );
+  };
+
   return (
     <>
       <nav
-        className="flex flex-col gap-px w-full"
+        className="flex flex-col gap-px w-full h-full"
         onContextMenu={handleContextMenu}
       >
-        {items.map((it) => {
-          const isActive = location.pathname === it.to;
-          return (
-            <NavLink
-              key={it.to}
-              to={it.to}
-              className="relative flex items-center gap-2.5 w-full h-8 px-2.5 rounded text-muted-fg/70 transition-colors duration-100 hover:text-fg hover:bg-muted/20 group"
-            >
-              {isActive && (
-                <motion.div
-                  layoutId="tab-indicator"
-                  className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-accent"
-                  transition={layoutTransition}
-                />
-              )}
-              <span className="relative inline-flex items-center shrink-0">
-                <it.icon
-                  className={cn(
-                    "h-[15px] w-[15px] transition-colors duration-100",
-                    isActive ? "text-accent" : "group-hover:text-fg/70"
-                  )}
-                />
-                {it.to === "/work" && terminalAttention.indicator !== "none" ? (
-                  <span
-                    title={
-                      terminalAttention.indicator === "running-needs-attention"
-                        ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
-                        : "All active terminals running"
-                    }
-                    className={cn(
-                      "absolute -right-1 -top-1 h-2 w-2 rounded-full",
-                      terminalAttention.indicator === "running-needs-attention" ? "bg-amber-400" : "bg-emerald-500"
-                    )}
-                  />
-                ) : null}
-              </span>
-              <span className={cn(
-                "font-mono text-[11px] tracking-wide truncate",
-                isActive && "text-fg font-medium"
-              )}>{it.label}</span>
-            </NavLink>
-          );
-        })}
+        {/* Core navigation items */}
+        <div className="flex flex-col gap-px">
+          {mainItems.slice(0, 4).map((it) => renderItem(it))}
+        </div>
+
+        {/* Group separator */}
+        <div className="mx-3 my-1 border-t border-border/20" />
+
+        {/* Tool navigation items */}
+        <div className="flex flex-col gap-px">
+          {mainItems.slice(4).map((it) => renderItem(it))}
+        </div>
+
+        {/* Spacer pushes settings to bottom */}
+        <div className="mt-auto" />
+
+        {/* Divider line before settings */}
+        <div className="mx-2 mb-1 border-t border-border/20" />
+
+        {/* Settings pinned to bottom */}
+        {renderItem(settingsItem)}
       </nav>
+
+      {/* Tooltip when collapsed */}
+      {!expanded && tooltip && (
+        <div
+          className="fixed z-50 px-2.5 py-1 rounded-md bg-[--color-surface-overlay] border border-border/40 shadow-float text-[11px] font-mono text-fg whitespace-nowrap pointer-events-none"
+          style={{
+            left: 58,
+            top: tooltip.top,
+            transform: "translateY(-50%)",
+          }}
+        >
+          {tooltip.label}
+        </div>
+      )}
+
+      {/* Context menu */}
       {contextMenu && project?.rootPath ? (
         <div
           className="fixed z-40 min-w-[170px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button className="block w-full rounded-sm px-2 py-1 text-left text-[11px] font-mono hover:bg-muted/40" onClick={() => {
-            setContextMenu(null);
-            window.ade.app.revealPath(project.rootPath).catch(() => { });
-          }}>{revealLabel}</button>
+          <button
+            className="block w-full rounded-sm px-2 py-1 text-left text-[11px] font-mono hover:bg-muted/40"
+            onClick={() => {
+              setContextMenu(null);
+              window.ade.app.revealPath(project.rootPath).catch(() => {});
+            }}
+          >
+            {revealLabel}
+          </button>
         </div>
       ) : null}
     </>

@@ -1,5 +1,5 @@
 import React from "react";
-import { RefreshCw } from "lucide-react";
+import { ArrowsClockwise } from "@phosphor-icons/react";
 import { useAppStore } from "../../../state/appStore";
 import { useConflictsState, useConflictsDispatch } from "../state/ConflictsContext";
 import { fetchBatchAssessment, fetchPrsWithConflicts } from "../state/conflictsActions";
@@ -90,7 +90,7 @@ export function LaneListPane() {
   return (
     <div className="h-full overflow-auto p-2">
       {/* By Lane / By PR toggle */}
-      <div className="mb-2 flex rounded-lg border border-border/50 text-[10px] font-medium">
+      <div className="mb-2 flex rounded-lg border border-border/50 text-[11px] font-medium">
         {(["by-lane", "by-pr"] as const).map((v) => (
           <button
             key={v}
@@ -159,15 +159,15 @@ export function LaneListPane() {
                   <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
                   {restack && (
                     <span
-                      className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-200 ring-1 ring-inset ring-amber-500/30"
+                      className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[11px] font-medium text-amber-200 ring-1 ring-inset ring-amber-500/30"
                       title={`Parent advanced; behind ${restack.behindCount} commit(s).`}
                     >
-                      <RefreshCw className="h-2.5 w-2.5" />
+                      <ArrowsClockwise size={10} />
                       restack
                     </span>
                   )}
                 </div>
-                <div className="mt-1.5 pl-4 text-[11px] text-muted-fg">
+                <div className="mt-1.5 pl-4 text-xs text-muted-fg">
                   {status?.status ?? "unknown"} · overlaps {status?.overlappingFileCount ?? 0}
                 </div>
               </button>
@@ -200,7 +200,7 @@ export function LaneListPane() {
                 <div className="truncate text-xs font-semibold text-fg">
                   #{pr.githubPrNumber} {pr.title}
                 </div>
-                <div className="mt-1 text-[11px] text-muted-fg">
+                <div className="mt-1 text-xs text-muted-fg">
                   {risk} risk · {pr.conflictAnalysis?.overlapCount ?? 0} overlapping files
                 </div>
               </button>

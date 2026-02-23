@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, type PanelImperativeHandle } from "react-resizable-panels";
-import type { LucideIcon } from "lucide-react";
+import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { ResizeGutter } from "./ResizeGutter";
 import { FloatingPane } from "./FloatingPane";
 import { useDockLayout } from "./DockLayoutState";
@@ -24,7 +24,7 @@ export type { PaneLeaf, PaneSplit, PaneLayoutEntry } from "./paneTreeOps";
 
 export type PaneConfig = {
   title: string;
-  icon?: LucideIcon;
+  icon?: PhosphorIcon;
   meta?: React.ReactNode;
   minimizable?: boolean;
   headerActions?: React.ReactNode;

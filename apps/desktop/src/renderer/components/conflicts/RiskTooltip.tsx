@@ -56,19 +56,19 @@ export function RiskTooltip({
       )}
       style={style}
     >
-      <div className="mb-1 text-[11px] font-semibold text-fg">{title}</div>
+      <div className="mb-1 text-xs font-semibold text-fg">{title}</div>
       <div className="max-h-[220px] overflow-auto rounded-lg bg-bg/30 p-1">
         {shown.length === 0 ? (
-          <div className="px-1 py-0.5 text-[11px] text-muted-fg">No overlapping files.</div>
+          <div className="px-1 py-0.5 text-xs text-muted-fg">No overlapping files.</div>
         ) : (
           shown.map((file) => (
-            <div key={file} className="truncate px-1 py-0.5 text-[11px] text-fg" title={file}>
+            <div key={file} className="truncate px-1 py-0.5 text-xs text-fg" title={file}>
               {compactFilePath(file)}
             </div>
           ))
         )}
       </div>
-      {hiddenCount > 0 ? <div className="mt-1 text-[11px] text-muted-fg">+{hiddenCount} more</div> : null}
+      {hiddenCount > 0 ? <div className="mt-1 text-xs text-muted-fg">+{hiddenCount} more</div> : null}
     </div>
   );
 }

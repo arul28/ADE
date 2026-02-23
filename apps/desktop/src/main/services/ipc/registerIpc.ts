@@ -259,7 +259,9 @@ import type {
   ListOrchestratorLaneDecisionsArgs,
   MissionMetricsConfig,
   MissionMetricSample,
-  SetMissionMetricsConfigArgs
+  SetMissionMetricsConfigArgs,
+  ExecutionPlanPreview,
+  SendAgentMessageArgs
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -1168,7 +1170,7 @@ export function registerIpc({
     const plannedSteps = plannerPlanToMissionSteps({
       plan: planning.plan,
       requestedEngine: planning.run.requestedEngine,
-      resolvedEngine: planning.run.resolvedEngine,
+      resolvedEngine: planning.run.resolvedEngine!,
       executorPolicy,
       degraded: planning.run.degraded,
       reasonCode: planning.run.reasonCode,
@@ -1310,7 +1312,7 @@ export function registerIpc({
     const plannedSteps = plannerPlanToMissionSteps({
       plan: planning.plan,
       requestedEngine: planning.run.requestedEngine,
-      resolvedEngine: planning.run.resolvedEngine,
+      resolvedEngine: planning.run.resolvedEngine!,
       executorPolicy,
       degraded: planning.run.degraded,
       reasonCode: planning.run.reasonCode,
@@ -1686,6 +1688,27 @@ export function registerIpc({
       return ctx.aiOrchestratorService.setMissionMetricsConfig(arg);
     }
   );
+
+  ipcMain.handle(
+    IPC.orchestratorGetExecutionPlanPreview,
+    async (_event, arg: { runId: string }): Promise<ExecutionPlanPreview | null> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.getExecutionPlanPreview(arg);
+    }
+  );
+
+  ipcMain.handle(
+    IPC.orchestratorSendAgentMessage,
+    async (_event, arg: SendAgentMessageArgs): Promise<OrchestratorChatMessage> => {
+      const ctx = getCtx();
+      return ctx.aiOrchestratorService.sendAgentMessage(arg);
+    }
+  );
+
+  ipcMain.handle(IPC.getAggregatedUsage, (_e, arg) => {
+    const ctx = getCtx();
+    return ctx.aiOrchestratorService.getAggregatedUsage(arg ?? {});
+  });
 
   ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
     const ctx = getCtx();

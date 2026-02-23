@@ -126,14 +126,14 @@ export function CommitTimeline({
       <div className="flex items-center justify-between px-2 py-1.5 border-b border-border bg-card/50">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Commits</span>
-          <span className="text-[10px] text-muted-fg">{loading ? "loading..." : `${commits.length}`}</span>
-          <span className="text-[10px] text-muted-fg/80" title="Blue timeline node means merge commit (multiple parents).">
+          <span className="text-[11px] text-muted-fg">{loading ? "loading..." : `${commits.length}`}</span>
+          <span className="text-[11px] text-muted-fg/80" title="Blue timeline node means merge commit (multiple parents).">
             blue dot = merge
           </span>
         </div>
         <button
           type="button"
-          className="text-[10px] text-muted-fg hover:text-fg"
+          className="text-[11px] text-muted-fg hover:text-fg"
           onClick={() => void load()}
           disabled={!laneId || loading}
           title="Refresh"
@@ -142,7 +142,7 @@ export function CommitTimeline({
         </button>
       </div>
 
-      {error ? <div className="px-2 py-2 text-[11px] text-red-300">{error}</div> : null}
+      {error ? <div className="px-2 py-2 text-xs text-red-300">{error}</div> : null}
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onScroll={onScroll}>
         <div className="relative pl-5 pr-1 py-1">
@@ -160,7 +160,7 @@ export function CommitTimeline({
                   type="button"
                   title={isMerge ? "Merge commit (multiple parents)." : "Commit"}
                   className={cn(
-                    "group relative flex w-full items-start gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors",
+                    "group relative flex w-full items-start gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
                     isSelected ? "bg-accent/10 text-fg" : "text-muted-fg hover:bg-muted/40 hover:text-fg"
                   )}
                   onClick={() => onSelectCommit(commit)}
@@ -203,7 +203,7 @@ export function CommitTimeline({
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className={cn("font-mono text-[10px]", isNewest ? "text-emerald-300" : "text-muted-fg")}>
+                      <span className={cn("font-mono text-[11px]", isNewest ? "text-emerald-300" : "text-muted-fg")}>
                         {commit.shortSha}
                       </span>
                       {isNewest ? <span className="rounded bg-emerald-900/30 border border-emerald-700/60 px-1 text-[9px] text-emerald-300 uppercase tracking-wider">HEAD</span> : null}
@@ -221,7 +221,7 @@ export function CommitTimeline({
                           needs push
                         </span>
                       )}
-                      <span className="ml-auto text-[10px] text-muted-fg/60 shrink-0">{formatRelative(commit.authoredAt)}</span>
+                      <span className="ml-auto text-[11px] text-muted-fg/60 shrink-0">{formatRelative(commit.authoredAt)}</span>
                     </div>
                     <div className="truncate text-fg leading-tight">{commit.subject}</div>
                   </div>
@@ -248,7 +248,7 @@ export function CommitTimeline({
       {/* Tooltip that follows hovered item */}
       {hovered && tooltipPos ? (
         <div
-          className="pointer-events-none absolute z-50 w-[260px] rounded border border-border bg-bg p-2 text-[11px] shadow-2xl ring-1 ring-border/60 backdrop-blur-sm"
+          className="pointer-events-none absolute z-50 w-[260px] rounded border border-border bg-bg p-2 text-xs shadow-2xl ring-1 ring-border/60 backdrop-blur-sm"
           style={{
             left: Math.min(tooltipPos.x, (containerRef.current?.clientWidth ?? 300) - 270),
             top: Math.max(0, tooltipPos.y - 8),
@@ -256,16 +256,16 @@ export function CommitTimeline({
           }}
         >
           <div className="flex items-center justify-between gap-2">
-            <div className="font-mono text-[10px] text-muted-fg truncate">{hovered.sha}</div>
-            <div className="text-[10px] text-muted-fg shrink-0">{formatTs(hovered.authoredAt)}</div>
+            <div className="font-mono text-[11px] text-muted-fg truncate">{hovered.sha}</div>
+            <div className="text-[11px] text-muted-fg shrink-0">{formatTs(hovered.authoredAt)}</div>
           </div>
           <div className="mt-1 truncate text-fg">{hovered.subject}</div>
-          <div className="mt-1 text-[10px] text-muted-fg">
+          <div className="mt-1 text-[11px] text-muted-fg">
             {hovered.authorName}
             {hoveredMeta?.fileCount != null ? ` · ${hoveredMeta.fileCount} file${hoveredMeta.fileCount === 1 ? "" : "s"}` : ""}
           </div>
           {hoveredMeta?.message ? (
-            <div className="mt-1 max-h-[100px] overflow-hidden whitespace-pre-wrap text-[10px] text-muted-fg/80">
+            <div className="mt-1 max-h-[100px] overflow-hidden whitespace-pre-wrap text-[11px] text-muted-fg/80">
               {hoveredMeta.message}
             </div>
           ) : null}

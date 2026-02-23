@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, GitPullRequest, Plus } from "lucide-react";
+import { Eye, GitPullRequest, Plus } from "@phosphor-icons/react";
 import type { LandResult, MergeMethod, PrSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -36,24 +36,24 @@ function sortByCreatedAtAsc<T extends { createdAt: string }>(items: T[]): T[] {
 }
 
 function stateChip(state: PrSummary["state"]): { label: string; className: string } {
-  if (state === "draft") return { label: "draft", className: "text-purple-200 border-l-2 border-l-purple-400 border-purple-700/60 bg-purple-900/20" };
-  if (state === "open") return { label: "open", className: "text-sky-200 border-l-2 border-l-sky-400 border-sky-700/60 bg-sky-900/20" };
-  if (state === "merged") return { label: "merged", className: "text-emerald-200 border-l-2 border-l-emerald-400 border-emerald-700/60 bg-emerald-900/20" };
-  return { label: "closed", className: "text-muted-fg border-l-2 border-l-muted-fg/40 border-border bg-card/30" };
+  if (state === "draft") return { label: "draft", className: "text-purple-400 border border-purple-500/20 bg-purple-500/12" };
+  if (state === "open") return { label: "open", className: "text-blue-400 border border-blue-500/20 bg-blue-500/12" };
+  if (state === "merged") return { label: "merged", className: "text-emerald-400 border border-emerald-500/20 bg-emerald-500/12" };
+  return { label: "closed", className: "text-neutral-400 border border-neutral-500/20 bg-neutral-500/12" };
 }
 
-function checksChip(status: PrSummary["checksStatus"]): { label: string; className: string } {
-  if (status === "passing") return { label: "checks: passing", className: "text-emerald-200 border-l-2 border-l-emerald-400 border-emerald-700/60 bg-emerald-900/20" };
-  if (status === "failing") return { label: "checks: failing", className: "text-red-200 border-l-2 border-l-red-400 border-red-700/60 bg-red-900/20" };
-  if (status === "pending") return { label: "checks: pending", className: "text-amber-200 border-l-2 border-l-amber-400 border-amber-700/60 bg-amber-900/20" };
-  return { label: "checks: none", className: "text-muted-fg border-l-2 border-l-muted-fg/40 border-border bg-card/30" };
+function checksChip(status: PrSummary["checksStatus"]): { label: string; dotColor: string; className: string } {
+  if (status === "passing") return { label: "passing", dotColor: "bg-emerald-400", className: "text-emerald-400 border border-emerald-500/20 bg-emerald-500/12" };
+  if (status === "failing") return { label: "failing", dotColor: "bg-red-400", className: "text-red-400 border border-red-500/20 bg-red-500/12" };
+  if (status === "pending") return { label: "pending", dotColor: "bg-amber-400", className: "text-amber-400 border border-amber-500/20 bg-amber-500/12" };
+  return { label: "none", dotColor: "bg-neutral-400", className: "text-neutral-400 border border-neutral-500/20 bg-neutral-500/12" };
 }
 
 function reviewsChip(status: PrSummary["reviewStatus"]): { label: string; className: string } {
-  if (status === "approved") return { label: "reviews: approved", className: "text-emerald-200 border-l-2 border-l-emerald-400 border-emerald-700/60 bg-emerald-900/20" };
-  if (status === "changes_requested") return { label: "reviews: changes requested", className: "text-amber-200 border-l-2 border-l-amber-400 border-amber-700/60 bg-amber-900/20" };
-  if (status === "requested") return { label: "reviews: requested", className: "text-sky-200 border-l-2 border-l-sky-400 border-sky-700/60 bg-sky-900/20" };
-  return { label: "reviews: none", className: "text-muted-fg border-l-2 border-l-muted-fg/40 border-border bg-card/30" };
+  if (status === "approved") return { label: "approved", className: "text-emerald-400 border border-emerald-500/20 bg-emerald-500/12" };
+  if (status === "changes_requested") return { label: "changes requested", className: "text-amber-400 border border-amber-500/20 bg-amber-500/12" };
+  if (status === "requested") return { label: "requested", className: "text-blue-400 border border-blue-500/20 bg-blue-500/12" };
+  return { label: "none", className: "text-neutral-400 border border-neutral-500/20 bg-neutral-500/12" };
 }
 
 function formatTimestamp(iso: string): string {
@@ -196,7 +196,7 @@ export function PRsPage() {
     "pr-list": {
       title: "PR List",
       icon: GitPullRequest,
-      meta: <span className="text-[11px] text-muted-fg">{prs.length} linked</span>,
+      meta: <span className="text-xs text-muted-fg">{prs.length} linked</span>,
       bodyClassName: "overflow-auto",
       children: (
         <div className="p-2">
@@ -211,7 +211,7 @@ export function PRsPage() {
                       <Button
                         size="sm"
                         variant="primary"
-                        className="shadow-card text-[11px] font-semibold tracking-wide uppercase"
+                        className="shadow-card text-xs font-semibold tracking-wide uppercase"
                         disabled={!rootPr}
                         onClick={() => {
                           if (!rootPr) return;
@@ -259,13 +259,13 @@ export function PRsPage() {
                               <div className="min-w-0">
                                 <div className="flex items-center gap-2">
                                   <span className="font-semibold text-fg truncate">{item.laneName}</span>
-                                  {pr ? <span className="font-mono text-[11px] text-muted-fg/70">#{pr.githubPrNumber}</span> : <span className="text-[11px] italic text-muted-fg/50">(no PR)</span>}
+                                  {pr ? <span className="font-mono text-xs text-muted-fg/70">#{pr.githubPrNumber}</span> : <span className="text-xs italic text-muted-fg/50">(no PR)</span>}
                                 </div>
                               </div>
                             </div>
                             {pr ? (
                               <div className="flex flex-wrap items-center justify-end gap-1 shrink-0">
-                                <Chip className={cn("text-[10px] px-1.5 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
+                                <Chip className={cn("text-[11px] px-1.5 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
                               </div>
                             ) : null}
                           </button>
@@ -276,7 +276,7 @@ export function PRsPage() {
                 );
               })}
               {!stackedChains.length ? (
-                <EmptyState title="No stacked PR chains yet" description="Create PRs from lane inspectors to see chains here." />
+                <EmptyState title="No stacked PR chains yet" description="No pull requests yet. PRs will appear here when you push branches." />
               ) : null}
             </div>
           ) : (
@@ -297,16 +297,16 @@ export function PRsPage() {
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-[11px] text-muted-fg/70">#{pr.githubPrNumber}</span>
+                          <span className="font-mono text-xs text-muted-fg/70">#{pr.githubPrNumber}</span>
                           <span className="truncate font-medium text-fg">{pr.title}</span>
                         </div>
-                        <div className="mt-0.5 text-[11px] text-muted-fg/60 truncate">{laneName}</div>
+                        <div className="mt-0.5 text-xs text-muted-fg/60 truncate">{laneName}</div>
                       </div>
-                      <Chip className={cn("text-[10px] px-1.5 shrink-0 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
+                      <Chip className={cn("text-[11px] px-1.5 shrink-0 rounded-md", stateChip(pr.state).className)}>{stateChip(pr.state).label}</Chip>
                     </button>
                   );
                 })}
-                {!allPrsSorted.length ? <div className="px-3 py-4 text-xs text-muted-fg text-center">No linked PRs yet.</div> : null}
+                {!allPrsSorted.length ? <div className="px-3 py-4 text-xs text-muted-fg text-center">No pull requests yet. PRs will appear here when you push branches.</div> : null}
               </div>
             </div>
           )}
@@ -332,14 +332,17 @@ export function PRsPage() {
 
           {/* Status badges */}
           <div className="flex flex-wrap items-center gap-2.5 py-1">
-            <Chip className={cn("text-[11px] px-2.5 py-1 rounded-md font-medium", stateChip(selectedPr.state).className)}>{stateChip(selectedPr.state).label}</Chip>
-            <Chip className={cn("text-[11px] px-2.5 py-1 rounded-md font-medium", checksChip(selectedPr.checksStatus).className)}>{checksChip(selectedPr.checksStatus).label}</Chip>
-            <Chip className={cn("text-[11px] px-2.5 py-1 rounded-md font-medium", reviewsChip(selectedPr.reviewStatus).className)}>{reviewsChip(selectedPr.reviewStatus).label}</Chip>
+            <Chip className={cn("text-xs px-2.5 py-1 rounded-md font-medium", stateChip(selectedPr.state).className)}>{stateChip(selectedPr.state).label}</Chip>
+            <Chip className={cn("text-xs px-2.5 py-1 rounded-md font-medium inline-flex items-center gap-1.5", checksChip(selectedPr.checksStatus).className)}>
+              <span className={cn("h-1.5 w-1.5 rounded-full", checksChip(selectedPr.checksStatus).dotColor)} />
+              {checksChip(selectedPr.checksStatus).label}
+            </Chip>
+            <Chip className={cn("text-xs px-2.5 py-1 rounded-md font-medium", reviewsChip(selectedPr.reviewStatus).className)}>{reviewsChip(selectedPr.reviewStatus).label}</Chip>
           </div>
 
           {/* Branch info */}
           <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
-            <div className="text-xs font-semibold text-fg uppercase tracking-wider">Branches</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Branches</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
               <span className="text-muted-fg/70 font-medium">Base</span>
               <span className="font-mono text-fg bg-muted/30 rounded-md px-2 py-0.5 w-fit">{selectedPr.baseBranch}</span>
@@ -350,7 +353,7 @@ export function PRsPage() {
 
           {/* Changes */}
           <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
-            <div className="text-xs font-semibold text-fg uppercase tracking-wider">Changes</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Changes</div>
             <div className="flex items-center gap-5">
               <span className="text-sm font-bold font-mono text-emerald-400">+{selectedPr.additions}</span>
               <span className="text-sm font-bold font-mono text-red-400">-{selectedPr.deletions}</span>
@@ -359,13 +362,13 @@ export function PRsPage() {
 
           {/* Lane info */}
           <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
-            <div className="text-xs font-semibold text-fg uppercase tracking-wider">Lane</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Lane</div>
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="text-fg font-medium">{laneById.get(selectedPr.laneId)?.name ?? selectedPr.laneId}</span>
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 text-[11px]"
+                className="h-7 text-xs"
                 onClick={() => navigate(`/lanes?laneId=${encodeURIComponent(selectedPr.laneId)}`)}
               >
                 Go to lane
@@ -375,7 +378,7 @@ export function PRsPage() {
 
           {/* Timestamps */}
           <div className="rounded shadow-card bg-card/60 ring-1 ring-border/10 p-3.5 space-y-2.5">
-            <div className="text-xs font-semibold text-fg uppercase tracking-wider">Timestamps</div>
+            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Timestamps</div>
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
               <span className="text-muted-fg/60 font-medium">Created</span>
               <span className="text-fg tabular-nums">{formatTimestamp(selectedPr.createdAt)}</span>
@@ -422,7 +425,7 @@ export function PRsPage() {
       <div className="flex items-center gap-4 border-b border-border/15 px-4 py-2.5">
         <div className="flex items-center gap-2.5">
           <div className="text-sm font-bold text-fg tracking-tight">PRs</div>
-          <span className="text-[11px] text-muted-fg/60 font-medium tabular-nums">{prs.length} linked</span>
+          <span className="text-xs text-muted-fg/60 font-medium tabular-nums">{prs.length} linked</span>
         </div>
 
         {/* Segmented control */}
@@ -465,7 +468,7 @@ export function PRsPage() {
             <option value="rebase">rebase</option>
           </select>
           <Button size="sm" variant="primary" onClick={() => setCreatePrOpen(true)}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
+            <Plus size={14} weight="regular" className="mr-1" />
             Create PR
           </Button>
           <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
@@ -499,7 +502,7 @@ export function PRsPage() {
             ) : null}
             {landStackDialog.results ? (
               <div className="mt-4 max-h-[50vh] overflow-auto rounded bg-muted/15 ring-1 ring-border/10">
-                <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-fg/60 font-semibold border-b border-border/10">Results</div>
+                <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-muted-fg/60 font-semibold border-b border-border/10">Results</div>
                 <div className="divide-y divide-border/10">
                   {landStackDialog.results.map((r, idx) => (
                     <div key={`${r.prNumber}:${idx}`} className="px-3 py-2.5 text-xs">
@@ -511,7 +514,7 @@ export function PRsPage() {
                           <span className="font-mono font-semibold text-fg">#{r.prNumber}</span>
                         </div>
                         <Chip className={cn(
-                          "text-[10px] px-2 rounded-md font-medium",
+                          "text-[11px] px-2 rounded-md font-medium",
                           r.success
                             ? "text-emerald-200 border-l-2 border-l-emerald-400 bg-emerald-900/20"
                             : "text-red-200 border-l-2 border-l-red-400 bg-red-900/20"
@@ -519,7 +522,7 @@ export function PRsPage() {
                           {r.success ? "merged" : "failed"}
                         </Chip>
                       </div>
-                      {r.error ? <div className="mt-1.5 text-[11px] text-red-300/80 pl-6">{r.error}</div> : null}
+                      {r.error ? <div className="mt-1.5 text-xs text-red-300/80 pl-6">{r.error}</div> : null}
                     </div>
                   ))}
                 </div>

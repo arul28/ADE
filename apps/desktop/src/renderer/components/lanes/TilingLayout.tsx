@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import { Panel, Group } from "react-resizable-panels";
-import { X } from "lucide-react";
+import { X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { ResizeGutter } from "../ui/ResizeGutter";
@@ -109,7 +109,7 @@ function TileRenderer({
             isRunning ? "bg-black/40 text-white opacity-0 backdrop-blur-sm group-hover:opacity-100" : "bg-muted/20 text-muted-fg opacity-100"
           )}
         >
-          <span className="max-w-[80%] truncate font-mono text-[10px]">{session.title}</span>
+          <span className="max-w-[80%] truncate font-mono text-[11px]">{session.title}</span>
           <Button
             variant="ghost"
             size="sm"
@@ -121,7 +121,7 @@ function TileRenderer({
             }}
             title={isClosing ? "Closing terminal" : "Close terminal"}
           >
-            <X className="h-3 w-3" />
+            <X size={12} />
           </Button>
         </div>
 
@@ -131,8 +131,8 @@ function TileRenderer({
           ) : (
             <div className="flex h-full flex-col items-center justify-center p-4 text-center text-muted-fg">
               <div className="text-xs font-semibold">{session.title}</div>
-              <div className="mt-1 text-[10px] uppercase">{session.status}</div>
-              <div className="mt-2 text-[10px] opacity-50">Exit code: {session.exitCode ?? "?"}</div>
+              <div className="mt-1 text-[11px] uppercase">{session.status}</div>
+              <div className="mt-2 text-[11px] opacity-50">Exit code: {session.exitCode ?? "?"}</div>
             </div>
           )}
         </div>

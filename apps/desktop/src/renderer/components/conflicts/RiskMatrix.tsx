@@ -1,5 +1,5 @@
 import React from "react";
-import { Clock3 } from "lucide-react";
+import { Clock } from "@phosphor-icons/react";
 import type { BatchOverlapEntry, LaneSummary, RiskMatrixEntry } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { RiskTooltip } from "./RiskTooltip";
@@ -208,7 +208,7 @@ export function RiskMatrix({
   return (
     <div className="relative overflow-auto rounded shadow-card bg-card/30">
       {loading && progress ? (
-        <div className="sticky left-0 top-0 z-30 bg-bg/90 px-2 py-1 text-[11px] text-muted-fg">
+        <div className="sticky left-0 top-0 z-30 bg-bg/90 px-2 py-1 text-xs text-muted-fg">
           Computing {progress.completedPairs}/{progress.totalPairs} pairs…{etaLabel ? ` ${etaLabel}` : ""}
         </div>
       ) : null}
@@ -249,7 +249,7 @@ export function RiskMatrix({
                     <button
                       type="button"
                       className={cn(
-                        "relative flex h-12 w-full flex-col items-center justify-center rounded-lg px-1 text-[10px] font-semibold transition-all duration-300",
+                        "relative flex h-12 w-full flex-col items-center justify-center rounded-lg px-1 text-[11px] font-semibold transition-all duration-300",
                         isLoadingCell
                           ? cn("ade-risk-skeleton text-muted-fg ring-1 ring-border/50", skeletonResolved && "opacity-60")
                           : cellClasses(riskLevel, isSelected, stale),
@@ -264,12 +264,12 @@ export function RiskMatrix({
                       title={staleTitle}
                     >
                       {isLoadingCell ? (
-                        <span className="text-[10px] text-muted-fg/80">…</span>
+                        <span className="text-[11px] text-muted-fg/80">…</span>
                       ) : (
                         <>
                           <span>{riskLevel}</span>
                           <span className="opacity-80">{entry?.overlapCount ?? 0} files</span>
-                          {stale ? <Clock3 className="absolute right-1 top-1 h-3 w-3 text-muted-fg" /> : null}
+                          {stale ? <Clock size={12} className="absolute right-1 top-1 text-muted-fg" /> : null}
                         </>
                       )}
                     </button>

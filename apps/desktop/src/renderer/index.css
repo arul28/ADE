@@ -1,255 +1,143 @@
 @import "tailwindcss";
 
+/* Geist Variable Fonts */
+@font-face {
+  font-family: 'Geist';
+  src: url('../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   --radius-xl: 6px;
   --radius-lg: 4px;
   --radius-md: 3px;
   --radius-sm: 2px;
+  --radius-full: 9999px;
 
   --pane-gap: 3px;
   --pane-radius: var(--radius-lg);
   --pane-minimized-height: 28px;
 
-  --font-sans: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --font-serif: "Source Serif 4", Georgia, Cambria, "Times New Roman", serif;
-  --font-mono: "SF Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
 
-  --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.03);
-  --shadow-card-hover: 0 1px 3px -1px rgb(0 0 0 / 0.05);
-  --shadow-float: 0 4px 12px -4px rgb(0 0 0 / 0.1);
+  --shadow-card: 0 1px 3px -1px rgba(0, 0, 0, 0.3);
+  --shadow-card-hover: 0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Dark Theme (DEFAULT)
+   ═══════════════════════════════════════════════════════════ */
 
 :root,
-[data-theme="e-paper"] {
-  /* E-PAPER Theme (Warm/Light) - DEFAULT */
-  --color-bg: #fdfbf7;
-  --color-fg: #201a14;
-  --color-surface: #f7f2e9;
+[data-theme="dark"] {
+  --color-bg: #0f0f11;
+  --color-fg: #e4e4e7;
+  --color-surface: #141416;
+  --color-card: #18181b;
+  --color-card-fg: #e4e4e7;
+  --color-secondary: #27272a;
+  --color-secondary-fg: #a1a1aa;
+  --color-muted: #27272a;
+  --color-muted-fg: #71717a;
+  --color-border: #27272a;
+  --color-accent: #06d6a0;
+  --color-accent-fg: #012a1f;
+  --color-accent-muted: rgba(6, 214, 160, 0.12);
+  --color-surface-raised: #1c1c1f;
+  --color-surface-recessed: #09090b;
+  --color-surface-overlay: #1c1c1f;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-separator: inset 0 0 4px 0 rgba(0, 0, 0, 0.4);
+  --shadow-panel: 0 2px 8px -2px rgba(0, 0, 0, 0.3);
+  --color-separator: #1c1c1f;
+  --color-separator-active: #06d6a0;
+  --border-separator: #27272a;
+  --gradient-surface: linear-gradient(180deg, #141416, #0f0f11);
+  --gradient-panel: linear-gradient(180deg, #1c1c1f 0%, #141416 100%);
+  --color-glow: rgba(6, 214, 160, 0.15);
+  --pane-bg: #18181b;
+  --pane-border: rgba(39, 39, 42, 0.6);
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+  --color-diff-add: #22c55e;
+  --color-diff-del: #ef4444;
+  --color-diff-hunk: #3b82f6;
+}
 
-  --color-card: #fdfbf7;
-  --color-card-fg: #201a14;
-  --color-secondary: #ddd1be;
-  --color-secondary-fg: #5f5140;
+/* ═══════════════════════════════════════════════════════════
+   Light Theme
+   ═══════════════════════════════════════════════════════════ */
 
-  --color-muted: #efe8dd;
-  --color-muted-fg: #6f6359;
-
-  --color-border: #d3cfc6;
-
-  --color-accent: #c22323;
+[data-theme="light"] {
+  --color-bg: #f5f5f6;
+  --color-fg: #0f0f11;
+  --color-surface: #fafafa;
+  --color-card: #ffffff;
+  --color-card-fg: #0f0f11;
+  --color-secondary: #e4e4e7;
+  --color-secondary-fg: #52525b;
+  --color-muted: #e4e4e7;
+  --color-muted-fg: #52525b;
+  --color-border: #d4d4d8;
+  --color-accent: #049068;
   --color-accent-fg: #ffffff;
-
+  --color-accent-muted: rgba(4, 144, 104, 0.08);
   --color-surface-raised: #ffffff;
-  --color-surface-recessed: #f0eae0;
-  --color-surface-overlay: #fdfbf7;
-  --shadow-inset: inset 0 1px 3px 0 rgb(0 0 0 / 0.06);
-  --shadow-separator: inset 0 0 4px 0 rgb(0 0 0 / 0.08);
-  --shadow-panel: 0 1px 4px -1px rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.04);
-  --color-separator: #e8e0d4;
-  --color-separator-active: #c22323;
-  --border-separator: #d3cfc6;
-  --gradient-surface: linear-gradient(180deg, #fdfbf7, #f7f2e9);
-  --gradient-panel: linear-gradient(180deg, #fdfbf7 0%, #f9f4ec 100%);
-  --color-glow: rgba(194, 35, 35, 0.25);
+  --color-surface-recessed: #e4e4e7;
+  --color-surface-overlay: #ffffff;
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-separator: inset 0 0 3px 0 rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 2px 8px -2px rgba(0, 0, 0, 0.06);
+  --color-separator: #e4e4e7;
+  --color-separator-active: #049068;
+  --border-separator: #d4d4d8;
+  --gradient-surface: linear-gradient(180deg, #fafafa, #f5f5f6);
+  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  --color-glow: rgba(4, 144, 104, 0.1);
   --pane-bg: #ffffff;
-  --pane-border: rgba(211, 207, 198, 0.5);
+  --pane-border: rgba(212, 212, 216, 0.5);
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-error: #dc2626;
+  --color-info: #2563eb;
+  --color-diff-add: #16a34a;
+  --color-diff-del: #dc2626;
+  --color-diff-hunk: #2563eb;
 }
 
-[data-theme="bloomberg"] {
-  /* BLOOMBERG Theme (Dark Terminal) */
-  --color-bg: #0a0a0a;
-  --color-fg: #ffc87a;
-  --color-surface: #15100a;
+/* ═══════════════════════════════════════════════════════════
+   Per-Tab Tint System
+   ═══════════════════════════════════════════════════════════ */
 
-  --color-card: #16110a;
-  --color-card-fg: #ffbb66;
-  --color-secondary: #4f3c1f;
-  --color-secondary-fg: #f5d2a4;
+.tab-tint-project { --tab-tint-rgb: 6, 214, 160; }
+.tab-tint-lanes { --tab-tint-rgb: 245, 158, 11; }
+.tab-tint-files { --tab-tint-rgb: 113, 113, 122; }
+.tab-tint-work { --tab-tint-rgb: 34, 197, 94; }
+.tab-tint-conflicts { --tab-tint-rgb: 239, 68, 68; }
+.tab-tint-graph { --tab-tint-rgb: 99, 102, 241; }
+.tab-tint-prs { --tab-tint-rgb: 16, 185, 129; }
+.tab-tint-history { --tab-tint-rgb: 217, 119, 6; }
+.tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
+.tab-tint-missions { --tab-tint-rgb: 59, 130, 246; }
+.tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
 
-  --color-muted: #1f180f;
-  --color-muted-fg: #b09779;
+/* ═══════════════════════════════════════════════════════════
+   Base Styles
+   ═══════════════════════════════════════════════════════════ */
 
-  --color-border: #403121;
-
-  --color-accent: #ff7a00;
-  --color-accent-fg: #000000;
-
-  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
-  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
-  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
-
-  --color-surface-raised: #1c150d;
-  --color-surface-recessed: #0e0a06;
-  --color-surface-overlay: #201810;
-  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.4);
-  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.5);
-  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgb(0 0 0 / 0.3);
-  --color-separator: #1a1208;
-  --color-separator-active: #ff7a00;
-  --border-separator: #403121;
-  --gradient-surface: linear-gradient(180deg, #16110a, #0e0a06);
-  --gradient-panel: linear-gradient(180deg, #1c150d 0%, #16110a 100%);
-  --color-glow: rgba(255, 122, 0, 0.3);
-  --pane-bg: #1c150d;
-  --pane-border: rgba(64, 49, 33, 0.5);
-}
-
-[data-theme="github"] {
-  /* GITHUB Theme (Dark Navy) */
-  --color-bg: #0d1117;
-  --color-fg: #c9d1d9;
-  --color-surface: #0f1a2d;
-
-  --color-card: #111b2c;
-  --color-card-fg: #c9d1d9;
-  --color-secondary: #58a6ff;
-  --color-secondary-fg: #0f2d53;
-
-  --color-muted: #1d2a3a;
-  --color-muted-fg: #8b97a8;
-
-  --color-border: #2f3b49;
-
-  --color-accent: #58a6ff;
-  --color-accent-fg: #ffffff;
-
-  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
-  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
-  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
-
-  --color-surface-raised: #161b22;
-  --color-surface-recessed: #090d13;
-  --color-surface-overlay: #1c2333;
-  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.35);
-  --shadow-separator: inset 0 0 5px 0 rgb(0 0 0 / 0.4);
-  --shadow-panel: 0 1px 5px -1px rgba(13, 17, 23, 0.5), 0 1px 2px -1px rgba(88, 166, 255, 0.04);
-  --color-separator: #151c28;
-  --color-separator-active: #58a6ff;
-  --border-separator: #2f3b49;
-  --gradient-surface: linear-gradient(180deg, #111b2c, #0d1117);
-  --gradient-panel: linear-gradient(180deg, #161b22 0%, #111b2c 100%);
-  --color-glow: rgba(88, 166, 255, 0.2);
-  --pane-bg: #161b22;
-  --pane-border: rgba(47, 59, 73, 0.5);
-}
-
-[data-theme="rainbow"] {
-  /* RAINBOW Theme (Vibrant Dark) */
-  --color-bg: #1b1f23;
-  --color-fg: #e6edf3;
-  --color-surface: #252035;
-
-  --color-card: #222737;
-  --color-card-fg: #e6edf3;
-  --color-secondary: #c084fc;
-  --color-secondary-fg: #35134f;
-
-  --color-muted: #2a3342;
-  --color-muted-fg: #96a0ac;
-
-  --color-border: #525e72;
-
-  --color-accent: #fb7185;
-  --color-accent-fg: #ffffff;
-
-  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
-  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
-  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
-
-  --color-surface-raised: #2a2f3f;
-  --color-surface-recessed: #16181e;
-  --color-surface-overlay: #2e3348;
-  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.35);
-  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.45);
-  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.35), 0 1px 3px -1px rgb(0 0 0 / 0.25);
-  --color-separator: #232838;
-  --color-separator-active: #fb7185;
-  --border-separator: #3e4660;
-  --gradient-surface: linear-gradient(135deg, #252035, #222737);
-  --gradient-panel: linear-gradient(135deg, #2a2f3f 0%, #252035 100%);
-  --color-glow: rgba(251, 113, 133, 0.25);
-  --pane-bg: #2a2f3f;
-  --pane-border: rgba(82, 94, 114, 0.5);
-}
-
-[data-theme="sky"] {
-  /* SKY Theme (Light / Analytical) */
-  --color-bg: #f0f6ff;
-  --color-fg: #1e3a8a;
-  --color-surface: #edf3ff;
-
-  --color-card: #f7faff;
-  --color-card-fg: #1e3a8a;
-  --color-secondary: #14b8a6;
-  --color-secondary-fg: #042f2f;
-
-  --color-muted: #dbeafe;
-  --color-muted-fg: #60a5fa;
-
-  --color-border: #b7d5ff;
-
-  --color-accent: #2563eb;
-  --color-accent-fg: #ffffff;
-
-  --color-surface-raised: #ffffff;
-  --color-surface-recessed: #e4eeff;
-  --color-surface-overlay: #f7faff;
-  --shadow-inset: inset 0 1px 3px 0 rgba(37, 99, 235, 0.06);
-  --shadow-separator: inset 0 0 4px 0 rgba(37, 99, 235, 0.08);
-  --shadow-panel: 0 1px 4px -1px rgba(30, 58, 138, 0.06), 0 1px 2px -1px rgba(37, 99, 235, 0.04);
-  --color-separator: #d6e8ff;
-  --color-separator-active: #2563eb;
-  --border-separator: #b7d5ff;
-  --gradient-surface: linear-gradient(180deg, #f7faff, #edf3ff);
-  --gradient-panel: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
-  --color-glow: rgba(37, 99, 235, 0.2);
-  --pane-bg: #ffffff;
-  --pane-border: rgba(183, 213, 255, 0.5);
-}
-
-[data-theme="pats"] {
-  /* PATS Theme (Navy/Red/Silver) */
-  --color-bg: #001a36;
-  /* Navy */
-  --color-fg: #edf4ff;
-  --color-surface: #012b53;
-
-  --color-card: #001a34;
-  --color-card-fg: #d3deec;
-  --color-secondary: #0d426b;
-  --color-secondary-fg: #cfe0f3;
-
-  --color-muted: #163f66;
-  --color-muted-fg: #a6bdd6;
-
-  --color-border: #c60c30;
-
-  --color-accent: #c60c30;
-  --color-accent-fg: #ffffff;
-
-  --shadow-card: 0 2px 8px -1px rgb(0 0 0 / 0.35), 0 1px 4px -1px rgb(0 0 0 / 0.25);
-  --shadow-card-hover: 0 8px 16px -3px rgb(0 0 0 / 0.45), 0 4px 8px -4px rgb(0 0 0 / 0.3);
-  --shadow-float: 0 14px 32px -6px rgb(0 0 0 / 0.55), 0 10px 16px -6px rgb(0 0 0 / 0.4);
-
-  --color-surface-raised: #012a50;
-  --color-surface-recessed: #00132a;
-  --color-surface-overlay: #023060;
-  --shadow-inset: inset 0 1px 4px 0 rgb(0 0 0 / 0.4);
-  --shadow-separator: inset 0 0 6px 0 rgb(0 0 0 / 0.5);
-  --shadow-panel: 0 2px 6px -1px rgb(0 0 0 / 0.4), 0 1px 3px -1px rgba(198, 12, 48, 0.06);
-  --color-separator: #011e3e;
-  --color-separator-active: #c60c30;
-  --border-separator: rgba(198, 12, 48, 0.4);
-  --gradient-surface: linear-gradient(180deg, #012b53, #001a36);
-  --gradient-panel: linear-gradient(180deg, #012a50 0%, #001a36 100%);
-  --color-glow: rgba(198, 12, 48, 0.3);
-  --pane-bg: #012a50;
-  --pane-border: rgba(198, 12, 48, 0.25);
-}
-
-/*
- * Base Styles 
- */
 html,
 body {
   height: 100%;
@@ -296,7 +184,30 @@ h6 {
   letter-spacing: -0.02em;
 }
 
-/* Resize Gutter */
+/* Theme-aware prose for agent chat markdown */
+.ade-prose-themed,
+.ade-prose-themed :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  color: var(--color-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Collapsible Sidebar
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-sidebar {
+  width: 52px;
+  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.ade-sidebar:hover {
+  width: 168px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Resize Gutter
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-gutter {
   position: relative;
   z-index: 10;
@@ -374,7 +285,10 @@ h6 {
   background: color-mix(in srgb, var(--color-separator-active) 18%, var(--color-separator));
 }
 
-/* Floating Pane System */
+/* ═══════════════════════════════════════════════════════════
+   Floating Pane System
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-pane-container {
   display: flex;
   gap: var(--pane-gap);
@@ -460,7 +374,10 @@ h6 {
   z-index: 5;
 }
 
-/* Thinner, transparent gutters inside floating pane containers */
+/* ═══════════════════════════════════════════════════════════
+   Pane Gutters (inside floating pane containers)
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-pane-gutter.vertical {
   width: 8px;
   cursor: col-resize;
@@ -528,7 +445,10 @@ h6 {
   display: none;
 }
 
-/* Lane divider: prominent separator between split lane columns */
+/* ═══════════════════════════════════════════════════════════
+   Lane Divider
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-lane-divider {
   position: relative;
   z-index: 12;
@@ -598,87 +518,24 @@ h6 {
   box-shadow: 0 0 14px 3px var(--color-glow);
 }
 
-/* Tiling surface: recessed background behind floating panes */
+/* ═══════════════════════════════════════════════════════════
+   Tiling Surface & Panel Header
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-tiling-surface {
   background: var(--color-surface-recessed);
   padding: var(--pane-gap);
 }
 
-/* Panel Header */
 .ade-panel-header {
   background: var(--color-surface-raised);
   border-bottom: 1px solid var(--color-border);
 }
 
-/* Per-Theme Unique Effects */
-
-/* Rainbow: accent gutter */
-[data-theme="rainbow"] .ade-gutter:hover .ade-gutter-pill {
-  background: linear-gradient(180deg, #fb7185, #c084fc);
-}
-
-/* Pats: red accent on active separators */
-[data-theme="pats"] .ade-gutter[data-resize-handle-active] .ade-gutter-pill,
-[data-theme="pats"] .ade-gutter.dragging .ade-gutter-pill {
-  background: var(--color-accent);
-}
-
 /* ═══════════════════════════════════════════════════════════
-   Per-Theme: Minimized pane header, lane divider, tiling surface
+   Scrollbars
    ═══════════════════════════════════════════════════════════ */
 
-/* Per-theme lane divider + tiling accents (minimal) */
-
-[data-theme="bloomberg"] .ade-lane-divider::before {
-  background: rgba(255, 122, 0, 0.6);
-}
-
-[data-theme="github"] .ade-lane-divider::before {
-  background: rgba(88, 166, 255, 0.5);
-}
-
-[data-theme="github"] .ade-tiling-surface {
-  background: #090d13;
-}
-
-[data-theme="rainbow"] .ade-lane-divider::before {
-  background: linear-gradient(180deg, #fb7185, #a78bfa);
-  opacity: 0.5;
-}
-
-[data-theme="sky"] .ade-tiling-surface {
-  background: #e8effc;
-}
-
-[data-theme="pats"] .ade-lane-divider::before {
-  background: rgba(198, 12, 48, 0.5);
-}
-
-/* Theme-aware diff colors (light vs dark) */
-:root,
-[data-theme="e-paper"],
-[data-theme="sky"] {
-  --color-diff-add: #16a34a;
-  --color-diff-del: #dc2626;
-  --color-diff-hunk: #2563eb;
-}
-
-[data-theme="bloomberg"],
-[data-theme="github"],
-[data-theme="rainbow"],
-[data-theme="pats"] {
-  --color-diff-add: #6ee7b7;
-  --color-diff-del: #fda4af;
-  --color-diff-hunk: #7dd3fc;
-}
-
-/* Theme-aware prose for agent chat markdown */
-.ade-prose-themed,
-.ade-prose-themed :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
-  color: var(--color-fg);
-}
-
-/* Scrollbars — minimal, unobtrusive */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -697,6 +554,10 @@ h6 {
   background-color: color-mix(in srgb, var(--color-muted-fg) 35%, transparent);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Conflict Markers
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-conflict-ours-line {
   background: rgba(0, 200, 0, 0.1);
 }
@@ -714,11 +575,115 @@ h6 {
   background: rgba(220, 38, 38, 0.55);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Refined Pane Treatment
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-pane {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.ade-pane:hover {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.15);
+}
+.ade-pane:focus-within {
+  border-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.25);
+  box-shadow: var(--shadow-card), inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 0 0 1px rgba(var(--tab-tint-rgb, 113, 113, 122), 0.08);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Input Fields
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-input {
+  background: var(--color-surface-recessed);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--color-fg);
+  transition: border-color 150ms, box-shadow 150ms;
+}
+.ade-input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-muted);
+  outline: none;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Chips & Badges
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--color-muted);
+  color: var(--color-muted-fg);
+  border: 1px solid transparent;
+}
+.ade-chip-success {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.ade-chip-warning {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.2);
+}
+.ade-chip-error {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.ade-chip-info {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Button Micro-interactions
+   ═══════════════════════════════════════════════════════════ */
+
+button, [role="button"] {
+  transition: transform 60ms ease, box-shadow 150ms ease;
+}
+button:active, [role="button"]:active {
+  transform: scale(0.97) translateY(0.5px);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Opaque Dropdown Utility
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-dropdown-opaque {
+  background-color: var(--color-bg);
+}
+
+.ade-dropdown-opaque::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: var(--color-bg);
+  border-radius: inherit;
+  z-index: -1;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Risk & Conflict Animations
+   ═══════════════════════════════════════════════════════════ */
+
 @keyframes ade-shimmer {
   0% {
     transform: translateX(-100%);
   }
-
   100% {
     transform: translateX(100%);
   }
@@ -743,7 +708,6 @@ h6 {
     opacity: 0;
     transform: scale(0.92);
   }
-
   100% {
     opacity: 1;
     transform: scale(1);
@@ -758,7 +722,6 @@ h6 {
   0% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55);
   }
-
   100% {
     box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
   }
@@ -768,7 +731,6 @@ h6 {
   0% {
     box-shadow: inset 0 0 0 0 rgba(16, 185, 129, 0.55);
   }
-
   100% {
     box-shadow: inset 0 0 0 10px rgba(16, 185, 129, 0);
   }
@@ -786,11 +748,9 @@ h6 {
   0% {
     transform: scale(1);
   }
-
   50% {
     transform: scale(1.3);
   }
-
   100% {
     transform: scale(1);
   }
@@ -801,12 +761,10 @@ h6 {
     transform: scale(1);
     box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
   }
-
   50% {
     transform: scale(1.2);
     box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.28);
   }
-
   100% {
     transform: scale(1);
     box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
@@ -823,6 +781,10 @@ h6 {
   transform-origin: center;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Tooltip Animations
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-tooltip-motion {
   transition: opacity 150ms ease, transform 150ms ease;
 }
@@ -837,6 +799,10 @@ h6 {
   transform: translateY(3px) scale(0.98);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Edge Path & PR Animations
+   ═══════════════════════════════════════════════════════════ */
+
 .ade-edge-path {
   transition: opacity 200ms ease, stroke-width 200ms ease, stroke 260ms ease;
 }
@@ -845,11 +811,9 @@ h6 {
   0% {
     opacity: 1;
   }
-
   50% {
     opacity: 0.55;
   }
-
   100% {
     opacity: 1;
   }
@@ -863,11 +827,9 @@ h6 {
   0% {
     opacity: 1;
   }
-
   50% {
     opacity: 0.35;
   }
-
   100% {
     opacity: 1;
   }
@@ -877,11 +839,14 @@ h6 {
   animation: ade-pr-ci-pending 800ms ease-in-out infinite;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Node Animations
+   ═══════════════════════════════════════════════════════════ */
+
 @keyframes ade-node-merging-pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
   }
-
   100% {
     box-shadow: 0 0 0 12px rgba(56, 189, 248, 0);
   }
@@ -896,7 +861,6 @@ h6 {
     opacity: 1;
     transform: scale(1);
   }
-
   100% {
     opacity: 0;
     transform: scale(0.94);
@@ -911,7 +875,6 @@ h6 {
   0% {
     box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
   }
-
   100% {
     box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
   }
@@ -921,12 +884,15 @@ h6 {
   animation: ade-node-failed-pulse 500ms ease-out 3;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Drop Preview & Status Pulse
+   ═══════════════════════════════════════════════════════════ */
+
 @keyframes ade-drop-preview-pop {
   0% {
     opacity: 0;
     transform: translateY(-4px) scale(0.98);
   }
-
   100% {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -937,15 +903,12 @@ h6 {
   animation: ade-drop-preview-pop 160ms ease-out;
 }
 
-/* Status dot pulse for running terminals */
 @keyframes ade-status-pulse {
-
   0%,
   100% {
     opacity: 1;
     box-shadow: 0 0 0 0 currentColor;
   }
-
   50% {
     opacity: 0.7;
     box-shadow: 0 0 0 3px transparent;
@@ -957,174 +920,14 @@ h6 {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Per-Theme: Unique Visual Aesthetics
-   ═══════════════════════════════════════════════════════════ */
-
-/* ─────────────────────────────────────────────────────────
-   1. E-PAPER  –  warm paper grain, ink borders, sepia tints
-   ───────────────────────────────────────────────────────── */
-
-/* E-Paper: clean warm tones, no texture */
-[data-theme="e-paper"] .ade-floating-pane,
-:root .ade-floating-pane {
-  border-color: rgba(80, 65, 45, 0.14);
-}
-
-/* ─────────────────────────────────────────────────────────
-   2. BLOOMBERG  –  hard edges, CRT glow, grid lines, mono
-   ───────────────────────────────────────────────────────── */
-
-/* Bloomberg: hard edges, CRT terminal, grid overlay */
-[data-theme="bloomberg"] .ade-floating-pane {
-  --pane-radius: 2px;
-  border-radius: 2px;
-  border-color: rgba(255, 200, 122, 0.12);
-}
-
-[data-theme="bloomberg"] .ade-drop-zone-overlay {
-  border-radius: 2px;
-}
-
-[data-theme="bloomberg"] .ade-floating-pane-header .ade-pane-title {
-  text-shadow: 0 0 8px rgba(255, 122, 0, 0.3);
-  color: var(--color-fg);
-}
-
-/* Grid-line background on tiling surface */
-[data-theme="bloomberg"] .ade-tiling-surface {
-  background-color: var(--color-surface-recessed);
-  background-image:
-    linear-gradient(rgba(255, 200, 122, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 200, 122, 0.025) 1px, transparent 1px);
-  background-size: 20px 20px;
-}
-
-[data-theme="bloomberg"] .ade-gutter .ade-gutter-pill {
-  border-radius: 1px;
-}
-
-[data-theme="bloomberg"] .ade-pane-gutter::before {
-  border-radius: 1px;
-}
-
-/* ─────────────────────────────────────────────────────────
-   3. GITHUB  –  crisp borders, blue accents, clean design
-   ───────────────────────────────────────────────────────── */
-
-/* GitHub: crisp borders, blue accents */
-[data-theme="github"] .ade-floating-pane {
-  border-color: rgba(47, 59, 73, 0.5);
-}
-
-[data-theme="github"] .ade-floating-pane:focus-within {
-  border-color: rgba(88, 166, 255, 0.4);
-}
-
-/* ─────────────────────────────────────────────────────────
-   4. RAINBOW  –  gradient borders, glassmorphism, neon glow
-   ───────────────────────────────────────────────────────── */
-
-/* Rainbow: structured color, no glassmorphism */
-[data-theme="rainbow"] .ade-floating-pane {
-  border-color: rgba(192, 132, 252, 0.18);
-  border-left: 2px solid rgba(251, 113, 133, 0.3);
-}
-
-[data-theme="rainbow"] .ade-floating-pane:hover {
-  border-color: rgba(192, 132, 252, 0.35);
-}
-
-[data-theme="rainbow"] .ade-pane-gutter:hover::before,
-[data-theme="rainbow"] .ade-pane-gutter[data-resize-handle-active]::before {
-  background: linear-gradient(180deg, #fb7185, #c084fc);
-}
-
-[data-theme="rainbow"] .ade-floating-pane-header .ade-pane-title {
-  color: rgba(192, 132, 252, 0.85);
-}
-
-/* ─────────────────────────────────────────────────────────
-   5. SKY  –  frosted glass, flat design, teal accents
-   ───────────────────────────────────────────────────────── */
-
-/* Sky: flat, minimal, blue-tinted */
-[data-theme="sky"] .ade-floating-pane {
-  background: #ffffff;
-  border-color: rgba(183, 213, 255, 0.45);
-}
-
-[data-theme="sky"] .ade-floating-pane:hover {
-  border-color: rgba(37, 99, 235, 0.2);
-}
-
-[data-theme="sky"] .ade-gutter:hover .ade-gutter-pill,
-[data-theme="sky"] .ade-gutter[data-resize-handle-active] .ade-gutter-pill {
-  background: var(--color-secondary);
-}
-
-[data-theme="sky"] .ade-pane-gutter:hover::before,
-[data-theme="sky"] .ade-pane-gutter[data-resize-handle-active]::before {
-  background: var(--color-secondary);
-}
-
-[data-theme="sky"] ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-
-[data-theme="sky"] ::-webkit-scrollbar-thumb {
-  background-color: rgba(37, 99, 235, 0.12);
-  border-radius: 99px;
-}
-
-/* ─────────────────────────────────────────────────────────
-   6. PATS  –  metallic silver, red stripe, bold & patriotic
-   ───────────────────────────────────────────────────────── */
-
-/* Pats: bold, structural, red accent */
-[data-theme="pats"] .ade-floating-pane {
-  border-top: 2px solid rgba(198, 12, 48, 0.5);
-  border-color: rgba(198, 12, 48, 0.15);
-}
-
-[data-theme="pats"] .ade-floating-pane-header .ade-pane-title {
-  font-weight: 600;
-  color: var(--color-fg);
-}
-
-[data-theme="pats"] .ade-tiling-surface {
-  background: #000e1f;
-}
-
-[data-theme="pats"] .ade-floating-pane:hover {
-  border-top-color: rgba(198, 12, 48, 0.7);
-}
-
-/* Opaque dropdown background utility */
-.ade-dropdown-opaque {
-  background-color: var(--color-bg);
-}
-
-.ade-dropdown-opaque::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-color: var(--color-bg);
-  border-radius: inherit;
-  z-index: -1;
-}
-
-/* ═══════════════════════════════════════════════════════════
-   ADE Motion System — Global Keyframes
+   Global Keyframes
    ═══════════════════════════════════════════════════════════ */
 
 @keyframes ade-float {
-
   0%,
   100% {
     transform: translateY(-4px);
   }
-
   50% {
     transform: translateY(4px);
   }
@@ -1134,11 +937,9 @@ h6 {
   0% {
     background-position: 0% 50%;
   }
-
   50% {
     background-position: 100% 50%;
   }
-
   100% {
     background-position: 0% 50%;
   }
@@ -1148,24 +949,20 @@ h6 {
   0% {
     transform: translate(0, 0);
   }
-
   50% {
     transform: translate(15px, -10px);
   }
-
   100% {
     transform: translate(0, 0);
   }
 }
 
 @keyframes ade-breathe {
-
   0%,
   100% {
     transform: scale(1);
     opacity: 1;
   }
-
   50% {
     transform: scale(1.03);
     opacity: 0.85;
@@ -1177,7 +974,6 @@ h6 {
     transform: translateY(8px);
     opacity: 0;
   }
-
   100% {
     transform: translateY(0);
     opacity: 1;
@@ -1185,12 +981,10 @@ h6 {
 }
 
 @keyframes ade-glow-pulse {
-
   0%,
   100% {
     box-shadow: 0 0 4px 1px var(--color-glow);
   }
-
   50% {
     box-shadow: 0 0 12px 4px var(--color-glow);
   }
@@ -1200,7 +994,6 @@ h6 {
   0% {
     transform: rotate(0deg);
   }
-
   100% {
     transform: rotate(360deg);
   }
@@ -1210,7 +1003,6 @@ h6 {
   0% {
     transform: rotate(0deg);
   }
-
   100% {
     transform: rotate(360deg);
   }
@@ -1220,7 +1012,6 @@ h6 {
   0% {
     transform: translateY(-100%);
   }
-
   100% {
     transform: translateY(100%);
   }
@@ -1230,7 +1021,6 @@ h6 {
   0% {
     transform: translateX(-100%);
   }
-
   100% {
     transform: translateX(200%);
   }
@@ -1240,7 +1030,6 @@ h6 {
   0% {
     transform: rotate(0deg);
   }
-
   100% {
     transform: rotate(360deg);
   }
@@ -1250,7 +1039,6 @@ h6 {
   0% {
     transform: rotate(0deg);
   }
-
   100% {
     transform: rotate(360deg);
   }
@@ -1260,15 +1048,16 @@ h6 {
   0% {
     transform: rotate(360deg);
   }
-
   100% {
     transform: rotate(0deg);
   }
 }
 
-/* Reduced motion: disable all ADE animations */
-@media (prefers-reduced-motion: reduce) {
+/* ═══════════════════════════════════════════════════════════
+   Reduced Motion
+   ═══════════════════════════════════════════════════════════ */
 
+@media (prefers-reduced-motion: reduce) {
   .ade-tab-bg,
   .ade-tab-bg::before,
   .ade-tab-bg::after {
@@ -1286,19 +1075,23 @@ h6 {
   will-change: opacity;
 }
 
-/* 1. Play — Command Center / Radar Sweep */
+[data-theme="dark"] .ade-tab-bg,
+:root .ade-tab-bg { opacity: 0.3; }
+[data-theme="light"] .ade-tab-bg { opacity: 0.15; }
+
+/* 1. Project — Command Center / Radar Sweep (cyan #06d6a0) */
 .ade-tab-bg-project {
   background:
     repeating-linear-gradient(0deg,
       transparent,
       transparent 23px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 23px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 24px),
+      rgba(6, 214, 160, 0.03) 23px,
+      rgba(6, 214, 160, 0.03) 24px),
     repeating-linear-gradient(90deg,
       transparent,
       transparent 23px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 23px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 24px);
+      rgba(6, 214, 160, 0.03) 23px,
+      rgba(6, 214, 160, 0.03) 24px);
 }
 
 .ade-tab-bg-project::before {
@@ -1312,14 +1105,14 @@ h6 {
   margin-left: -250px;
   background: conic-gradient(from 0deg,
       transparent 0deg,
-      color-mix(in srgb, var(--color-accent) 6%, transparent) 30deg,
+      rgba(6, 214, 160, 0.06) 30deg,
       transparent 60deg);
   border-radius: 50%;
   animation: ade-radar-sweep 20s linear infinite;
   opacity: 0.5;
 }
 
-/* 2. Lanes — Racing Tracks (horizontal flowing lines) */
+/* 2. Lanes — Racing Tracks (amber #f59e0b) */
 .ade-tab-bg-lanes::before {
   content: "";
   position: absolute;
@@ -1328,16 +1121,16 @@ h6 {
     repeating-linear-gradient(0deg,
       transparent,
       transparent 59px,
-      color-mix(in srgb, var(--color-accent) 5%, transparent) 59px,
-      color-mix(in srgb, var(--color-accent) 5%, transparent) 60px);
+      rgba(245, 158, 11, 0.05) 59px,
+      rgba(245, 158, 11, 0.05) 60px);
   animation: ade-particle-drift 25s ease-in-out infinite;
 }
 
-/* 3. Files — Explorer / Tree Wireframe */
+/* 3. Files — Explorer / Tree Wireframe (neutral) */
 .ade-tab-bg-files {
   background:
     linear-gradient(135deg,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 0%,
+      rgba(113, 113, 122, 0.03) 0%,
       transparent 30%);
 }
 
@@ -1349,13 +1142,13 @@ h6 {
   width: 200px;
   height: 100%;
   background:
-    linear-gradient(45deg, color-mix(in srgb, var(--color-accent) 4%, transparent) 1px, transparent 1px),
-    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 3%, transparent) 1px, transparent 1px);
+    linear-gradient(45deg, rgba(113, 113, 122, 0.04) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(113, 113, 122, 0.03) 1px, transparent 1px);
   background-size: 40px 40px;
   opacity: 0.5;
 }
 
-/* 4. Terminals — Hacker Console / Code Rain */
+/* 4. Terminals — Hacker Console / Code Rain (green #22c55e) */
 .ade-tab-bg-terminals::before {
   content: "";
   position: absolute;
@@ -1364,8 +1157,8 @@ h6 {
     repeating-linear-gradient(90deg,
       transparent,
       transparent 39px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 39px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 40px);
+      rgba(34, 197, 94, 0.03) 39px,
+      rgba(34, 197, 94, 0.03) 40px);
   opacity: 0.4;
 }
 
@@ -1380,13 +1173,13 @@ h6 {
     repeating-linear-gradient(90deg,
       transparent 0px,
       transparent 38px,
-      color-mix(in srgb, var(--color-accent) 5%, transparent) 38px,
-      color-mix(in srgb, var(--color-accent) 5%, transparent) 40px);
+      rgba(34, 197, 94, 0.05) 38px,
+      rgba(34, 197, 94, 0.05) 40px);
   animation: ade-code-rain 8s linear infinite;
   opacity: 0.25;
 }
 
-/* 5. Conflicts — Battlefield / Diagonal Tension Lines */
+/* 5. Conflicts — Battlefield / Diagonal Tension Lines (red #ef4444) */
 .ade-tab-bg-conflicts::before {
   content: "";
   position: absolute;
@@ -1395,13 +1188,13 @@ h6 {
     repeating-linear-gradient(45deg,
       transparent,
       transparent 29px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 29px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 30px),
+      rgba(239, 68, 68, 0.03) 29px,
+      rgba(239, 68, 68, 0.03) 30px),
     repeating-linear-gradient(135deg,
       transparent,
       transparent 29px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 29px,
-      color-mix(in srgb, var(--color-accent) 3%, transparent) 30px);
+      rgba(239, 68, 68, 0.03) 29px,
+      rgba(239, 68, 68, 0.03) 30px);
   animation: ade-breathe 6s ease-in-out infinite;
   opacity: 0.5;
 }
@@ -1412,35 +1205,35 @@ h6 {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 20% 30%, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 3%),
-    radial-gradient(circle at 60% 20%, color-mix(in srgb, var(--color-accent) 6%, transparent) 0%, transparent 2.5%),
-    radial-gradient(circle at 80% 60%, color-mix(in srgb, var(--color-accent) 7%, transparent) 0%, transparent 3%),
-    radial-gradient(circle at 35% 70%, color-mix(in srgb, var(--color-accent) 5%, transparent) 0%, transparent 2%),
-    radial-gradient(circle at 70% 80%, color-mix(in srgb, var(--color-accent) 6%, transparent) 0%, transparent 2.5%),
-    radial-gradient(circle at 10% 80%, color-mix(in srgb, var(--color-accent) 5%, transparent) 0%, transparent 2%),
-    radial-gradient(circle at 90% 25%, color-mix(in srgb, var(--color-accent) 7%, transparent) 0%, transparent 3%),
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--color-accent) 4%, transparent) 0%, transparent 2%);
+    radial-gradient(circle at 20% 30%, rgba(6, 214, 160, 0.08) 0%, transparent 3%),
+    radial-gradient(circle at 60% 20%, rgba(6, 214, 160, 0.06) 0%, transparent 2.5%),
+    radial-gradient(circle at 80% 60%, rgba(6, 214, 160, 0.07) 0%, transparent 3%),
+    radial-gradient(circle at 35% 70%, rgba(6, 214, 160, 0.05) 0%, transparent 2%),
+    radial-gradient(circle at 70% 80%, rgba(6, 214, 160, 0.06) 0%, transparent 2.5%),
+    radial-gradient(circle at 10% 80%, rgba(6, 214, 160, 0.05) 0%, transparent 2%),
+    radial-gradient(circle at 90% 25%, rgba(6, 214, 160, 0.07) 0%, transparent 3%),
+    radial-gradient(circle at 50% 50%, rgba(6, 214, 160, 0.04) 0%, transparent 2%);
   animation: ade-breathe 8s ease-in-out infinite;
 }
 
-/* 7. Graph — Constellation / Star-field */
+/* 7. Graph — Constellation / Star-field (indigo #6366f1) */
 .ade-tab-bg-graph::before {
   content: "";
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 15% 15%, color-mix(in srgb, var(--color-fg) 12%, transparent) 0px, color-mix(in srgb, var(--color-fg) 12%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 45% 25%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, color-mix(in srgb, var(--color-fg) 8%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 75% 35%, color-mix(in srgb, var(--color-fg) 10%, transparent) 0px, color-mix(in srgb, var(--color-fg) 10%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 25% 55%, color-mix(in srgb, var(--color-fg) 7%, transparent) 0px, color-mix(in srgb, var(--color-fg) 7%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 85% 65%, color-mix(in srgb, var(--color-fg) 9%, transparent) 0px, color-mix(in srgb, var(--color-fg) 9%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 55% 75%, color-mix(in srgb, var(--color-fg) 6%, transparent) 0px, color-mix(in srgb, var(--color-fg) 6%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 35% 85%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, color-mix(in srgb, var(--color-fg) 8%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 65% 90%, color-mix(in srgb, var(--color-fg) 11%, transparent) 0px, color-mix(in srgb, var(--color-fg) 11%, transparent) 1px, transparent 1px);
+    radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.12) 0px, rgba(99, 102, 241, 0.12) 1px, transparent 1px),
+    radial-gradient(circle at 45% 25%, rgba(99, 102, 241, 0.08) 0px, rgba(99, 102, 241, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 75% 35%, rgba(99, 102, 241, 0.10) 0px, rgba(99, 102, 241, 0.10) 1px, transparent 1px),
+    radial-gradient(circle at 25% 55%, rgba(99, 102, 241, 0.07) 0px, rgba(99, 102, 241, 0.07) 1px, transparent 1px),
+    radial-gradient(circle at 85% 65%, rgba(99, 102, 241, 0.09) 0px, rgba(99, 102, 241, 0.09) 1px, transparent 1px),
+    radial-gradient(circle at 55% 75%, rgba(99, 102, 241, 0.06) 0px, rgba(99, 102, 241, 0.06) 1px, transparent 1px),
+    radial-gradient(circle at 35% 85%, rgba(99, 102, 241, 0.08) 0px, rgba(99, 102, 241, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at 65% 90%, rgba(99, 102, 241, 0.11) 0px, rgba(99, 102, 241, 0.11) 1px, transparent 1px);
   animation: ade-particle-drift 30s ease-in-out infinite;
 }
 
-/* 8. PRs — Gateway / Launch Pad */
+/* 8. PRs — Gateway / Launch Pad (emerald #10b981) */
 .ade-tab-bg-prs::before {
   content: "";
   position: absolute;
@@ -1450,13 +1243,13 @@ h6 {
   height: 100%;
   margin-left: -200px;
   background:
-    linear-gradient(0deg, color-mix(in srgb, var(--color-accent) 4%, transparent) 0%, transparent 60%);
+    linear-gradient(0deg, rgba(16, 185, 129, 0.04) 0%, transparent 60%);
   border-radius: 50% 50% 0 0;
   opacity: 0.6;
   animation: ade-breathe 8s ease-in-out infinite;
 }
 
-/* 9. History — Time Chronicle / Circular Arcs */
+/* 9. History — Time Chronicle / Circular Arcs (amber #d97706) */
 .ade-tab-bg-history::before {
   content: "";
   position: absolute;
@@ -1465,7 +1258,7 @@ h6 {
   width: 400px;
   height: 400px;
   margin-top: -200px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 6%, transparent);
+  border: 1px solid rgba(217, 119, 6, 0.06);
   border-radius: 50%;
   opacity: 0.5;
   animation: ade-timeline-arc 60s linear infinite;
@@ -1479,13 +1272,13 @@ h6 {
   width: 300px;
   height: 300px;
   margin-top: -150px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 4%, transparent);
+  border: 1px solid rgba(217, 119, 6, 0.04);
   border-radius: 50%;
   opacity: 0.4;
   animation: ade-timeline-arc 45s linear infinite reverse;
 }
 
-/* 10. Automations — Factory Floor / Rotating Gears */
+/* 10. Automations — Factory Floor / Rotating Gears (orange #f97316) */
 .ade-tab-bg-automations::before {
   content: "";
   position: absolute;
@@ -1493,7 +1286,7 @@ h6 {
   right: -60px;
   width: 200px;
   height: 200px;
-  border: 2px dashed color-mix(in srgb, var(--color-accent) 6%, transparent);
+  border: 2px dashed rgba(249, 115, 22, 0.06);
   border-radius: 50%;
   animation: ade-gear-spin 20s linear infinite;
   opacity: 0.4;
@@ -1506,18 +1299,18 @@ h6 {
   right: 80px;
   width: 140px;
   height: 140px;
-  border: 2px dashed color-mix(in srgb, var(--color-accent) 5%, transparent);
+  border: 2px dashed rgba(249, 115, 22, 0.05);
   border-radius: 50%;
   animation: ade-gear-spin-reverse 15s linear infinite;
   opacity: 0.35;
 }
 
-/* 11. Missions — Space Adventure / Nebula Aurora */
+/* 11. Missions — Space Adventure / Nebula Aurora (blue #3b82f6) */
 .ade-tab-bg-missions {
   background:
-    radial-gradient(ellipse at 30% 20%, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 50%),
-    radial-gradient(ellipse at 70% 60%, color-mix(in srgb, var(--color-secondary) 6%, transparent) 0%, transparent 40%),
-    radial-gradient(ellipse at 50% 90%, color-mix(in srgb, var(--color-accent) 5%, transparent) 0%, transparent 45%);
+    radial-gradient(ellipse at 30% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 60%, rgba(59, 130, 246, 0.06) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 90%, rgba(59, 130, 246, 0.05) 0%, transparent 45%);
   background-size: 200% 200%;
   animation: ade-gradient-shift 20s ease-in-out infinite;
 }
@@ -1527,30 +1320,30 @@ h6 {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 10% 20%, color-mix(in srgb, var(--color-fg) 10%, transparent) 0px, transparent 2px),
-    radial-gradient(circle at 30% 50%, color-mix(in srgb, var(--color-fg) 6%, transparent) 0px, transparent 1.5px),
-    radial-gradient(circle at 50% 10%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, transparent 1px),
-    radial-gradient(circle at 70% 40%, color-mix(in srgb, var(--color-fg) 5%, transparent) 0px, transparent 1px),
-    radial-gradient(circle at 90% 70%, color-mix(in srgb, var(--color-fg) 7%, transparent) 0px, transparent 1.5px),
-    radial-gradient(circle at 20% 80%, color-mix(in srgb, var(--color-fg) 9%, transparent) 0px, transparent 1px),
-    radial-gradient(circle at 80% 15%, color-mix(in srgb, var(--color-fg) 6%, transparent) 0px, transparent 2px),
-    radial-gradient(circle at 60% 85%, color-mix(in srgb, var(--color-fg) 8%, transparent) 0px, transparent 1px);
+    radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.10) 0px, transparent 2px),
+    radial-gradient(circle at 30% 50%, rgba(59, 130, 246, 0.06) 0px, transparent 1.5px),
+    radial-gradient(circle at 50% 10%, rgba(59, 130, 246, 0.08) 0px, transparent 1px),
+    radial-gradient(circle at 70% 40%, rgba(59, 130, 246, 0.05) 0px, transparent 1px),
+    radial-gradient(circle at 90% 70%, rgba(59, 130, 246, 0.07) 0px, transparent 1.5px),
+    radial-gradient(circle at 20% 80%, rgba(59, 130, 246, 0.09) 0px, transparent 1px),
+    radial-gradient(circle at 80% 15%, rgba(59, 130, 246, 0.06) 0px, transparent 2px),
+    radial-gradient(circle at 60% 85%, rgba(59, 130, 246, 0.08) 0px, transparent 1px);
   animation: ade-float 6s ease-in-out infinite;
 }
 
-/* 12. Settings — Workshop / Blueprint Grid */
+/* 12. Settings — Workshop / Blueprint Grid (neutral) */
 .ade-tab-bg-settings {
   background:
     repeating-linear-gradient(0deg,
       transparent,
       transparent 47px,
-      color-mix(in srgb, var(--color-accent) 4%, transparent) 47px,
-      color-mix(in srgb, var(--color-accent) 4%, transparent) 48px),
+      rgba(113, 113, 122, 0.04) 47px,
+      rgba(113, 113, 122, 0.04) 48px),
     repeating-linear-gradient(90deg,
       transparent,
       transparent 47px,
-      color-mix(in srgb, var(--color-accent) 4%, transparent) 47px,
-      color-mix(in srgb, var(--color-accent) 4%, transparent) 48px);
+      rgba(113, 113, 122, 0.04) 47px,
+      rgba(113, 113, 122, 0.04) 48px);
 }
 
 .ade-tab-bg-settings::before {
@@ -1561,29 +1354,17 @@ h6 {
     repeating-linear-gradient(0deg,
       transparent,
       transparent 7px,
-      color-mix(in srgb, var(--color-accent) 2%, transparent) 7px,
-      color-mix(in srgb, var(--color-accent) 2%, transparent) 8px),
+      rgba(113, 113, 122, 0.02) 7px,
+      rgba(113, 113, 122, 0.02) 8px),
     repeating-linear-gradient(90deg,
       transparent,
       transparent 7px,
-      color-mix(in srgb, var(--color-accent) 2%, transparent) 7px,
-      color-mix(in srgb, var(--color-accent) 2%, transparent) 8px);
+      rgba(113, 113, 122, 0.02) 7px,
+      rgba(113, 113, 122, 0.02) 8px);
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Enhanced Theme Personality Effects
-   ═══════════════════════════════════════════════════════════ */
-
-/* Tab background opacity per theme — subtle, never distracting */
-[data-theme="e-paper"] .ade-tab-bg { opacity: 0.25; }
-[data-theme="bloomberg"] .ade-tab-bg { opacity: 0.35; }
-[data-theme="github"] .ade-tab-bg { opacity: 0.25; }
-[data-theme="rainbow"] .ade-tab-bg { opacity: 0.35; }
-[data-theme="sky"] .ade-tab-bg { opacity: 0.2; }
-[data-theme="pats"] .ade-tab-bg { opacity: 0.3; }
-
-/* ═══════════════════════════════════════════════════════════
-   Button Micro-interactions
+   Utility Classes
    ═══════════════════════════════════════════════════════════ */
 
 /* Primary button — flat, no shimmer */
@@ -1616,60 +1397,22 @@ h6 {
   animation: ade-spin-slow 20s linear infinite;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Per-Theme Personality Effects — Transition & Micro-polish
-   ═══════════════════════════════════════════════════════════ */
-
-/* ─────────────────────────────────────────────────────────
-   Per-Theme Transition Tuning (modernized, no gimmicks)
-   ───────────────────────────────────────────────────────── */
-
-/* Bloomberg: snappy transitions, grid overlay on panes */
-[data-theme="bloomberg"] button,
-[data-theme="bloomberg"] a {
-  transition-duration: 80ms;
+/* Spin 4s utility (DAG running ring) */
+.ade-spin-4s {
+  animation: ade-spin-slow 4s linear infinite;
 }
 
-[data-theme="bloomberg"] .ade-floating-pane {
-  background-image:
-    linear-gradient(rgba(255, 200, 122, 0.015) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 200, 122, 0.015) 1px, transparent 1px);
-  background-size: 20px 20px;
+/* Blue glow pulse for active missions */
+.ade-glow-pulse-blue {
+  animation: ade-glow-pulse-blue 2s ease-in-out infinite;
 }
 
-[data-theme="bloomberg"] button,
-[data-theme="bloomberg"] input,
-[data-theme="bloomberg"] select,
-[data-theme="bloomberg"] textarea {
-  border-radius: 2px !important;
-}
-
-/* GitHub: precise focus rings */
-[data-theme="github"] input:focus,
-[data-theme="github"] select:focus,
-[data-theme="github"] textarea:focus {
-  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
-  border-color: rgba(88, 166, 255, 0.5);
-}
-
-/* Rainbow: gradient text utility (opt-in only) */
-[data-theme="rainbow"] .ade-rainbow-heading {
-  background: linear-gradient(90deg, #fb7185, #c084fc, #38bdf8, #fb7185);
-  background-size: 300% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: ade-gradient-shift 8s ease-in-out infinite;
-}
-
-/* Pats: bold headings */
-[data-theme="pats"] h1,
-[data-theme="pats"] h2,
-[data-theme="pats"] h3 {
-  font-weight: 700;
-}
-
-@keyframes ade-pats-star-twinkle {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 0.8; }
+@keyframes ade-glow-pulse-blue {
+  0%,
+  100% {
+    box-shadow: 0 0 4px 1px rgba(59, 130, 246, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px rgba(59, 130, 246, 0.3);
+  }
 }

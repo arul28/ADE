@@ -1,19 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  BrainCircuit,
-  ChevronDown,
+  Brain as BrainCircuit,
+  CaretDown as ChevronDown,
   Clipboard,
   FileText,
   Info,
-  MessageSquarePlus,
+  ChatCircleDots as MessageSquarePlus,
   Monitor,
   Play,
-  RefreshCw,
-  Square,
+  ArrowClockwise as RefreshCw,
+  Stop as Square,
   Terminal,
   X,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -116,7 +116,7 @@ function LaunchPanel({
     <div className="border-b border-border/15 bg-[--color-surface-recessed]/40 px-3 py-2.5 space-y-2">
       {/* Lane selector */}
       <div className="flex items-center gap-2">
-        <label className="text-[10px] uppercase tracking-wider text-muted-fg/70 shrink-0">Lane</label>
+        <label className="text-[11px] uppercase tracking-wider text-muted-fg/70 shrink-0">Lane</label>
         <div className="relative flex-1">
           <select
             className="h-6 w-full appearance-none rounded bg-muted/30 pl-2 pr-6 text-xs outline-none hover:bg-muted/50 transition-colors cursor-pointer"
@@ -129,7 +129,7 @@ function LaunchPanel({
               </option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
+          <ChevronDown size={12} weight="regular" className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-fg/60" />
         </div>
       </div>
 
@@ -139,27 +139,27 @@ function LaunchPanel({
           type="button"
           disabled={!laneId}
           onClick={() => onLaunchPty(laneId, "claude")}
-          className="inline-flex items-center gap-1 rounded bg-violet-500/12 px-2 py-1 text-[11px] font-medium text-violet-700 transition-all hover:bg-violet-500/20 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded bg-violet-500/12 px-2 py-1 text-xs font-medium text-violet-700 transition-all hover:bg-violet-500/20 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
         >
-          <Terminal className="h-3 w-3" />
+          <Terminal size={12} weight="regular" />
           Claude
         </button>
         <button
           type="button"
           disabled={!laneId}
           onClick={() => onLaunchPty(laneId, "codex")}
-          className="inline-flex items-center gap-1 rounded bg-sky-500/12 px-2 py-1 text-[11px] font-medium text-sky-700 transition-all hover:bg-sky-500/20 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded bg-sky-500/12 px-2 py-1 text-xs font-medium text-sky-700 transition-all hover:bg-sky-500/20 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
         >
-          <Terminal className="h-3 w-3" />
+          <Terminal size={12} weight="regular" />
           Codex
         </button>
         <button
           type="button"
           disabled={!laneId}
           onClick={() => onLaunchPty(laneId, "shell")}
-          className="inline-flex items-center gap-1 rounded bg-muted/40 px-2 py-1 text-[11px] font-medium text-muted-fg transition-all hover:bg-muted/70 hover:text-fg active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1 rounded bg-muted/40 px-2 py-1 text-xs font-medium text-muted-fg transition-all hover:bg-muted/70 hover:text-fg active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
         >
-          <Terminal className="h-3 w-3" />
+          <Terminal size={12} weight="regular" />
           Shell
         </button>
 
@@ -171,11 +171,11 @@ function LaunchPanel({
             type="button"
             disabled={!laneId}
             onClick={() => setChatOpen((v) => !v)}
-            className="inline-flex items-center gap-1 rounded border border-accent/30 bg-accent/8 px-2 py-1 text-[11px] font-medium text-accent transition-all hover:bg-accent/15 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded border border-accent/30 bg-accent/8 px-2 py-1 text-xs font-medium text-accent transition-all hover:bg-accent/15 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
           >
-            <MessageSquarePlus className="h-3 w-3" />
+            <MessageSquarePlus size={12} weight="regular" />
             Chat
-            <ChevronDown className={cn("h-3 w-3 opacity-60 transition-transform", chatOpen && "rotate-180")} />
+            <ChevronDown size={12} weight="regular" className={cn("opacity-60 transition-transform", chatOpen && "rotate-180")} />
           </button>
           {chatOpen && (
             <div className="absolute left-0 top-full z-50 mt-1 w-40 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
@@ -183,14 +183,14 @@ function LaunchPanel({
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
                 onClick={() => { onLaunchChat(laneId, "claude"); setChatOpen(false); }}
               >
-                <BrainCircuit className="h-3.5 w-3.5 text-violet-600" />
+                <BrainCircuit size={14} weight="regular" className="text-violet-600" />
                 Claude chat
               </button>
               <button
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50"
                 onClick={() => { onLaunchChat(laneId, "codex"); setChatOpen(false); }}
               >
-                <BrainCircuit className="h-3.5 w-3.5 text-sky-600" />
+                <BrainCircuit size={14} weight="regular" className="text-sky-600" />
                 Codex chat
               </button>
             </div>
@@ -415,7 +415,7 @@ export function TerminalsPage() {
           <div className="border-b border-border/15 px-3 py-2 space-y-1.5">
             <div className="flex items-center gap-2">
               <select
-                className="h-6 flex-1 rounded bg-muted/25 px-2 text-[11px] outline-none hover:bg-muted/40 transition-colors"
+                className="h-6 flex-1 rounded bg-muted/25 px-2 text-xs outline-none hover:bg-muted/40 transition-colors"
                 value={filterLaneId}
                 onChange={(e) => setFilterLaneId(e.target.value)}
               >
@@ -423,7 +423,7 @@ export function TerminalsPage() {
                 {lanes.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
               <select
-                className="h-6 w-28 rounded bg-muted/25 px-2 text-[11px] outline-none hover:bg-muted/40 transition-colors"
+                className="h-6 w-28 rounded bg-muted/25 px-2 text-xs outline-none hover:bg-muted/40 transition-colors"
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as TerminalSessionStatus | "all")}
               >
@@ -435,7 +435,7 @@ export function TerminalsPage() {
               </select>
             </div>
             <input
-              className="h-6 w-full rounded bg-muted/25 px-2 text-[11px] outline-none placeholder:text-muted-fg/50 hover:bg-muted/40 transition-colors"
+              className="h-6 w-full rounded bg-muted/25 px-2 text-xs outline-none placeholder:text-muted-fg/50 hover:bg-muted/40 transition-colors"
               placeholder="Search sessions..."
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -446,13 +446,24 @@ export function TerminalsPage() {
           <div className="min-h-0 flex-1 overflow-auto">
             {filtered.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center px-4 py-12 text-center">
-                <div className="mb-3 rounded-lg bg-muted/20 p-3">
-                  <Terminal className="h-5 w-5 text-muted-fg/40" />
+                <div className="mb-3 rounded-lg bg-emerald-500/10 p-3">
+                  <Terminal size={20} weight="regular" className="text-emerald-500/60" />
                 </div>
-                <div className="text-xs font-semibold text-fg/50">No sessions</div>
-                <div className="mt-1 text-[11px] text-muted-fg/50 leading-relaxed">
-                  Launch a session above to get started.
+                <div className="text-xs font-semibold text-fg/50">No terminal sessions</div>
+                <div className="mt-1 text-xs text-muted-fg/50 leading-relaxed max-w-[220px]">
+                  Start a new session to begin working.
                 </div>
+                <button
+                  type="button"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-all hover:bg-emerald-500/25 active:scale-[0.97]"
+                  onClick={() => {
+                    if (lanes.length > 0) handleLaunchPty(lanes[0]!.id, "shell").catch(() => {});
+                  }}
+                  disabled={lanes.length === 0}
+                >
+                  <Terminal size={14} weight="regular" />
+                  New session
+                </button>
               </div>
             ) : (
               <div>
@@ -461,7 +472,7 @@ export function TerminalsPage() {
                   <div>
                     <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/10 bg-bg/90 px-3 py-1 backdrop-blur-sm">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-700">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">
                         Running · {runningFiltered.length}
                       </span>
                     </div>
@@ -474,7 +485,7 @@ export function TerminalsPage() {
                   <div>
                     <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/10 bg-bg/90 px-3 py-1 backdrop-blur-sm">
                       <span className="h-1.5 w-1.5 rounded-full bg-border" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-fg/60">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-fg/60">
                         Ended · {endedFiltered.length}
                       </span>
                     </div>
@@ -496,11 +507,11 @@ export function TerminalsPage() {
         ? selectedIsChat ? "chat" : selectedSession.status === "running" ? "live" : selectedSession.status
         : undefined,
       children: (
-        <div className="h-full w-full">
+        <div className="h-full w-full bg-surface-recessed">
           {selectedSession && selectedIsChat ? (
             <AgentChatPane laneId={selectedSession.laneId} lockSessionId={selectedSession.id} />
           ) : runningSessions.length > 0 ? (
-            <div className="relative h-full w-full">
+            <div className="relative h-full w-full bg-surface-recessed">
               {runningSessions.map((session) =>
                 session.ptyId ? (
                   <TerminalView
@@ -525,7 +536,7 @@ export function TerminalsPage() {
           ) : (
             <div className="flex h-full flex-col items-center justify-center px-6">
               <div className="mb-3 rounded-lg bg-muted/20 p-3.5">
-                <Monitor className="h-6 w-6 text-muted-fg/35" />
+                <Monitor size={24} weight="regular" className="text-muted-fg/35" />
               </div>
               <div className="text-sm font-semibold text-fg/50">
                 {selectedSession ? "Session not running" : "No session selected"}
@@ -551,8 +562,8 @@ export function TerminalsPage() {
             <div className="space-y-2.5">
               {/* Metadata */}
               <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
-                <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-fg/60">
-                  <Info className="h-3 w-3" />
+                <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
+                  <Info size={12} weight="regular" />
                   Session info
                 </div>
                 <div className="space-y-0">
@@ -567,7 +578,7 @@ export function TerminalsPage() {
                     ["Started", new Date(selectedSession.startedAt).toLocaleTimeString()],
                     selectedSession.endedAt ? ["Ended", new Date(selectedSession.endedAt).toLocaleTimeString()] : null,
                   ].filter((row): row is [string, string] => row != null).map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-[11px] hover:bg-muted/20 transition-colors">
+                    <div key={label} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/20 transition-colors">
                       <span className="text-muted-fg/70 shrink-0">{label}</span>
                       <span className="truncate font-medium text-right">{value}</span>
                     </div>
@@ -578,11 +589,11 @@ export function TerminalsPage() {
               {/* Last output */}
               {sanitizeTerminalInlineText(selectedSession.lastOutputPreview, 420) ? (
                 <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
-                  <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-fg/60">
-                    <Monitor className="h-3 w-3" />
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
+                    <Monitor size={12} weight="regular" />
                     Last output
                   </div>
-                  <pre className="whitespace-pre-wrap break-words rounded border border-border/10 bg-[--color-surface-recessed] px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-muted-fg/80">
+                  <pre className="whitespace-pre-wrap break-words rounded border border-border/10 bg-[--color-surface-recessed] px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-fg/80">
                     {sanitizeTerminalInlineText(selectedSession.lastOutputPreview, 420)}
                   </pre>
                 </div>
@@ -591,22 +602,22 @@ export function TerminalsPage() {
               {/* Summary */}
               {selectedSession.summary && selectedSession.status !== "running" ? (
                 <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
-                  <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-fg/60">
-                    <FileText className="h-3 w-3" />
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
+                    <FileText size={12} weight="regular" />
                     Summary
                   </div>
-                  <p className="text-[11px] leading-relaxed text-fg/70">{selectedSession.summary}</p>
+                  <p className="text-xs leading-relaxed text-fg/70">{selectedSession.summary}</p>
                 </div>
               ) : null}
 
               {/* Resume command */}
               {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
                 <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
-                  <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-fg/60">
-                    <Play className="h-3 w-3" />
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
+                    <Play size={12} weight="regular" />
                     Resume command
                   </div>
-                  <code className="block rounded border border-border/10 bg-[--color-surface-recessed] px-2.5 py-1.5 font-mono text-[10.5px] text-fg/80">
+                  <code className="block rounded border border-border/10 bg-[--color-surface-recessed] px-2.5 py-1.5 font-mono text-[11px] text-fg/80">
                     {selectedSession.resumeCommand}
                   </code>
                 </div>
@@ -615,11 +626,11 @@ export function TerminalsPage() {
               {/* Terminal health */}
               {selectedHealth ? (
                 <div className="rounded-lg border border-border/15 bg-muted/10 p-2.5">
-                  <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-fg/60">
-                    <Info className="h-3 w-3" />
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-fg/60">
+                    <Info size={12} weight="regular" />
                     Terminal health
                   </div>
-                  <div className="grid grid-cols-2 gap-1 text-[10.5px] font-mono text-muted-fg/70">
+                  <div className="grid grid-cols-2 gap-1 text-[11px] font-mono text-muted-fg/70">
                     <span>fit_failures: {selectedHealth.fitFailures}</span>
                     <span>zero_dim: {selectedHealth.zeroDimFits}</span>
                     <span>renderer: {selectedHealth.rendererFallbacks}</span>
@@ -632,24 +643,24 @@ export function TerminalsPage() {
               <div className="flex flex-wrap gap-1.5 pt-0.5">
                 {selectedSession.status === "running" && selectedSession.ptyId ? (
                   <Button variant="outline" size="sm" disabled={closingPtyIds.has(selectedSession.ptyId)} onClick={() => { if (selectedSession.ptyId) closeSession(selectedSession.ptyId).catch(() => {}); }}>
-                    <Square className="h-3.5 w-3.5" />
+                    <Square size={14} weight="regular" />
                     {closingPtyIds.has(selectedSession.ptyId) ? "Closing..." : "Close"}
                   </Button>
                 ) : null}
                 {selectedSession.status === "running" && selectedIsChat ? (
                   <Button variant="outline" size="sm" disabled={closingChatSessionId === selectedSession.id} onClick={() => closeChatSession(selectedSession.id).catch(() => {})}>
-                    <Square className="h-3.5 w-3.5" />
+                    <Square size={14} weight="regular" />
                     {closingChatSessionId === selectedSession.id ? "Ending..." : "End chat"}
                   </Button>
                 ) : null}
                 {selectedSession.status !== "running" && selectedSession.resumeCommand ? (
                   <>
                     <Button variant="outline" size="sm" disabled={resumingSessionId != null} onClick={() => resumeSession(selectedSession).catch(() => {})}>
-                      <Play className="h-3.5 w-3.5" />
+                      <Play size={14} weight="regular" />
                       {resumingSessionId === selectedSession.id ? "Resuming..." : "Resume"}
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => { navigator.clipboard.writeText(selectedSession.resumeCommand ?? "").catch(() => {}); }}>
-                      <Clipboard className="h-3.5 w-3.5" />
+                      <Clipboard size={14} weight="regular" />
                       Copy
                     </Button>
                   </>
@@ -662,10 +673,10 @@ export function TerminalsPage() {
           ) : (
             <div className="flex h-full flex-col items-center justify-center px-6">
               <div className="mb-3 rounded-lg bg-muted/20 p-3.5">
-                <Info className="h-5 w-5 text-muted-fg/35" />
+                <Info size={20} weight="regular" className="text-muted-fg/35" />
               </div>
               <div className="text-xs font-semibold text-fg/50">No session selected</div>
-              <div className="mt-1 text-center text-[11px] text-muted-fg/50 leading-relaxed">
+              <div className="mt-1 text-center text-xs text-muted-fg/50 leading-relaxed">
                 Click a session from the list to view details.
               </div>
             </div>
@@ -689,7 +700,7 @@ export function TerminalsPage() {
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold tracking-tight text-fg/80">Work</span>
             {runningSessions.length > 0 ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 {runningSessions.length} running
               </span>
@@ -703,7 +714,7 @@ export function TerminalsPage() {
               disabled={runningSessions.length === 0}
               onClick={() => closeRunning().catch(() => {})}
             >
-              <Square className="h-3.5 w-3.5" />
+              <Square size={14} weight="regular" />
               Close all
             </Button>
             <Button
@@ -713,7 +724,7 @@ export function TerminalsPage() {
               onClick={() => refresh().catch(() => {})}
               title="Refresh"
             >
-              <RefreshCw className="h-3.5 w-3.5" />
+              <RefreshCw size={14} weight="regular" />
             </Button>
           </div>
         </div>
@@ -773,14 +784,14 @@ function SessionRow({
           </span>
         </div>
         <div className="mt-1 flex items-center gap-1.5 pl-4">
-          <span className="truncate text-[10.5px] text-muted-fg/70">{session.laneName}</span>
+          <span className="truncate text-[11px] text-muted-fg/70">{session.laneName}</span>
           {session.toolType ? (
-            <span className={cn("rounded px-1 py-0.5 text-[9.5px] font-medium leading-none", toolBadgeClass(session.toolType))}>
+            <span className={cn("rounded px-1 py-0.5 text-[10.5px] font-medium leading-none", toolBadgeClass(session.toolType))}>
               {session.toolType}
             </span>
           ) : null}
           {session.exitCode != null && session.exitCode !== 0 ? (
-            <span className="rounded bg-red-500/12 px-1 py-0.5 text-[9.5px] font-mono font-medium text-red-600 leading-none">
+            <span className="rounded bg-red-500/12 px-1 py-0.5 text-[10.5px] font-mono font-medium text-red-600 leading-none">
               exit {session.exitCode}
             </span>
           ) : null}
@@ -790,12 +801,12 @@ function SessionRow({
       {canResume ? (
         <button
           type="button"
-          className="absolute right-2 top-2.5 inline-flex items-center gap-1 rounded border border-border/30 bg-card/90 px-1.5 py-0.5 text-[10px] text-muted-fg opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
+          className="absolute right-2 top-2.5 inline-flex items-center gap-1 rounded border border-border/30 bg-card/90 px-1.5 py-0.5 text-[11px] text-muted-fg opacity-0 transition-opacity hover:text-fg group-hover:opacity-100"
           disabled={resumingSessionId != null}
           onClick={(e) => { e.stopPropagation(); onResume(); }}
           title="Resume"
         >
-          <Play className="h-2.5 w-2.5" />
+          <Play size={10} weight="regular" />
           Resume
         </button>
       ) : null}

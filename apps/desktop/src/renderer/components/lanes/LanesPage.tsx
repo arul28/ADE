@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, ChevronDown, FileCode2, GitBranch, Home, Layers3, Link2, Maximize2, Minimize2, Pin, Plus, Search, Terminal, X } from "lucide-react";
+import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -699,7 +699,7 @@ export function LanesPage() {
     return {
       "stack": {
         title: "Stack",
-        icon: Layers3,
+        icon: Stack,
         bodyClassName: "overflow-hidden",
         children: (
           <LaneStackPane
@@ -711,7 +711,7 @@ export function LanesPage() {
       },
       "git-actions": {
         title: "Git Actions",
-        icon: FileCode2,
+        icon: FileCode,
         headerActions: laneId ? (
           <Button
             size="sm"
@@ -724,7 +724,7 @@ export function LanesPage() {
               setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
             }}
           >
-            {expandedGitActionsLaneId === laneId ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
+            {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
           </Button>
         ) : null,
         bodyClassName: "overflow-hidden",
@@ -744,7 +744,7 @@ export function LanesPage() {
       },
       "diff-viewer": {
         title: "Diff",
-        icon: FileCode2,
+        icon: FileCode,
         bodyClassName: "overflow-hidden",
         children: (
           <LaneDiffPane
@@ -757,13 +757,13 @@ export function LanesPage() {
       },
       "work": {
         title: "Work",
-        icon: Terminal,
+        icon: Terminal as any,
         bodyClassName: "overflow-hidden",
         children: <LaneWorkPane laneId={laneId} />
       },
       "inspector": {
         title: "Inspector",
-        icon: Search,
+        icon: MagnifyingGlass,
         bodyClassName: "overflow-hidden",
         children: <LaneInspectorPane laneId={laneId} />
       }
@@ -786,13 +786,13 @@ export function LanesPage() {
                 onClick={() => setBranchDropdownOpen((prev) => !prev)}
                 disabled={branchCheckoutBusy}
               >
-                <GitBranch className="h-3.5 w-3.5" />
+                <GitBranch size={14} />
                 <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
-                <ChevronDown className="h-3 w-3 opacity-60" />
+                <CaretDown size={12} className="opacity-60" />
               </button>
               {branchDropdownOpen ? (
                 <div className="absolute left-0 top-full z-50 mt-1 w-72 max-h-80 overflow-auto rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
-                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Local branches</div>
+                  <div className="px-3 py-1.5 text-[11px] uppercase tracking-wider text-muted-fg">Local branches</div>
                   {localPrimaryBranches.map((branch) => (
                     <button
                       key={`local:${branch.name}`}
@@ -807,15 +807,15 @@ export function LanesPage() {
                         await checkoutPrimaryBranch(branch.name);
                       }}
                     >
-                      {branch.isCurrent ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                      {branch.isCurrent ? <Check size={12} className="shrink-0" /> : <span className="w-3 shrink-0" />}
                       <span className="truncate">{branch.name}</span>
-                      {branch.upstream ? <span className="ml-auto shrink-0 text-[10px] text-muted-fg">tracked</span> : null}
+                      {branch.upstream ? <span className="ml-auto shrink-0 text-[11px] text-muted-fg">tracked</span> : null}
                     </button>
                   ))}
                   {remotePrimaryBranches.length > 0 ? (
                     <>
                       <div className="my-1 h-px bg-border/20" />
-                      <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-fg">Remote branches</div>
+                      <div className="px-3 py-1.5 text-[11px] uppercase tracking-wider text-muted-fg">Remote branches</div>
                       {remotePrimaryBranches.map((branch) => (
                         <button
                           key={`remote:${branch.name}`}
@@ -826,23 +826,23 @@ export function LanesPage() {
                         >
                           <span className="w-3 shrink-0" />
                           <span className="truncate">{branch.name}</span>
-                          <span className="ml-auto shrink-0 text-[10px] text-sky-700">remote</span>
+                          <span className="ml-auto shrink-0 text-[11px] text-sky-700">remote</span>
                         </button>
                       ))}
                     </>
                   ) : null}
                   {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
-                    <div className="px-3 py-1.5 text-[11px] text-muted-fg">No branches found.</div>
+                    <div className="px-3 py-1.5 text-xs text-muted-fg">No branches found.</div>
                   ) : null}
                   {branchCheckoutError ? (
-                    <div className="px-3 py-1.5 text-[10px] text-red-400">{branchCheckoutError}</div>
+                    <div className="px-3 py-1.5 text-[11px] text-red-400">{branchCheckoutError}</div>
                   ) : null}
                 </div>
               ) : null}
             </div>
           ) : null}
           {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
-            <div className="inline-flex items-center gap-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-800">
+            <div className="inline-flex items-center gap-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-800">
               <span>{branchCheckoutError}</span>
               <button
                 type="button"
@@ -855,7 +855,7 @@ export function LanesPage() {
             </div>
           ) : null}
           <div className="relative flex items-center">
-            <Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-muted-fg/50" />
+            <MagnifyingGlass size={14} className="pointer-events-none absolute left-2 text-muted-fg/50" />
             <input
               id="lanes-filter-input"
               value={laneFilter}
@@ -871,14 +871,14 @@ export function LanesPage() {
                 onClick={() => setLaneFilter("")}
                 title="Clear filter"
               >
-                <X className="h-3 w-3" />
+                <X size={12} />
               </button>
             ) : null}
           </div>
           {/* Add Lane dropdown */}
           <div className="relative" ref={addLaneDropdownRef}>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
-              <Plus className="h-3 w-3 mr-0.5" /> Lane <ChevronDown className="h-3 w-3 ml-0.5 opacity-60" />
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
+              <Plus size={12} className="mr-0.5" /> Lane <CaretDown size={12} className="ml-0.5 opacity-60" />
             </Button>
             {addLaneDropdownOpen ? (
               <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
@@ -904,7 +904,7 @@ export function LanesPage() {
                     setCreateOpen(true);
                   }}
                 >
-                  <Plus className="h-3.5 w-3.5" />
+                  <Plus size={14} />
                   Create new lane
                 </button>
                 <button
@@ -917,14 +917,14 @@ export function LanesPage() {
                     setAttachOpen(true);
                   }}
                 >
-                  <Link2 className="h-3.5 w-3.5" />
+                  <Link size={14} />
                   Add existing worktree as lane
                 </button>
               </div>
             ) : null}
           </div>
 
-          <div className="ml-auto text-[10px] text-muted-fg/50 tabular-nums">
+          <div className="ml-auto text-[11px] text-muted-fg/50 tabular-nums">
             {filteredLanes.length}/{sortedLanes.length}
             <span className="ml-1.5 hidden sm:inline">· shift-click to split</span>
           </div>
@@ -946,11 +946,12 @@ export function LanesPage() {
           const autoRebaseStatus = autoRebaseByLaneId.get(lane.id) ?? null;
 
           return (
-            <button
+            <div
               key={lane.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               className={cn(
-                "group relative inline-flex h-7 max-w-[280px] shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-all duration-150",
+                "group relative inline-flex h-7 max-w-[280px] shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-all duration-150",
                 isSelected
                   ? "border-accent/35 bg-bg text-fg font-semibold shadow-card ring-1 ring-accent/15"
                   : isVisible
@@ -969,7 +970,7 @@ export function LanesPage() {
                 setLaneContextMenu({ laneId: lane.id, x: event.clientX, y: event.clientY });
               }}
             >
-              {isPrimary ? <Home className="h-3 w-3 shrink-0 text-emerald-600" /> : null}
+              {isPrimary ? <House size={12} className="shrink-0 text-emerald-600" /> : null}
               {/* Conflict status dot */}
               <span className={cn("h-2 w-2 shrink-0 rounded-full", conflictDotClass(conflictStatus?.status))} />
               {/* Terminal attention spinner */}
@@ -1048,7 +1049,7 @@ export function LanesPage() {
                   }}
                   title={isPinned ? "Unpin lane" : "Pin lane"}
                 >
-                  <Pin className="h-2.5 w-2.5" />
+                  <PushPin size={10} />
                 </button>
               ) : null}
               {/* Expand fullscreen */}
@@ -1062,7 +1063,7 @@ export function LanesPage() {
                 }}
                 title="Expand lane fullscreen"
               >
-                <Maximize2 className="h-2.5 w-2.5" />
+                <ArrowsOutSimple size={10} />
               </button>
               {/* Close from split */}
               {closable ? (
@@ -1075,10 +1076,10 @@ export function LanesPage() {
                   }}
                   title="Remove from split"
                 >
-                  <X className="h-2.5 w-2.5" />
+                  <X size={10} />
                 </button>
               ) : null}
-            </button>
+            </div>
           );
         })}
       </div>
@@ -1101,10 +1102,43 @@ export function LanesPage() {
       {/* Floating pane tiling layout */}
       {visibleLaneIds.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
-          <EmptyState
-            title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
-            description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to begin."}
-          />
+          {sortedLanes.length === 0 ? (
+            <EmptyState
+              title="No lanes created yet"
+              description="Lanes let you work on multiple features in parallel."
+            >
+              <Button
+                size="sm"
+                variant="primary"
+                className="mt-3"
+                disabled={!canCreateLane}
+                onClick={() => {
+                  setCreateLaneName("");
+                  setCreateParentLaneId("");
+                  setCreateAsChild(false);
+                  setCreateBaseBranch("");
+                  const primary = lanes.find((l) => l.laneType === "primary");
+                  if (primary) {
+                    window.ade.git.listBranches({ laneId: primary.id })
+                      .then((branches) => {
+                        setCreateBranches(branches);
+                        const current = branches.find((b) => b.isCurrent && !b.isRemote);
+                        if (current) setCreateBaseBranch(current.name);
+                      })
+                      .catch(() => {});
+                  }
+                  setCreateOpen(true);
+                }}
+              >
+                Create Lane
+              </Button>
+            </EmptyState>
+          ) : (
+            <EmptyState
+              title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
+              description={filteredLanes.length === 0 ? "Adjust the lane filter." : "Select a lane tab to begin."}
+            />
+          )}
         </div>
       ) : visibleLaneIds.length === 1 ? (
         <PaneTilingLayout
@@ -1163,7 +1197,7 @@ export function LanesPage() {
               onClick={() => setExpandedLaneId(null)}
               title="Exit fullscreen (Esc)"
             >
-              <X className="h-4 w-4" />
+              <X size={16} />
             </Button>
           </div>
           <PaneTilingLayout

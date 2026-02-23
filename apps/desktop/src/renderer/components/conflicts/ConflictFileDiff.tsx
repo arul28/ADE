@@ -106,7 +106,7 @@ function buildDecorations(
 }
 
 function isDarkTheme(theme: ThemeId): boolean {
-  return theme === "bloomberg" || theme === "github" || theme === "rainbow" || theme === "pats";
+  return theme === "dark";
 }
 
 export function ConflictFileDiff({

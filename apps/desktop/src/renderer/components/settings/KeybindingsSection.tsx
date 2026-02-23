@@ -1,5 +1,5 @@
 import React from "react";
-import { RefreshCw, Save, Trash2 } from "lucide-react";
+import { ArrowsClockwise, FloppyDisk, Trash } from "@phosphor-icons/react";
 import type { KeybindingDefinition, KeybindingOverride, KeybindingsSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -130,15 +130,15 @@ export function KeybindingsSection() {
         </div>
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void refresh()}>
-            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            <ArrowsClockwise size={16} weight="regular" className={cn(loading && "animate-spin")} />
             Refresh
           </Button>
           <Button size="sm" disabled={saving || !snapshot} onClick={() => void save()}>
-            <Save className="h-4 w-4" />
+            <FloppyDisk size={16} weight="regular" />
             {saving ? "Saving…" : "Save"}
           </Button>
           <Button size="sm" variant="outline" disabled={!snapshot} onClick={() => void clearOverrides()}>
-            <Trash2 className="h-4 w-4" />
+            <Trash size={16} weight="regular" />
             Reset
           </Button>
         </div>

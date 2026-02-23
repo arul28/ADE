@@ -3,12 +3,12 @@ import { Group, Panel } from "react-resizable-panels";
 import {
   ArrowDown,
   Check,
-  ChevronDown,
-  Layers3,
-  MoreHorizontal,
-  RefreshCw,
+  CaretDown,
+  Stack,
+  DotsThree,
+  ArrowsClockwise,
   Upload
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -509,7 +509,7 @@ export function LaneGitActionsPane({
       <div
         key={`${mode}:${file.path}`}
         className={cn(
-          "group flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer text-[11px]",
+          "group flex items-center gap-1.5 px-2 py-1 rounded-lg cursor-pointer text-xs",
           rowSelected ? "bg-accent/10 text-fg shadow-card" : "hover:bg-muted/30 text-muted-fg hover:text-fg"
         )}
         onClick={() => {
@@ -526,7 +526,7 @@ export function LaneGitActionsPane({
           }}
           title={mode === "staged" ? "Unstage" : "Stage"}
         >
-          {mode === "staged" ? <Check className="h-2 w-2 text-accent" /> : null}
+          {mode === "staged" ? <Check size={8} className="text-accent" /> : null}
         </button>
         <span className={cn("inline-block w-1.5 h-1.5 rounded-full shrink-0",
           file.kind === "modified" ? "bg-blue-400" :
@@ -550,9 +550,9 @@ export function LaneGitActionsPane({
             "h-2 w-2 rounded-full shrink-0",
             lane?.laneType === "primary" ? "bg-emerald-500" : lane?.status.dirty ? "bg-amber-500" : "bg-sky-500"
           )} />
-          <span className="text-[11px] font-semibold truncate max-w-[100px]">{lane?.name ?? "No lane"}</span>
+          <span className="text-xs font-semibold truncate max-w-[100px]">{lane?.name ?? "No lane"}</span>
           {lane ? (
-            <span className="text-[10px] text-muted-fg font-mono shrink-0">
+            <span className="text-[11px] text-muted-fg font-mono shrink-0">
               {lane.laneType === "primary" ? (
                 <>Primary · <span className="text-emerald-600">{lane.branchRef}</span></>
               ) : (
@@ -577,7 +577,7 @@ export function LaneGitActionsPane({
           <div className="flex-1 min-w-[4px]" />
 
           <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})} title="Refresh (fetches remote)">
-            <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+            <ArrowsClockwise size={12} className={cn(loading && "animate-spin")} />
           </Button>
 
           {/* Pull dropdown */}
@@ -587,7 +587,7 @@ export function LaneGitActionsPane({
                 variant="outline"
                 size="sm"
                 className={cn(
-                  "h-6 rounded-r-none border-r-0 px-1.5 text-[11px]",
+                  "h-6 rounded-r-none border-r-0 px-1.5 text-xs",
                   pullHighlighted && "ring-2 ring-sky-500/60 bg-sky-500/10 text-sky-700"
                 )}
                 disabled={!laneId || busyAction != null}
@@ -597,7 +597,7 @@ export function LaneGitActionsPane({
                 }}
                 title={`Pull (${syncMode})`}
               >
-                <ArrowDown className="h-3 w-3" />
+                <ArrowDown size={12} />
               </Button>
               <Button
                 variant="outline"
@@ -605,7 +605,7 @@ export function LaneGitActionsPane({
                 className={cn("h-6 rounded-l-none px-0.5", pullHighlighted && "ring-2 ring-sky-500/60 bg-sky-500/10 text-sky-700")}
                 onClick={() => setPullDropdownOpen((prev) => !prev)}
               >
-                <ChevronDown className="h-3 w-3" />
+                <CaretDown size={12} />
               </Button>
             </div>
             {pullDropdownOpen ? (
@@ -618,7 +618,7 @@ export function LaneGitActionsPane({
                     if (laneId) runPull("merge");
                   }}
                 >
-                  {syncMode === "merge" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                  {syncMode === "merge" ? <Check size={12} className="shrink-0" /> : <span className="w-3 shrink-0" />}
                   <div>
                     <div className="font-medium">Pull (merge)</div>
                   </div>
@@ -631,7 +631,7 @@ export function LaneGitActionsPane({
                     if (laneId) runPull("rebase");
                   }}
                 >
-                  {syncMode === "rebase" ? <Check className="h-3 w-3 shrink-0" /> : <span className="w-3 shrink-0" />}
+                  {syncMode === "rebase" ? <Check size={12} className="shrink-0" /> : <span className="w-3 shrink-0" />}
                   <div>
                     <div className="font-medium">Pull (rebase)</div>
                   </div>
@@ -655,14 +655,14 @@ export function LaneGitActionsPane({
                 variant="primary"
                 size="sm"
                 className={cn(
-                  "h-6 rounded-r-none px-1.5 text-[11px]",
+                  "h-6 rounded-r-none px-1.5 text-xs",
                   pushHighlighted && "ring-2 ring-amber-500/60 bg-amber-600 text-white"
                 )}
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(false)}
                 title={pushButtonTitle}
               >
-                <Upload className="h-3 w-3" />
+                <Upload size={12} />
               </Button>
               <Button
                 variant="primary"
@@ -675,7 +675,7 @@ export function LaneGitActionsPane({
                 onClick={() => setPushDropdownOpen((prev) => !prev)}
                 title="Push options"
               >
-                <ChevronDown className="h-3 w-3" />
+                <CaretDown size={12} />
               </Button>
             </div>
             {pushDropdownOpen ? (
@@ -698,7 +698,7 @@ export function LaneGitActionsPane({
                     <div className={cn("font-medium", forcePushHighlighted && "text-amber-700")}>
                       Force Push (lease){forcePushHighlighted ? " · Recommended" : ""}
                     </div>
-                    <div className="text-[10px] text-muted-fg">Use after rebase or rewritten history</div>
+                    <div className="text-[11px] text-muted-fg">Use after rebase or rewritten history</div>
                   </div>
                 </button>
               </div>
@@ -709,7 +709,7 @@ export function LaneGitActionsPane({
             <Button
               variant="outline"
               size="sm"
-              className="h-6 px-1.5 text-[11px]"
+              className="h-6 px-1.5 text-xs"
               title="Rebase onto parent"
               disabled={!laneId || busyAction != null}
               onClick={() => {
@@ -722,14 +722,14 @@ export function LaneGitActionsPane({
                 });
               }}
             >
-              <Layers3 className="h-3 w-3" />
+              <Stack size={12} />
             </Button>
           ) : null}
           {lane?.parentLaneId ? (
             <Button
               variant="outline"
               size="sm"
-              className={cn("h-6 px-1.5 text-[11px]", restackPublishHighlighted && "ring-2 ring-amber-500/60 bg-amber-500/10 text-amber-800")}
+              className={cn("h-6 px-1.5 text-xs", restackPublishHighlighted && "ring-2 ring-amber-500/60 bg-amber-500/10 text-amber-800")}
               title="Restack onto parent, then publish with confirmation"
               disabled={!laneId || busyAction != null}
               onClick={() => runRestackAndPublishFlow(true)}
@@ -747,7 +747,7 @@ export function LaneGitActionsPane({
               title="More actions"
               onClick={() => setMoreDropdownOpen((prev) => !prev)}
             >
-              <MoreHorizontal className="h-3 w-3" />
+              <DotsThree size={12} />
             </Button>
             {moreDropdownOpen ? (
               <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded border border-border/50 bg-[--color-surface-overlay] py-0.5 shadow-float">
@@ -824,7 +824,7 @@ export function LaneGitActionsPane({
           <div className="h-4 w-px bg-border/20" />
 
           <input
-            className="h-6 min-w-[80px] max-w-[160px] flex-1 rounded-lg bg-muted/30 px-1.5 text-[11px] outline-none focus:ring-1 focus:ring-accent/30"
+            className="h-6 min-w-[80px] max-w-[160px] flex-1 rounded-lg bg-muted/30 px-1.5 text-xs outline-none focus:ring-1 focus:ring-accent/30"
             placeholder="Commit message..."
             value={commitMessage}
             onChange={(e) => setCommitMessage(e.target.value)}
@@ -843,7 +843,7 @@ export function LaneGitActionsPane({
           <Button
             variant="outline"
             size="sm"
-            className={cn("h-6 px-1.5 text-[11px]", amendCommit && "bg-amber-500/10 border-amber-500/40 text-amber-800")}
+            className={cn("h-6 px-1.5 text-xs", amendCommit && "bg-amber-500/10 border-amber-500/40 text-amber-800")}
             title="Amend the latest commit using this message"
             disabled={busyAction != null}
             onClick={() => setAmendCommit((prev) => !prev)}
@@ -853,7 +853,7 @@ export function LaneGitActionsPane({
           <Button
             variant="primary"
             size="sm"
-            className="h-6 px-1.5 text-[11px]"
+            className="h-6 px-1.5 text-xs"
             disabled={!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null}
             onClick={() => {
               if (laneId)
@@ -871,7 +871,7 @@ export function LaneGitActionsPane({
 
       {nextActionHint ? (
         <div className={cn(
-          "shrink-0 border-b border-border/15 px-2 py-1 text-[10px] flex items-center gap-2",
+          "shrink-0 border-b border-border/15 px-2 py-1 text-[11px] flex items-center gap-2",
           nextActionHint.action === "restack_publish" && "bg-amber-500/12 text-amber-800",
           nextActionHint.action === "pull" && !divergedSync && "bg-sky-500/8 text-sky-700",
           nextActionHint.action === "push" && "bg-emerald-500/8 text-emerald-700",
@@ -884,7 +884,7 @@ export function LaneGitActionsPane({
             {nextActionHint.action === "pull" ? (
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-[10px] border border-sky-500/30 hover:bg-sky-500/15"
+                className="rounded px-1.5 py-0.5 text-[11px] border border-sky-500/30 hover:bg-sky-500/15"
                 disabled={!laneId || busyAction != null}
                 onClick={() => {
                   if (!laneId) return;
@@ -897,7 +897,7 @@ export function LaneGitActionsPane({
             {nextActionHint.action === "restack_publish" ? (
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                className="rounded px-1.5 py-0.5 text-[11px] border border-amber-500/40 hover:bg-amber-500/20"
                 disabled={!laneId || busyAction != null}
                 onClick={() => runRestackAndPublishFlow(true)}
               >
@@ -907,7 +907,7 @@ export function LaneGitActionsPane({
             {nextActionHint.action === "pull" && divergedSync ? (
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                className="rounded px-1.5 py-0.5 text-[11px] border border-amber-500/40 hover:bg-amber-500/20"
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(true)}
               >
@@ -917,7 +917,7 @@ export function LaneGitActionsPane({
             {nextActionHint.action === "push" ? (
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-[10px] border border-emerald-500/30 hover:bg-emerald-500/15"
+                className="rounded px-1.5 py-0.5 text-[11px] border border-emerald-500/30 hover:bg-emerald-500/15"
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(false)}
               >
@@ -927,7 +927,7 @@ export function LaneGitActionsPane({
             {nextActionHint.action === "force_push_lease" ? (
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                className="rounded px-1.5 py-0.5 text-[11px] border border-amber-500/40 hover:bg-amber-500/20"
                 disabled={!laneId || busyAction != null}
                 onClick={() => runPush(true)}
               >
@@ -939,12 +939,12 @@ export function LaneGitActionsPane({
       ) : null}
 
       {nextActionHint?.action === "restack_publish" && !autoRebaseEnabled ? (
-        <div className="shrink-0 border-b border-border/15 bg-sky-500/8 px-2 py-1 text-[10px] text-sky-700">
+        <div className="shrink-0 border-b border-border/15 bg-sky-500/8 px-2 py-1 text-[11px] text-sky-700">
           <div className="flex items-center gap-2">
             <span className="truncate">Auto-rebase is off. Enable it in Settings to auto-sync child lanes when parent/main advances.</span>
             <button
               type="button"
-              className="ml-auto rounded px-1.5 py-0.5 text-[10px] border border-sky-500/30 hover:bg-sky-500/15"
+              className="ml-auto rounded px-1.5 py-0.5 text-[11px] border border-sky-500/30 hover:bg-sky-500/15"
               onClick={onOpenSettings}
             >
               Open settings
@@ -956,7 +956,7 @@ export function LaneGitActionsPane({
       {autoRebaseStatus ? (
         <div
           className={cn(
-            "shrink-0 border-b border-border/15 px-2 py-1 text-[10px] flex items-center gap-2",
+            "shrink-0 border-b border-border/15 px-2 py-1 text-[11px] flex items-center gap-2",
             autoRebaseStatus.state === "autoRebased" && "bg-emerald-500/8 text-emerald-700",
             autoRebaseStatus.state === "rebasePending" && "bg-amber-500/12 text-amber-800",
             autoRebaseStatus.state === "rebaseConflict" && "bg-red-500/12 text-red-200"
@@ -978,7 +978,7 @@ export function LaneGitActionsPane({
               {autoRebaseStatus.state === "rebaseConflict" ? (
                 <button
                   type="button"
-                  className="rounded px-1.5 py-0.5 text-[10px] border border-red-500/35 hover:bg-red-500/20"
+                  className="rounded px-1.5 py-0.5 text-[11px] border border-red-500/35 hover:bg-red-500/20"
                   disabled={!laneId || busyAction != null}
                   onClick={() => {
                     if (!laneId) return;
@@ -990,7 +990,7 @@ export function LaneGitActionsPane({
               ) : (
                 <button
                   type="button"
-                  className="rounded px-1.5 py-0.5 text-[10px] border border-amber-500/40 hover:bg-amber-500/20"
+                  className="rounded px-1.5 py-0.5 text-[11px] border border-amber-500/40 hover:bg-amber-500/20"
                   disabled={!laneId || busyAction != null}
                   onClick={() => runRestackAndPublishFlow(true)}
                 >
@@ -1009,27 +1009,27 @@ export function LaneGitActionsPane({
             <div className="flex h-full min-h-0 flex-col">
               <div className="flex items-center justify-between px-2 py-1 bg-card/30 shrink-0 border-r border-border/10">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] text-muted-fg/70">Files</span>
-                  <Chip className="text-[10px] h-4 px-1">{changedFileCount}</Chip>
+                  <span className="text-xs text-muted-fg/70">Files</span>
+                  <Chip className="text-[11px] h-4 px-1">{changedFileCount}</Chip>
                   {stagedCount > 0 ? (
-                    <span className="text-[10px] text-muted-fg">({stagedCount} staged)</span>
+                    <span className="text-[11px] text-muted-fg">({stagedCount} staged)</span>
                   ) : null}
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    className="text-[10px] px-1 text-muted-fg hover:text-fg"
+                    className="text-[11px] px-1 text-muted-fg hover:text-fg"
                     onClick={() => setShowStashes((prev) => !prev)}
                   >
                     {showStashes ? "Hide stashes" : `Show stashes (${stashes.length})`}
                   </button>
                   {changes.unstaged.length > 0 ? (
-                    <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={stageAll}>
+                    <button type="button" className="text-[11px] text-muted-fg hover:text-fg px-1" onClick={stageAll}>
                       Stage All
                     </button>
                   ) : null}
                   {changes.staged.length > 0 ? (
-                    <button type="button" className="text-[10px] text-muted-fg hover:text-fg px-1" onClick={unstageAll}>
+                    <button type="button" className="text-[11px] text-muted-fg hover:text-fg px-1" onClick={unstageAll}>
                       Unstage All
                     </button>
                   ) : null}
@@ -1043,13 +1043,13 @@ export function LaneGitActionsPane({
                       <div className="h-full overflow-auto bg-card/20 px-2 py-1.5">
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] uppercase tracking-wide text-muted-fg">Stashes</span>
-                            <Chip className="h-4 px-1 text-[10px]">{stashes.length}</Chip>
+                            <span className="text-[11px] uppercase tracking-wide text-muted-fg">Stashes</span>
+                            <Chip className="h-4 px-1 text-[11px]">{stashes.length}</Chip>
                           </div>
                           <Button
                             variant="outline"
                             size="sm"
-                            className="h-5 px-1.5 text-[10px]"
+                            className="h-5 px-1.5 text-[11px]"
                             disabled={!laneId || busyAction != null}
                             onClick={() => {
                               if (!laneId) return;
@@ -1064,18 +1064,18 @@ export function LaneGitActionsPane({
                           </Button>
                         </div>
                         {stashes.length === 0 ? (
-                          <div className="rounded-lg bg-muted/20 px-2 py-1 text-[10px] text-muted-fg">No stashes in this lane.</div>
+                          <div className="rounded-lg bg-muted/20 px-2 py-1 text-[11px] text-muted-fg">No stashes in this lane.</div>
                         ) : (
                           <div className="space-y-1">
                             {stashes.slice(0, 4).map((stash) => (
                               <div key={stash.ref} className="flex items-center gap-2 rounded-lg bg-muted/20 px-2 py-1">
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate text-[11px] text-fg">{stash.subject || stash.ref}</div>
-                                  <div className="truncate text-[10px] text-muted-fg">{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
+                                  <div className="truncate text-xs text-fg">{stash.subject || stash.ref}</div>
+                                  <div className="truncate text-[11px] text-muted-fg">{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
                                 </div>
                                 <button
                                   type="button"
-                                  className="rounded px-1 py-0.5 text-[10px] text-sky-700 hover:bg-sky-500/10"
+                                  className="rounded px-1 py-0.5 text-[11px] text-sky-700 hover:bg-sky-500/10"
                                   disabled={!laneId || busyAction != null}
                                   onClick={() => {
                                     if (!laneId) return;
@@ -1088,7 +1088,7 @@ export function LaneGitActionsPane({
                                 </button>
                                 <button
                                   type="button"
-                                  className="rounded px-1 py-0.5 text-[10px] text-amber-700 hover:bg-amber-500/10"
+                                  className="rounded px-1 py-0.5 text-[11px] text-amber-700 hover:bg-amber-500/10"
                                   disabled={!laneId || busyAction != null}
                                   onClick={() => {
                                     if (!laneId) return;
@@ -1101,7 +1101,7 @@ export function LaneGitActionsPane({
                                 </button>
                                 <button
                                   type="button"
-                                  className="rounded px-1 py-0.5 text-[10px] text-red-700 hover:bg-red-500/10"
+                                  className="rounded px-1 py-0.5 text-[11px] text-red-700 hover:bg-red-500/10"
                                   disabled={!laneId || busyAction != null}
                                   onClick={() => {
                                     if (!laneId) return;
@@ -1115,7 +1115,7 @@ export function LaneGitActionsPane({
                               </div>
                             ))}
                             {stashes.length > 4 ? (
-                              <div className="text-[10px] text-muted-fg">+{stashes.length - 4} more stash entries.</div>
+                              <div className="text-[11px] text-muted-fg">+{stashes.length - 4} more stash entries.</div>
                             ) : null}
                           </div>
                         )}
@@ -1126,18 +1126,18 @@ export function LaneGitActionsPane({
                       <div className="h-full overflow-auto p-1 space-y-2">
                         {changes.staged.length > 0 ? (
                           <div className="space-y-0.5">
-                            <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
+                            <div className="px-2 pb-0.5 text-[11px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
                             {changes.staged.map((file) => renderFileRow(file, "staged"))}
                           </div>
                         ) : null}
                         {changes.unstaged.length > 0 ? (
                           <div className="space-y-0.5">
-                            <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
+                            <div className="px-2 pb-0.5 text-[11px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
                             {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
                           </div>
                         ) : null}
                         {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                          <div className="p-3 text-center text-[11px] text-muted-fg opacity-50 italic">No changes</div>
+                          <div className="p-3 text-center text-xs text-muted-fg opacity-50 italic">No changes</div>
                         ) : null}
                       </div>
                     </Panel>
@@ -1146,18 +1146,18 @@ export function LaneGitActionsPane({
                   <div className="h-full overflow-auto p-1 space-y-2">
                     {changes.staged.length > 0 ? (
                       <div className="space-y-0.5">
-                        <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
+                        <div className="px-2 pb-0.5 text-[11px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
                         {changes.staged.map((file) => renderFileRow(file, "staged"))}
                       </div>
                     ) : null}
                     {changes.unstaged.length > 0 ? (
                       <div className="space-y-0.5">
-                        <div className="px-2 pb-0.5 text-[10px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
+                        <div className="px-2 pb-0.5 text-[11px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
                         {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
                       </div>
                     ) : null}
                     {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                      <div className="p-3 text-center text-[11px] text-muted-fg opacity-50 italic">No changes</div>
+                      <div className="p-3 text-center text-xs text-muted-fg opacity-50 italic">No changes</div>
                     ) : null}
                   </div>
                 )}
@@ -1181,7 +1181,7 @@ export function LaneGitActionsPane({
 
       {/* Status bar */}
       {(notice || error || busyAction) && (
-        <div className={cn("shrink-0 flex items-center justify-between border-t border-border/15 px-2 py-0.5 text-[11px]", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
+        <div className={cn("shrink-0 flex items-center justify-between border-t border-border/15 px-2 py-0.5 text-xs", error ? "bg-red-50 text-red-800" : "bg-accent/10 text-accent")}>
           <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>
         </div>
       )}

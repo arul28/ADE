@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquarePlus, RefreshCw } from "lucide-react";
+import { ChatCircle, ArrowsClockwise } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatEvent,
@@ -611,7 +611,7 @@ export function AgentChatPane({
                 .finally(() => setBusy(false));
             }}
           >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
+            <ChatCircle size={14} weight="regular" />
             New chat
           </Button>
         ) : null}
@@ -627,14 +627,14 @@ export function AgentChatPane({
             });
           }}
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <ArrowsClockwise size={14} weight="regular" />
           Refresh
         </Button>
 
         {selectedSession ? (
           <>
-            <Chip className="text-[10px]">{selectedSession.provider}</Chip>
-            <Chip className="text-[10px]">{selectedSession.status}</Chip>
+            <Chip className="text-[11px]">{selectedSession.provider}</Chip>
+            <Chip className="text-[11px]">{selectedSession.status}</Chip>
             {turnActive ? <Chip className="bg-accent/20 text-[10px] text-fg/90">active turn</Chip> : null}
           </>
         ) : null}

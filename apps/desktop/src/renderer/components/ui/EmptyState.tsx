@@ -5,22 +5,25 @@ export function EmptyState({
   title,
   description,
   icon: Icon,
-  className
+  className,
+  children
 }: {
   title: string;
   description?: string;
   icon?: React.ElementType;
   className?: string;
+  children?: React.ReactNode;
 }) {
   return (
-    <div className={cn("rounded shadow-panel bg-[--color-surface-raised] p-10 text-center", className)}>
+    <div className={cn("flex flex-col items-center justify-center rounded shadow-panel bg-[--color-surface-raised] p-10 text-center", className)}>
       {Icon ? (
-        <div className="mb-3 inline-flex items-center justify-center w-10 h-10 rounded bg-accent/10 text-accent">
-          <Icon className="h-5 w-5" />
+        <div className="mb-4 inline-flex items-center justify-center">
+          <Icon size={48} weight="regular" className="text-muted-fg/30" />
         </div>
       ) : null}
-      <div className="text-sm font-semibold text-fg/70">{title}</div>
-      {description ? <div className="mt-2 text-sm text-muted-fg/70">{description}</div> : null}
+      <div className="text-lg font-medium text-fg">{title}</div>
+      {description ? <div className="mt-2 text-sm text-muted-fg max-w-[45ch] mx-auto">{description}</div> : null}
+      {children}
     </div>
   );
 }

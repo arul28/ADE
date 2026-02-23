@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowSquareOut } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
@@ -170,7 +170,7 @@ function StackGraph({
               key={`label:${lane.id}`}
               type="button"
               className={cn(
-                "absolute flex items-center gap-1.5 rounded-lg px-1.5 text-[11px] transition-colors whitespace-nowrap",
+                "absolute flex items-center gap-1.5 rounded-lg px-1.5 text-xs transition-colors whitespace-nowrap",
                 isSelected
                   ? "bg-accent/15 text-fg shadow-sm shadow-accent/20"
                   : "text-muted-fg hover:bg-muted/60 hover:text-fg"
@@ -221,11 +221,11 @@ export function LaneStackPane({
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 px-2 text-[11px]"
+          className="h-6 px-2 text-xs"
           onClick={() => navigate("/graph")}
           title="Open workspace canvas"
         >
-          <ArrowUpRight className="h-3 w-3" />
+          <ArrowSquareOut size={12} />
           Canvas
         </Button>
       </div>

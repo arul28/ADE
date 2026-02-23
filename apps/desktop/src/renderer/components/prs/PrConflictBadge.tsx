@@ -1,5 +1,5 @@
 import React from "react";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Warning as AlertTriangle, CheckCircle as CheckCircle2 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 
 type PrConflictBadgeProps = {
@@ -11,8 +11,8 @@ type PrConflictBadgeProps = {
 export function PrConflictBadge({ riskLevel, overlappingFileCount, className }: PrConflictBadgeProps) {
   if (!riskLevel || riskLevel === "none") {
     return (
-      <span className={cn("inline-flex items-center gap-1 text-[10px] text-emerald-500", className)}>
-        <CheckCircle2 className="h-3 w-3" />
+      <span className={cn("inline-flex items-center gap-1 text-[11px] text-emerald-500", className)}>
+        <CheckCircle2 size={12} weight="regular" />
         clean
       </span>
     );
@@ -25,8 +25,8 @@ export function PrConflictBadge({ riskLevel, overlappingFileCount, className }: 
   }[riskLevel];
 
   return (
-    <span className={cn("inline-flex items-center gap-1 text-[10px]", colors, className)}>
-      <AlertTriangle className="h-3 w-3" />
+    <span className={cn("inline-flex items-center gap-1 text-[11px]", colors, className)}>
+      <AlertTriangle size={12} weight="regular" />
       {riskLevel}
       {overlappingFileCount != null && overlappingFileCount > 0 && (
         <span className="text-muted-fg">({overlappingFileCount})</span>

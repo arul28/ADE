@@ -1,5 +1,5 @@
 import React from "react";
-import { Layers, AlertTriangle, Sparkles } from "lucide-react";
+import { Stack, Warning, Sparkle } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
 import { LaneListPane } from "../panes/LaneListPane";
 import { ConflictDetailPane } from "../panes/ConflictDetailPane";
@@ -20,18 +20,18 @@ export function MergeOneLaneTab() {
     () => ({
       lanes: {
         title: "Lanes",
-        icon: Layers,
+        icon: Stack,
         children: <LaneListPane />,
       },
       "conflict-detail": {
         title: "Conflict Detail",
-        icon: AlertTriangle,
+        icon: Warning,
         bodyClassName: "overflow-hidden",
         children: <ConflictDetailPane />,
       },
       resolution: {
         title: "Resolution",
-        icon: Sparkles,
+        icon: Sparkle,
         children: <ConflictResolutionPane />,
       },
     }),

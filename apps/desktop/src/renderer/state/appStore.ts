@@ -1,8 +1,8 @@
 import { create } from "zustand";
 import type { KeybindingsSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
 
-export type ThemeId = "e-paper" | "bloomberg" | "github" | "rainbow" | "sky" | "pats";
-export const THEME_IDS: ThemeId[] = ["e-paper", "bloomberg", "github", "rainbow", "sky", "pats"];
+export type ThemeId = "dark" | "light";
+export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -27,12 +27,15 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
 
 function readInitialTheme(): ThemeId {
   try {
-    const raw = window.localStorage.getItem("ade.theme") as ThemeId;
-    if (THEME_IDS.includes(raw)) return raw;
+    const raw = window.localStorage.getItem("ade.theme");
+    if (raw === "dark" || raw === "light") return raw as ThemeId;
+    // Migrate old themes: dark-ish themes → dark, light-ish → light
+    if (raw === "github" || raw === "bloomberg" || raw === "rainbow" || raw === "pats") return "dark";
+    if (raw === "e-paper" || raw === "sky") return "light";
   } catch {
     // ignore
   }
-  return "e-paper";
+  return "dark";
 }
 
 function persistTheme(theme: ThemeId) {

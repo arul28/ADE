@@ -10,7 +10,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { GenerateDocsModal } from "./GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
-import { RefreshCw, ChevronRight, FileText, FolderGit2, Target, GitMerge, ClipboardList, Rocket, Clock, BookOpenText } from "lucide-react";
+import { ArrowsClockwise, CaretRight, FileText, FolderSimple, Crosshair, GitMerge, ClipboardText, Rocket, Clock, BookOpenText } from "@phosphor-icons/react";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -193,12 +193,12 @@ function PackContentView({ pack }: { pack: PackSummary | null }) {
 type PackTab = "project" | "lanes" | "missions" | "conflicts" | "features" | "plans";
 
 const TABS: { id: PackTab; label: string; icon: React.ElementType }[] = [
-  { id: "project", label: "Project", icon: FolderGit2 },
+  { id: "project", label: "Project", icon: FolderSimple },
   { id: "lanes", label: "Lanes", icon: FileText },
   { id: "missions", label: "Missions", icon: Rocket },
   { id: "conflicts", label: "Conflicts", icon: GitMerge },
-  { id: "features", label: "Features", icon: Target },
-  { id: "plans", label: "Plans", icon: ClipboardList }
+  { id: "features", label: "Features", icon: Crosshair },
+  { id: "plans", label: "Plans", icon: ClipboardText }
 ];
 
 // ─── Individual Pack Panels ─────────────────────────────────────────
@@ -654,7 +654,7 @@ function PackPanel({
           {pack?.packKey ? (
             <>
               <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void loadVersions()}>
-                <Clock className="h-3 w-3" /> History
+                <Clock size={12} weight="regular" /> History
               </Button>
               <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void loadEvents()}>
                 Events
@@ -662,7 +662,7 @@ function PackPanel({
             </>
           ) : null}
           <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onRefresh} disabled={busy}>
-            <RefreshCw className={cn("h-3.5 w-3.5", busy && "animate-spin")} />
+            <ArrowsClockwise size={14} weight="regular" className={cn(busy && "animate-spin")} />
           </Button>
         </div>
       </div>
@@ -723,7 +723,7 @@ function PackPanel({
       {/* Pack file path */}
       {pack?.path ? (
         <div className="border-t border-border/20 px-4 py-1.5">
-          <div className="truncate text-[10px] text-muted-fg/60">{pack.path}</div>
+          <div className="truncate text-[11px] text-muted-fg/60">{pack.path}</div>
         </div>
       ) : null}
     </div>
@@ -747,7 +747,7 @@ function InventorySummary({ inventory }: { inventory: ContextInventorySnapshot |
       {stats.map((s) => (
         <div key={s.label} className="text-center">
           <div className="text-lg font-bold text-fg">{s.value}</div>
-          <div className="text-[10px] text-muted-fg">{s.label}</div>
+          <div className="text-[11px] text-muted-fg">{s.label}</div>
         </div>
       ))}
     </div>
@@ -779,7 +779,7 @@ export function ContextPage() {
       <div className="mb-5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-9 h-9 rounded bg-accent/10">
-            <BookOpenText className="h-5 w-5 text-accent" />
+            <BookOpenText size={20} weight="regular" className="text-accent" />
           </div>
           <div>
             <h1 className="text-lg font-semibold text-fg">Context Packs</h1>
@@ -810,7 +810,7 @@ export function ContextPage() {
                 : "text-muted-fg hover:bg-muted/40 hover:text-fg"
             )}
           >
-            <tab.icon className="h-3.5 w-3.5" />
+            <tab.icon size={14} weight="regular" />
             {tab.label}
           </button>
         ))}

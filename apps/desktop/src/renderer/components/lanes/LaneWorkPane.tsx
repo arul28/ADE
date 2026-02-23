@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { MessageSquare, Terminal } from "lucide-react";
+import { ChatCircle, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import { LaneTerminalsPanel } from "./LaneTerminalsPanel";
@@ -55,19 +55,19 @@ export function LaneWorkPane({
         <Button
           size="sm"
           variant={view === "terminal" ? "primary" : "outline"}
-          className="h-7 px-2 text-[11px]"
+          className="h-7 px-2 text-xs"
           onClick={() => setView("terminal")}
         >
-          <Terminal className="h-3.5 w-3.5" />
+          <Terminal size={14} />
           Terminal view
         </Button>
         <Button
           size="sm"
           variant={view === "chat" ? "primary" : "outline"}
-          className="h-7 px-2 text-[11px]"
+          className="h-7 px-2 text-xs"
           onClick={() => setView("chat")}
         >
-          <MessageSquare className="h-3.5 w-3.5" />
+          <ChatCircle size={14} />
           Chat view
         </Button>
       </div>

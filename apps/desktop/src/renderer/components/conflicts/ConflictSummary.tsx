@@ -45,7 +45,7 @@ export function ConflictSummary({
             <div key={`${overlap.peerId ?? "base"}:${overlap.peerName}`} className="rounded shadow-card bg-card/30 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="truncate text-xs font-semibold text-fg">{overlap.peerName}</div>
-                <div className={`text-[11px] uppercase tracking-wide ${riskClass(overlap.riskLevel)}`}>{overlap.riskLevel}</div>
+                <div className={`text-xs uppercase tracking-wide ${riskClass(overlap.riskLevel)}`}>{overlap.riskLevel}</div>
               </div>
               <div className="mt-2 max-h-40 overflow-auto rounded-lg bg-muted/20 p-2 text-xs">
                 {overlap.files.length === 0 ? (
@@ -56,7 +56,7 @@ export function ConflictSummary({
                       <span className="truncate text-fg" title={file.path}>
                         {file.path}
                       </span>
-                      <span className="text-[10px] uppercase text-muted-fg">{file.conflictType}</span>
+                      <span className="text-[11px] uppercase text-muted-fg">{file.conflictType}</span>
                     </div>
                   ))
                 )}

@@ -5,6 +5,7 @@ import type {
   OrchestratorClaimScope,
   StartOrchestratorRunStepPolicy
 } from "../../../shared/types";
+import { SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
 import { phaseModelToExecutorKind } from "../orchestrator/executionPolicy";
 
 type RawPlanStep = {
@@ -275,7 +276,21 @@ function toPlannerStep(step: RawPlanStep, index: number, strategy: string, keywo
       keywords
     },
     roleClass,
-    requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration"
+    requiresDedicatedWorker: roleClass === "review" || roleClass === "testing" || roleClass === "integration",
+    role:
+      step.kind === "analysis"
+        ? "planning"
+        : step.kind === "implementation"
+          ? "implementation"
+          : step.kind === "validation"
+            ? "testing"
+            : step.kind === "integration"
+              ? "integration"
+              : step.kind === "summary"
+                ? "merge"
+                : step.kind === "merge"
+                  ? "merge"
+                  : "implementation"
   };
   if (Number.isFinite(step.timeoutMs ?? NaN) && (step.timeoutMs ?? 0) > 0) {
     metadata.timeoutMs = Math.floor(step.timeoutMs as number);
@@ -299,8 +314,7 @@ function detectSlashCommands(prompt: string): string[] {
   return prompt
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => /^\/[a-zA-Z]/.test(line))
-    .map((line) => line);
+    .filter((line) => /^\/[a-zA-Z]/.test(line));
 }
 
 export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: string | null; policy?: MissionExecutionPolicy }): DeterministicMissionPlan {
@@ -603,43 +617,6 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
     previousIndex = index;
   }
 
-  // Merge step — injected when policy.merge.mode !== "off"
-  if (policy && policy.merge.mode !== "off") {
-    const mergeIndex = rawSteps.length;
-    const isManual = policy.merge.mode === "manual";
-    rawSteps.push({
-      title: isManual ? "Merge ready — awaiting approval" : "Auto-merge to target",
-      detail: isManual
-        ? "All gates passed. Merge is blocked pending operator approval."
-        : "All gates passed. Automatically merging work into the target branch.",
-      kind: "merge",
-      dependencyIndices: previousIndex >= 0 ? [previousIndex] : [],
-      joinPolicy: "all_success",
-      quorumCount: null,
-      timeoutMs: isManual ? null : 600_000,
-      retryLimit: 0,
-      executorKind: isManual ? "manual" : "codex",
-      doneCriteria: isManual
-        ? "Operator approves the merge and the step is manually resolved."
-        : "Work is merged to target branch and merge commit verified.",
-      splitReason: "Policy requires an explicit merge phase for completion.",
-      policy: buildPolicy({
-        kind: "merge",
-        laneId,
-        title: isManual ? "merge_gate" : "auto_merge",
-        parallelBranch: false
-      }),
-      extraMetadata: {
-        stepType: "merge",
-        taskType: "merge",
-        mergeMode: policy.merge.mode,
-        ...(isManual ? { blockedSticky: true, blockedErrorClass: "policy" } : {}),
-        ...(hasParallelJoin && !skipIntegration ? { integrationFlow: true, requiresConflictResolver: true } : {})
-      }
-    });
-    previousIndex = mergeIndex;
-  }
-
   const summaryTitle = summaryCandidates[0] ?? "Record mission outcomes and handoff artifacts";
   rawSteps.push({
     title: summaryTitle,
@@ -665,29 +642,62 @@ export function buildDeterministicMissionPlan(args: { prompt: string; laneId?: s
   const slashCommands = detectSlashCommands(args.prompt);
   for (const cmd of slashCommands) {
     const depIndex = rawSteps.length - 1;
-    rawSteps.push({
-      title: cmd,
-      detail: `Execute slash command: ${cmd}`,
-      kind: "implementation",
-      dependencyIndices: depIndex >= 0 ? [depIndex] : [],
-      joinPolicy: "all_success",
-      quorumCount: null,
-      timeoutMs: 300_000,
-      retryLimit: 0,
-      executorKind: "claude",
-      doneCriteria: "Slash command execution completed.",
-      splitReason: "Slash command detected in prompt.",
-      policy: buildPolicy({
-        kind: "implementation",
-        laneId,
+    const cmdBase = cmd.split(/\s/)[0];
+    const translation = SLASH_COMMAND_TRANSLATIONS[cmdBase];
+
+    if (translation) {
+      // Translated slash command: use the full prompt translation as step instructions
+      rawSteps.push({
         title: cmd,
-        parallelBranch: false
-      }),
-      extraMetadata: {
-        startupCommand: cmd,
-        stepType: "command"
-      }
-    });
+        detail: translation.prompt,
+        kind: "implementation",
+        dependencyIndices: depIndex >= 0 ? [depIndex] : [],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 300_000,
+        retryLimit: 0,
+        executorKind: "claude",
+        doneCriteria: "Slash command execution completed.",
+        splitReason: "Slash command detected in prompt.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: cmd,
+          parallelBranch: false
+        }),
+        extraMetadata: {
+          stepType: "command",
+          slashCommand: cmd,
+          instructions: translation.prompt
+        }
+      });
+    } else {
+      // Unknown slash command: pass through as startupCommand (legacy behavior)
+      rawSteps.push({
+        title: cmd,
+        detail: `Execute slash command: ${cmd}`,
+        kind: "implementation",
+        dependencyIndices: depIndex >= 0 ? [depIndex] : [],
+        joinPolicy: "all_success",
+        quorumCount: null,
+        timeoutMs: 300_000,
+        retryLimit: 0,
+        executorKind: "claude",
+        doneCriteria: "Slash command execution completed.",
+        splitReason: "Slash command detected in prompt.",
+        policy: buildPolicy({
+          kind: "implementation",
+          laneId,
+          title: cmd,
+          parallelBranch: false
+        }),
+        extraMetadata: {
+          startupCommand: cmd,
+          stepType: "command",
+          slashCommand: cmd
+        }
+      });
+    }
   }
 
   return {

@@ -3,6 +3,8 @@ import type {
   OrchestratorExecutorStartArgs,
   OrchestratorExecutorStartResult
 } from "./orchestratorService";
+import type { OrchestratorWorkerRole, OrchestratorContextView } from "../../../shared/types";
+import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
 
 function shellEscapeArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -29,9 +31,14 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
       }
 
       try {
-        // 0. Check for startup command override from policy
+        // 0a. Translate slash commands to proper prompts
+        const rawStartup = typeof step.metadata?.startupCommand === "string" ? step.metadata.startupCommand.trim() : "";
+        const slashBase = rawStartup.split(/\s/)[0];
+        const slashTranslation = slashBase ? SLASH_COMMAND_TRANSLATIONS[slashBase] : undefined;
+
+        // 0b. Check for startup command override from policy (skip if slash translation applies)
         const startupCommandOverride =
-          typeof step.metadata?.startupCommand === "string" && step.metadata.startupCommand.trim().length
+          !slashTranslation && typeof step.metadata?.startupCommand === "string" && step.metadata.startupCommand.trim().length
             ? step.metadata.startupCommand.trim()
             : null;
 
@@ -68,6 +75,16 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
         }
 
         systemParts.push(`You are an ADE orchestrator worker executing step "${step.title}".`);
+
+        systemParts.push(
+          [
+            "Work style:",
+            "- If you discover information relevant to other steps (API changes, schema updates, config requirements), include it in your output summary.",
+            "- If you hit a blocker you can work around safely, work around it and note what you did.",
+            "- Structure your output: lead with what you accomplished, then what you changed, then risks or notes for downstream steps.",
+            "- If your step depends on upstream work, check the handoff context before starting — don't redo completed work."
+          ].join("\n")
+        );
 
         const instructions =
           typeof step.metadata?.instructions === "string" ? step.metadata.instructions.trim() : "";
@@ -148,6 +165,36 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
         if (handoffSummaries.length) {
           systemParts.push(`Context from upstream steps:\n${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
         }
+
+        // Inject translated slash command prompt as instructions
+        if (slashTranslation) {
+          systemParts.push(`Slash command instructions:\n${slashTranslation.prompt}`);
+        }
+
+        // Apply role-specific context view
+        const workerRole = typeof step.metadata?.role === "string" ? step.metadata.role as OrchestratorWorkerRole : null;
+        const contextView = workerRole ? DEFAULT_CONTEXT_VIEW_POLICIES[
+          workerRole === "code_review" ? "review" :
+          workerRole === "test_review" ? "test_review" :
+          "implementation"
+        ] : null;
+
+        if (contextView?.readOnly) {
+          systemParts.push("IMPORTANT: You are in a READ-ONLY review role. Do NOT modify any files. Only analyze and provide feedback on the code/tests you are reviewing.");
+        }
+
+        // ADE self-awareness
+        systemParts.push("You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.");
+
+        // Handoff summary guidance
+        systemParts.push(
+          [
+            "Before finishing, write a HANDOFF SUMMARY (3-5 bullets):",
+            "1. What you accomplished (files created/modified)",
+            "2. What downstream steps need to know (API changes, new deps, config updates)",
+            "3. Any risks or known issues (edge cases not covered, flaky tests)"
+          ].join("\n")
+        );
 
         // 2. Build user prompt from context snapshot
         const userParts: string[] = [];

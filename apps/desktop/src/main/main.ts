@@ -503,6 +503,7 @@ app.whenReady().then(async () => {
       laneService,
       projectConfigService,
       aiIntegrationService,
+      prService,
       projectRoot,
       onThreadEvent: (event) => broadcast(IPC.orchestratorThreadEvent, event)
     });

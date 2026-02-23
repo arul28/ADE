@@ -41,7 +41,22 @@ import type {
   PtyCreateArgs,
   RunCompletionEvaluation,
   StartOrchestratorRunArgs,
-  StartOrchestratorRunStepInput
+  StartOrchestratorRunStepInput,
+  RecoveryLoopPolicy,
+  RecoveryLoopIteration,
+  RecoveryLoopState,
+  OrchestratorContextView,
+  ContextViewPolicy,
+  OrchestratorWorkerRole,
+  RoleIsolationRule,
+  RoleIsolationValidation,
+  TeamManifest,
+  IntegrationPrPolicy
+} from "../../../shared/types";
+import {
+  DEFAULT_RECOVERY_LOOP_POLICY,
+  DEFAULT_CONTEXT_VIEW_POLICIES,
+  DEFAULT_ROLE_ISOLATION_RULES
 } from "../../../shared/types";
 import { evaluateRunCompletion } from "./executionPolicy";
 import type { AdeDb, SqlValue } from "../state/kvDb";
@@ -1197,6 +1212,7 @@ export function createOrchestratorService({
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
   const autopilotRunLocks = new Set<string>();
+  const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const getRuntimeConfig = (): ResolvedOrchestratorRuntimeConfig => {
     const snapshot = projectConfigService?.get();
     const ai = asRecord(snapshot?.effective?.ai);
@@ -6732,6 +6748,393 @@ export function createOrchestratorService({
       const updatedRow = getStepRow(stepId);
       if (!updatedRow) throw new Error(`Step not found after skip: ${stepId}`);
       return toStep(updatedRow);
+    },
+
+    // ─── Recovery Loop ────────────────────────────────────────────
+
+    triggerRecoveryLoop(args: {
+      runId: string;
+      failedStepId: string;
+      failurePhase: string;
+      failureReason: string;
+    }): { action: "fix"; fixStepId: string; recheckStepId: string } | { action: "stop"; reason: string } {
+      const runId = String(args.runId ?? "").trim();
+      const failedStepId = String(args.failedStepId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+      if (!failedStepId) throw new Error("failedStepId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+
+      // Resolve recovery policy from run metadata or use default
+      let policy: RecoveryLoopPolicy = DEFAULT_RECOVERY_LOOP_POLICY;
+      if (runRow.metadata_json) {
+        try {
+          const meta = JSON.parse(runRow.metadata_json);
+          if (meta?.recoveryLoop && typeof meta.recoveryLoop === "object") {
+            policy = { ...DEFAULT_RECOVERY_LOOP_POLICY, ...meta.recoveryLoop };
+          }
+        } catch {
+          // fall through to default
+        }
+      }
+
+      if (!policy.enabled) {
+        return { action: "stop", reason: "Recovery loops are disabled by policy." };
+      }
+
+      // Get or create recovery loop state for this run
+      let state = recoveryLoopStates.get(runId);
+      if (!state) {
+        state = {
+          runId,
+          iterations: [],
+          currentIteration: 0,
+          exhausted: false,
+          stopReason: null
+        };
+        recoveryLoopStates.set(runId, state);
+      }
+
+      // Check if max iterations reached
+      if (state.currentIteration >= policy.maxIterations) {
+        state.exhausted = true;
+        state.stopReason = `Max recovery iterations reached (${policy.maxIterations}). onExhaustion=${policy.onExhaustion}`;
+        appendTimelineEvent({
+          runId,
+          stepId: failedStepId,
+          eventType: "recovery_loop_exhausted",
+          reason: "max_iterations",
+          detail: {
+            maxIterations: policy.maxIterations,
+            onExhaustion: policy.onExhaustion,
+            failurePhase: args.failurePhase,
+            failureReason: args.failureReason
+          }
+        });
+        return { action: "stop", reason: state.stopReason };
+      }
+
+      // Create new iteration
+      const iterationNum = state.currentIteration + 1;
+      const now = nowIso();
+
+      // Insert fix step
+      const fixStepId = randomUUID();
+      const fixStepKey = `recovery_fix_${iterationNum}`;
+      const existingStepRows = listStepRows(runId);
+      const maxIndex = existingStepRows.reduce((max, row) => Math.max(max, row.step_index), -1);
+
+      db.run(
+        `
+          insert into orchestrator_steps(
+            id, run_id, project_id, mission_step_id, step_key, step_index,
+            title, lane_id, status, join_policy, quorum_count,
+            dependency_step_ids_json, retry_limit, retry_count, last_attempt_id,
+            policy_json, metadata_json, created_at, updated_at, started_at, completed_at
+          ) values (?, ?, ?, null, ?, ?, ?, null, 'pending', 'all_success', null, ?, 1, 0, null, '{}', ?, ?, ?, null, null)
+        `,
+        [
+          fixStepId,
+          runId,
+          projectId,
+          fixStepKey,
+          maxIndex + 1,
+          `Recovery fix (iteration ${iterationNum})`,
+          JSON.stringify([failedStepId]),
+          JSON.stringify({
+            stepType: "implementation",
+            recoveryIteration: iterationNum,
+            failedStepId,
+            failurePhase: args.failurePhase,
+            failureReason: args.failureReason,
+            instructions: `Fix the issues found in step ${failedStepId}: ${args.failureReason}`
+          }),
+          now,
+          now
+        ]
+      );
+
+      // Insert re-review step dependent on the fix step
+      const recheckStepId = randomUUID();
+      const recheckStepKey = `recovery_recheck_${iterationNum}`;
+
+      db.run(
+        `
+          insert into orchestrator_steps(
+            id, run_id, project_id, mission_step_id, step_key, step_index,
+            title, lane_id, status, join_policy, quorum_count,
+            dependency_step_ids_json, retry_limit, retry_count, last_attempt_id,
+            policy_json, metadata_json, created_at, updated_at, started_at, completed_at
+          ) values (?, ?, ?, null, ?, ?, ?, null, 'pending', 'all_success', null, ?, 1, 0, null, '{}', ?, ?, ?, null, null)
+        `,
+        [
+          recheckStepId,
+          runId,
+          projectId,
+          recheckStepKey,
+          maxIndex + 2,
+          `Recovery re-review (iteration ${iterationNum})`,
+          JSON.stringify([fixStepId]),
+          JSON.stringify({
+            stepType: "code_review",
+            recoveryIteration: iterationNum,
+            instructions: `Re-review the fix applied in recovery iteration ${iterationNum}. Verify the original issue is resolved.`
+          }),
+          now,
+          now
+        ]
+      );
+
+      // Record the iteration
+      const iteration: RecoveryLoopIteration = {
+        iteration: iterationNum,
+        triggerStepId: failedStepId,
+        triggerPhase: args.failurePhase,
+        failureReason: args.failureReason,
+        fixStepId,
+        reReviewStepId: recheckStepId,
+        reTestStepId: null,
+        outcome: "still_failing",
+        startedAt: now,
+        completedAt: null
+      };
+      state.iterations.push(iteration);
+      state.currentIteration = iterationNum;
+
+      // Emit timeline events
+      appendTimelineEvent({
+        runId,
+        stepId: failedStepId,
+        eventType: "recovery_loop_started",
+        reason: "quality_gate_failure",
+        detail: {
+          iteration: iterationNum,
+          maxIterations: policy.maxIterations,
+          failurePhase: args.failurePhase,
+          failureReason: args.failureReason,
+          fixStepId,
+          recheckStepId
+        }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId: fixStepId, reason: "recovery_fix_inserted" });
+      emit({ type: "orchestrator-step-updated", runId, stepId: recheckStepId, reason: "recovery_recheck_inserted" });
+
+      refreshStepReadiness(runId);
+
+      return { action: "fix", fixStepId, recheckStepId };
+    },
+
+    // ─── Context View for Role ────────────────────────────────────
+
+    getContextViewForRole(args: {
+      role: OrchestratorWorkerRole;
+    }): ContextViewPolicy {
+      const role = args.role;
+      let viewKey: OrchestratorContextView;
+      switch (role) {
+        case "implementation":
+        case "planning":
+        case "integration":
+        case "merge":
+          viewKey = "implementation";
+          break;
+        case "code_review":
+          viewKey = "review";
+          break;
+        case "test_review":
+        case "testing":
+          viewKey = "test_review";
+          break;
+        default:
+          viewKey = "implementation";
+          break;
+      }
+      return DEFAULT_CONTEXT_VIEW_POLICIES[viewKey];
+    },
+
+    // ─── Role Isolation Validation ────────────────────────────────
+
+    validateRunRoleIsolation(args: {
+      runId: string;
+    }): RoleIsolationValidation {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+
+      const stepRows = listStepRows(runId);
+      const attemptRows = listAttemptRows(runId);
+
+      // Group attempts by executor_session_id, collecting the role from step metadata
+      const rolesBySession = new Map<string, Set<OrchestratorWorkerRole>>();
+      const stepIdsBySession = new Map<string, Set<string>>();
+
+      for (const attempt of attemptRows) {
+        const sessionId = attempt.executor_session_id;
+        if (!sessionId) continue;
+
+        // Find the step for this attempt to determine its role
+        const stepRow = stepRows.find((s) => s.id === attempt.step_id);
+        if (!stepRow) continue;
+
+        let role: OrchestratorWorkerRole | null = null;
+        if (stepRow.metadata_json) {
+          try {
+            const meta = JSON.parse(stepRow.metadata_json);
+            if (meta?.stepType) {
+              role = meta.stepType as OrchestratorWorkerRole;
+            }
+            if (meta?.role) {
+              role = meta.role as OrchestratorWorkerRole;
+            }
+          } catch {
+            // skip
+          }
+        }
+        if (!role) continue;
+
+        if (!rolesBySession.has(sessionId)) {
+          rolesBySession.set(sessionId, new Set());
+          stepIdsBySession.set(sessionId, new Set());
+        }
+        rolesBySession.get(sessionId)!.add(role);
+        stepIdsBySession.get(sessionId)!.add(stepRow.id);
+      }
+
+      // Check each session against isolation rules
+      const violations: RoleIsolationValidation["violations"] = [];
+
+      for (const [sessionId, roles] of rolesBySession) {
+        for (const rule of DEFAULT_ROLE_ISOLATION_RULES) {
+          const [roleA, roleB] = rule.mutuallyExclusive;
+          if (roles.has(roleA) && roles.has(roleB)) {
+            const affectedStepIds = Array.from(stepIdsBySession.get(sessionId) ?? []);
+            violations.push({
+              rule,
+              affectedStepIds,
+              correctionApplied: false,
+              correctionDetail: `Session ${sessionId} has conflicting roles: ${roleA} and ${roleB}.`
+            });
+          }
+        }
+      }
+
+      const result: RoleIsolationValidation = {
+        valid: violations.length === 0,
+        violations,
+        correctedPlan: false
+      };
+
+      if (violations.length > 0) {
+        appendTimelineEvent({
+          runId,
+          eventType: "role_isolation_violation",
+          reason: "isolation_check",
+          detail: {
+            violationCount: violations.length,
+            violations: violations.map((v) => ({
+              roles: v.rule.mutuallyExclusive,
+              enforcement: v.rule.enforcement,
+              affectedStepIds: v.affectedStepIds,
+              reason: v.rule.reason
+            }))
+          }
+        });
+      }
+
+      return result;
+    },
+
+    // ─── Integration PR Trigger ───────────────────────────────────
+
+    triggerIntegrationPr(args: {
+      runId: string;
+      policy: IntegrationPrPolicy;
+    }): { stepId: string } | null {
+      const runId = String(args.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required.");
+
+      const policy = args.policy;
+      if (!policy.enabled) return null;
+
+      const runRow = getRunRow(runId);
+      if (!runRow) throw new Error(`Run not found: ${runId}`);
+
+      // Get all steps and collect unique lane IDs
+      const stepRows = listStepRows(runId);
+      const laneIds = new Set<string>();
+      for (const row of stepRows) {
+        if (row.lane_id) laneIds.add(row.lane_id);
+      }
+
+      // Only create integration step if multiple lanes are involved
+      if (laneIds.size < 2) return null;
+
+      const now = nowIso();
+      const stepId = randomUUID();
+      const stepKey = "integration_pr";
+
+      // All existing non-skipped/non-canceled step IDs become dependencies
+      const allStepIds = stepRows
+        .filter((r) => r.status !== "skipped" && r.status !== "canceled")
+        .map((r) => r.id);
+      const maxIndex = stepRows.reduce((max, row) => Math.max(max, row.step_index), -1);
+
+      db.run(
+        `
+          insert into orchestrator_steps(
+            id, run_id, project_id, mission_step_id, step_key, step_index,
+            title, lane_id, status, join_policy, quorum_count,
+            dependency_step_ids_json, retry_limit, retry_count, last_attempt_id,
+            policy_json, metadata_json, created_at, updated_at, started_at, completed_at
+          ) values (?, ?, ?, null, ?, ?, ?, null, 'pending', 'all_success', null, ?, 1, 0, null, '{}', ?, ?, ?, null, null)
+        `,
+        [
+          stepId,
+          runId,
+          projectId,
+          stepKey,
+          maxIndex + 1,
+          "Integration PR",
+          JSON.stringify(allStepIds),
+          JSON.stringify({
+            stepType: "merge",
+            instructions: "Create integration PR merging all parallel lanes, resolve any merge conflicts first",
+            laneIds: Array.from(laneIds),
+            policy: {
+              createIntegrationLane: policy.createIntegrationLane,
+              autoResolveConflicts: policy.autoResolveConflicts,
+              draft: policy.draft,
+              baseBranch: policy.baseBranch ?? null
+            }
+          }),
+          now,
+          now
+        ]
+      );
+
+      appendTimelineEvent({
+        runId,
+        stepId,
+        eventType: "integration_pr_step_inserted",
+        reason: "multi_lane_integration",
+        detail: {
+          laneIds: Array.from(laneIds),
+          dependencyCount: allStepIds.length,
+          policy: {
+            createIntegrationLane: policy.createIntegrationLane,
+            autoResolveConflicts: policy.autoResolveConflicts,
+            draft: policy.draft
+          }
+        }
+      });
+      emit({ type: "orchestrator-step-updated", runId, stepId, reason: "integration_pr_inserted" });
+
+      refreshStepReadiness(runId);
+
+      return { stepId };
     }
   };
 }

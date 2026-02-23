@@ -1,6 +1,6 @@
 import React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { CheckCircle as CheckCircle2, XCircle, SpinnerGap as Loader2 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import type { LandResult, MergeMethod } from "../../../shared/types";
@@ -117,7 +117,7 @@ export function StackedLandingDialog({
                     )}
                   >
                     <div className="font-medium text-fg">{opt.label}</div>
-                    <div className="mt-0.5 text-[10px] text-muted-fg">{opt.desc}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-fg">{opt.desc}</div>
                   </button>
                 ))}
               </div>
@@ -129,13 +129,13 @@ export function StackedLandingDialog({
                 <div className="flex items-center gap-2 text-xs">
                   {successCount > 0 && (
                     <span className="flex items-center gap-1 text-emerald-600">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <CheckCircle2 size={14} weight="regular" />
                       {successCount} landed
                     </span>
                   )}
                   {failCount > 0 && (
                     <span className="flex items-center gap-1 text-red-600">
-                      <XCircle className="h-3.5 w-3.5" />
+                      <XCircle size={14} weight="regular" />
                       {failCount} failed
                     </span>
                   )}
@@ -149,9 +149,9 @@ export function StackedLandingDialog({
                         r.success ? "text-emerald-600" : "text-red-600"
                       )}
                     >
-                      {r.success ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+                      {r.success ? <CheckCircle2 size={12} weight="regular" /> : <XCircle size={12} weight="regular" />}
                       <span className="truncate">#{r.prNumber}</span>
-                      {r.error && <span className="ml-auto text-[10px] text-red-500">{r.error}</span>}
+                      {r.error && <span className="ml-auto text-[11px] text-red-500">{r.error}</span>}
                     </div>
                   ))}
                 </div>
@@ -177,7 +177,7 @@ export function StackedLandingDialog({
                 >
                   {running ? (
                     <span className="flex items-center gap-2">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <Loader2 size={14} weight="regular" className="animate-spin" />
                       Landing...
                     </span>
                   ) : (

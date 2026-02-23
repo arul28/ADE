@@ -17,7 +17,7 @@ export const Button = React.forwardRef<
   ref
 ) {
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded font-medium text-[12px] transition-colors duration-100 disabled:opacity-40 disabled:pointer-events-none";
+    "inline-flex items-center justify-center gap-1.5 rounded font-medium text-[12px] transition-colors duration-100 active:scale-[0.97] active:translate-y-[0.5px] disabled:opacity-40 disabled:pointer-events-none";
 
   const sizes = size === "sm" ? "h-7 px-2.5" : "h-8 px-3";
 

@@ -271,7 +271,11 @@ import type {
   GetOrchestratorContextCheckpointArgs,
   ListOrchestratorLaneDecisionsArgs,
   GetMissionMetricsArgs,
-  SetMissionMetricsConfigArgs
+  SetMissionMetricsConfigArgs,
+  ExecutionPlanPreview,
+  GetAggregatedUsageArgs,
+  AggregatedUsageStats,
+  SendAgentMessageArgs
 } from "../shared/types";
 
 contextBridge.exposeInMainWorld("ade", {
@@ -435,6 +439,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorGetMissionMetrics, args),
     setMissionMetricsConfig: async (args: SetMissionMetricsConfigArgs): Promise<MissionMetricsConfig> =>
       ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
+    getExecutionPlanPreview: async (args: { runId: string }): Promise<ExecutionPlanPreview | null> =>
+      ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
+    sendAgentMessage: async (args: SendAgentMessageArgs): Promise<OrchestratorChatMessage> =>
+      ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
+    getAggregatedUsage: async (args: GetAggregatedUsageArgs): Promise<AggregatedUsageStats> =>
+      ipcRenderer.invoke(IPC.getAggregatedUsage, args),
     onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OrchestratorRuntimeEvent) => cb(payload);
       ipcRenderer.on(IPC.orchestratorEvent, listener);

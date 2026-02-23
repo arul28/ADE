@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertCircle, CheckCircle2, GitBranch, PackagePlus, Sparkles, Wand2 } from "lucide-react";
+import { WarningCircle, CheckCircle, GitBranch, Package, Sparkle, MagicWand } from "@phosphor-icons/react";
 import type {
   ConfigAutomationRule,
   ConfigStackButtonDefinition,
@@ -136,7 +136,7 @@ function previewLines(title: string, bullets: string[]) {
   return (
     <div className="rounded border border-border bg-card/40 p-3 text-xs">
       <div className="flex items-center gap-2 font-semibold text-fg">
-        <Wand2 className="h-4 w-4 text-muted-fg" />
+        <MagicWand size={16} weight="regular" className="text-muted-fg" />
         {title}
       </div>
       <ul className="mt-2 space-y-1 text-muted-fg">
@@ -577,9 +577,9 @@ export function OnboardingPage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             {complete ? (
-                              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                              <CheckCircle size={16} weight="regular" className="text-emerald-400" />
                             ) : active ? (
-                              <Sparkles className="h-4 w-4 text-accent" />
+                              <Sparkle size={16} weight="regular" className="text-accent" />
                             ) : (
                               <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-muted/70 text-[10px] text-muted-fg">
                                 {idx + 1}
@@ -608,7 +608,7 @@ export function OnboardingPage() {
                   <div className="rounded border border-border bg-card/40 p-4">
                     <div className="flex items-start gap-3">
                       <div className="mt-0.5 rounded-md border border-border bg-bg/60 p-2">
-                        <Sparkles className="h-5 w-5 text-accent" />
+                        <Sparkle size={20} weight="regular" className="text-accent" />
                       </div>
                       <div className="min-w-0">
                         <div className="text-sm font-semibold">Start quickly</div>
@@ -640,14 +640,14 @@ export function OnboardingPage() {
                       <div className="grid gap-2 md:grid-cols-2">
                         <div className="rounded border border-border bg-bg/40 p-3 text-xs">
                           <div className="flex items-center gap-2 font-semibold text-fg">
-                            <GitBranch className="h-4 w-4 text-muted-fg" />
+                            <GitBranch size={16} weight="regular" className="text-muted-fg" />
                             Lanes + worktrees
                           </div>
                           <div className="mt-1 text-muted-fg">Keep multiple branches checked out side-by-side without clobbering your working tree.</div>
                         </div>
                         <div className="rounded border border-border bg-bg/40 p-3 text-xs">
                           <div className="flex items-center gap-2 font-semibold text-fg">
-                            <PackagePlus className="h-4 w-4 text-muted-fg" />
+                            <Package size={16} weight="regular" className="text-muted-fg" />
                             Packs + conflict radar
                           </div>
                           <div className="mt-1 text-muted-fg">Packs capture deterministic context; conflict radar predicts overlaps so you can fix issues early.</div>
@@ -759,7 +759,7 @@ export function OnboardingPage() {
                     </div>
                     {applyMode === "replace" ? (
                       <div className="mt-2 flex items-start gap-2 rounded border border-amber-700/60 bg-amber-900/20 px-2 py-1 text-[11px] text-amber-200">
-                        <AlertCircle className="mt-0.5 h-4 w-4" />
+                        <WarningCircle size={16} weight="regular" className="mt-0.5" />
                         <div>
                           Replace overwrites existing processes/test suites in shared config.
                           If you already have a tuned config, prefer Append.
@@ -768,7 +768,7 @@ export function OnboardingPage() {
                     ) : null}
                     {configAppliedAt ? (
                       <div className="mt-2 flex items-center gap-2 rounded border border-emerald-800 bg-emerald-900/20 px-2 py-1 text-[11px] text-emerald-200">
-                        <CheckCircle2 className="h-4 w-4" />
+                        <CheckCircle size={16} weight="regular" />
                         Applied at {formatDate(configAppliedAt)}
                       </div>
                     ) : null}
@@ -1283,7 +1283,7 @@ export function OnboardingPage() {
                   <div className="rounded border border-border bg-card/40 p-4">
                     <div className="flex items-start gap-3">
                       <div className="mt-0.5 rounded-md border border-border bg-bg/60 p-2">
-                        <Sparkles className="h-5 w-5 text-accent" />
+                        <Sparkle size={20} weight="regular" className="text-accent" />
                       </div>
                       <div className="min-w-0">
                         <div className="text-sm font-semibold">You are ready</div>
@@ -1321,32 +1321,32 @@ export function OnboardingPage() {
                   {step === "welcome" ? (
                     <Button size="sm" onClick={goNext}>
                       Start
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : step === "detect-defaults" ? (
                     <Button size="sm" disabled={!defaults} onClick={goNext}>
                       Next
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : step === "review-config" ? (
                     <Button size="sm" onClick={goNext}>
                       Next
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : step === "detect-branches" ? (
                     <Button size="sm" onClick={goNext}>
                       Next
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : step === "import-branches" ? (
                     <Button size="sm" onClick={goNext}>
                       Next
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : step === "generate-packs" ? (
                     <Button size="sm" onClick={goNext}>
                       Next
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkle size={16} weight="regular" />
                     </Button>
                   ) : (
                     <div className="text-xs text-muted-fg">Done</div>

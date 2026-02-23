@@ -1,20 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
-  AlertCircle,
-  ExternalLink,
+  Pulse as Activity,
+  WarningCircle as AlertCircle,
+  ArrowSquareOut as ExternalLink,
   FolderOpen,
-  Home,
-  Layers,
+  House as Home,
+  SquaresFour as Layers,
   Play,
-  RefreshCw,
-  RotateCcw,
-  Save,
+  ArrowsClockwise as RefreshCw,
+  FloppyDisk as Save,
   ShieldCheck,
-  Square,
-  SquareDashed,
-  Trash2
-} from "lucide-react";
+  Stop as Square,
+  Pause as SquareDashed,
+  Trash as Trash2,
+  MagnifyingGlass
+} from "@phosphor-icons/react";
 import type {
   ConfigProcessDefinition,
   ConfigStackButtonDefinition,
@@ -929,10 +929,11 @@ export function ProjectHomePage() {
 
   /* ---- Pane configs for the floating tiling layout ---- */
 
+  /* eslint-disable @typescript-eslint/no-explicit-any -- Phosphor icons are compatible at runtime */
   const paneConfigs: Record<string, PaneConfig> = useMemo(() => ({
     overview: {
       title: "Overview",
-      icon: Home,
+      icon: Home as any,
       meta: project?.displayName ?? "(no project)",
       minimizable: true,
       bodyClassName: "overflow-auto",
@@ -941,7 +942,7 @@ export function ProjectHomePage() {
           {error ? (
             <div className="rounded bg-red-500/10 border-l-[3px] border-red-500 px-3 py-2 text-xs text-red-400">
               <div className="flex items-start gap-2">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <AlertCircle size={16} weight="regular" className="mt-0.5 shrink-0" />
                 <div className="min-w-0">{error}</div>
               </div>
             </div>
@@ -955,7 +956,7 @@ export function ProjectHomePage() {
             <div className="rounded bg-amber-500/10 border-l-[3px] border-amber-500 px-3 py-2 text-xs text-amber-400">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
-                  <ShieldCheck className="mt-0.5 h-4 w-4" />
+                  <ShieldCheck size={16} weight="regular" className="mt-0.5" />
                   <div>
                     Shared config changed and is untrusted. Start/restart/run actions are blocked until you confirm.
                   </div>
@@ -979,7 +980,7 @@ export function ProjectHomePage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-bold tracking-tight">Project header</div>
-                <div className="text-[11px] text-muted-fg/70">Repo summary and global stack controls</div>
+                <div className="text-xs text-muted-fg/70">Repo summary and global stack controls</div>
               </div>
               <div className="flex items-center gap-2">
                 <Chip>base: {project?.baseRef ?? "main"}</Chip>
@@ -1015,20 +1016,20 @@ export function ProjectHomePage() {
                   await window.ade.processes.startAll({ laneId: effectiveLaneId });
                 })}
               >
-                <Play className="h-4 w-4" />
+                <Play size={16} weight="regular" />
                 Start all
               </Button>
               <Button size="sm" variant="outline" disabled={!effectiveLaneId} onClick={() => runWithRefresh(async () => {
                 if (!effectiveLaneId) return;
                 await window.ade.processes.stopAll({ laneId: effectiveLaneId });
               })}>
-                <Square className="h-4 w-4" />
+                <Square size={16} weight="regular" />
                 Stop all
               </Button>
 
               {stackStatuses.map(({ stack, status }) => (
-                <div key={stack.id} className={cx("inline-flex items-center gap-1.5 rounded shadow-card bg-card/60 px-2.5 py-1.5 border-t-2", status === "running" ? "border-emerald-500/50" : status === "error" ? "border-red-500/50" : status === "partial" ? "border-amber-500/50" : "border-border/30")}>
-                  <Chip className={cx("text-[11px]", stackTone(status))}>{status}</Chip>
+                <div key={stack.id} className={cx("inline-flex items-center gap-1.5 rounded-lg bg-card border border-border px-2.5 py-1.5 border-t-2 transition-colors duration-150", status === "running" ? "border-t-emerald-500/50" : status === "error" ? "border-t-red-500/50" : status === "partial" ? "border-t-amber-500/50" : "border-t-border/30")}>
+                  <Chip className={cx("text-xs", stackTone(status))}>{status}</Chip>
                   <span className="text-xs font-semibold">{stack.name}</span>
                   <Button
                     size="sm"
@@ -1063,7 +1064,7 @@ export function ProjectHomePage() {
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-bold tracking-tight">Quick add process</div>
-                <div className="text-[11px] text-muted-fg/70">Use this for common commands. You can fine-tune in Config editor.</div>
+                <div className="text-xs text-muted-fg/70">Use this for common commands. You can fine-tune in Config editor.</div>
               </div>
               <Button size="sm" variant="outline" onClick={scrollToConfigEditor}>
                 Jump to config editor
@@ -1096,7 +1097,7 @@ export function ProjectHomePage() {
                 Save config
               </Button>
             </div>
-            <div className="mt-2 text-[11px] text-muted-fg">
+            <div className="mt-2 text-xs text-muted-fg">
               For commands that need a subdirectory, set <span className="font-mono">Working directory</span> instead of using <span className="font-mono">cd ... &&</span>.
             </div>
           </div>
@@ -1105,7 +1106,7 @@ export function ProjectHomePage() {
     },
     processes: {
       title: "Processes",
-      icon: Play,
+      icon: Play as any,
       meta: `${processItems.length} processes`,
       minimizable: true,
       bodyClassName: "overflow-auto",
@@ -1113,22 +1114,26 @@ export function ProjectHomePage() {
         <div className="space-y-3 p-3">
           <div className="space-y-2">
             {processItems.length === 0 ? (
-              <div className="rounded bg-muted/10 p-3 text-xs text-muted-fg">
-                No process definitions. Use "Quick add process" above or the config editor.
+              <div className="flex flex-col items-center justify-center py-10 text-center">
+                <Play size={48} weight="regular" className="text-muted-fg/30" />
+                <div className="mt-3 text-lg font-medium text-fg">No processes defined</div>
+                <div className="mt-1 text-sm text-muted-fg max-w-[45ch]">
+                  Use the "Quick add process" panel above or open the config editor to define your first managed process.
+                </div>
               </div>
             ) : null}
 
-            <div className="overflow-hidden rounded border border-border/10 bg-card/30">
+            <div className="overflow-hidden rounded-lg border border-border bg-card">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b-2 border-accent/20 bg-muted/30">
-                    <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Name</th>
-                    <th className="w-24 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Status</th>
-                    <th className="w-24 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Readiness</th>
-                    <th className="w-16 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">PID</th>
-                    <th className="w-20 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Uptime</th>
-                    <th className="w-20 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Port</th>
-                    <th className="w-32 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-fg">Action</th>
+                    <th className="px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Name</th>
+                    <th className="w-24 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Status</th>
+                    <th className="w-24 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Readiness</th>
+                    <th className="w-16 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">PID</th>
+                    <th className="w-20 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Uptime</th>
+                    <th className="w-20 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Port</th>
+                    <th className="w-32 px-3 py-2 text-xs font-medium tracking-widest uppercase text-muted-fg">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/10">
@@ -1148,18 +1153,18 @@ export function ProjectHomePage() {
                           {active && <span className="ml-2 font-bold text-accent">●</span>}
                         </td>
                         <td className="px-3 py-2">
-                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", statusBadgeBg(rowRuntime.status))}>
+                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", statusBadgeBg(rowRuntime.status))}>
                             {rowRuntime.status}
                           </span>
                         </td>
                         <td className="px-3 py-2">
-                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", readinessBadgeBg(rowRuntime.readiness))}>
+                          <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", readinessBadgeBg(rowRuntime.readiness))}>
                             {rowRuntime.readiness}
                           </span>
                         </td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-muted-fg/70">{rowRuntime.pid ?? "-"}</td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-muted-fg/70">{formatUptime(rowRuntime, nowTick)}</td>
-                        <td className="px-3 py-2 font-mono text-[11px] text-muted-fg/70">
+                        <td className="px-3 py-2 font-mono text-xs text-muted-fg/70">{rowRuntime.pid ?? "-"}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-muted-fg/70">{formatUptime(rowRuntime, nowTick)}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-muted-fg/70">
                           {rowRuntime.ports.length ? rowRuntime.ports.join(",") : "-"}
                         </td>
                         <td className="px-3 py-1.5">
@@ -1219,7 +1224,7 @@ export function ProjectHomePage() {
             </div>
           </div>
 
-          <div className="rounded shadow-card bg-card/50 p-3">
+          <div className="rounded-lg bg-card border border-border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-semibold">Process logs</div>
@@ -1234,7 +1239,7 @@ export function ProjectHomePage() {
                   onClick={() => setProcessPauseAutoscroll((v) => !v)}
                   title="Pause autoscroll"
                 >
-                  <SquareDashed className="h-4 w-4" />
+                  <SquareDashed size={16} weight="regular" />
                   {processPauseAutoscroll ? "Resume" : "Pause"}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setProcessLogRaw("")}>Clear view</Button>
@@ -1242,7 +1247,7 @@ export function ProjectHomePage() {
             </div>
 
             <div className="mt-2 relative">
-              <svg className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-fg/40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <MagnifyingGlass size={14} weight="regular" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/40" />
               <input
                 className="h-8 w-full rounded-lg border border-border/15 bg-muted/20 pl-8 pr-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/40"
                 placeholder="Search log lines..."
@@ -1253,7 +1258,7 @@ export function ProjectHomePage() {
 
             <pre
               ref={processLogRef}
-              className="mt-2 h-[330px] overflow-auto rounded border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
+              className="mt-2 h-[330px] overflow-auto rounded border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-xs leading-relaxed text-muted-fg"
             >
               {visibleProcessLog || "(no output yet)"}
             </pre>
@@ -1263,7 +1268,7 @@ export function ProjectHomePage() {
     },
     tests: {
       title: "Tests",
-      icon: Layers,
+      icon: Layers as any,
       meta: `${suites.length} suites`,
       minimizable: true,
       bodyClassName: "overflow-auto",
@@ -1271,8 +1276,12 @@ export function ProjectHomePage() {
         <div className="space-y-3 p-3">
           <div className="space-y-2">
             {suites.length === 0 ? (
-              <div className="rounded bg-muted/10 p-3 text-xs text-muted-fg">
-                No test suites defined. Add suites in the config editor.
+              <div className="flex flex-col items-center justify-center py-10 text-center">
+                <Layers size={48} weight="regular" className="text-muted-fg/30" />
+                <div className="mt-3 text-lg font-medium text-fg">No test suites defined</div>
+                <div className="mt-1 text-sm text-muted-fg max-w-[45ch]">
+                  Define test suites in the config editor to run and track your test results from this dashboard.
+                </div>
               </div>
             ) : null}
 
@@ -1280,13 +1289,13 @@ export function ProjectHomePage() {
               const last = latestRunBySuite.get(suite.id);
               const running = last?.status === "running";
               return (
-                <div key={suite.id} className={cx("rounded shadow-card bg-card/50 p-3 border-l-[3px] transition-colors", last?.status === "passed" ? "border-emerald-500/50" : last?.status === "failed" ? "border-red-500/50" : last?.status === "running" ? "border-blue-500/50" : "border-border/20")}>
+                <div key={suite.id} className={cx("rounded-lg bg-card border border-border p-3 border-l-[3px] transition-colors duration-150", last?.status === "passed" ? "border-l-emerald-500/50" : last?.status === "failed" ? "border-l-red-500/50" : last?.status === "running" ? "border-l-blue-500/50" : "border-l-border/20")}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold">{suite.name}</div>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-fg">
                         <Chip>{suite.id}</Chip>
-                        <span className={cx("inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", testStatusBadgeBg(last?.status))}>{last?.status ?? "never"}</span>
+                        <span className={cx("inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(last?.status))}>{last?.status ?? "never"}</span>
                         <Chip>duration: {formatDurationMs(last?.durationMs ?? null)}</Chip>
                         <Chip>time: {formatDate(last?.startedAt ?? null)}</Chip>
                       </div>
@@ -1303,7 +1312,7 @@ export function ProjectHomePage() {
                           setSelectedRunId(next.id);
                         })}
                       >
-                        <Play className="h-3.5 w-3.5" />
+                        <Play size={14} weight="regular" />
                         {last ? "Rerun" : "Run"}
                       </Button>
                       <Button
@@ -1315,7 +1324,7 @@ export function ProjectHomePage() {
                           runWithRefresh(async () => { await window.ade.tests.stop({ runId: last.id }); });
                         }}
                       >
-                        <Square className="h-3.5 w-3.5" />
+                        <Square size={14} weight="regular" />
                         Stop
                       </Button>
                     </div>
@@ -1324,8 +1333,8 @@ export function ProjectHomePage() {
               );
             })}
 
-            <div className="rounded shadow-card bg-card/50 p-2">
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-fg/70">Run history</div>
+            <div className="rounded-lg bg-card border border-border p-2">
+              <div className="mb-1.5 text-xs font-medium tracking-widest uppercase text-muted-fg">Run history</div>
               <div className="max-h-[180px] space-y-0.5 overflow-auto">
                 {runs.map((run) => (
                   <button
@@ -1337,14 +1346,14 @@ export function ProjectHomePage() {
                     onClick={() => setSelectedRunId(run.id)}
                   >
                     <span className="truncate font-medium">{run.suiteName}</span>
-                    <span className={cx("ml-2 shrink-0 inline-block rounded-full px-2 py-0.5 text-[10px] font-medium", testStatusBadgeBg(run.status))}>{run.status}</span>
+                    <span className={cx("ml-2 shrink-0 inline-block rounded-full px-2 py-0.5 text-xs font-medium", testStatusBadgeBg(run.status))}>{run.status}</span>
                   </button>
                 ))}
               </div>
             </div>
           </div>
 
-          <div className="rounded shadow-card bg-card/50 p-3">
+          <div className="rounded-lg bg-card border border-border p-3">
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-semibold">Suite logs</div>
@@ -1356,7 +1365,7 @@ export function ProjectHomePage() {
             </div>
 
             <div className="mt-2 relative">
-              <svg className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-fg/40" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <MagnifyingGlass size={14} weight="regular" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/40" />
               <input
                 className="h-8 w-full rounded-lg border border-border/15 bg-muted/20 pl-8 pr-2.5 text-xs outline-none transition-colors focus:border-accent/40 focus:bg-muted/30 placeholder:text-muted-fg/40"
                 placeholder="Search log lines..."
@@ -1367,7 +1376,7 @@ export function ProjectHomePage() {
 
             <pre
               ref={testLogRef}
-              className="mt-2 h-[330px] overflow-auto rounded border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-[11px] leading-relaxed text-muted-fg"
+              className="mt-2 h-[330px] overflow-auto rounded border border-border/10 bg-[--color-surface-recessed] p-3 font-mono text-xs leading-relaxed text-muted-fg"
             >
               {visibleTestLog || "(no output yet)"}
             </pre>
@@ -1377,7 +1386,7 @@ export function ProjectHomePage() {
     },
     config: {
       title: "Config",
-      icon: Activity,
+      icon: Activity as any,
       meta: configTarget === "shared" ? ".ade/ade.yaml" : ".ade/local.yaml",
       minimizable: true,
       bodyClassName: "overflow-auto",
@@ -1406,7 +1415,7 @@ export function ProjectHomePage() {
                   <option value="local">.ade/local.yaml</option>
                 </select>
                 <Button size="sm" variant="primary" onClick={() => saveConfig().catch(() => { })}>
-                  <Save className="h-4 w-4" />
+                  <Save size={16} weight="regular" />
                   Save config
                 </Button>
               </div>
@@ -1446,7 +1455,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {processRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded shadow-card bg-card/50 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-lg bg-card border border-border p-2 transition-colors duration-150">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `process ${idx + 1}`}</div>
                         <Button
@@ -1454,7 +1463,7 @@ export function ProjectHomePage() {
                           variant="ghost"
                           onClick={() => setProcessRows((prev) => prev.filter((_, i) => i !== idx))}
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash2 size={14} weight="regular" />
                           Remove
                         </Button>
                       </div>
@@ -1617,7 +1626,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {stackRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded shadow-card bg-card/50 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-lg bg-card border border-border p-2 transition-colors duration-150">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `stack ${idx + 1}`}</div>
                         <Button
@@ -1625,7 +1634,7 @@ export function ProjectHomePage() {
                           variant="ghost"
                           onClick={() => setStackRows((prev) => prev.filter((_, i) => i !== idx))}
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash2 size={14} weight="regular" />
                           Remove
                         </Button>
                       </div>
@@ -1702,7 +1711,7 @@ export function ProjectHomePage() {
 
                 <div className="space-y-2">
                   {suiteRows.map((row, idx) => (
-                    <div key={`${row.id}-${idx}`} className="rounded shadow-card bg-card/50 p-2">
+                    <div key={`${row.id}-${idx}`} className="rounded-lg bg-card border border-border p-2 transition-colors duration-150">
                       <div className="mb-2 flex items-center justify-between">
                         <div className="text-xs font-semibold">{row.id || `suite ${idx + 1}`}</div>
                         <Button
@@ -1710,7 +1719,7 @@ export function ProjectHomePage() {
                           variant="ghost"
                           onClick={() => setSuiteRows((prev) => prev.filter((_, i) => i !== idx))}
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <Trash2 size={14} weight="regular" />
                           Remove
                         </Button>
                       </div>
@@ -1787,7 +1796,7 @@ export function ProjectHomePage() {
       <div className="flex items-center justify-between border-b border-border/15 px-5 py-3 shrink-0">
         <div>
           <div className="text-base font-bold tracking-tight">Run</div>
-          <div className="text-[11px] text-muted-fg/70">Managed processes, lane-scoped stack controls, tests, and config</div>
+          <div className="text-xs text-muted-fg/70">Managed processes, lane-scoped stack controls, tests, and config</div>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -1799,7 +1808,7 @@ export function ProjectHomePage() {
             }}
             title="Refresh"
           >
-            <RefreshCw className={cx("h-4 w-4", loading && "animate-spin")} />
+            <RefreshCw size={16} weight="regular" className={cx(loading && "animate-spin")} />
             Refresh
           </Button>
           <Button
@@ -1811,7 +1820,7 @@ export function ProjectHomePage() {
               });
             }}
           >
-            <FolderOpen className="h-4 w-4" />
+            <FolderOpen size={16} weight="regular" />
             Open repo
           </Button>
           <Button
@@ -1823,7 +1832,7 @@ export function ProjectHomePage() {
               });
             }}
           >
-            <ExternalLink className="h-4 w-4" />
+            <ExternalLink size={16} weight="regular" />
             Open .ade
           </Button>
         </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AtSign, ImageIcon, Pause, Play, Square, X, Hash, Slash } from "lucide-react";
+import { At, Image, Pause, Play, Square, X, Hash } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
   AgentChatFileRef,
@@ -294,8 +294,8 @@ export function AgentChatComposer({
         ) : null}
 
         {turnActive ? (
-          <Chip className="bg-accent/20 text-[10px] text-fg/90">
-            <Play className="mr-1 h-3 w-3" />
+          <Chip className="bg-accent/20 text-[11px] text-fg/90">
+            <Play size={12} weight="regular" className="mr-1" />
             Steering active turn
           </Chip>
         ) : null}
@@ -303,7 +303,7 @@ export function AgentChatComposer({
         <Button
           size="sm"
           variant={attachmentPickerOpen ? "primary" : "outline"}
-          className="h-7 px-2 text-[10px]"
+          className="h-7 px-2 text-[11px]"
           disabled={!canAttach}
           onClick={() => {
             if (!canAttach) return;
@@ -311,7 +311,7 @@ export function AgentChatComposer({
           }}
           title={canAttach ? "Attach files to the next message" : "Attachments are disabled while steering"}
         >
-          <AtSign className="h-3.5 w-3.5" />
+          <At size={14} weight="regular" />
           Attach
         </Button>
       </div>
@@ -333,10 +333,10 @@ export function AgentChatComposer({
           <div className="font-semibold text-fg/90">Approval pending · {pendingApproval.kind}</div>
           <div className="mt-0.5 text-fg/80">{pendingApproval.description}</div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
-            <Button size="sm" className="h-6 px-2 text-[10px]" onClick={() => onApproval("accept")}>Accept</Button>
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => onApproval("accept_for_session")}>Accept Session</Button>
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => onApproval("decline")}>Decline</Button>
-            <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => onApproval("cancel")}>Dismiss</Button>
+            <Button size="sm" className="h-6 px-2 text-[11px]" onClick={() => onApproval("accept")}>Accept</Button>
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onApproval("accept_for_session")}>Accept Session</Button>
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onApproval("decline")}>Decline</Button>
+            <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" onClick={() => onApproval("cancel")}>Dismiss</Button>
           </div>
         </div>
       ) : null}
@@ -344,8 +344,8 @@ export function AgentChatComposer({
       {attachments.length ? (
         <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-border/30 bg-bg/40 px-2 py-1.5">
           {attachments.map((attachment) => (
-            <Chip key={attachment.path} className="flex items-center gap-1 bg-accent/15 text-[10px] text-fg">
-              {attachment.type === "image" ? <ImageIcon className="h-3 w-3" /> : <AtSign className="h-3 w-3" />}
+            <Chip key={attachment.path} className="flex items-center gap-1 bg-accent/15 text-[11px] text-fg">
+              {attachment.type === "image" ? <Image size={12} weight="regular" /> : <At size={12} weight="regular" />}
               <span className="max-w-[220px] truncate">{attachment.path}</span>
               <button
                 type="button"
@@ -353,7 +353,7 @@ export function AgentChatComposer({
                 title={`Remove ${attachment.path}`}
                 onClick={() => onRemoveAttachment(attachment.path)}
               >
-                <X className="h-3 w-3" />
+                <X size={12} weight="regular" />
               </button>
             </Chip>
           ))}
@@ -362,9 +362,9 @@ export function AgentChatComposer({
 
       {selectedContextPacks.length ? (
         <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-violet-500/20 bg-violet-500/[0.04] px-2 py-1.5">
-          <Hash className="h-3 w-3 text-violet-400/60" />
+          <Hash size={12} weight="regular" className="text-violet-400/60" />
           {selectedContextPacks.map((pack) => (
-            <Chip key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="flex items-center gap-1 bg-violet-500/15 text-[10px] text-fg/80">
+            <Chip key={`${pack.scope}:${pack.featureKey ?? ""}:${pack.missionId ?? ""}`} className="flex items-center gap-1 bg-violet-500/15 text-[11px] text-fg/80">
               <span className="max-w-[200px] truncate">{pack.label}</span>
               <button
                 type="button"
@@ -372,7 +372,7 @@ export function AgentChatComposer({
                 title={`Remove ${pack.label}`}
                 onClick={() => removeContextPack(pack)}
               >
-                <X className="h-3 w-3" />
+                <X size={12} weight="regular" />
               </button>
             </Chip>
           ))}
@@ -382,7 +382,7 @@ export function AgentChatComposer({
       {attachmentPickerOpen ? (
         <div className="mb-2 rounded border border-border/40 bg-bg/60">
           <div className="flex items-center gap-2 border-b border-border/30 px-2 py-1.5">
-            <AtSign className="h-3.5 w-3.5 text-muted-fg" />
+            <At size={14} weight="regular" className="text-muted-fg" />
             <input
               ref={attachmentInputRef}
               value={attachmentQuery}
@@ -431,7 +431,7 @@ export function AgentChatComposer({
                   onMouseEnter={() => setAttachmentCursor(index)}
                   onClick={() => selectAttachment(result)}
                 >
-                  {result.type === "image" ? <ImageIcon className="h-3.5 w-3.5 text-accent/80" /> : <AtSign className="h-3.5 w-3.5 text-muted-fg" />}
+                  {result.type === "image" ? <Image size={14} weight="regular" className="text-accent/80" /> : <At size={14} weight="regular" className="text-muted-fg" />}
                   <span className="truncate">{result.path}</span>
                 </button>
               ))
@@ -446,7 +446,7 @@ export function AgentChatComposer({
         {/* ── Slash command picker ── */}
         {slashPickerOpen && filteredSlashCommands.length > 0 ? (
           <div className="absolute bottom-full left-0 z-10 mb-1 w-72 rounded-lg border border-border/40 bg-bg/95 shadow-lg shadow-black/20 backdrop-blur-sm">
-            <div className="border-b border-border/20 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-fg/60">
+            <div className="border-b border-border/20 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-fg/60">
               Commands
             </div>
             <div className="max-h-52 overflow-auto py-1">
@@ -463,7 +463,7 @@ export function AgentChatComposer({
                 >
                   <span className="w-16 font-mono text-accent/80">{cmd.command}</span>
                   <span className="flex-1 text-fg/70">{cmd.description}</span>
-                  <span className="text-[10px] text-muted-fg/50">{cmd.category}</span>
+                  <span className="text-[11px] text-muted-fg/50">{cmd.category}</span>
                 </button>
               ))}
             </div>
@@ -473,7 +473,7 @@ export function AgentChatComposer({
         {/* ── Context pack picker ── */}
         {contextPickerOpen ? (
           <div className="absolute bottom-full left-0 z-10 mb-1 w-80 rounded-lg border border-border/40 bg-bg/95 shadow-lg shadow-black/20 backdrop-blur-sm">
-            <div className="border-b border-border/20 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-fg/60">
+            <div className="border-b border-border/20 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-fg/60">
               Context Packs
             </div>
             <div className="max-h-52 overflow-auto py-1">
@@ -498,16 +498,16 @@ export function AgentChatComposer({
                       }}
                     >
                       <span className={cn(
-                        "flex h-4 w-4 items-center justify-center rounded border text-[10px]",
+                        "flex h-4 w-4 items-center justify-center rounded border text-[11px]",
                         isSelected ? "border-violet-400/60 bg-violet-500/20 text-violet-300" : "border-border/40 text-transparent"
                       )}>
                         {isSelected ? "\u2713" : ""}
                       </span>
                       <div className="flex-1">
                         <div className="font-medium text-fg/85">{pack.label}</div>
-                        <div className="text-[10px] text-muted-fg/60">{pack.description}</div>
+                        <div className="text-[11px] text-muted-fg/60">{pack.description}</div>
                       </div>
-                      <span className="text-[10px] text-muted-fg/40">{pack.scope}</span>
+                      <span className="text-[11px] text-muted-fg/40">{pack.scope}</span>
                     </button>
                   );
                 })
@@ -518,7 +518,7 @@ export function AgentChatComposer({
             <div className="border-t border-border/20 px-3 py-1.5">
               <button
                 type="button"
-                className="text-[10px] text-accent/70 hover:text-accent"
+                className="text-[11px] text-accent/70 hover:text-accent"
                 onClick={() => setContextPickerOpen(false)}
               >
                 Done
@@ -681,7 +681,7 @@ export function AgentChatComposer({
               title="Interrupt active turn"
               onClick={onInterrupt}
             >
-              <Square className="h-3.5 w-3.5" />
+              <Square size={14} weight="regular" />
               Stop
             </Button>
           ) : null}
@@ -689,17 +689,17 @@ export function AgentChatComposer({
           <Button className="h-9" disabled={busy || !draft.trim().length} onClick={onSubmit}>
             {busy ? (
               <>
-                <Pause className="h-3.5 w-3.5" />
+                <Pause size={14} weight="regular" />
                 Sending
               </>
             ) : turnActive ? (
               <>
-                <Play className="h-3.5 w-3.5" />
+                <Play size={14} weight="regular" />
                 Steer
               </>
             ) : (
               <>
-                <Play className="h-3.5 w-3.5" />
+                <Play size={14} weight="regular" />
                 Send
               </>
             )}
@@ -707,7 +707,7 @@ export function AgentChatComposer({
         </div>
       </div>
 
-      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted-fg/70">
+      <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-fg/70">
         <span className="inline-flex items-center gap-1"><Kbd className="px-1 py-0 text-[9px]">@</Kbd> files</span>
         <span className="text-border/40">|</span>
         <span className="inline-flex items-center gap-1"><Kbd className="px-1 py-0 text-[9px]">/</Kbd> commands</span>

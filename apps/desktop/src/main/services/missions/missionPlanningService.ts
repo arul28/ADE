@@ -37,6 +37,30 @@ export type MissionPlanningContextBundle = {
   constraints?: string[];
 };
 
+export class MissionPlanningError extends Error {
+  readonly reasonCode: string;
+  readonly reasonDetail: string;
+  readonly validationErrors: string[];
+  readonly attempts: number;
+  readonly engine: string | null;
+
+  constructor(opts: {
+    reasonCode: string;
+    reasonDetail: string;
+    validationErrors?: string[];
+    attempts?: number;
+    engine?: string | null;
+  }) {
+    super(`Mission planning failed: ${opts.reasonDetail}`);
+    this.name = "MissionPlanningError";
+    this.reasonCode = opts.reasonCode;
+    this.reasonDetail = opts.reasonDetail;
+    this.validationErrors = opts.validationErrors ?? [];
+    this.attempts = opts.attempts ?? 0;
+    this.engine = opts.engine ?? null;
+  }
+}
+
 export type MissionPlanningRequest = {
   missionId?: string;
   title: string;
@@ -68,7 +92,7 @@ export type MissionPlanningResult = {
 type PlannerAdapterResult = {
   rawResponse: string;
   commandPreview: string;
-  engine: Exclude<MissionPlannerResolvedEngine, "deterministic_fallback">;
+  engine: MissionPlannerResolvedEngine;
 };
 
 type PlannerRuntimeError = {
@@ -83,7 +107,7 @@ type PlannerRuntimeError = {
 const TASK_TYPES: PlannerTaskType[] = ["analysis", "code", "integration", "test", "review", "merge", "deploy", "docs"];
 const CONTEXT_PROFILES: PlannerContextProfileRequirement[] = ["deterministic", "deterministic_plus_narrative"];
 const CLAIM_LANES: PlannerClaimLane[] = ["analysis", "backend", "frontend", "integration", "conflict"];
-const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
 const GENERIC_STEP_NAME_RE = /^(?:step|task|phase)\s*[-_#]?\s*\d+$/i;
 const GENERIC_STEP_DESCRIPTION_RE =
   /^(?:execute|do|perform)\s+(?:mission|this|the)\s+(?:work|step|task)(?:\s+for\s+this\s+step)?\.?$/i;
@@ -249,7 +273,8 @@ function plannerSchemaJson(): Record<string, unknown> {
           domain: { type: "string", enum: ["backend", "frontend", "infra", "testing", "docs", "release", "mixed"] },
           complexity: { type: "string", enum: ["low", "medium", "high"] },
           strategy: { type: "string", enum: ["sequential", "parallel-lite", "parallel-first"] },
-          parallelismCap: { type: "number" }
+          parallelismCap: { type: "number" },
+          parallelismRationale: { type: "string" }
         },
         required: ["title", "objective", "domain", "complexity", "strategy", "parallelismCap"]
       },
@@ -312,6 +337,7 @@ function buildPlannerPrompt(args: {
     "Each step description must include concrete deliverables and verification intent.",
     "Dependencies must reflect true execution order. Independent workstreams should not depend on each other.",
     "Prefer minimal safe parallelism unless units are independent.",
+    "Recommend a parallelismCap (1-32) based on how many workstreams can truly run independently. Include a brief parallelismRationale in missionSummary explaining your reasoning.",
     args.allowPlanningQuestions
       ? "Clarifying questions are allowed only in planning output assumptions/risks; runtime must not request extra input unless blocked."
       : "Do not ask follow-up questions. Fill assumptions conservatively and continue."
@@ -329,6 +355,13 @@ function buildPlannerPrompt(args: {
     "",
     "Context constraints:",
     ...constraints.map((line) => `- ${line}`),
+    "",
+    "Strategic planning principles:",
+    "- CRITICAL PATH FIRST: Identify which steps block the most downstream work and front-load them.",
+    "- SMART PARALLELISM: Group truly independent work for parallel execution. Don't serialize what can safely run concurrently.",
+    "- HANDOFF DESIGN: Each step should produce a clear handoff summary for downstream consumers.",
+    "- VERIFY EARLY: Place validation close to implementation, not batched at the end.",
+    "- RIGHT-SIZE STEPS: One step = one agent, one session. If a step says 'implement X, Y, and Z' and they're independent, split them.",
     "",
     "Context digests:",
     docs || "- none",
@@ -524,7 +557,10 @@ export function validateAndCanonicalizePlannerPlan(raw: unknown): {
       ),
       complexity: toEnum(missionSummarySource.complexity, ["low", "medium", "high"] as const, "medium"),
       strategy: toEnum(missionSummarySource.strategy, ["sequential", "parallel-lite", "parallel-first"] as const, "parallel-lite"),
-      parallelismCap: toPositiveInt(missionSummarySource.parallelismCap, 2, 1, 8)
+      parallelismCap: toPositiveInt(missionSummarySource.parallelismCap, 2, 1, 32),
+      parallelismRationale: typeof missionSummarySource.parallelismRationale === "string"
+        ? missionSummarySource.parallelismRationale.slice(0, 500)
+        : undefined
     },
     assumptions: toStringArray(source.assumptions),
     risks: toStringArray(source.risks),
@@ -904,50 +940,10 @@ export function plannerPlanToMissionSteps(args: {
 export async function planMissionOnce(args: MissionPlanningRequest): Promise<MissionPlanningResult> {
   const startedAt = Date.now();
   const plannerRunId = randomUUID();
-  const timeoutMs = Math.max(5_000, Math.min(180_000, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS)));
+  const timeoutMs = Math.max(5_000, Math.min(600_000, Math.floor(args.timeoutMs ?? DEFAULT_TIMEOUT_MS)));
   const requestedEngine: MissionPlannerEngine = args.plannerEngine ?? "auto";
   const order = plannerEngineOrder(requestedEngine, args.aiIntegrationService);
   const plannerAttempts: MissionPlannerAttempt[] = [];
-
-  const fallback = (
-    reasonCode: MissionPlannerReasonCode,
-    reasonDetail: string,
-    errorDetails: string[] = [],
-    commandPreview: string | null = null
-  ): MissionPlanningResult => {
-    const plan = buildDeterministicPlannerPlan({
-      title: args.title,
-      prompt: args.prompt,
-      laneId: args.laneId,
-      policy: args.policy
-    });
-    const normalizedPlanHash = sha256(stableStringify(plan));
-    const run: MissionPlannerRun = {
-      id: plannerRunId,
-      missionId: args.missionId ?? "",
-      requestedEngine,
-      resolvedEngine: "deterministic_fallback",
-      status: "fallback",
-      degraded: true,
-      reasonCode,
-      reasonDetail,
-      planHash: normalizedPlanHash,
-      normalizedPlanHash,
-      commandPreview,
-      rawResponse: null,
-      createdAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAt,
-      validationErrors: errorDetails,
-      attempts: plannerAttempts
-    };
-    args.logger?.warn?.("missions.planner.fallback", {
-      plannerRunId,
-      requestedEngine,
-      reasonCode,
-      reasonDetail
-    });
-    return { plan, run };
-  };
 
   const prompt = buildPlannerPrompt({
     prompt: args.prompt,
@@ -960,7 +956,12 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
 
   const runtimeErrors: PlannerRuntimeError[] = [];
   if (!order.length) {
-    return fallback("planner_unavailable", "Selected planner adapter is unavailable on this machine.");
+    throw new MissionPlanningError({
+      reasonCode: "planner_unavailable",
+      reasonDetail: "Selected planner adapter is unavailable on this machine.",
+      attempts: 0,
+      engine: null
+    });
   }
   for (const engine of order) {
     try {
@@ -1084,6 +1085,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
       });
       return { plan, run };
     } catch (error) {
+      if (error instanceof MissionPlanningError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       const reasonCode: MissionPlannerReasonCode =
         /timed out|timeout/i.test(message) ? "planner_timeout" : "planner_execution_error";
@@ -1106,9 +1108,15 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
     }
   }
 
-  if (runtimeErrors.length === 0) {
-    return fallback("planner_unavailable", "No planner adapter was available.");
-  }
-  const best = runtimeErrors[runtimeErrors.length - 1]!;
-  return fallback(best.reasonCode, best.detail, best.validationErrors ?? [], best.commandPreview ?? null);
+  // All engines exhausted — throw with summary of failures
+  const allValidationErrors = runtimeErrors.flatMap((e) => e.validationErrors ?? []);
+  const summaryDetails = runtimeErrors.map((e) => `${e.engine}: ${e.detail}`).join("; ");
+  const best = runtimeErrors[runtimeErrors.length - 1];
+  throw new MissionPlanningError({
+    reasonCode: best?.reasonCode ?? "planner_unavailable",
+    reasonDetail: summaryDetails || "All planner engines failed.",
+    validationErrors: allValidationErrors,
+    attempts: plannerAttempts.length,
+    engine: best?.engine ?? null
+  });
 }

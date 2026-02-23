@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ExternalLink, Grid, LayoutList, Plus, Settings, Trash2, X } from "lucide-react";
+import { ArrowSquareOut, GridFour, List, Plus, GearSix, Trash, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import type {
   TerminalLaunchProfile,
@@ -379,20 +379,20 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               className={cn("p-1 rounded hover:bg-muted", viewMode === "tabs" && "bg-muted text-fg shadow-sm")}
               title="Tab View"
             >
-              <LayoutList className="h-3.5 w-3.5" />
+              <List size={14} />
             </button>
             <button
               onClick={() => setViewMode("grid")}
               className={cn("p-1 rounded hover:bg-muted", viewMode === "grid" && "bg-muted text-fg shadow-sm")}
               title="Tiling Grid"
             >
-              <Grid className="h-3.5 w-3.5" />
+              <GridFour size={14} />
             </button>
           </div>
           <div className="h-4 w-px bg-border" />
           <div className="truncate text-xs font-semibold">{laneName ?? laneId}</div>
-          <Chip className="text-[10px]">{runningSessions.length} running</Chip>
-          {!launchTracked ? <Chip className="text-[10px]">no context</Chip> : null}
+          <Chip className="text-[11px]">{runningSessions.length} running</Chip>
+          {!launchTracked ? <Chip className="text-[11px]">no context</Chip> : null}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex flex-wrap items-center gap-1">
@@ -403,7 +403,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   key={profile.id}
                   variant={profile.id === "shell" ? "outline" : "primary"}
                   size="sm"
-                  className="h-7 px-2 text-[11px]"
+                  className="h-7 px-2 text-xs"
                   style={profile.color ? { backgroundColor: profile.color, borderColor: profile.color, color: "#fff" } : undefined}
                   onClick={() => launchFromProfile(profile)}
                   title={profile.command ? `${profile.name} (${profile.command})` : profile.name}
@@ -416,17 +416,17 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
           <Button
             variant="outline"
             size="sm"
-            className="h-7 px-2 text-[11px]"
+            className="h-7 px-2 text-xs"
             title="Open in Terminals tab"
             onClick={() => {
               navigate(`/work?laneId=${encodeURIComponent(laneId)}&status=running`);
             }}
           >
-            <ExternalLink className="h-3.5 w-3.5" />
+            <ArrowSquareOut size={14} />
             Terminals
           </Button>
           <Button variant="outline" size="sm" className="h-7 w-7 p-0" title="Terminal settings" onClick={openSettings}>
-            <Settings className="h-4 w-4" />
+            <GearSix size={16} />
           </Button>
         </div>
       </div>
@@ -460,7 +460,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   style={profileColor ? { backgroundColor: profileColor } : undefined}
                 />
                 <span className="max-w-[260px] truncate">{sessionTabLabel(s)}</span>
-                {!s.tracked ? <span className="rounded border border-border px-1 text-[10px] text-muted-fg">no ctx</span> : null}
+                {!s.tracked ? <span className="rounded border border-border px-1 text-[11px] text-muted-fg">no ctx</span> : null}
                 {s.status === "running" && s.ptyId ? (
                   <span
                     role="button"
@@ -483,7 +483,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                     }}
                     title={closingSessionIds.has(s.id) ? "Closing…" : "Close / kill session"}
                   >
-                    <X className="h-3 w-3" />
+                    <X size={12} />
                   </span>
                 ) : null}
               </Tabs.Trigger>
@@ -497,10 +497,10 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
               <div className="flex items-center justify-between gap-2 rounded border border-border bg-card/50 px-2 py-1 mb-2 shrink-0">
                 <div className="min-w-0 flex items-center gap-2">
                   <div className="truncate text-xs font-semibold text-fg">{current.title}</div>
-                  {current.toolType ? <Chip className="text-[10px]">{current.toolType}</Chip> : null}
-                  {!current.tracked ? <Chip className="text-[10px]">no context</Chip> : null}
+                  {current.toolType ? <Chip className="text-[11px]">{current.toolType}</Chip> : null}
+                  {!current.tracked ? <Chip className="text-[11px]">no context</Chip> : null}
                 </div>
-                <div className="shrink-0 text-[11px] text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
+                <div className="shrink-0 text-xs text-muted-fg">{new Date(current.startedAt).toLocaleString()}</div>
               </div>
             ) : null}
 
@@ -568,7 +568,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
 
             <div className="space-y-3">
               <div className="rounded border border-border bg-bg/40 p-3 text-xs">
-                <div className="text-[11px] font-semibold text-muted-fg">Launch mode</div>
+                <div className="text-xs font-semibold text-muted-fg">Launch mode</div>
                 <label className="mt-2 flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -581,23 +581,23 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                   />
                   <span className="text-fg">Launch terminals with context (tracked transcripts + pack refresh)</span>
                 </label>
-                <div className="mt-1 text-[11px] text-muted-fg">
+                <div className="mt-1 text-xs text-muted-fg">
                   If disabled, terminals still run normally but do not produce transcripts or pack updates.
                 </div>
               </div>
 
               <div className="rounded border border-border bg-bg/40 p-3 text-xs">
-                <div className="text-[11px] font-semibold text-muted-fg">Terminal buttons</div>
+                <div className="text-xs font-semibold text-muted-fg">Terminal buttons</div>
                 <div className="mt-2 grid grid-cols-1 gap-2">
                   {profileDraft.length === 0 ? (
-                    <div className="text-[11px] text-muted-fg">No profiles loaded.</div>
+                    <div className="text-xs text-muted-fg">No profiles loaded.</div>
                   ) : (
                     profileDraft.map((p) => {
                       const locked = isDefaultProfile(p);
                       return (
                         <div key={p.id} className="rounded border border-border bg-card/50 p-2">
                           <div className="flex flex-wrap items-center gap-2">
-                            <div className="min-w-[140px] text-[11px] text-muted-fg">{p.id}</div>
+                            <div className="min-w-[140px] text-xs text-muted-fg">{p.id}</div>
                             <input
                               className="h-8 flex-1 min-w-[180px] rounded border border-border bg-bg/40 px-2 text-xs text-fg outline-none"
                               value={p.name}
@@ -617,16 +617,16 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-8 px-2 text-[11px]"
+                              className="h-8 px-2 text-xs"
                               disabled={locked}
                               onClick={() => setProfileDraft((prev) => prev.filter((x) => x.id !== p.id))}
                               title={locked ? "Default buttons cannot be removed" : "Remove button"}
                             >
-                              <Trash2 className="h-4 w-4" />
+                              <Trash size={16} />
                             </Button>
                           </div>
                           <div className="mt-1.5 flex items-center gap-1">
-                            <span className="text-[10px] text-muted-fg mr-1">Color</span>
+                            <span className="text-[11px] text-muted-fg mr-1">Color</span>
                             {PROFILE_COLORS.map((c) => (
                               <button
                                 key={c ?? "none"}
@@ -652,7 +652,7 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                 </div>
 
                 <div className="mt-3 rounded border border-border bg-bg/40 p-2">
-                  <div className="text-[11px] font-semibold text-muted-fg">Add custom button</div>
+                  <div className="text-xs font-semibold text-muted-fg">Add custom button</div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <input
                       className="h-8 min-w-[180px] flex-1 rounded border border-border bg-bg/40 px-2 text-xs text-fg outline-none"
@@ -666,15 +666,15 @@ export function LaneTerminalsPanel({ overrideLaneId }: { overrideLaneId?: string
                       onChange={(e) => setNewProfileCommand(e.target.value)}
                       placeholder="Command (e.g., npm run dev)"
                     />
-                    <Button size="sm" variant="primary" className="h-8 px-2 text-[11px]" onClick={addProfile}>
-                      <Plus className="mr-1 h-3 w-3" />
+                    <Button size="sm" variant="primary" className="h-8 px-2 text-xs" onClick={addProfile}>
+                      <Plus size={12} className="mr-1" />
                       Add
                     </Button>
                   </div>
                 </div>
 
                 {profilesError ? (
-                  <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-[11px] text-red-300">
+                  <div className="mt-2 rounded border border-red-900 bg-red-950/20 p-2 text-xs text-red-300">
                     {profilesError}
                   </div>
                 ) : null}

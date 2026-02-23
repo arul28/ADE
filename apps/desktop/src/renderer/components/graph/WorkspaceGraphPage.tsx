@@ -21,7 +21,7 @@ import {
   getBezierPath,
   useReactFlow
 } from "@xyflow/react";
-import { AlertTriangle, ArrowUpRight, Filter, Flag, GitBranch, Layers3, Plus, Search, Shield, Sparkles, Star, Tag, Zap } from "lucide-react";
+import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   BatchAssessmentResult,
@@ -169,11 +169,11 @@ type IntegrationDialogState = {
 const VIEW_MODES: GraphViewMode[] = ["stack", "risk", "activity", "all"];
 const ICON_OPTIONS: Array<{ key: LaneIcon; label: string; icon: React.ReactNode }> = [
   { key: null, label: "None", icon: <span className="text-xs">○</span> },
-  { key: "star", label: "Star", icon: <Star className="h-3.5 w-3.5" /> },
-  { key: "flag", label: "Flag", icon: <Flag className="h-3.5 w-3.5" /> },
-  { key: "bolt", label: "Bolt", icon: <Zap className="h-3.5 w-3.5" /> },
-  { key: "shield", label: "Shield", icon: <Shield className="h-3.5 w-3.5" /> },
-  { key: "tag", label: "Tag", icon: <Tag className="h-3.5 w-3.5" /> }
+  { key: "star", label: "Star", icon: <Star size={14} weight="regular" /> },
+  { key: "flag", label: "Flag", icon: <Flag size={14} weight="regular" /> },
+  { key: "bolt", label: "Bolt", icon: <Lightning size={14} weight="regular" /> },
+  { key: "shield", label: "Shield", icon: <Shield size={14} weight="regular" /> },
+  { key: "tag", label: "Tag", icon: <Tag size={14} weight="regular" /> }
 ];
 const COLOR_PALETTE = ["#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#2563eb", "#9333ea", "#1f2937", "#f8fafc"];
 const DEFAULT_PRESET = "__default__";
@@ -321,11 +321,11 @@ function prCiDotColor(pr: GraphPrOverlay): string {
 }
 
 function iconGlyph(icon: LaneIcon): React.ReactNode {
-  if (icon === "star") return <Star className="h-3.5 w-3.5" />;
-  if (icon === "flag") return <Flag className="h-3.5 w-3.5" />;
-  if (icon === "bolt") return <Zap className="h-3.5 w-3.5" />;
-  if (icon === "shield") return <Shield className="h-3.5 w-3.5" />;
-  if (icon === "tag") return <Tag className="h-3.5 w-3.5" />;
+  if (icon === "star") return <Star size={14} weight="regular" />;
+  if (icon === "flag") return <Flag size={14} weight="regular" />;
+  if (icon === "bolt") return <Lightning size={14} weight="regular" />;
+  if (icon === "shield") return <Shield size={14} weight="regular" />;
+  if (icon === "tag") return <Tag size={14} weight="regular" />;
   return null;
 }
 
@@ -517,7 +517,7 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         {iconGlyph(lane.icon)}
         <span className="truncate font-semibold">{lane.name}</span>
       </div>
-      <div className="truncate text-[10px] text-muted-fg">{lane.branchRef}</div>
+      <div className="truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
       <div className="mt-1 flex flex-wrap items-center gap-1">
         <Chip className="px-1 py-0 text-[10px]">{lane.status.dirty ? "dirty" : "clean"}</Chip>
         <Chip className="px-1 py-0 text-[10px]" title={`Compared to base ${lane.baseRef}`}>
@@ -570,8 +570,8 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         </div>
       ) : null}
       {data.collapsedChildCount > 0 ? (
-        <div className="mt-1 inline-flex items-center gap-1 rounded bg-muted/40 px-1 text-[10px]">
-          <Layers3 className="h-3 w-3" />
+        <div className="mt-1 inline-flex items-center gap-1 rounded bg-muted/40 px-1 text-[11px]">
+          <Stack size={12} weight="regular" />
           {data.collapsedChildCount} children
         </div>
       ) : null}
@@ -2397,7 +2397,7 @@ function GraphInner() {
       <div className="relative h-full w-full">
         <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
         <div className="absolute inset-0 flex items-center justify-center">
-          <EmptyState title="No lanes yet" description="Create a lane to start." />
+          <EmptyState title="No lanes yet" description="Create lanes to see your workspace graph." />
         </div>
       </div>
     );
@@ -2426,7 +2426,7 @@ function GraphInner() {
           </div>
 
           <div className="relative ml-2">
-            <Search className="pointer-events-none absolute left-2 top-1.5 h-3.5 w-3.5 text-muted-fg" />
+            <MagnifyingGlass size={14} weight="regular" className="pointer-events-none absolute left-2 top-1.5 text-muted-fg" />
             <input
               value={filters.search}
               onChange={(event) => {
@@ -2510,7 +2510,7 @@ function GraphInner() {
               className="h-7 px-2 text-[11px]"
               onClick={() => setShowFiltersPanel((prev) => !prev)}
             >
-              <Filter className="h-3.5 w-3.5" />
+              <Funnel size={14} weight="regular" />
               Filters
             </Button>
             {showFiltersPanel ? (
@@ -2519,7 +2519,7 @@ function GraphInner() {
                   Drag-drop integrates commits by default; use Reparent when you want to change stack hierarchy.
                 </div>
                 <div className="mb-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Status</div>
+                  <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">Status</div>
                   <div className="flex flex-wrap gap-1">
                     {(["conflict", "at-risk", "clean", "unknown"] as GraphStatusFilter[]).map((status) => (
                       <Chip
@@ -2554,7 +2554,7 @@ function GraphInner() {
                   </div>
                 </div>
                 <div className="mb-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Lane Type</div>
+                  <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">Lane Type</div>
                   <div className="flex flex-wrap gap-1">
                     {(["worktree", "attached", "primary"] as LaneSummary["laneType"][]).map((laneType) => (
                       <Chip
@@ -2579,7 +2579,7 @@ function GraphInner() {
                   </div>
                 </div>
                 <div className="mb-2">
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-fg">Visibility</div>
+                  <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-fg">Visibility</div>
                   <div className="flex flex-wrap gap-1">
                     <Chip
                       role="button"
@@ -2629,7 +2629,7 @@ function GraphInner() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wider text-muted-fg">
+                  <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wider text-muted-fg">
                     Root stack
                     <select
                       value={filters.rootLaneId ?? ""}
@@ -2652,7 +2652,7 @@ function GraphInner() {
                       ))}
                     </select>
                   </label>
-                  <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wider text-muted-fg">
+                  <label className="flex flex-col gap-1 text-[11px] uppercase tracking-wider text-muted-fg">
                     Tag
                     <select
                       value={filters.tags[0] ?? ""}
@@ -2867,7 +2867,7 @@ function GraphInner() {
           <MiniMap pannable zoomable />
           <Controls showInteractive={false}>
             <ControlButton title="Zoom to fit" onClick={() => void reactFlow.fitView({ duration: 500, padding: 0.2 })}>
-              <ArrowUpRight className="h-4 w-4" />
+              <ArrowSquareOut size={16} weight="regular" />
             </ControlButton>
           </Controls>
           <Panel position="bottom-left">
@@ -3100,7 +3100,7 @@ function GraphInner() {
                 })
               }
             >
-              <Plus className="h-3 w-3" />
+              <Plus size={12} weight="regular" />
               Add
             </Button>
           </div>
@@ -3712,7 +3712,7 @@ function GraphInner() {
         <div className={cn("absolute left-3 right-3 z-[85] rounded bg-red-900/35 px-3 py-2 text-xs text-red-100", batch?.truncated ? "top-[106px]" : "top-[60px]")}>
           <div className="flex items-center justify-between gap-2">
             <div className="inline-flex items-center gap-1.5">
-              <AlertTriangle className="h-3.5 w-3.5" />
+              <Warning size={14} weight="regular" />
               {errorBanner}
             </div>
             <div className="flex gap-1">
