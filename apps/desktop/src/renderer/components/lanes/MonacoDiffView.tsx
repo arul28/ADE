@@ -52,8 +52,8 @@ function disposeDiffModels(editor: import("monaco-editor").editor.IStandaloneDif
   }
 }
 
-export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; editable?: boolean; className?: string }>(
-  function MonacoDiffView({ diff, editable = false, className }, ref) {
+export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; editable?: boolean; className?: string; theme?: "dark" | "light" }>(
+  function MonacoDiffView({ diff, editable = false, className, theme = "dark" }, ref) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const diffEditorRef = useRef<import("monaco-editor").editor.IStandaloneDiffEditor | null>(null);
     const modelsRef = useRef<{ original: import("monaco-editor").editor.ITextModel; modified: import("monaco-editor").editor.ITextModel } | null>(
@@ -83,7 +83,8 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
             fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
             fontSize: 13,
             lineHeight: 18,
-            scrollBeyondLastLine: false
+            scrollBeyondLastLine: false,
+            theme: theme === "light" ? "vs" : "vs-dark"
           });
 
           diffEditorRef.current = editor;
@@ -142,6 +143,21 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
         cancelled = true;
       };
     }, [diff, editable]);
+
+    useEffect(() => {
+      let cancelled = false;
+      loadMonaco()
+        .then((monaco) => {
+          if (cancelled) return;
+          monaco.editor.setTheme(theme === "light" ? "vs" : "vs-dark");
+        })
+        .catch(() => {
+          if (!cancelled) setFailed(true);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [theme]);
 
     return (
       <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>

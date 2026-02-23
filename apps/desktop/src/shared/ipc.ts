@@ -4,6 +4,8 @@ export const IPC = {
   appGetProject: "ade.app.getProject",
   appOpenExternal: "ade.app.openExternal",
   appRevealPath: "ade.app.revealPath",
+  appWriteClipboardText: "ade.app.writeClipboardText",
+  appOpenPathInEditor: "ade.app.openPathInEditor",
   projectOpenRepo: "ade.project.openRepo",
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",

@@ -302,7 +302,13 @@ contextBridge.exposeInMainWorld("ade", {
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getProject: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.appGetProject),
     openExternal: async (url: string): Promise<void> => ipcRenderer.invoke(IPC.appOpenExternal, { url }),
-    revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path })
+    revealPath: async (path: string): Promise<void> => ipcRenderer.invoke(IPC.appRevealPath, { path }),
+    writeClipboardText: async (text: string): Promise<void> => ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
+    openPathInEditor: async (args: {
+      rootPath: string;
+      relativePath?: string;
+      target: "finder" | "vscode" | "cursor" | "zed";
+    }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args)
   },
   project: {
     openRepo: async (): Promise<ProjectInfo> => ipcRenderer.invoke(IPC.projectOpenRepo),
