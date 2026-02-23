@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -835,6 +836,83 @@ export function registerIpc({
     if (!raw) return;
     shell.showItemInFolder(raw);
   });
+
+  ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
+    const text = typeof arg?.text === "string" ? arg.text : "";
+    clipboard.writeText(text);
+  });
+
+  ipcMain.handle(
+    IPC.appOpenPathInEditor,
+    async (
+      _event,
+      arg: { rootPath: string; relativePath?: string; target: "finder" | "vscode" | "cursor" | "zed" }
+    ): Promise<void> => {
+      const rootRaw = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      const relRaw = typeof arg?.relativePath === "string" ? arg.relativePath.trim() : "";
+      const target = arg?.target;
+      if (!rootRaw) throw new Error("Missing root path.");
+      if (target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
+        throw new Error("Unsupported editor target.");
+      }
+      const targetPath = relRaw ? path.resolve(rootRaw, relRaw) : path.resolve(rootRaw);
+
+      if (target === "finder") {
+        shell.showItemInFolder(targetPath);
+        return;
+      }
+
+      const launchDetached = async (command: string, args: string[]): Promise<void> => {
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          try {
+            const child = spawn(command, args, { detached: true, stdio: "ignore" });
+            child.once("error", (error) => {
+              if (settled) return;
+              settled = true;
+              reject(error);
+            });
+            child.once("spawn", () => {
+              if (settled) return;
+              settled = true;
+              child.unref();
+              resolve();
+            });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      };
+
+      const launchAttempts = async (attempts: Array<{ command: string; args: string[] }>): Promise<void> => {
+        let lastError: unknown = null;
+        for (const attempt of attempts) {
+          try {
+            await launchDetached(attempt.command, attempt.args);
+            return;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        throw lastError instanceof Error ? lastError : new Error("Failed to launch external editor.");
+      };
+
+      const attempts: Array<{ command: string; args: string[] }> = [];
+      const cliCommand = target === "vscode" ? "code" : target === "cursor" ? "cursor" : "zed";
+
+      if (process.platform === "darwin") {
+        const appName = target === "vscode" ? "Visual Studio Code" : target === "cursor" ? "Cursor" : "Zed";
+        attempts.push({ command: "open", args: ["-a", appName, targetPath] });
+      }
+      attempts.push({ command: cliCommand, args: [targetPath] });
+
+      try {
+        await launchAttempts(attempts);
+      } catch {
+        throw new Error(`Unable to open file in ${target}. Ensure it is installed and available.`);
+      }
+    }
+  );
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     return {
