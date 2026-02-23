@@ -197,6 +197,12 @@ const WORKER_MESSAGE_RETRY_BACKOFF_MAX_MS = 90_000;
 const WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS = 90_000;
 const WORKER_MESSAGE_INFLIGHT_LEASE_MS = 45_000;
 const WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS = 180_000;
+const PLANNER_THREAD_ID_PREFIX = "planner";
+const PLANNER_THREAD_TITLE = "Planner Agent";
+const PLANNER_THREAD_STEP_KEY = "planner";
+const PLANNER_STREAM_FLUSH_CHARS = 1_200;
+const PLANNER_STREAM_FLUSH_INTERVAL_MS = 1_500;
+const MAX_PLANNER_RAW_OUTPUT_CHARS = 4_000_000;
 
 type SessionRuntimeSignal = {
   laneId: string;
@@ -228,6 +234,39 @@ type AgentChatSessionSummaryEntry = Awaited<
   ReturnType<ReturnType<typeof createAgentChatService>["listSessions"]>
 >[number];
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+  settled: boolean;
+};
+
+type PlannerTurnCompletionStatus = "completed" | "failed" | "interrupted";
+
+type PlannerTurnCompletion = {
+  status: PlannerTurnCompletionStatus;
+  rawOutput: string;
+  error: string | null;
+};
+
+type PlannerAgentSessionState = {
+  missionId: string;
+  threadId: string;
+  sessionId: string;
+  laneId: string;
+  provider: "claude" | "codex";
+  model: string;
+  reasoningEffort: string | null;
+  rawOutput: string;
+  rawOutputTruncated: boolean;
+  streamBuffer: string;
+  lastStreamFlushAtMs: number;
+  turn: Deferred<PlannerTurnCompletion> | null;
+  activeTurnId: string | null;
+  createdAt: string;
+  lastEventAt: string;
+};
+
 type WorkerDeliveryContext = {
   missionId: string;
   threadId: string;
@@ -253,6 +292,29 @@ type WorkerDeliverySessionResolution = {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let settle: ((value: T) => void) | null = null;
+  let reject: ((error: unknown) => void) | null = null;
+  const deferred: Deferred<T> = {
+    promise: new Promise<T>((resolve, rejectFn) => {
+      settle = resolve;
+      reject = rejectFn;
+    }),
+    resolve(value: T) {
+      if (deferred.settled) return;
+      deferred.settled = true;
+      settle?.(value);
+    },
+    reject(error: unknown) {
+      if (deferred.settled) return;
+      deferred.settled = true;
+      reject?.(error);
+    },
+    settled: false
+  };
+  return deferred;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -496,6 +558,10 @@ function parseJsonArray(raw: string | null | undefined): unknown[] {
 
 function missionThreadId(missionId: string): string {
   return `mission:${missionId}`;
+}
+
+function plannerThreadId(missionId: string): string {
+  return `${PLANNER_THREAD_ID_PREFIX}:${missionId}`;
 }
 
 function clampLimit(rawLimit: number | null | undefined, fallback: number, max = MAX_THREAD_PAGE_SIZE): number {
@@ -1069,6 +1135,8 @@ export function createAiOrchestratorService(args: {
   const chatMessages = new Map<string, OrchestratorChatMessage[]>();
   const activeChatSessions = new Map<string, OrchestratorChatSessionState>();
   const chatTurnQueues = new Map<string, Promise<void>>();
+  const plannerSessionByMissionId = new Map<string, PlannerAgentSessionState>();
+  const plannerSessionBySessionId = new Map<string, PlannerAgentSessionState>();
   const activeHealthSweepRuns = new Set<string>();
   const sessionRuntimeSignals = new Map<string, SessionRuntimeSignal>();
   const attemptRuntimeTrackers = new Map<string, AttemptRuntimeTracker>();
@@ -1814,6 +1882,197 @@ export function createAiOrchestratorService(args: {
       metadata: metadata ?? null
     };
     return appendChatMessage(msg);
+  };
+
+  const upsertPlannerThread = (args: {
+    missionId: string;
+    laneId: string;
+    sessionId: string;
+    provider: "claude" | "codex";
+    model: string;
+    reasoningEffort: string | null;
+  }): OrchestratorChatThread => {
+    return upsertThread({
+      missionId: args.missionId,
+      threadId: plannerThreadId(args.missionId),
+      threadType: "worker",
+      title: PLANNER_THREAD_TITLE,
+      target: {
+        kind: "worker",
+        runId: null,
+        stepId: null,
+        stepKey: PLANNER_THREAD_STEP_KEY,
+        attemptId: null,
+        sessionId: args.sessionId,
+        laneId: args.laneId
+      },
+      metadata: {
+        role: "planner",
+        provider: args.provider,
+        model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        plannerThread: true
+      }
+    });
+  };
+
+  const appendPlannerWorkerMessage = (
+    state: PlannerAgentSessionState,
+    content: string,
+    metadata?: Record<string, unknown> | null
+  ): OrchestratorChatMessage | null => {
+    const normalizedContent = content.trim();
+    if (!normalizedContent.length) return null;
+    return appendChatMessage({
+      id: randomUUID(),
+      missionId: state.missionId,
+      role: "worker",
+      content: normalizedContent,
+      timestamp: nowIso(),
+      threadId: state.threadId,
+      target: {
+        kind: "worker",
+        runId: null,
+        stepId: null,
+        stepKey: PLANNER_THREAD_STEP_KEY,
+        attemptId: null,
+        sessionId: state.sessionId,
+        laneId: state.laneId
+      },
+      visibility: "full",
+      deliveryState: "delivered",
+      sourceSessionId: state.sessionId,
+      attemptId: null,
+      laneId: state.laneId,
+      runId: null,
+      stepKey: PLANNER_THREAD_STEP_KEY,
+      metadata: metadata ?? null
+    });
+  };
+
+  const flushPlannerStreamBuffer = (state: PlannerAgentSessionState, force = false): void => {
+    if (!state.streamBuffer.length) return;
+    if (!force) {
+      const hasParagraphBreak = /\n{2,}/.test(state.streamBuffer);
+      const exceededChunkThreshold = state.streamBuffer.length >= PLANNER_STREAM_FLUSH_CHARS;
+      const exceededInterval = Date.now() - state.lastStreamFlushAtMs >= PLANNER_STREAM_FLUSH_INTERVAL_MS;
+      if (!hasParagraphBreak && !exceededChunkThreshold && !exceededInterval) {
+        return;
+      }
+    }
+
+    let chunk = state.streamBuffer;
+    if (!force) {
+      let boundary = Math.min(state.streamBuffer.length, PLANNER_STREAM_FLUSH_CHARS);
+      const lastNewline = state.streamBuffer.lastIndexOf("\n", boundary);
+      if (lastNewline >= 120) {
+        boundary = lastNewline + 1;
+      }
+      chunk = state.streamBuffer.slice(0, boundary);
+      state.streamBuffer = state.streamBuffer.slice(boundary);
+    } else {
+      state.streamBuffer = "";
+    }
+
+    state.lastStreamFlushAtMs = Date.now();
+    appendPlannerWorkerMessage(state, chunk, {
+      planner: {
+        stream: true,
+        sessionId: state.sessionId
+      }
+    });
+  };
+
+  const appendPlannerTextDelta = (state: PlannerAgentSessionState, rawDelta: string): void => {
+    const delta = String(rawDelta ?? "");
+    if (!delta.length) return;
+    if (state.rawOutput.length < MAX_PLANNER_RAW_OUTPUT_CHARS) {
+      const remaining = MAX_PLANNER_RAW_OUTPUT_CHARS - state.rawOutput.length;
+      const accepted = delta.slice(0, remaining);
+      state.rawOutput += accepted;
+      if (accepted.length < delta.length) {
+        state.rawOutputTruncated = true;
+      }
+    } else {
+      state.rawOutputTruncated = true;
+    }
+    state.streamBuffer += delta;
+    flushPlannerStreamBuffer(state, false);
+  };
+
+  const beginPlannerTurn = (state: PlannerAgentSessionState): Deferred<PlannerTurnCompletion> => {
+    if (state.turn && !state.turn.settled) {
+      state.turn.resolve({
+        status: "interrupted",
+        rawOutput: state.rawOutput,
+        error: "Planner turn was interrupted by a newer turn."
+      });
+    }
+    state.rawOutput = "";
+    state.rawOutputTruncated = false;
+    state.streamBuffer = "";
+    state.lastStreamFlushAtMs = 0;
+    state.activeTurnId = null;
+    const turn = createDeferred<PlannerTurnCompletion>();
+    state.turn = turn;
+    return turn;
+  };
+
+  const completePlannerTurn = (
+    state: PlannerAgentSessionState,
+    status: PlannerTurnCompletionStatus,
+    error: string | null
+  ): void => {
+    flushPlannerStreamBuffer(state, true);
+    if (state.rawOutputTruncated) {
+      appendPlannerWorkerMessage(
+        state,
+        "Planner output exceeded capture limit; response was truncated in-thread.",
+        {
+          planner: {
+            truncated: true,
+            sessionId: state.sessionId
+          }
+        }
+      );
+    }
+    const turn = state.turn;
+    if (!turn || turn.settled) return;
+    turn.resolve({
+      status,
+      rawOutput: state.rawOutput,
+      error
+    });
+    state.turn = null;
+  };
+
+  const registerPlannerSession = (state: PlannerAgentSessionState): void => {
+    const existingByMission = plannerSessionByMissionId.get(state.missionId);
+    if (existingByMission && existingByMission.sessionId !== state.sessionId) {
+      completePlannerTurn(
+        existingByMission,
+        "interrupted",
+        "Planner session was replaced by a newer planning run."
+      );
+      plannerSessionBySessionId.delete(existingByMission.sessionId);
+    }
+    plannerSessionByMissionId.set(state.missionId, state);
+    plannerSessionBySessionId.set(state.sessionId, state);
+  };
+
+  const resolvePlannerLaneId = async (mission: MissionDetail): Promise<string> => {
+    const missionLaneId = toOptionalString(mission.laneId);
+    if (missionLaneId) return missionLaneId;
+    if (!laneService || typeof laneService.list !== "function") {
+      throw new Error("Mission planning lane could not be resolved.");
+    }
+    const lanes = await laneService.list({ includeArchived: false });
+    const preferred = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0] ?? null;
+    const laneId = preferred && typeof preferred.id === "string" ? preferred.id.trim() : "";
+    if (!laneId.length) {
+      throw new Error("Mission planning lane could not be resolved.");
+    }
+    return laneId;
   };
 
   const recordRuntimeEvent = (args: {
@@ -3755,15 +4014,174 @@ export function createAiOrchestratorService(args: {
     chatTurnQueues.set(missionId, next);
   };
 
+  const canUsePlannerAgentSessions = (): boolean => {
+    return Boolean(
+      agentChatService
+      && laneService
+      && typeof agentChatService.createSession === "function"
+      && typeof agentChatService.sendMessage === "function"
+    );
+  };
+
+  const createPlannerAgentIntegration = (args: {
+    mission: MissionDetail;
+    provider: "claude" | "codex";
+    model?: string;
+    policy?: MissionExecutionPolicy;
+  }): ReturnType<typeof createAiIntegrationService> => {
+    if (!agentChatService) {
+      throw new Error("Planner agent chat service is unavailable.");
+    }
+    const providerAvailability = {
+      claude: args.provider === "claude",
+      codex: args.provider === "codex"
+    };
+    const planningReasoningEffort =
+      typeof args.policy?.planning.reasoningEffort === "string" && args.policy.planning.reasoningEffort.trim().length
+        ? args.policy.planning.reasoningEffort.trim()
+        : null;
+    const fallbackModel = args.provider === "claude" ? "sonnet" : "gpt-5.3-codex";
+
+    return {
+      getMode: () => "subscription",
+      getAvailability: () => providerAvailability,
+      planMission: async (planArgs: {
+        cwd: string;
+        prompt: string;
+        timeoutMs?: number;
+        model?: string;
+        provider?: "claude" | "codex";
+        jsonSchema?: unknown;
+      }) => {
+        const startedAtMs = Date.now();
+        const laneId = await resolvePlannerLaneId(args.mission);
+        const model = String(planArgs.model ?? args.model ?? fallbackModel).trim() || fallbackModel;
+        const session = await agentChatService.createSession({
+          laneId,
+          provider: args.provider,
+          model,
+          ...(planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {})
+        });
+        const thread = upsertPlannerThread({
+          missionId: args.mission.id,
+          laneId,
+          sessionId: session.id,
+          provider: args.provider,
+          model: session.model,
+          reasoningEffort: session.reasoningEffort ?? planningReasoningEffort
+        });
+        const plannerState: PlannerAgentSessionState = {
+          missionId: args.mission.id,
+          threadId: thread.id,
+          sessionId: session.id,
+          laneId,
+          provider: args.provider,
+          model: session.model,
+          reasoningEffort: session.reasoningEffort ?? planningReasoningEffort,
+          rawOutput: "",
+          rawOutputTruncated: false,
+          streamBuffer: "",
+          lastStreamFlushAtMs: 0,
+          turn: null,
+          activeTurnId: null,
+          createdAt: nowIso(),
+          lastEventAt: nowIso()
+        };
+        registerPlannerSession(plannerState);
+        updateMissionMetadata(args.mission.id, (metadata) => {
+          metadata.plannerAgent = {
+            sessionId: session.id,
+            threadId: thread.id,
+            laneId,
+            provider: args.provider,
+            model: session.model,
+            reasoningEffort: session.reasoningEffort ?? planningReasoningEffort,
+            updatedAt: nowIso()
+          };
+        });
+        appendPlannerWorkerMessage(
+          plannerState,
+          `Planner online (${args.provider}:${session.model}).`,
+          {
+            planner: {
+              event: "session_started",
+              sessionId: session.id
+            }
+          }
+        );
+
+        const turn = beginPlannerTurn(plannerState);
+        appendPlannerWorkerMessage(
+          plannerState,
+          "Planning request received. Building structured mission plan...",
+          {
+            planner: {
+              event: "turn_enqueued",
+              sessionId: session.id
+            }
+          }
+        );
+
+        try {
+          await agentChatService.sendMessage({
+            sessionId: session.id,
+            text: planArgs.prompt,
+            ...(planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {})
+          });
+          const completion = await turn.promise;
+          if (completion.status !== "completed") {
+            throw new Error(completion.error ?? `Planner turn finished with status '${completion.status}'.`);
+          }
+          const text = completion.rawOutput.trim();
+          if (!text.length) {
+            throw new Error("Planner turn completed without returning text.");
+          }
+          appendPlannerWorkerMessage(
+            plannerState,
+            "Planner produced a candidate plan. Validating and applying steps...",
+            {
+              planner: {
+                event: "response_ready",
+                sessionId: session.id
+              }
+            }
+          );
+          return {
+            text,
+            structuredOutput: null,
+            provider: args.provider,
+            model: session.model,
+            sessionId: session.id,
+            durationMs: Date.now() - startedAtMs,
+            inputTokens: null,
+            outputTokens: null
+          } as any;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          completePlannerTurn(plannerState, "failed", message);
+          appendPlannerWorkerMessage(
+            plannerState,
+            `Planner turn failed: ${message}`,
+            {
+              planner: {
+                event: "turn_failed",
+                sessionId: session.id
+              }
+            }
+          );
+          throw error;
+        }
+      }
+    } as ReturnType<typeof createAiIntegrationService>;
+  };
+
   /**
    * Plan a mission using AI.
    *
-   * Delegation model: the leader process (this service) assembles the prompt
-   * and parses the structured result, but all planning *reasoning* is
-   * delegated to an external CLI process via `aiIntegrationService.executeTask()`
-   * (which spawns a Claude or Codex CLI subprocess). The leader never performs
-   * the AI inference itself — it only orchestrates prompt assembly and result
-   * integration into the mission's step list.
+   * Delegation model: planning runs through an explicit planner agent session
+   * whenever chat/lane services are available. This keeps planning behavior
+   * aligned with other spawned worker agents and exposes a dedicated planner
+   * thread in the UI.
    *
    * AI planning is policy-driven — callers decide whether to invoke this
    * based on the active mission execution policy/runtime profile.
@@ -3780,29 +4198,41 @@ export function createAiOrchestratorService(args: {
       return;
     }
 
-    if (!aiIntegrationService || !projectRoot) {
+    const plannerSessionSupported = canUsePlannerAgentSessions();
+    if (!projectRoot || (!aiIntegrationService && !plannerSessionSupported)) {
       logger.warn("ai_orchestrator.plan_with_ai_not_available", {
         missionId: args.missionId,
         hasAiService: !!aiIntegrationService,
+        hasPlannerSessionSupport: plannerSessionSupported,
         hasProjectRoot: !!projectRoot
       });
       throw new MissionPlanningError({
         reasonCode: "planner_unavailable",
-        reasonDetail: "AI integration service or project root is not available.",
+        reasonDetail: "Planner execution service is not available.",
         engine: null
       });
     }
 
     try {
       const plannerEngine: MissionPlannerEngine = args.provider === "codex" ? "codex_cli" : "claude_cli";
+      const planningIntegration = plannerSessionSupported
+        ? createPlannerAgentIntegration({
+            mission,
+            provider: args.provider,
+            model: args.model,
+            policy: args.policy
+          })
+        : aiIntegrationService ?? undefined;
+
       const planning = await planMissionOnce({
         missionId: args.missionId,
         title: mission.title,
         prompt: mission.prompt,
         laneId: mission.laneId,
         plannerEngine,
+        model: args.model,
         projectRoot,
-        aiIntegrationService,
+        aiIntegrationService: planningIntegration,
         logger,
         policy: args.policy
       });
@@ -3906,6 +4336,7 @@ export function createAiOrchestratorService(args: {
       logger.info("ai_orchestrator.plan_with_ai_completed", {
         missionId: args.missionId,
         provider: args.provider,
+        plannerSessionSupported,
         resolvedEngine: planning.run.resolvedEngine,
         stepCount: plannedSteps.length
       });
@@ -4451,6 +4882,28 @@ export function createAiOrchestratorService(args: {
         : null;
       const rationale = missionSummary?.parallelismRationale;
       return typeof rationale === "string" && rationale.length > 0 ? rationale : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveMissionLaunchPlannerModel = (missionId: string): "opus" | "sonnet" | "haiku" | null => {
+    const row = db.get<{ metadata_json: string | null }>(
+      `
+        select metadata_json
+        from missions
+        where id = ?
+        limit 1
+      `,
+      [missionId]
+    );
+    if (!row?.metadata_json) return null;
+    try {
+      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+      const launch = isRecord(metadata.launch) ? (metadata.launch as Record<string, unknown>) : null;
+      const raw = typeof launch?.orchestratorModel === "string" ? launch.orchestratorModel.trim().toLowerCase() : "";
+      if (raw === "opus" || raw === "sonnet" || raw === "haiku") return raw;
+      return null;
     } catch {
       return null;
     }
@@ -5154,10 +5607,15 @@ export function createAiOrchestratorService(args: {
       if (availability?.codex) return "codex";
       return null;
     })();
+    const plannerModel = (() => {
+      if (provider !== "claude") return undefined;
+      return resolveMissionLaunchPlannerModel(missionId) ?? undefined;
+    })();
     const attemptedAiPlanner = runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex");
     if (attemptedAiPlanner) {
+      transitionMissionStatus(missionId, "planning");
       try {
-        await planWithAI({ missionId, provider, policy });
+        await planWithAI({ missionId, provider, model: plannerModel, policy });
       } catch (planError) {
         const errorMessage = planError instanceof Error ? planError.message : String(planError);
         transitionMissionStatus(missionId, "planning");
@@ -7862,10 +8320,113 @@ export function createAiOrchestratorService(args: {
     sessionSignalQueues.set(sessionId, next);
   };
 
+  const handlePlannerAgentChatEvent = (envelope: AgentChatEventEnvelope): boolean => {
+    const sessionId = String(envelope.sessionId ?? "").trim();
+    if (!sessionId.length) return false;
+    const state = plannerSessionBySessionId.get(sessionId);
+    if (!state) return false;
+
+    state.lastEventAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length
+      ? envelope.timestamp
+      : nowIso();
+
+    const event = envelope.event;
+    if (event.type === "status") {
+      if (event.turnId) {
+        state.activeTurnId = event.turnId;
+      }
+      if (event.turnStatus === "started") {
+        appendPlannerWorkerMessage(
+          state,
+          "Planner started reasoning on the mission plan.",
+          {
+            planner: {
+              event: "turn_started",
+              sessionId: state.sessionId,
+              turnId: event.turnId ?? null
+            }
+          }
+        );
+      } else if (event.turnStatus === "failed" || event.turnStatus === "interrupted") {
+        const status = event.turnStatus === "failed" ? "failed" : "interrupted";
+        const message = typeof event.message === "string" && event.message.trim().length
+          ? event.message.trim()
+          : `Planner turn ${status}.`;
+        appendPlannerWorkerMessage(state, message, {
+          planner: {
+            event: "turn_status_terminal",
+            sessionId: state.sessionId,
+            status
+          }
+        });
+        completePlannerTurn(state, status, message);
+      }
+      return true;
+    }
+
+    if (event.type === "text") {
+      appendPlannerTextDelta(state, event.text);
+      return true;
+    }
+
+    if (event.type === "plan") {
+      appendPlannerWorkerMessage(
+        state,
+        `Planner proposed ${event.steps.length} plan step${event.steps.length === 1 ? "" : "s"}.`,
+        {
+          planner: {
+            event: "plan_outline",
+            sessionId: state.sessionId
+          }
+        }
+      );
+      return true;
+    }
+
+    if (event.type === "error") {
+      const message = String(event.message ?? "Planner session reported an error.").trim();
+      appendPlannerWorkerMessage(state, message, {
+        planner: {
+          event: "error",
+          sessionId: state.sessionId
+        }
+      });
+      completePlannerTurn(state, "failed", message);
+      return true;
+    }
+
+    if (event.type === "done") {
+      const status: PlannerTurnCompletionStatus =
+        event.status === "failed"
+          ? "failed"
+          : event.status === "interrupted"
+            ? "interrupted"
+            : "completed";
+      completePlannerTurn(state, status, status === "completed" ? null : `Planner turn ${status}.`);
+      appendPlannerWorkerMessage(
+        state,
+        status === "completed"
+          ? "Planner completed the turn."
+          : `Planner turn ${status}.`,
+        {
+          planner: {
+            event: "turn_done",
+            sessionId: state.sessionId,
+            status
+          }
+        }
+      );
+      return true;
+    }
+
+    return false;
+  };
+
   const onAgentChatEvent = (envelope: AgentChatEventEnvelope): void => {
     if (disposed) return;
     const sessionId = String(envelope.sessionId ?? "").trim();
     if (!sessionId.length) return;
+    handlePlannerAgentChatEvent(envelope);
     const event = envelope.event;
     const shouldReplay =
       (event.type === "status" && (event.turnStatus === "completed" || event.turnStatus === "interrupted" || event.turnStatus === "failed"))
@@ -8482,6 +9043,8 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
       chatMessages.clear();
       activeChatSessions.clear();
       chatTurnQueues.clear();
+      plannerSessionByMissionId.clear();
+      plannerSessionBySessionId.clear();
       activeHealthSweepRuns.clear();
       sessionRuntimeSignals.clear();
       attemptRuntimeTrackers.clear();

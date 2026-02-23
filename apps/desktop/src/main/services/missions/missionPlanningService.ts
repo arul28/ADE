@@ -69,6 +69,7 @@ export type MissionPlanningRequest = {
   plannerEngine: MissionPlannerEngine;
   projectRoot: string;
   timeoutMs?: number;
+  model?: string;
   allowPlanningQuestions?: boolean;
   contextBundle?: MissionPlanningContextBundle;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
@@ -720,6 +721,7 @@ async function runPlannerAdapter(args: {
   cwd: string;
   prompt: string;
   timeoutMs: number;
+  model?: string;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
 }): Promise<PlannerAdapterResult> {
   if (!args.aiIntegrationService || args.aiIntegrationService.getMode() === "guest") {
@@ -732,6 +734,7 @@ async function runPlannerAdapter(args: {
       cwd: args.cwd,
       prompt: args.prompt,
       timeoutMs: args.timeoutMs,
+      model: args.model,
       provider,
       jsonSchema: plannerSchemaJson()
     });
@@ -970,6 +973,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         cwd: args.projectRoot,
         prompt,
         timeoutMs,
+        model: args.model,
         aiIntegrationService: args.aiIntegrationService
       });
 

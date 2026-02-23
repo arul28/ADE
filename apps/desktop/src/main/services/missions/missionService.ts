@@ -986,6 +986,22 @@ export function createMissionService({
       const autopilotExecutor = args.autopilotExecutor ?? "codex";
       const executorPolicy = normalizeMissionExecutorPolicy(args.executorPolicy);
       const allowPlanningQuestions = args.allowPlanningQuestions === true;
+      const launchModelRaw = typeof args.orchestratorModel === "string" ? args.orchestratorModel.trim().toLowerCase() : "";
+      const launchModel =
+        launchModelRaw === "opus" || launchModelRaw === "sonnet" || launchModelRaw === "haiku"
+          ? launchModelRaw
+          : null;
+      const launchThinkingBudgets = (() => {
+        if (!isRecord(args.thinkingBudgets)) return null;
+        const out: Record<string, number> = {};
+        for (const [key, value] of Object.entries(args.thinkingBudgets)) {
+          const normalizedKey = String(key).trim();
+          const numeric = Number(value);
+          if (!normalizedKey.length || !Number.isFinite(numeric) || numeric < 0) continue;
+          out[normalizedKey] = Math.floor(numeric);
+        }
+        return Object.keys(out).length > 0 ? out : null;
+      })();
       const missionDepthRaw = typeof args.missionDepth === "string" ? args.missionDepth.trim() : "";
       const missionDepth: MissionDepthTier | null =
         missionDepthRaw === "light" || missionDepthRaw === "standard" || missionDepthRaw === "deep"
@@ -1027,7 +1043,9 @@ export function createMissionService({
           runMode: launchMode,
           autopilotExecutor,
           executorPolicy,
-          allowPlanningQuestions
+          allowPlanningQuestions,
+          ...(launchModel ? { orchestratorModel: launchModel } : {}),
+          ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {})
         },
         ...(missionDepth ? { missionDepth } : {}),
         ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),

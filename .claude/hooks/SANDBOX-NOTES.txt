@@ -1,0 +1,24 @@
+Sandbox Hook: Known Issues & Setup Notes
+==========================================
+
+Issue (Feb 2026): Hook silently failing - all tool calls allowed
+----------------------------------------------------------------
+Root cause: The shebang `#!/usr/bin/env python3` resolved to the project's
+venv Python (.venv/bin/python3), which symlinked to /opt/anaconda3/bin/python3.12.
+That Anaconda binary was a 0-byte empty file (corrupted/incomplete install).
+The empty binary ran, did nothing, and exited 0 — so Claude Code treated
+every tool call as "approved."
+
+Fix: sandbox.sh wrapper uses /usr/bin/python3 explicitly, and sandbox.py's
+shebang is set to #!/usr/bin/python3 (not #!/usr/bin/env python3).
+
+Prevention:
+- Always use absolute Python paths in hooks, never `env python3`
+- The .venv and Anaconda installations can break independently of this project
+- If the sandbox stops blocking, check: /usr/bin/python3 --version
+- The hook is invoked via sandbox.sh (bash wrapper) which calls sandbox.py
+  with /usr/bin/python3, bypassing any venv/conda resolution
+
+Other past issue: ~/.claude/settings.json had "hooks": {} which overrode
+the project-level hook config entirely. If hooks stop working, check that
+file doesn't have an empty hooks key.

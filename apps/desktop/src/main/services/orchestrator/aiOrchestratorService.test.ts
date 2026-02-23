@@ -100,12 +100,23 @@ function createMockAiIntegrationService(overrides: {
 }
 
 function createMockAgentChatService(overrides: {
+  createSession?: (...args: any[]) => Promise<any>;
   sendMessage?: (...args: any[]) => Promise<void>;
   steer?: (...args: any[]) => Promise<void>;
   resumeSession?: (...args: any[]) => Promise<any>;
   listSessions?: (...args: any[]) => Promise<any[]>;
 } = {}) {
   return {
+    createSession: overrides.createSession ?? vi.fn().mockResolvedValue({
+      id: "chat-session-1",
+      laneId: "lane-1",
+      provider: "claude",
+      model: "sonnet",
+      reasoningEffort: "medium",
+      status: "idle",
+      createdAt: "2026-02-20T00:00:00.000Z",
+      lastActivityAt: "2026-02-20T00:00:00.000Z"
+    }),
     sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue(undefined),
     steer: overrides.steer ?? vi.fn().mockResolvedValue(undefined),
     resumeSession: overrides.resumeSession ?? vi.fn().mockResolvedValue({}),
@@ -1445,6 +1456,137 @@ describe("aiOrchestratorService", () => {
       expect(meta.plannerPlan.stepCount).toBe(2);
       expect(meta.planner).toBeTruthy();
     } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("planWithAI uses a spawned planner agent session when lane + chat services are available", async () => {
+    const plannerResponse = JSON.stringify({
+      schemaVersion: "1.0",
+      missionSummary: {
+        title: "Planner agent mission",
+        objective: "Ensure planner runs as a visible agent thread",
+        domain: "backend",
+        complexity: "low",
+        strategy: "sequential",
+        parallelismCap: 1
+      },
+      assumptions: [],
+      risks: [],
+      steps: [
+        {
+          stepId: "planner-agent-step-1",
+          name: "Planner agent step",
+          description: "Implement planner-agent integration.",
+          taskType: "code",
+          executorHint: "either",
+          preferredScope: "lane",
+          requiresContextProfiles: ["deterministic"],
+          dependencies: [],
+          artifactHints: [],
+          claimPolicy: { lanes: ["backend"] },
+          maxAttempts: 2,
+          retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+          outputContract: { expectedSignals: ["code_written"], completionCriteria: "code_written" }
+        }
+      ],
+      handoffPolicy: { externalConflictDefault: "intervention" }
+    });
+
+    const mockAi = createMockAiIntegrationService();
+    const plannerSessionId = "planner-session-1";
+    let aiOrchestratorRef: ReturnType<typeof createAiOrchestratorService> | null = null;
+
+    const agentChatService = createMockAgentChatService({
+      createSession: vi.fn().mockResolvedValue({
+        id: plannerSessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "opus",
+        reasoningEffort: "high",
+        status: "idle",
+        createdAt: "2026-02-20T00:00:00.000Z",
+        lastActivityAt: "2026-02-20T00:00:00.000Z"
+      }),
+      sendMessage: vi.fn().mockImplementation(async ({ sessionId }: { sessionId: string }) => {
+        const orchestrator = aiOrchestratorRef;
+        if (!orchestrator) return;
+        orchestrator.onAgentChatEvent({
+          sessionId,
+          timestamp: "2026-02-20T00:00:01.000Z",
+          event: { type: "status", turnStatus: "started", turnId: "planner-turn-1" }
+        });
+        orchestrator.onAgentChatEvent({
+          sessionId,
+          timestamp: "2026-02-20T00:00:02.000Z",
+          event: { type: "text", text: plannerResponse, turnId: "planner-turn-1" }
+        });
+        orchestrator.onAgentChatEvent({
+          sessionId,
+          timestamp: "2026-02-20T00:00:03.000Z",
+          event: { type: "done", turnId: "planner-turn-1", status: "completed" }
+        });
+      }),
+      listSessions: vi.fn().mockResolvedValue([
+        {
+          sessionId: plannerSessionId,
+          laneId: "lane-1",
+          provider: "claude",
+          model: "opus",
+          reasoningEffort: "high",
+          status: "idle",
+          startedAt: "2026-02-20T00:00:00.000Z",
+          endedAt: null,
+          lastActivityAt: "2026-02-20T00:00:03.000Z",
+          lastOutputPreview: plannerResponse.slice(0, 120),
+          summary: "Planner output ready"
+        }
+      ])
+    });
+
+    const fixture = await createFixture({
+      aiIntegrationService: mockAi,
+      laneService: {} as any,
+      agentChatService
+    });
+    aiOrchestratorRef = fixture.aiOrchestratorService;
+
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Run planner through an agent session.",
+        laneId: fixture.laneId
+      });
+
+      await fixture.aiOrchestratorService.planWithAI({
+        missionId: mission.id,
+        provider: "claude",
+        model: "opus"
+      });
+
+      expect(agentChatService.createSession).toHaveBeenCalledTimes(1);
+      expect(agentChatService.sendMessage).toHaveBeenCalledTimes(1);
+      expect(mockAi.planMission).not.toHaveBeenCalled();
+
+      const plannerThreadId = `planner:${mission.id}`;
+      const threads = fixture.aiOrchestratorService.listChatThreads({ missionId: mission.id, includeClosed: true });
+      const plannerThread = threads.find((thread) => thread.id === plannerThreadId);
+      expect(plannerThread?.threadType).toBe("worker");
+      expect(plannerThread?.sessionId).toBe(plannerSessionId);
+      expect(plannerThread?.title).toBe("Planner Agent");
+
+      const plannerMessages = fixture.aiOrchestratorService.getThreadMessages({
+        missionId: mission.id,
+        threadId: plannerThreadId,
+        limit: 200
+      });
+      expect(plannerMessages.some((entry) => entry.content.includes("Planner online"))).toBe(true);
+      expect(plannerMessages.some((entry) => entry.content.includes("\"schemaVersion\""))).toBe(true);
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.steps.length).toBe(1);
+      expect(refreshed?.steps[0]?.title).toBe("Planner agent step");
+    } finally {
+      aiOrchestratorRef = null;
       fixture.dispose();
     }
   });

@@ -448,6 +448,68 @@ describe("missionPlanningService planner contract", () => {
       expect(planError.attempts).toBe(0);
     }
   });
+
+  it("forwards explicit planner model overrides to aiIntegrationService.planMission", async () => {
+    const planMissionMock = vi.fn().mockResolvedValue({
+      text: "",
+      structuredOutput: {
+        schemaVersion: "1.0",
+        missionSummary: {
+          title: "Model override",
+          objective: "Verify model forwarding",
+          domain: "mixed",
+          complexity: "medium",
+          strategy: "sequential",
+          parallelismCap: 1
+        },
+        assumptions: [],
+        risks: [],
+        steps: [
+          {
+            stepId: "implement",
+            name: "Implement feature",
+            description: "Write code and verify completion criteria.",
+            taskType: "code",
+            executorHint: "either",
+            preferredScope: "lane",
+            requiresContextProfiles: ["deterministic"],
+            dependencies: [],
+            artifactHints: [],
+            claimPolicy: { lanes: ["backend"] },
+            maxAttempts: 2,
+            retryPolicy: { baseMs: 5000, maxMs: 120000, multiplier: 2, maxRetries: 1 },
+            outputContract: { expectedSignals: ["code_done"], completionCriteria: "code_done" }
+          }
+        ],
+        handoffPolicy: {
+          externalConflictDefault: "intervention"
+        }
+      }
+    });
+
+    const aiIntegrationService = {
+      getAvailability: () => ({ claude: true, codex: false }),
+      getMode: () => "ready",
+      planMission: planMissionMock
+    };
+
+    await planMissionOnce({
+      title: "Model override mission",
+      prompt: "Implement feature with explicit planner model.",
+      laneId: null,
+      plannerEngine: "claude_cli",
+      projectRoot: "/Users/arul/ADE/apps/desktop",
+      model: "opus",
+      aiIntegrationService: aiIntegrationService as never
+    });
+
+    expect(planMissionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "claude",
+        model: "opus"
+      })
+    );
+  });
 });
 
 describe("policy-driven planner DAG", () => {
