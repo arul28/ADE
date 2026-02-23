@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import dagre from "dagre";
 import type { OrchestratorStep, OrchestratorAttempt } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
@@ -58,80 +59,50 @@ type LayoutNode = {
 function computeLayout(steps: OrchestratorStep[], attemptsByStep: Map<string, number>, maxDepth: { value: number }): LayoutNode[] {
   if (steps.length === 0) return [];
 
-  // Build adjacency: stepId -> step
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: "LR", nodesep: GAP_Y, ranksep: GAP_X, marginx: PADDING, marginy: PADDING });
+  g.setDefaultEdgeLabel(() => ({}));
+
   const stepMap = new Map<string, OrchestratorStep>();
   for (const step of steps) {
     stepMap.set(step.id, step);
+    g.setNode(step.id, { width: BASE_NODE_W, height: NODE_H });
   }
-
-  // Compute depth (column) via topological BFS
-  const depthMap = new Map<string, number>();
-  const dependents = new Map<string, string[]>();
 
   for (const step of steps) {
-    if (!dependents.has(step.id)) dependents.set(step.id, []);
     for (const depId of step.dependencyStepIds) {
-      const list = dependents.get(depId) ?? [];
-      list.push(step.id);
-      dependents.set(depId, list);
+      if (stepMap.has(depId)) {
+        g.setEdge(depId, step.id);
+      }
     }
   }
 
-  // Roots have no dependencies
-  const roots = steps.filter((s) => s.dependencyStepIds.length === 0);
-  const queue: Array<{ id: string; depth: number }> = roots.map((s) => ({ id: s.id, depth: 0 }));
+  dagre.layout(g);
+
+  const nodes: LayoutNode[] = [];
   let mDepth = 0;
 
-  while (queue.length > 0) {
-    const { id, depth } = queue.shift()!;
-    const existing = depthMap.get(id);
-    if (existing !== undefined && existing >= depth) continue;
-    depthMap.set(id, depth);
-    if (depth > mDepth) mDepth = depth;
+  for (const step of steps) {
+    const node = g.node(step.id);
+    if (!node) continue;
 
-    for (const childId of dependents.get(id) ?? []) {
-      queue.push({ id: childId, depth: depth + 1 });
-    }
+    const x = node.x - node.width / 2;
+    const y = node.y - node.height / 2;
+    const col = Math.round(x / (BASE_NODE_W + GAP_X));
+    if (col > mDepth) mDepth = col;
+
+    nodes.push({
+      step,
+      col,
+      row: 0,
+      x,
+      y,
+      attemptCount: attemptsByStep.get(step.id) ?? 0,
+      nodeW: BASE_NODE_W,
+    });
   }
 
   maxDepth.value = mDepth;
-
-  // For steps not reached (cycles or disconnected), assign depth 0
-  for (const step of steps) {
-    if (!depthMap.has(step.id)) depthMap.set(step.id, 0);
-  }
-
-  // Group by column
-  const columns = new Map<number, OrchestratorStep[]>();
-  for (const step of steps) {
-    const col = depthMap.get(step.id) ?? 0;
-    const list = columns.get(col) ?? [];
-    list.push(step);
-    columns.set(col, list);
-  }
-
-  // Layout nodes with depth-based sizing
-  const nodes: LayoutNode[] = [];
-  for (let col = 0; col <= mDepth; col++) {
-    const colSteps = columns.get(col) ?? [];
-    colSteps.sort((a, b) => a.stepIndex - b.stepIndex);
-    // Earlier pipeline steps are slightly larger
-    const depthScale = mDepth > 0 ? 1 + (1 - col / mDepth) * 0.1 : 1;
-    const nodeW = Math.round(BASE_NODE_W * depthScale);
-    for (let row = 0; row < colSteps.length; row++) {
-      const step = colSteps[row];
-      nodes.push({
-        step,
-        col,
-        row,
-        x: PADDING + col * (BASE_NODE_W + GAP_X),
-        y: PADDING + row * (NODE_H + GAP_Y),
-        attemptCount: attemptsByStep.get(step.id) ?? 0,
-        nodeW,
-      });
-    }
-  }
-
   return nodes;
 }
 

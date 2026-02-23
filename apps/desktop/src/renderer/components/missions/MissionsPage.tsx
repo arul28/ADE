@@ -25,7 +25,8 @@ import {
   Hash,
   CaretDown,
   List,
-  Kanban
+  Kanban,
+  Trash
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
@@ -227,9 +228,10 @@ function toCodexApprovalMode(value: string): "suggest" | "auto-edit" | "full-aut
   return "full-auto";
 }
 
-function formatElapsed(startedAt: string | null): string {
+function formatElapsed(startedAt: string | null, endedAt?: string | null): string {
   if (!startedAt) return "--";
-  const delta = Math.max(0, Date.now() - Date.parse(startedAt));
+  const end = endedAt ? Date.parse(endedAt) : Date.now();
+  const delta = Math.max(0, end - Date.parse(startedAt));
   const secs = Math.floor(delta / 1000);
   if (secs < 60) return `${secs}s`;
   const mins = Math.floor(secs / 60);
@@ -237,6 +239,16 @@ function formatElapsed(startedAt: string | null): string {
   const hours = Math.floor(mins / 60);
   return `${hours}h ${mins % 60}m`;
 }
+
+const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+
+const NOISY_EVENT_TYPES = new Set([
+  "claim_heartbeat",
+  "context_pack_bootstrap",
+  "autopilot_parallelism_cap_adjusted",
+  "tick",
+  "dynamic_cap",
+]);
 
 function relativeWhen(iso: string): string {
   const ts = Date.parse(iso);
@@ -364,6 +376,12 @@ function narrativeForEvent(ev: { eventType: string; reason: string; stepId?: str
   // ── Autopilot events ──
   if (ev.eventType === "autopilot_advance") return `Autopilot advanced: ${ev.reason}`;
   if (ev.eventType === "autopilot_attempt_start_failed") return `Autopilot failed to start attempt: ${ev.reason}`;
+
+  // ── Gate / review events ──
+  if (ev.eventType === "merge_conflict_detected") return `Merge conflict detected for step ${stepLabel}`;
+  if (ev.eventType === "code_review_passed") return `Code review passed for step ${stepLabel}`;
+  if (ev.eventType === "tests_passed") return `Tests passed for step ${stepLabel}`;
+  if (ev.eventType === "integration_started") return `Integration started for step ${stepLabel}`;
 
   // ── Context events ──
   if (ev.eventType === "context_snapshot_created") return "Context snapshot saved for future reference";
@@ -1324,37 +1342,10 @@ function CreateMissionDialog({
             />
           </label>
 
-          <div className="grid grid-cols-3 gap-3">
-            {/* Lane */}
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-fg">Lane</span>
-              <select
-                value={draft.laneId}
-                onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
-                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
-              >
-                <option value="">Auto</option>
-                {lanes.map((l) => (
-                  <option key={l.id} value={l.id}>{l.name}</option>
-                ))}
-              </select>
-            </label>
-
-            {/* Priority */}
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-fg">Priority</span>
-              <select
-                value={draft.priority}
-                onChange={(e) => setDraft((p) => ({ ...p, priority: e.target.value as MissionPriority }))}
-                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
-              >
-                <option value="low">Low</option>
-                <option value="normal">Normal</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
-            </label>
-
+          {/* Lane info */}
+          <div className="rounded-lg border border-border/15 bg-surface-recessed/50 px-3 py-2 text-[11px] text-muted-fg">
+            <GitBranch className="inline h-3 w-3 mr-1 -mt-0.5" />
+            Missions automatically create dedicated lanes for each step.
           </div>
 
           {/* Orchestrator Model */}
@@ -1688,12 +1679,17 @@ export default function MissionsPage() {
   /* ── Execution plan preview state ── */
   const [executionPlanPreview, setExecutionPlanPreview] = useState<ExecutionPlanPreviewType | null>(null);
 
-  /* ── Elapsed time ticker ── */
+  /* ── Track original step count for dynamic step indicator ── */
+  const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
+
+  /* ── Elapsed time ticker (only runs when a non-terminal mission is selected) ── */
   const [, setTick] = useState(0);
+  const hasActiveMission = selectedMission && !TERMINAL_MISSION_STATUSES.has(selectedMission.status);
   useEffect(() => {
+    if (!hasActiveMission) return;
     const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [hasActiveMission]);
 
   /* ── Derived data ── */
   const filteredMissions = useMemo(() => {
@@ -1903,11 +1899,14 @@ export default function MissionsPage() {
       if (!latestRun) { setRunGraph(null); return; }
       const graph = await window.ade.orchestrator.getRunGraph({ runId: latestRun.id, timelineLimit: 120 });
       setRunGraph(graph);
+      if (originalStepCount === null && graph.steps.length > 0) {
+        setOriginalStepCount(graph.steps.length);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setRunGraph(null);
     }
-  }, []);
+  }, [originalStepCount]);
 
   const scheduleOrchestratorGraphRefresh = useCallback((missionId: string, delayMs = 180) => {
     if (graphRefreshTimerRef.current !== null) {
@@ -1947,6 +1946,7 @@ export default function MissionsPage() {
       setExecutionPlanPreview(null);
       setSteeringLog([]);
       setChatJumpTarget(null);
+      setOriginalStepCount(null);
       return;
     }
     setSteeringLog([]);
@@ -2108,6 +2108,24 @@ export default function MissionsPage() {
       setRunBusy(false);
     }
   }, [runGraph, selectedMission, loadOrchestratorGraph]);
+
+  /* ── Lane cleanup for failed/canceled missions ── */
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const handleCleanupLanes = useCallback(async () => {
+    if (!runGraph?.steps) return;
+    const laneIds = [...new Set(runGraph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+    if (!laneIds.length) return;
+    if (!window.confirm(`Archive ${laneIds.length} lane(s) created by this mission?`)) return;
+    setCleanupBusy(true);
+    try {
+      for (const laneId of laneIds) {
+        try { await window.ade.lanes.archive({ laneId }); } catch { /* lane may already be archived */ }
+      }
+      await refreshLanes();
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [runGraph, refreshLanes]);
 
   const handleSteer = useCallback(async () => {
     if (!selectedMission || !steerInput.trim()) return;
@@ -2411,7 +2429,7 @@ export default function MissionsPage() {
                     )}
                   </div>
                   <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted-fg">
-                    <span><Clock className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null)}</span>
+                    <span><Clock className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null, selectedMission && TERMINAL_MISSION_STATUSES.has(selectedMission.status) ? selectedMission.completedAt : null)}</span>
                     {selectedMission?.laneName && (
                       <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
                     )}
@@ -2439,6 +2457,12 @@ export default function MissionsPage() {
                     <Button variant="outline" size="sm" onClick={handleCancelRun} disabled={runBusy}>
                       <Stop className="h-3 w-3" />
                       Cancel
+                    </Button>
+                  )}
+                  {selectedMission && (selectedMission.status === "failed" || selectedMission.status === "canceled") && runGraph?.steps && runGraph.steps.some(s => s.laneId) && (
+                    <Button variant="ghost" size="sm" onClick={handleCleanupLanes} disabled={cleanupBusy}>
+                      {cleanupBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Trash className="h-3 w-3" />}
+                      Clean up lanes
                     </Button>
                   )}
                 </div>
@@ -2494,6 +2518,19 @@ export default function MissionsPage() {
                     evaluation={runGraph.completionEvaluation}
                   />
                   <PhaseProgressBar steps={runGraph.steps} />
+                  {runGraph.steps.length > 0 && (() => {
+                    const completed = runGraph.steps.filter(s => s.status === "succeeded").length;
+                    const total = runGraph.steps.length;
+                    const pct = Math.round((completed / total) * 100);
+                    return (
+                      <div className="text-[10px] text-muted-fg flex items-center gap-2">
+                        <span>{completed} of {total} steps complete ({pct}%)</span>
+                        {originalStepCount !== null && originalStepCount !== total && (
+                          <span className="text-amber-400/70">(plan adjusted from {originalStepCount} steps)</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {isActiveMission && (
                     <ExecutionPlanPreview preview={executionPlanPreview} />
                   )}
@@ -2693,7 +2730,7 @@ function ActivityNarrativeHeader({
   // Last meaningful action from timeline
   const timeline = runGraph.timeline;
   const latestMeaningful = timeline.find(
-    (ev) => ev.eventType !== "claim_heartbeat" && ev.eventType !== "context_pack_bootstrap"
+    (ev) => !NOISY_EVENT_TYPES.has(ev.eventType)
   );
   const lastActionLine = latestMeaningful
     ? `Last: ${narrativeForEvent(latestMeaningful)}`
@@ -2701,7 +2738,7 @@ function ActivityNarrativeHeader({
 
   // Recent narrative lines from the timeline (top 5 most recent non-heartbeat events)
   const recentEvents = timeline
-    .filter((ev) => ev.eventType !== "claim_heartbeat")
+    .filter((ev) => !NOISY_EVENT_TYPES.has(ev.eventType))
     .slice(0, 5);
   const narrativeLines = narrativeSummary(recentEvents, steeringLog);
 
