@@ -67,8 +67,24 @@ export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
 
   if (phases.length === 0) return null;
 
+  const totalCompleted = steps.filter(s => s.status === "succeeded" || s.status === "skipped").length;
+  const totalSteps = steps.length;
+  const overallPct = totalSteps > 0 ? Math.round((totalCompleted / totalSteps) * 100) : 0;
+
   return (
     <div className={cn("space-y-1.5", className)}>
+      <div className="mb-2 pb-2 border-b border-border/10">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] font-medium text-muted-fg">Overall Progress</span>
+          <span className="text-[10px] text-muted-fg">{totalCompleted} of {totalSteps} ({overallPct}%)</span>
+        </div>
+        <div className="h-1.5 rounded-full overflow-hidden bg-accent/10">
+          <div
+            className="h-full rounded-full bg-accent transition-all duration-300"
+            style={{ width: `${overallPct}%` }}
+          />
+        </div>
+      </div>
       {phases.map(([phase, group]) => {
         const pct = group.total > 0 ? Math.round((group.completed / group.total) * 100) : 0;
         const colors = PHASE_COLORS[phase];
