@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-23
 
 ---
 
@@ -416,6 +416,29 @@ type PrEventPayload =
   | { type: 'prs-updated'; polledAt: string; prs: PrSummary[] }
   | { type: 'pr-notification'; prId: string; kind: PrNotificationKind; message: string };
 ```
+
+---
+
+## PR Strategy
+
+Phase 3 replaces the previous merge phase with explicit PR strategies, selected during mission configuration:
+
+| Strategy | Description | Best For |
+|----------|-------------|----------|
+| `integration` | Single PR from integration branch combining all lane work | Small missions, clean history |
+| `per-lane` | One PR per lane, each reviewed independently | Large missions, parallel review |
+| `queue` | Sequential merge queue — lanes merge one at a time | Strict CI, conflict-sensitive repos |
+| `manual` | No automatic PR creation — user handles PRs | Custom workflows, existing PR processes |
+
+**PrStrategy Type Definition**:
+
+```typescript
+type PrStrategy = 'integration' | 'per-lane' | 'queue' | 'manual';
+```
+
+Strategy is selected in the pre-mission configuration panel alongside model selection, thinking budgets, and execution plan preview. The orchestrator respects the chosen strategy during mission completion.
+
+Note: The previous "merge phase" in the mission lifecycle has been completely removed. PR creation is now a discrete step controlled by the selected strategy.
 
 ---
 

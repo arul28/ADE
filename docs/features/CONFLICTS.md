@@ -699,3 +699,15 @@ Conflict resolution generation now defaults to **external local CLIs** (Codex or
 
 - If context is insufficient, ADE blocks speculative patch generation (`status=blocked`) and records explicit gap messages.
 - Hosted/BYOK proposal APIs remain for compatibility, but they are deprecated as the primary resolution UX path.
+
+---
+
+### Phase 3: Orchestrator Conflict Handling
+
+The Phase 3 missions overhaul changes how conflicts are managed:
+
+- **Merge Phase Removed**: The previous merge phase (which attempted automatic conflict resolution) has been completely removed from the mission lifecycle
+- **PR Strategy**: Conflicts are now handled at PR time, controlled by the selected PR strategy (integration/per-lane/queue/manual)
+- **Integration Phase**: For `integration` strategy, lanes merge into an integration branch where conflicts are surfaced for resolution
+- **Pre-Merge Checking** (Planned): The orchestrator will perform dry-run merges to detect conflicts before PR creation, allowing proactive conflict resolution
+- **File Conflict Prevention** (Planned): During mission planning, the orchestrator will assign files to lanes to minimize overlap and reduce merge conflicts

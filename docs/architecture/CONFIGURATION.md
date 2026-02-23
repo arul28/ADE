@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-23
 
 The ADE configuration system manages project-level and workspace-level settings through a layered YAML-based approach. It supports shared team configuration, personal local overrides, and a trust model that prevents unauthorized command execution.
 
@@ -426,3 +426,77 @@ Overlay policies are evaluated in order. Later policies override earlier ones fo
 | Config migration (version upgrades) | Not started | Only version 1 exists currently |
 
 **Overall status**: Core configuration system is DONE (shared/local split, layered merging, trust model, validation, CRUD operations, file watching). AI provider detection and per-task model routing are DONE. Lane overlay policies are DONE (Phase 4, `laneOverlayMatcher.ts`). Lane profiles are NOT YET STARTED. Config migration system is NOT YET STARTED.
+
+---
+
+## Planned Configuration Blocks
+
+### Lane Templates Configuration
+
+```yaml
+# Lane templates (stored in project-level local.yaml)
+laneTemplates:
+  - name: "Node.js Full Stack"
+    description: "Node.js app with PostgreSQL and Redis"
+    envFiles:
+      - source: ".env.template"
+        destination: ".env"
+        variables:
+          PORT: "${LANE_PORT_START}"
+          DATABASE_URL: "postgresql://localhost:${LANE_PORT_START + 1}/app"
+    portRange:
+      start: auto  # or explicit: 3000
+      size: 100
+    dockerCompose: "docker-compose.dev.yml"
+    installCommand: "npm install"
+
+  - name: "Python API"
+    description: "FastAPI with SQLite"
+    envFiles:
+      - source: ".env.template"
+        destination: ".env"
+    portRange:
+      size: 50
+    installCommand: "pip install -r requirements.txt"
+```
+
+### Lane Proxy Configuration
+
+```yaml
+# Lane proxy settings
+laneProxy:
+  enabled: false
+  port: 8080
+  hostnamePattern: "<lane-slug>.localhost"
+  autoSetup: true
+  portDetection: true
+```
+
+### Compute Backend Configuration
+
+```yaml
+# Compute backend settings
+computeBackends:
+  default: "local"
+
+  local:
+    # No additional configuration required
+    enabled: true
+
+  vps:
+    enabled: false
+    relayAddress: ""
+    sshKeyPath: "~/.ssh/ade_vps"
+    nightShiftDefault: false
+
+  daytona:
+    enabled: false  # Always opt-in
+    apiKey: ""  # Stored in system keychain
+    region: "us-east-1"
+    defaultResources:
+      cpu: 2
+      ramMb: 4096
+      diskGb: 20
+    autoStopMinutes: 30
+    missionDefault: false
+```

@@ -1,5 +1,6 @@
 import React from "react";
-import { ArrowsDownUp, GitMerge, GitPullRequest, ListNumbers, Plus } from "@phosphor-icons/react";
+import { ArrowsDownUp, GitMerge, GitPullRequest, ListNumbers, Plus, ArrowsClockwise } from "@phosphor-icons/react";
+import { motion } from "motion/react";
 import type { MergeMethod, PrMergeContext, PrWithConflicts } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -98,14 +99,18 @@ function PRsPageInner() {
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
-      {/* Tab bar */}
-      <div className="flex items-center gap-4 px-4 py-2.5 bg-card/20 backdrop-blur-sm border-b border-border/10">
+      {/* Header - soft gradient fade instead of rigid border */}
+      <div className="relative flex items-center gap-5 px-5 py-3">
+        {/* Subtle gradient bottom edge */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-border/25 to-transparent" />
+
         <div className="flex items-center gap-2.5">
           <div className="text-sm font-bold text-fg tracking-tight">PRs</div>
-          <span className="text-xs text-muted-fg/65 tabular-nums">{prs.length} linked</span>
+          <span className="text-xs text-muted-fg/50 tabular-nums">{prs.length} linked</span>
         </div>
 
-        <div role="tablist" aria-label="PR categories" className="flex items-center rounded-lg bg-card/80 p-0.5 gap-0.5 border border-border/20">
+        {/* Floating tab bar - no card wrapper */}
+        <div role="tablist" aria-label="PR categories" className="flex items-center gap-1">
           {TAB_DEFS.map((tab) => {
             const isActive = activeTab === tab.id;
             const Icon = tab.icon;
@@ -119,28 +124,42 @@ function PRsPageInner() {
                 aria-controls={`pr-tabpanel-${tab.id}`}
                 id={`pr-tab-${tab.id}`}
                 className={cn(
-                  "px-2.5 py-1.5 rounded-md text-xs font-medium transition-all duration-150 flex items-center gap-1.5",
+                  "relative px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-1.5",
                   isActive
-                    ? "bg-accent text-accent-fg shadow-sm"
-                    : "text-muted-fg hover:text-fg hover:bg-muted/40",
+                    ? "text-accent"
+                    : "text-muted-fg hover:text-fg hover:bg-muted/25",
                 )}
                 onClick={() => setActiveTab(tab.id)}
               >
-                <Icon size={12} weight="regular" />
-                <span>{tab.label}</span>
-                <span className={cn("tabular-nums", isActive ? "text-accent-fg/90" : "text-muted-fg/75")}>
-                  {count}
+                {isActive && (
+                  <motion.div
+                    layoutId="pr-tab-indicator"
+                    className="absolute inset-0 rounded-md bg-accent/10"
+                    transition={{ type: "spring", bounce: 0.15, duration: 0.4 }}
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1.5">
+                  <Icon size={13} weight={isActive ? "fill" : "regular"} />
+                  <span>{tab.label}</span>
+                  {count > 0 && (
+                    <span className={cn(
+                      "tabular-nums text-[10px] min-w-[16px] text-center rounded-full px-1 py-px",
+                      isActive ? "bg-accent/20 text-accent" : "bg-muted/30 text-muted-fg/60",
+                    )}>
+                      {count}
+                    </span>
+                  )}
                 </span>
               </button>
             );
           })}
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2.5">
           <select
             value={mergeMethod}
             onChange={(e) => setMergeMethod(e.target.value as MergeMethod)}
-            className="h-8 rounded-lg border border-border/20 bg-surface-recessed px-2 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent/30"
+            className="h-7 rounded-md bg-muted/20 px-2 text-xs text-muted-fg hover:text-fg transition-colors focus:outline-none focus:ring-1 focus:ring-accent/30"
             title="Default merge method"
           >
             <option value="squash">squash</option>
@@ -148,12 +167,20 @@ function PRsPageInner() {
             <option value="rebase">rebase</option>
           </select>
           <Button size="sm" variant="primary" onClick={() => setCreatePrOpen(true)}>
-            <Plus size={14} weight="regular" className="mr-1" />
+            <Plus size={14} weight="bold" className="mr-0.5" />
             Create PR
           </Button>
-          <Button size="sm" variant="outline" onClick={() => void refresh()} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh"}
-          </Button>
+          <button
+            onClick={() => void refresh()}
+            disabled={loading}
+            className={cn(
+              "flex items-center justify-center h-7 w-7 rounded-md text-muted-fg hover:text-fg hover:bg-muted/25 transition-all duration-200",
+              loading && "animate-spin text-accent",
+            )}
+            title="Refresh"
+          >
+            <ArrowsClockwise size={14} weight="regular" />
+          </button>
         </div>
       </div>
 

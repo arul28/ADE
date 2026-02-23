@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-23
 
 This document describes the Electron desktop runtime in `apps/desktop`, including process boundaries, service initialization, IPC contracts, and lifecycle behavior.
 
@@ -88,7 +88,7 @@ Additional runtime loops:
 
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
-As of 2026-02-19, the contract includes `234` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github, automations/missions, layout/graph, processes/tests, and settings/config domains.
+As of 2026-02-23, the contract includes `292` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github, automations/missions, layout/graph, processes/tests, and settings/config domains.
 
 High-frequency/broadcast event channels include:
 
@@ -154,5 +154,16 @@ Desktop architecture is mature and production-oriented for current scope:
 - Head-change and session-end pipelines keep packs/conflicts/automations synchronized.
 - AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
 - Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
+
+### Planned Services
+
+| Service | Purpose | Phase |
+|---------|---------|-------|
+| `laneEnvironmentService` | Lane environment initialization (env files, port allocation, Docker startup, dependency installation) | 5 |
+| `laneProxyService` | Per-lane *.localhost hostname proxy with Host-header routing | 5 |
+| `previewLaunchService` | Preview URL generation, browser launch, share links | 5 |
+| `browserProfileService` | Chrome profile isolation per lane for cookie/auth separation | 5 |
+| `computeBackendService` | Compute backend abstraction (Local/VPS/Daytona selection and lifecycle) | 5.5 |
+| `daytonaService` | Daytona SDK integration for opt-in cloud sandbox environments | 5.5 |
 
 Future architecture expansion (Machines, relay transport, core extraction) is tracked in `docs/final-plan.md`.

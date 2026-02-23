@@ -469,6 +469,76 @@ lanes (
 **Remaining tasks** are scheduled as follows:
 - **Phase 9 (Advanced Features)**: LANES-032, LANES-036, LANES-037, LANES-038
 
+### Phase 5 — Lane Runtime Isolation
+
+| ID | Task | Status |
+|----|------|--------|
+| LANES-049 | Lane environment initialization service | TODO |
+| LANES-050 | Port allocation and lease manager | TODO |
+| LANES-051 | Per-lane hostname proxy (*.localhost) | TODO |
+| LANES-052 | Preview launch service | TODO |
+| LANES-053 | Lane template CRUD and storage | TODO |
+| LANES-054 | Auth redirect handling per-lane | TODO |
+| LANES-055 | LaneOverlayPolicy extension for env/port/proxy | TODO |
+| LANES-056 | Runtime diagnostics (health checks, port conflicts) | TODO |
+| LANES-057 | Renderer UI updates for lane env/proxy/preview | TODO |
+| LANES-058 | E2E validation for lane isolation | TODO |
+
+---
+
+## Lane Environment Initialization
+
+When a lane is created, ADE can automatically initialize its working environment:
+
+1. **Environment Files**: Copy/template `.env` files with lane-specific values (ports, hostnames, API keys)
+2. **Port Allocation**: Assign a unique port range (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2)
+3. **Docker Services**: Start lane-specific Docker Compose services (databases, caches, queues)
+4. **Dependency Installation**: Run install commands (`npm install`, `pip install`, etc.)
+
+**Lane Templates** (stored in `local.yaml`) define reusable initialization recipes:
+- Template selection available in the Create Lane dialog
+- Templates specify env files, port ranges, Docker compose paths, and install commands
+- Project-level defaults can be set in Settings → Lane Templates
+
+---
+
+## Lane Proxy & Preview
+
+Each lane can be assigned a unique `.localhost` subdomain for isolated web access:
+
+- **Hostname Pattern**: `<lane-slug>.localhost` (e.g., `feat-auth.localhost:8080`)
+- **Reverse Proxy**: A single proxy port routes requests by Host header to the correct lane's dev server
+- **Cookie/Auth Isolation**: Each lane gets its own cookie jar via unique hostname — no cross-lane session leakage
+- **Preview URLs**: Generated URLs can be shared or opened in browser for quick visual review
+- **Browser Profile Isolation** (optional): Auto-launch Chrome with a lane-specific profile directory
+
+This solves the common pain point where multiple dev servers on the same `localhost` share cookies, ports, and auth state — causing silent failures when switching between branches/lanes.
+
+---
+
+## Compute Backend
+
+Lanes can execute on different compute backends:
+
+| Backend  | Description                           | Use Case                           |
+|----------|---------------------------------------|------------------------------------|
+| Local    | Default. Processes run on host machine | Solo development, full control     |
+| VPS      | Remote relay via ADE machine registry  | Night Shift, remote capacity       |
+| Daytona  | Opt-in cloud sandbox via Daytona SDK   | Isolated environments, CI-like     |
+
+Backend selection can be configured:
+- **Per-project**: Default backend in project settings
+- **Per-lane**: Override on lane creation
+- **Per-mission**: Orchestrator selects backend based on mission requirements
+
+Note: Daytona is always opt-in and requires API key configuration in Settings → Compute Backends.
+
+---
+
+## Lane Overlay Policies
+
+The existing `laneOverlayMatcher.ts` system provides a foundation for lane-specific configuration. Overlay policies define per-lane overrides for environment variables, port mappings, proxy settings, and compute backend selection. These policies are evaluated at lane creation time and can be dynamically updated as lane configuration changes.
+
 ---
 
 ## 2026-02-16 Addendum — Integration Lane Rule

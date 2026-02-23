@@ -443,4 +443,17 @@ interface AutomationRuleSummary extends AutomationRule {
 
 ---
 
+### Compute Backend in Automations (Planned)
+
+Automation rules will support a `computeBackend` field:
+
+- **Field**: `computeBackend: 'local' | 'vps' | 'daytona'` (optional, defaults to project setting)
+- **Use Case**: Route specific automations to specific backends
+- **Night Shift Integration**: When Night Shift triggers automations after-hours, they can be automatically routed to VPS or Daytona backends to avoid consuming local machine resources
+- **Example**: CI-like automations (lint, test, build) routed to Daytona for isolated execution; deployment automations routed to VPS for network access
+
+Note: Daytona routing is only available when Daytona is configured (opt-in) in Settings > Compute Backends.
+
+---
+
 *This document describes the Automations feature for ADE. The core job engine pipeline (AUTO-001, AUTO-002) is implemented, and Phase 8 adds user-configurable automation rules, triggers, actions, NL-to-rule planner, trust enforcement, and UI management.*

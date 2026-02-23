@@ -1,6 +1,6 @@
 # ADE Final Plan (Canonical Roadmap)
 
-Last updated: 2026-02-20
+Last updated: 2026-02-23
 Owner: ADE
 Status: Active
 
@@ -50,6 +50,15 @@ Baseline derived from code in `apps/desktop`.
 - Executor scaffold adapters for Claude/Codex/Gemini (tracked-session scaffold, not yet AI-driven)
 - Mission planning with deterministic planner pass (rule/keyword classifier, dependency/join/done-criteria metadata)
 - Local GitHub integration via `gh` CLI
+- AI orchestrator runtime (mission lifecycle, fail-hard planner with 300s timeout)
+- PR strategies (integration/per-lane/queue/manual replacing merge phase)
+- Team synthesis and recovery loops
+- Execution plan preview with approval gates
+- Inter-agent messaging (sendAgentMessage IPC, backend routing)
+- AgentChannels UI (Slack-style, replaces chat+transcript tabs)
+- Model selection per-mission with per-model thinking budgets
+- Activity feed with category dropdown (replaces 12+ filter buttons)
+- Mission workspace with missionId-filtered queries
 
 ### 2.3 Architectural leverage and constraints
 
@@ -63,12 +72,10 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
-- Agent SDK integration (dual-SDK: `ai-sdk-provider-claude-code` for Claude, `@openai/codex-sdk` for Codex, unified via `AgentExecutor` interface)
-- MCP server (`apps/mcp-server`) for AI orchestrator tool access
-- AI orchestrator (Claude session via agent SDKs + MCP server for mission execution)
 - Agent identities (persona/policy bundles)
 - Night Shift automation family
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
+- Compute backend abstraction (local/VPS/Daytona)
 - Integration sandbox for lane-set verification
 - `packages/core` extraction
 - Relay and machine registry/routing
@@ -93,19 +100,20 @@ ADE becomes the execution control plane for parallel agentic development:
 
 Every planned feature in this roadmap is assigned to exactly one primary build phase.
 
-| Feature | Primary Phase | Depends On |
-|---|---|---|
-| Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline |
-| Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) |
-| MCP server | Phase 2 | Phase 1 |
-| AI orchestrator | Phase 3 | Phases 1 and 2 |
-| Agent identities | Phase 4 | Phase 3 |
-| Night Shift | Phase 4 | Phase 3 |
-| Play runtime isolation | Phase 5 | Phase 3 |
-| Integration sandbox + readiness gates | Phase 6 | Phase 5 |
-| Core extraction (`packages/core`) | Phase 7 | Phases 3, 5, 6 |
-| Relay + Machines | Phase 8 | Phase 7 |
-| iOS app | Phase 9 | Phase 8 |
+| Feature | Primary Phase | Depends On | Status |
+|---|---|---|---|
+| Agent SDK integration + AgentExecutor interface | Phase 1 | Current baseline | Complete |
+| Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
+| MCP server | Phase 2 | Phase 1 | Complete |
+| AI orchestrator | Phase 3 | Phases 1 and 2 | ~70% |
+| Agent identities | Phase 4 | Phase 3 | Planned |
+| Night Shift | Phase 4 | Phase 3 | Planned |
+| Play runtime isolation | Phase 5 | Phase 3 | Planned |
+| Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
+| Integration sandbox + readiness gates | Phase 6 | Phase 5 | Planned |
+| Core extraction (`packages/core`) | Phase 7 | Phases 3, 5, 6 | Planned |
+| Relay + Machines | Phase 8 | Phase 7 | Planned |
+| iOS app | Phase 9 | Phase 8 | Planned |
 
 ---
 
@@ -593,7 +601,7 @@ Goal: Expose ADE capabilities as MCP tools for AI orchestrator consumption. The 
 
 ---
 
-## Phase 3 -- AI Orchestrator (4-5 weeks)
+## Phase 3 -- AI Orchestrator (~70% Complete)
 
 Goal: Full AI-powered mission orchestration via a Claude session connected to the MCP server. The AI orchestrator sits on top of the existing deterministic runtime (DAG scheduling, claims, context snapshots) and makes intelligent decisions about what to do, when, and how.
 
@@ -610,104 +618,93 @@ Goal: Full AI-powered mission orchestration via a Claude session connected to th
 - Phase 1 complete (Agent SDKs and `AgentExecutor` interface available).
 - Phase 2 complete (MCP server available).
 
-### Workstreams
+### Shipped Workstreams
 
-#### W1: AI Orchestrator Service (Leader Session)
-- Create `aiOrchestratorService` that manages a Claude session acting as team leader with the ADE MCP server connected.
+#### W1: AI Orchestrator Service (Leader Session) — SHIPPED
+- `aiOrchestratorService` manages a Claude session acting as team leader with the ADE MCP server connected.
 - Orchestrator receives mission prompt + compressed context packs as initial input.
-- Orchestrator plans execution steps via AI reasoning, producing a structured `MissionPlan` JSON with step dependencies, executor hints, claim policies, file ownership patterns, and merge policy.
-- AI decisions (step ordering, agent selection, plan approval, intervention handling) are recorded as structured `OrchestratorEvent` records.
-- Implement plan review gate: optionally present the AI-generated plan to the user before execution begins (configurable via `ai.orchestrator.require_plan_review`).
+- Orchestrator plans execution steps via AI reasoning, producing a structured `MissionPlan` JSON with step dependencies, executor hints, and claim policies.
+- AI decisions recorded as structured `OrchestratorEvent` records.
 
-#### W2: Worker Agent Spawning and Lifecycle
-- Implement worker agent spawning via `spawn_agent` MCP tool, creating tracked sessions (`tool_type: "codex-orchestrated"` or `"claude-orchestrated"`).
-- Each worker operates in a dedicated lane worktree for file isolation — no two workers share a worktree.
-- Workers receive scoped system prompts, bounded context packs, restricted MCP tool whitelists, and configurable permission modes.
-- Implement worker lifecycle: `spawned → initializing → working → idle → disposed`.
-- Implement idle detection: when a worker completes a step, the orchestrator assigns the next available step or requests shutdown.
-- Implement heartbeat monitoring: workers emit claim heartbeats at configurable intervals. Missing heartbeats trigger failure handling.
-- Implement graceful shutdown: orchestrator sends shutdown requests, workers acknowledge and exit. Workers with in-progress work can defer shutdown until completion.
+#### W2: Execution Policies — SHIPPED
+- Fail-hard planner with 300-second timeout and `MissionPlanningError` class.
+- No deterministic fallback — planner failure = mission failure (forces quality planning).
+- Planner normalization rejects generic step labels/descriptions.
+- Mission-step dependency resolution preserves explicit empty dependency sets for true fan-out execution.
 
-#### W3: Shared Task List and Coordination Patterns
-- Materialize all mission steps as a shared task list with states: `pending`, `claimed`, `in_progress`, `completed`, `failed`.
-- Implement dependency resolution: steps blocked by incomplete predecessors cannot be claimed.
-- Implement six coordination patterns:
-  - **Sequential Chain**: Worker A → Worker B (output as context).
-  - **Parallel Fan-Out**: Multiple workers in separate lanes simultaneously.
-  - **Fan-In Merge**: Wait for all parallel workers, then merge lanes.
-  - **Plan-Then-Implement**: Worker plans in read-only mode, orchestrator approves, worker implements.
-  - **Review-and-Revise**: Implementation worker + review worker, orchestrator decides on revision.
-  - **Speculative Parallel**: Multiple workers attempt same step, best result wins.
-- Implement `parallelismCap` enforcement from the mission plan (max concurrent workers).
+#### W3: PR Strategies (Replaces Merge Phase) — SHIPPED
+- Merge phase completely removed from mission lifecycle.
+- Replaced with `PrStrategy` enum: `integration` | `per-lane` | `queue` | `manual`.
+- Strategy selected pre-mission in launch configuration.
+- Integration: single PR from integration branch; Per-lane: one PR per lane; Queue: sequential merge queue; Manual: user handles PRs.
 
-#### W4: File Conflict Prevention and Lane Merging
-- Implement claim-based file ownership: each step declares `filePatterns` globs in its claim policy. The planner validates no two parallel steps claim overlapping patterns.
-- Implement pre-merge conflict checking: before merging a worker's lane, call `check_conflicts` against other active worker lanes.
-- Implement three merge policies:
-  - `sequential`: merge each worker's lane immediately after step completion.
-  - `batch-at-end`: merge all lanes in dependency order after mission completes.
-  - `per-step`: orchestrator decides per-step based on downstream dependencies.
-- Implement conflict handoff strategies: `auto-resolve` (use AI conflict resolution), `ask-user` (intervention), `orchestrator-decides` (orchestrator picks resolution).
+#### W4: Team Synthesis — SHIPPED
+- Multi-agent coordination with role isolation between orchestrator and worker agents.
+- Parallel lane auto-provisioning creates child lanes for independent root workstreams.
+- Reuses pre-assigned non-base lanes to avoid duplicate lane creation on reruns.
 
-#### W5: Plan Approval Gates
-- Implement `requiresPlanApproval` flag on steps: workers with this flag start in read-only mode (`permissionMode: "plan"`), research the codebase, and submit a structured plan.
-- Orchestrator evaluates worker plans: checks for scope creep, file ownership violations, test coverage, alignment with mission goals.
-- Implement approve/reject flow: approved workers re-dispatch with edit permissions; rejected workers receive feedback and re-plan.
-- Record plan approval events in orchestrator timeline for audit.
+#### W5: Recovery Loops — SHIPPED
+- Deterministic health sweep loop in main process: ticks active runs, heartbeats active claims, detects stale running attempts by timeout policy.
+- Reconciles attempts when tracked sessions already ended but callbacks were missed.
+- Fails/retries stuck attempts and triggers autopilot reassignment.
 
-#### W6: Integration with Deterministic Runtime
-- AI orchestrator issues commands to the existing orchestrator runtime rather than replacing it.
-- Step creation, dependency wiring, and join policy decisions are made by AI and executed by the deterministic kernel.
-- Claim acquisition, heartbeat, and collision handling remain in the deterministic layer.
-- Worker agent sessions integrate with the existing session lifecycle: transcript capture, delta computation, pack refresh, `onSessionEnded` callback chain.
+#### W6: Completion Evaluator — SHIPPED
+- Gate evaluator for step and mission completion assessment.
+- Status/progress prompts trigger deterministic run telemetry replies (progress, active steps, blockers, recovered stale attempts).
 
-#### W7: Mission Lifecycle Integration
-- Integrate with existing mission lifecycle states (`queued` → `planning` → `plan_review` → `in_progress` → `completed`/`failed`).
-- Add `plan_review` state for missions with `require_plan_review` enabled.
-- AI orchestrator triggers mission state transitions through the existing `missionService` and `orchestratorService`.
-- Intervention routing: orchestrator detects need for human input, creates intervention via `ask_user` MCP tool, mission moves to `intervention_required`, user response flows back to orchestrator.
-- Implement automatic intervention triggers: step retry exhaustion, unresolvable conflicts, gate failures, budget approaching limits.
+#### W7: Execution Plan Preview — SHIPPED
+- Plan review gate: AI-generated plan presented to user before execution begins.
+- Configurable via `ai.orchestrator.require_plan_review`.
 
-#### W8: Context Window Management
-- Context packs serve as compressed memory for the orchestrator session.
-- Implement progressive context loading: start with mission pack + project pack, load worker result summaries on demand.
-- Implement context window pressure management: when utilization exceeds configurable threshold (default 80%), trigger summarization of older step results and intermediate context.
-- Orchestrator can always re-read step results from the deterministic runtime's durable state if summarized context is insufficient.
+#### W8: Inter-Agent Messaging — SHIPPED
+- `sendAgentMessage()` IPC handler for agent-to-agent communication.
+- Backend message routing between agents.
+- UI rendering of inter-agent messages in AgentChannels.
 
-#### W9: Orchestrator Configuration
-- Add `ai.orchestrator` configuration block in `.ade/local.yaml`: `require_plan_review`, `max_parallel_workers`, `default_merge_policy`, `default_conflict_handoff`, heartbeat intervals/timeouts, step timeouts, max retries, context pressure threshold, progressive loading toggle, budget caps.
-- Settings renderer: Orchestrator section in Settings with controls for all configuration options, with clear explanations and security implications.
-- Budget enforcement: when total mission budget or per-step budget is reached, pause execution with user notification.
-
-#### W10: Renderer — Activity Feed
+#### W9: Activity Feed — SHIPPED
+- Category dropdown replaces 12+ filter buttons.
 - Real-time activity feed streaming orchestrator decisions and agent outputs to the renderer.
-- Feed items include: `step_assigned`, `step_started`, `agent_spawned`, `agent_output` (streamed), `plan_submitted`, `plan_approved`, `plan_rejected`, `intervention_requested`, `step_completed`, `step_failed`, `context_loaded`, `lane_merged`, `conflict_detected`.
-- Feed supports filtering by step, worker, event type.
-- Live worker count and status indicators (active/idle/completed).
+- Feed supports filtering by step, worker, event category.
 
-#### W11: Renderer — DAG Visualization
-- Visual DAG of the orchestrator's execution plan overlaid on the existing runtime graph.
-- Nodes show AI-planned steps with real-time status from the deterministic runtime: pending (gray), claimed (blue), in_progress (animated), completed (green), failed (red).
-- Edges show dependencies and data flow between steps.
-- Click-to-inspect: clicking a step node opens step detail with context pack, worker assignment, transcript link, result summary.
-- Parallel step groups visually clustered to show fan-out/fan-in patterns.
+#### W10: Mission Workspace — SHIPPED
+- missionId filter applied to all queries (previously only breakdown).
+- Mission detail step-inspector surfaces lane assignment, current step status, worker heartbeat age, dependency names, completion criteria, and expected signals.
 
-#### W12: Renderer — Worker Transcript Tailing
+#### W11: Model Selection — SHIPPED
+- Orchestrator model selector (choose AI model per mission).
+- Per-model thinking budgets.
+
+#### W12: Context System — SHIPPED
+- Context packs serve as compressed memory for the orchestrator session.
+- Progressive context loading: start with mission pack + project pack, load worker result summaries on demand.
+
+### Remaining Workstreams
+
+#### W13: Live Multi-Agent Orchestration
+- End-to-end live multi-agent orchestration with real-time coordination.
+- Worker agent spawning via `spawn_agent` MCP tool with full lifecycle management.
+- Worker lifecycle: `spawned → initializing → working → idle → disposed`.
+- Idle detection, heartbeat monitoring, and graceful shutdown.
+
+#### W14: Real-Time Coordination Patterns
+- Six coordination patterns: Sequential Chain, Parallel Fan-Out, Fan-In, Plan-Then-Implement, Review-and-Revise, Speculative Parallel.
+- `parallelismCap` enforcement from the mission plan.
+- Shared task list with dependency resolution.
+
+#### W15: File Conflict Prevention at Merge Time
+- Claim-based file ownership: each step declares `filePatterns` globs, planner validates no overlapping patterns.
+- Pre-merge conflict checking via `check_conflicts` against active worker lanes.
+- Conflict handoff strategies: `auto-resolve`, `ask-user`, `orchestrator-decides`.
+
+#### W16: Worker Transcript Tailing
 - Live session transcript tailing for running worker agent sessions in mission detail.
-- Transcripts stream from tracked sessions linked to orchestrator attempts.
 - Multi-worker view: split pane showing multiple worker transcripts simultaneously (configurable 1-4 panes).
 - Transcript events color-coded by type: text (default), tool calls (blue), file changes (green), errors (red), approvals (amber).
 
-#### W13: Validation
-- End-to-end orchestrator tests: mission prompt → AI plan → worker spawning → parallel execution → lane merge → completion.
-- Plan approval round-trip tests: worker plan → orchestrator review → approve/reject → worker re-dispatch.
-- Intervention round-trip tests: orchestrator → UI → user → orchestrator.
-- File conflict prevention tests: overlapping file patterns detected at planning time; pre-merge conflict checks work.
-- Worker lifecycle tests: spawn, heartbeat, idle detection, graceful shutdown, crash recovery.
-- Context window pressure tests: verify summarization triggers and graceful degradation under large missions.
-- Crash recovery tests: verify orchestrator resumes from durable runtime state after restart.
-- Coordination pattern tests: sequential chain, parallel fan-out, fan-in merge, plan-then-implement, review-and-revise.
-- Budget enforcement tests: per-step and total mission budget caps halt execution correctly.
+#### W17: Validation
+- End-to-end orchestrator tests: mission prompt → AI plan → worker spawning → parallel execution → completion.
+- Coordination pattern tests, intervention round-trip tests, worker lifecycle tests.
+- Context window pressure tests, crash recovery tests, budget enforcement tests.
 
 ### Exit criteria
 
@@ -785,13 +782,14 @@ Goal: Reusable persona/policy profiles for mission execution and safe unattended
 
 ## Phase 5 -- Play Runtime Isolation (5-6 weeks)
 
-Goal: Concurrent lane runtimes without collisions.
+Goal: Concurrent lane runtimes without collisions. Full lane environment initialization, port isolation, hostname-based routing, and preview URL generation.
 
 ### Reference docs
 
 - [features/PROJECT_HOME.md](features/PROJECT_HOME.md) — Run tab (managed processes, stack buttons, test suites)
-- [features/LANES.md](features/LANES.md) — lane/worktree lifecycle, lane types
+- [features/LANES.md](features/LANES.md) — lane/worktree lifecycle, lane types, lane environment init, proxy & preview, overlay policies
 - [features/TERMINALS_AND_SESSIONS.md](features/TERMINALS_AND_SESSIONS.md) — PTY sessions in lane worktrees
+- [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) — Lane Templates, Proxy & Preview, Browser Profiles settings
 - [architecture/DESKTOP_APP.md](architecture/DESKTOP_APP.md) — main process service graph (new laneRuntimeService, laneProxyService)
 
 ### Dependencies
@@ -800,24 +798,131 @@ Goal: Concurrent lane runtimes without collisions.
 
 ### Workstreams
 
-- Data/contracts:
-  - Define runtime lease model (port/host/profile allocation and ownership).
-- Main process:
-  - Add `laneRuntimeService` (lease allocator + lease lifecycle).
-  - Add `laneProxyService` (host-to-port routing).
-  - Add `previewLaunchService` + optional `browserProfileService`.
-  - Add runtime diagnostics + fallback mode.
-- Renderer:
-  - Add Play controls for isolated preview launch/stop and diagnostics.
-- Validation:
-  - Multi-lane collision tests.
-  - Lease recovery tests on crash/restart.
+#### W1: Lane Environment Init
+- BranchBox-style environment initialization on lane creation.
+- Environment file copying/templating with lane-specific values (ports, hostnames, API keys).
+- Docker service startup for lane-specific Docker Compose services (databases, caches, queues).
+- Dependency installation (`npm install`, `pip install`, etc.).
+
+#### W2: Port Allocation & Lease
+- Dynamic port range per lane (e.g., 3000-3099 for lane 1, 3100-3199 for lane 2).
+- Lease/release lifecycle with crash recovery.
+- Port conflict detection and resolution.
+
+#### W3: Per-Lane Hostname Isolation
+- `*.localhost` reverse proxy with a single proxy port routing by Host header.
+- Hostname pattern: `<lane-slug>.localhost`.
+- Cookie/auth isolation via unique hostname per lane — no cross-lane session leakage.
+
+#### W4: Preview Launch Service
+- Generate preview URLs per lane.
+- Open in browser with one click.
+- Share preview links for quick visual review.
+
+#### W5: Lane Template System
+- Templates stored in `local.yaml` defining reusable initialization recipes.
+- Template selection available in the Create Lane dialog.
+- Templates specify env files, port ranges, Docker compose paths, and install commands.
+- Project-level default template in Settings.
+
+#### W6: Auth Redirect Handling
+- Redirect URI rewriting per-lane hostname.
+- OAuth callback routing to correct lane dev server.
+
+#### W7: LaneOverlayPolicy Extension
+- Extend existing `laneOverlayMatcher.ts` for env/port/proxy overlays.
+- Per-lane overrides for environment variables, port mappings, proxy settings, and compute backend selection.
+
+#### W8: Runtime Diagnostics
+- Lane health checks (process alive, port responding, proxy route active).
+- Port conflict detection across lanes.
+- Proxy status dashboard.
+- Fallback mode when isolation fails.
+
+#### W9: Renderer Updates
+- Play controls for isolated preview launch/stop and diagnostics.
+- Lane template selection in Create Lane dialog.
+- Proxy & preview status indicators in lane list.
+- Runtime diagnostics panel.
+
+#### W10: Validation
+- Multi-lane collision tests.
+- Lease recovery tests on crash/restart.
+- E2E tests for lane isolation, proxy routing, env init.
+- Port exhaustion and conflict detection tests.
 
 ### Exit criteria
 
 - Multiple lanes run simultaneously with deterministic routing.
+- Lane environment initialization is automatic and template-driven.
+- Per-lane hostname isolation prevents cookie/auth leakage between lanes.
+- Preview URLs are generated and shareable.
 - Isolation state is visible and manageable from Play.
 - Failures provide actionable fallback paths.
+
+---
+
+## Phase 5.5 -- Compute Backend Abstraction (3-4 weeks)
+
+Goal: Abstract lane execution behind a pluggable compute backend interface, enabling lanes to run locally, on a VPS, or in Daytona cloud sandboxes (opt-in).
+
+### Reference docs
+
+- [features/LANES.md](features/LANES.md) — compute backend table, lane overlay policies
+- [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) — Compute Backends settings
+- [architecture/DESKTOP_APP.md](architecture/DESKTOP_APP.md) — main process service graph
+
+### Dependencies
+
+- Phase 5 complete.
+
+### Workstreams
+
+#### W1: ComputeBackend Interface
+- Abstract backend interface with `create`, `destroy`, `exec`, `getPreviewUrl` methods.
+- Typed configuration per backend.
+- Backend capability discovery (supports Docker, supports preview URLs, etc.).
+
+#### W2: Local Backend Adapter
+- Implements `ComputeBackend` for local Docker/process execution.
+- Default backend — no additional configuration required.
+- Uses host machine resources.
+
+#### W3: Daytona Backend (Opt-in)
+- Daytona SDK integration for workspace creation and management.
+- Opt-in cloud sandbox compute — never required for ADE functionality.
+- Requires API key configuration in Settings.
+- Region selection and resource allocation (CPU, RAM, disk).
+- Auto-stop timeout for idle workspace cleanup.
+
+#### W4: VPS Backend Stub
+- Placeholder adapter for Phase 8 relay integration.
+- Interface-compliant but delegates to relay connection.
+
+#### W5: Backend Selection & Config
+- Per-project default backend in project settings.
+- Per-lane backend override on lane creation.
+- Per-mission backend selection by orchestrator based on mission requirements.
+- Settings UI for backend configuration.
+
+#### W6: Preview URL Unification
+- Preview URLs work across all backends.
+- Local: `<lane-slug>.localhost` proxy.
+- Daytona: SDK-provided workspace URL.
+- VPS: relay-routed preview.
+
+#### W7: Validation
+- Backend interface contract tests.
+- Local backend parity tests (existing behavior preserved).
+- Daytona backend integration tests (opt-in, requires API key).
+- Backend selection persistence and override tests.
+
+### Exit criteria
+
+- Lanes can execute on Local, Daytona, or VPS (stub) backends via unified interface.
+- Daytona is fully opt-in with clear configuration in Settings.
+- Preview URLs work across all backends.
+- Backend selection is configurable per-project, per-lane, and per-mission.
 
 ---
 
@@ -913,8 +1018,9 @@ Goal: Remote machine execution with explicit routing and ownership.
 ### Workstreams
 
 - Data/contracts:
-  - Machine identity/capability/heartbeat model.
+  - Machine identity/capability/heartbeat model with support for local/VPS/Daytona types.
   - Routing/ownership semantics for mission execution.
+  - Wire VPS `ComputeBackend` adapter (Phase 5.5 W4 stub) to relay connection.
 - Apps/services:
   - Add `apps/relay` (WS request/response + event streaming).
   - Add machine registry and reconnect semantics.
@@ -978,6 +1084,8 @@ Goal: Mobile mission control and intervention handling.
   - Add mission inbox, intervention cards, and outcome summary views.
   - Add pack/PR/conflict summary surfaces.
   - Add push notifications for intervention-required/completed runs.
+  - Add preview URL viewer per backend (Local proxy, Daytona workspace URL, VPS relay).
+  - Phone-only development via Daytona: launch missions targeting Daytona backend from iOS without a desktop machine.
 - Thin client architecture:
   - iPhone never runs agents. VPS does all compute.
   - Phone sends intent and displays results.
@@ -1020,12 +1128,13 @@ Goal: Mobile mission control and intervention handling.
 
 Base build order:
 
-1. Phase 1 (Agent SDK Integration + AgentExecutor Interface)
-1.5. Phase 1.5 (Agent Chat Integration — runs in parallel with Phase 1)
-2. Phase 2 (MCP Server)
-3. Phase 3 (AI Orchestrator)
+1. Phase 1 (Agent SDK Integration + AgentExecutor Interface) — **Complete**
+1.5. Phase 1.5 (Agent Chat Integration) — **Complete**
+2. Phase 2 (MCP Server) — **Complete**
+3. Phase 3 (AI Orchestrator) — **~70% Complete**
 4. Phase 4 (Agent Identities + Night Shift)
 5. Phase 5 (Play Runtime Isolation)
+5.5. Phase 5.5 (Compute Backend Abstraction)
 6. Phase 6 (Integration Sandbox + Merge Readiness)
 7. Phase 7 (Core Extraction)
 8. Phase 8 (Relay + Machines)
@@ -1036,6 +1145,7 @@ Pull-forward rules:
 - Phase 5 (Play Runtime Isolation) may begin after Phase 3 starts if resources allow, as it depends on the deterministic runtime (already shipped) rather than the AI orchestrator specifically.
 - Phase 2 (MCP Server) and Phase 1 (Agent SDK Integration) may overlap in late Phase 1 for tool contract design work.
 - Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1's migration workstreams.
+- Daytona SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration.
 
 ---
 
@@ -1066,6 +1176,10 @@ Each phase must satisfy:
 | MCP tool permission model gaps | Orchestrator may invoke unsafe operations | Permission/policy layer with deny-by-default; audit logging for all tool calls |
 | Codex App Server protocol stability | App Server is relatively new; protocol changes may break integration | Pin `codex` CLI version; generate TypeScript schemas from installed version; adapter pattern isolates protocol changes |
 | Claude multi-turn session quality vs Codex | Claude via community provider may have rougher multi-turn UX than Codex's purpose-built App Server | `AgentChatService` interface allows per-provider UX tuning; feature parity is a goal but not a hard requirement |
+| localhost subdomain browser compatibility | Safari/Firefox may not resolve `*.localhost` subdomains | Feature detection at startup; fallback to port-based isolation; document browser requirements |
+| Daytona SDK stability | Pre-1.0 SDK, API may change between versions | Pin SDK version; `ComputeBackend` interface isolates callers; Daytona is always opt-in |
+| Port exhaustion on machines with many lanes | Machines with 20+ lanes may exhaust ephemeral port ranges | Configurable port range size per lane; lease release on lane archive; diagnostics for port pressure |
+| Docker dependency for lane environment init | Lane env init features require Docker for service startup | Docker is optional; env file copying and dependency install work without Docker; clear error messages when Docker is unavailable |
 
 ---
 
@@ -1088,6 +1202,10 @@ Each phase must satisfy:
 - Relay reconnect success rate
 - Conflict prediction false-positive/false-negative trend
 - MCP tool call success rate and latency
+- Lane setup time: <5s (env init + port allocation + proxy registration)
+- Port collision rate: 0%
+- Proxy latency overhead: <5ms per request
+- Daytona workspace creation latency: <15s
 
 ### Adoption KPIs
 
@@ -1110,4 +1228,7 @@ The program is complete when:
 - Agent identities provide reusable persona/policy profiles that constrain orchestrator behavior.
 - Desktop and iOS can operate against local and relay machine targets.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
+- Compute backend abstraction enables lanes to execute on Local, VPS, or Daytona (opt-in) backends.
+- Preview URLs work across all compute backends with unified generation and access.
+- Lane isolation (env, ports, hostname, cookies) prevents cross-lane interference.
 - All core features work in `guest` mode without any subscriptions.

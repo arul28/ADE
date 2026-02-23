@@ -2,7 +2,9 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-21
+> Last updated: 2026-02-23
+>
+> **Phase 3 Status: ~70% Complete**
 
 ---
 
@@ -427,3 +429,51 @@ Lifecycle/transition coverage:
   - run with `npm --prefix apps/desktop run test:orchestrator-smoke`
   - complex observer-mode prompt run: `npm --prefix apps/desktop run test:orchestrator-complex-mock`
   - complex run report path: `/tmp/ade-orchestrator-complex-mock-report.json`
+
+### Shipped Features (Phase 3)
+
+#### Planner Overhaul
+- Fail-hard planner with 300-second timeout.
+- `MissionPlanningError` class for structured error handling.
+- No deterministic fallback — planner failure = mission failure (forces quality planning).
+
+#### PR Strategy (Replaces Merge Phase)
+- Merge phase completely removed from mission lifecycle.
+- Replaced with `PrStrategy` enum: `integration` | `per-lane` | `queue` | `manual`.
+- Strategy selected pre-mission in launch configuration.
+- Integration: single PR from integration branch; Per-lane: one PR per lane; Queue: sequential merge queue; Manual: user handles PRs.
+
+#### UI Redesign
+- AgentChannels (Slack-style) replaces separate chat + transcript tabs.
+- Tab count reduced from 6 to 5.
+- Activity feed: category dropdown replaces 12+ filter buttons.
+- Mission workspace: all queries filtered by missionId.
+
+#### Pre-Mission Configuration
+- Orchestrator model selector (choose AI model per mission).
+- Per-model thinking budgets.
+- PR strategy selector.
+- Execution plan preview with approval gate.
+
+#### Inter-Agent Messaging
+- `sendAgentMessage()` IPC handler for agent-to-agent communication.
+- Backend message routing between agents.
+- UI rendering of inter-agent messages in AgentChannels.
+
+#### Operational Improvements
+- missionId filter applied to all queries (previously only breakdown).
+- Role isolation between orchestrator and worker agents.
+- Team synthesis for multi-agent coordination.
+- Recovery loops for handling agent failures.
+
+### Remaining Work
+
+- End-to-end live multi-agent orchestration.
+- Context window management for long-running missions.
+- Plan approval gates (human-in-the-loop).
+- Real-time coordination pattern validation.
+- Worker transcript tailing.
+
+### Compute Backend Integration (Future)
+
+Mission launch will support compute backend selection, allowing missions to target Local, VPS, or Daytona (opt-in) execution environments.

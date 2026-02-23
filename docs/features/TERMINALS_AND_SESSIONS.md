@@ -725,3 +725,19 @@ CREATE INDEX idx_deltas_lane_id ON session_deltas(lane_id);
 | TERM-050 | Chat session resume (Codex thread/resume, Claude messages reload) | TODO |
 | TERM-051 | Chat transcript storage (.chat.jsonl) and delta computation | TODO |
 | TERM-052 | Chat-specific Settings (default provider, approval policy, send-on-enter) | TODO |
+
+### Remote Terminal Support (Planned)
+
+Terminals will support connections to remote compute backends:
+
+- **VPS Terminals**: SSH-based terminal sessions to VPS machines via the ADE relay
+- **Daytona Terminals**: Exec-based terminal sessions into Daytona workspace containers
+- **Seamless Switching**: Terminal tabs indicate the backend type; users can open terminals to any backend a lane is running on
+- **Session Persistence**: Remote terminal sessions reconnect automatically on network interruption
+
+### Phase 3 Integration Notes
+
+With the Phase 3 missions overhaul:
+- Terminal sessions are associated with missions via missionId
+- Agent output streams are available in the AgentChannels UI (Slack-style)
+- Worker transcript tailing (planned) will provide real-time agent terminal output

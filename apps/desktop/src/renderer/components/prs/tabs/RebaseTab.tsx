@@ -152,10 +152,10 @@ export function RebaseTab({
         key={need.laneId}
         type="button"
         className={cn(
-          "flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-all duration-150 border",
+          "flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs transition-colors duration-100",
           isSelected
-            ? "border-accent/40 bg-accent/12 shadow-[0_0_14px_-6px_rgba(34,211,238,0.45)]"
-            : "border-transparent hover:bg-card/65 hover:border-border/20 hover:translate-y-[-1px] hover:shadow-md",
+            ? "border-l-2 border-l-accent bg-accent/8"
+            : "border-l-2 border-l-transparent hover:bg-card/40",
         )}
         onClick={() => onSelectItem(need.laneId)}
       >
@@ -223,7 +223,7 @@ export function RebaseTab({
                     collapsed={collapsed[g.key]}
                     onToggle={() => setCollapsed((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}
                   >
-                    <div className="space-y-1 mt-1.5">
+                    <div className="space-y-0.5 mt-1.5">
                       {grouped[g.key].map(renderNeedItem)}
                     </div>
                   </UrgencyGroup>
@@ -239,9 +239,9 @@ export function RebaseTab({
         icon: Eye,
         bodyClassName: "overflow-auto",
         children: selectedNeed ? (
-          <div className="p-4 space-y-4">
+          <div className="p-4 space-y-5">
             {/* Header */}
-            <div className="rounded-xl border border-border/20 bg-card/45 backdrop-blur-sm shadow-card p-3.5">
+            <div className="rounded-lg bg-card/30 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-sm font-semibold text-fg">
@@ -272,22 +272,22 @@ export function RebaseTab({
             </div>
 
             {/* Drift analysis */}
-            <div className="rounded-xl border border-border/20 bg-card/45 backdrop-blur-sm shadow-card p-3.5 space-y-2.5">
-              <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Drift Analysis</div>
-              <div className="grid gap-2 md:grid-cols-3">
-                <div className="rounded-lg border border-border/20 bg-card/25 p-2 text-xs">
+            <div className="rounded-lg bg-card/30 p-4 space-y-3">
+              <div className="text-xs font-medium text-muted-fg/80">Drift Analysis</div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="bg-muted/15 rounded-md p-2.5 text-xs">
                   <div className="text-muted-fg/70">Behind By</div>
                   <div className={cn("font-mono font-semibold", selectedNeed.behindBy > 5 ? "text-amber-300" : "text-fg")}>
                     {selectedNeed.behindBy} commits
                   </div>
                 </div>
-                <div className="rounded-lg border border-border/20 bg-card/25 p-2 text-xs">
+                <div className="bg-muted/15 rounded-md p-2.5 text-xs">
                   <div className="text-muted-fg/70">Conflict Predicted</div>
                   <div className={cn("font-semibold", selectedNeed.conflictPredicted ? "text-amber-300" : "text-emerald-300")}>
                     {selectedNeed.conflictPredicted ? "yes" : "no"}
                   </div>
                 </div>
-                <div className="rounded-lg border border-border/20 bg-card/25 p-2 text-xs">
+                <div className="bg-muted/15 rounded-md p-2.5 text-xs">
                   <div className="text-muted-fg/70">Linked PR</div>
                   <div className="text-fg">{selectedNeed.prId ? `PR linked` : "none"}</div>
                 </div>
@@ -300,7 +300,7 @@ export function RebaseTab({
                     {selectedNeed.conflictingFiles.map((f) => (
                       <div
                         key={f}
-                        className="rounded border border-amber-500/20 bg-amber-500/5 px-2.5 py-1.5 text-xs font-mono text-amber-200/80"
+                        className="bg-amber-500/5 rounded-md px-2.5 py-1.5 text-xs font-mono text-amber-200/80"
                       >
                         {f}
                       </div>
@@ -311,9 +311,9 @@ export function RebaseTab({
             </div>
 
             {/* Resolution */}
-            <div className="rounded-xl border border-border/20 bg-card/45 backdrop-blur-sm shadow-card p-3.5 space-y-3">
+            <div className="rounded-lg bg-card/30 p-4 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-medium tracking-widest uppercase text-muted-fg">Resolution</div>
+                <div className="text-xs font-medium text-muted-fg/80">Resolution</div>
                 <ModelSelector
                   model={resolverModel}
                   reasoningLevel={resolverReasoningLevel}
@@ -346,7 +346,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="text-neutral-300"
+                  className="text-neutral-300 hover:text-neutral-200"
                   onClick={() => void handleDismiss()}
                 >
                   <XCircle size={12} className="mr-1" />
@@ -355,14 +355,14 @@ export function RebaseTab({
               </div>
 
               {selectedNeed.groupContext && (
-                <div className="rounded border border-border/20 bg-card/25 px-2.5 py-2 text-xs text-muted-fg">
+                <div className="bg-muted/15 rounded-md px-2.5 py-2 text-xs text-muted-fg">
                   Part of group: <span className="text-fg font-medium">{selectedNeed.groupContext}</span>
                 </div>
               )}
             </div>
 
             {rebaseError && (
-              <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              <div className="bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-200">
                 {rebaseError}
               </div>
             )}

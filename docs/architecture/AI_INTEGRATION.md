@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-20
+> Last updated: 2026-02-23
 
 The AI integration layer replaces the previous hosted agent with a local-first, subscription-powered approach. Instead of a cloud backend with API keys and remote job queues, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions, coordinates them through an MCP server, and manages multi-step workflows via an AI orchestrator.
 
@@ -898,6 +898,49 @@ ai:
     max_per_step_budget_usd: 10.0     # Per-step budget cap
 ```
 
+### Phase 3 Implementation Status
+
+**Shipped (~70%)**:
+- AI orchestrator service with mission lifecycle management
+- Fail-hard planner (300s timeout, MissionPlanningError, no deterministic fallback)
+- PR strategies (integration/per-lane/queue/manual) replacing merge phase
+- Team synthesis and recovery loops
+- Execution plan preview with approval gates
+- Inter-agent messaging (sendAgentMessage IPC)
+- AgentChannels UI (Slack-style agent communication)
+- Model selection per-mission with per-model thinking budgets
+- Activity feed with category dropdown
+- missionId-filtered queries across all views
+
+**Remaining (~30%)**:
+- Live multi-agent orchestration (concurrent agent coordination)
+- Real-time coordination patterns
+- File conflict prevention at merge time
+- Worker transcript tailing
+- End-to-end validation
+
+### Compute Backends for Agent Execution
+
+Agent execution can target different compute backends via the `ComputeBackend` interface:
+
+```typescript
+interface ComputeBackend {
+  type: 'local' | 'vps' | 'daytona';
+  create(config: WorkspaceConfig): Promise<WorkspaceHandle>;
+  destroy(handle: WorkspaceHandle): Promise<void>;
+  exec(handle: WorkspaceHandle, command: string): Promise<ExecResult>;
+  getPreviewUrl(handle: WorkspaceHandle, port: number): string;
+}
+```
+
+**Local Backend** (Default): Executes agents as local processes. No additional setup required.
+
+**VPS Backend**: Routes agent execution to remote machines via the ADE relay. Useful for Night Shift (after-hours autonomous work) and capacity scaling.
+
+**Daytona Backend** (Opt-in): Creates isolated cloud sandbox workspaces via the Daytona SDK. Each workspace gets its own filesystem, ports, and environment. Requires API key configuration.
+
+The orchestrator selects backends based on mission configuration, falling back to Local if no preference is set.
+
 ### Per-Task-Type Configuration
 
 ADE supports fine-grained control over which provider and model handles each type of AI task.
@@ -1334,9 +1377,9 @@ The pack service provides the context backbone for all AI operations:
 | Chat UI components | Complete | AgentChatPane, AgentChatMessageList, AgentChatComposer |
 | Chat session integration | Complete | `codex-chat` and `claude-chat` tool types in `terminal_sessions` |
 | MCP server (`apps/mcp-server`) | Complete | JSON-RPC 2.0 stdio server with Phase 2 tool/resource surface |
-| AI orchestrator (Claude + MCP) | Planned | Phase 3 -- leader/worker agent team architecture with shared task list, plan approval gates, file conflict prevention, lane merging, and six coordination patterns |
+| AI orchestrator (Claude + MCP) | ~70% Complete | Phase 3 -- missions overhaul shipped (fail-hard planner, PR strategies, inter-agent messaging, AgentChannels UI); remaining: live multi-agent orchestration, real-time coordination, file conflict prevention, worker transcript tailing, end-to-end validation |
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
 | Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. ADE now ships dual-SDK execution, native chat integration, and a production MCP bridge (`apps/mcp-server`) with policy enforcement and durable audit logging. Phase 3 (AI orchestrator with leader/worker agent team architecture) is the next implementation target. The orchestrator specification has been enriched with concrete team coordination patterns (shared task lists, plan approval gates, file conflict prevention, worker lifecycle management) informed by Claude Code's agent teams model.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 (AI Orchestrator) is ~70% complete — missions overhaul shipped (fail-hard planner, PR strategies replacing merge phase, inter-agent messaging, AgentChannels UI, model selection per-mission, activity feed with category dropdown, missionId-filtered queries). Remaining Phase 3 work: live multi-agent orchestration, real-time coordination patterns, file conflict prevention at merge time, worker transcript tailing, and end-to-end validation.

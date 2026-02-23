@@ -2565,24 +2565,45 @@ export function registerIpc({
     return await ctx.prService.refresh(arg);
   });
 
-  ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus> => {
+  ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus | null> => {
     const ctx = getCtx();
-    return await ctx.prService.getStatus(arg.prId);
+    try {
+      return await ctx.prService.getStatus(arg.prId);
+    } catch (err) {
+      // Return null for stale/deleted PR IDs instead of crashing
+      if (err instanceof Error && err.message.includes("PR not found")) return null;
+      throw err;
+    }
   });
 
   ipcMain.handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
     const ctx = getCtx();
-    return await ctx.prService.getChecks(arg.prId);
+    try {
+      return await ctx.prService.getChecks(arg.prId);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
   });
 
   ipcMain.handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
     const ctx = getCtx();
-    return await ctx.prService.getComments(arg.prId);
+    try {
+      return await ctx.prService.getComments(arg.prId);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
   });
 
   ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
     const ctx = getCtx();
-    return await ctx.prService.getReviews(arg.prId);
+    try {
+      return await ctx.prService.getReviews(arg.prId);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
   });
 
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {

@@ -185,9 +185,22 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     refresh();
   }, [refresh]);
 
+  // Use a ref to check the latest prs list without adding it as a dependency
+  const prsRef = React.useRef(prs);
+  prsRef.current = prs;
+
   // Load detail data when selected PR changes
   useEffect(() => {
     if (!selectedPrId) {
+      setDetailStatus(null);
+      setDetailChecks([]);
+      setDetailReviews([]);
+      setDetailComments([]);
+      return;
+    }
+
+    // Guard: don't attempt to load details for a PR that's not in our list
+    if (!prsRef.current.some((p) => p.id === selectedPrId)) {
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
@@ -212,7 +225,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         setDetailComments(comments);
       })
       .catch((err) => {
+        if (cancelled) return;
         console.warn("[PrsContext] Failed to load PR detail data:", err);
+        // Clear stale data on error so UI doesn't show outdated info
+        setDetailStatus(null);
+        setDetailChecks([]);
+        setDetailReviews([]);
+        setDetailComments([]);
       })
       .finally(() => {
         if (!cancelled) setDetailBusy(false);

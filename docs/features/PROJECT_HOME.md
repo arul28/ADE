@@ -544,3 +544,20 @@ test_runs (
 | PROJ-040 | Agent command editing (add/edit/delete commands and skills in-app) | TODO |
 | PROJ-041 | Agent tool quick-launch (open tracked terminal with tool in selected lane) | TODO |
 | PROJ-042 | Run prompt suggestion cards UI (accept/dismiss flow) | TODO |
+
+### Preview URL Management (Planned)
+
+The Project Home dashboard will surface preview URLs for active lanes:
+
+- **Preview URL Column**: Each lane row shows its preview URL (if proxy is enabled)
+- **Quick Launch**: Click to open preview in browser (uses isolated browser profile if configured)
+- **Copy Link**: Copy preview URL to clipboard for sharing
+- **Compute Backend Status**: Visual indicator showing which backend each lane is running on:
+  - Local (default)
+  - VPS (remote)
+  - Daytona (cloud sandbox)
+
+**Daytona Sandbox Management** (when configured):
+- View active Daytona workspaces
+- Start/stop workspaces from the dashboard
+- Monitor resource usage (CPU, RAM, disk)

@@ -144,10 +144,10 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                   key={group.groupId}
                   type="button"
                   className={cn(
-                    "w-full rounded-xl border p-3 text-left text-xs transition-all duration-150",
+                    "w-full rounded-lg p-3 text-left text-xs transition-colors duration-100",
                     isSelected
-                      ? "border-accent/40 bg-accent/12 shadow-[0_0_14px_-6px_rgba(34,211,238,0.45)]"
-                      : "border-border/20 bg-card/45 backdrop-blur-sm shadow-card hover:translate-y-[-1px] hover:shadow-md"
+                      ? "border-l-2 border-l-accent bg-accent/8"
+                      : "border-l-2 border-l-transparent bg-card/30 hover:bg-card/40"
                   )}
                   onClick={() => onSelectGroup(group.groupId)}
                 >
@@ -172,9 +172,9 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
       title: selectedGroup ? `Queue: ${selectedGroup.name ?? selectedGroup.groupId.slice(0, 8)}` : "Queue Detail",
       bodyClassName: "overflow-auto",
       children: selectedGroup ? (
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-5">
           {/* Controls */}
-          <div className="rounded-xl border border-border/20 bg-card/45 backdrop-blur-sm shadow-card p-3.5">
+          <div className="rounded-lg bg-card/30 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-fg">{selectedGroup.name ?? "Queue"}</div>
@@ -190,8 +190,8 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
           </div>
 
           {/* Pipeline visualization */}
-          <div className="rounded-xl border border-border/20 bg-card/45 backdrop-blur-sm shadow-card p-3.5 space-y-0">
-            <div className="text-xs font-medium tracking-widest uppercase text-muted-fg mb-3">Pipeline</div>
+          <div className="rounded-lg bg-card/30 p-4 space-y-0">
+            <div className="text-xs font-medium text-muted-fg/80 mb-3">Pipeline</div>
             {selectedGroup.members.map((member, idx) => {
               const isLast = idx === selectedGroup.members.length - 1;
               const prState = member.pr?.state ?? "unknown";
@@ -202,20 +202,20 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                   {/* Connector */}
                   <div className="flex flex-col items-center w-8 shrink-0">
                     <div className={cn(
-                      "w-3 h-3 rounded-full border-2 shrink-0",
-                      isLanded ? "bg-emerald-400 border-emerald-400" : isActive ? "bg-blue-400 border-blue-400 animate-pulse" : "bg-neutral-600 border-neutral-500"
+                      "w-2.5 h-2.5 rounded-full shrink-0",
+                      isLanded ? "bg-emerald-400" : isActive ? "bg-blue-400 animate-pulse" : "bg-neutral-600"
                     )} />
                     {!isLast ? (
                       <div className={cn(
-                        "w-0.5 flex-1 min-h-[24px]",
-                        isLanded ? "bg-emerald-500/50" : "bg-border/30"
+                        "w-px flex-1 min-h-[24px] opacity-40",
+                        isLanded ? "bg-emerald-500" : "bg-border"
                       )} />
                     ) : null}
                   </div>
                   {/* Node */}
                   <div className={cn(
-                    "flex-1 rounded-lg border px-3 py-2.5 mb-1.5 text-xs transition-all",
-                    isActive ? "border-blue-500/30 bg-blue-500/8" : isLanded ? "border-emerald-500/20 bg-emerald-500/5" : "border-border/20 bg-card/25"
+                    "flex-1 rounded-lg px-3 py-2.5 mb-1.5 text-xs transition-colors duration-100",
+                    isActive ? "bg-blue-500/8" : isLanded ? "bg-emerald-500/5" : "bg-muted/15"
                   )}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
@@ -234,7 +234,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setDeleteTarget(deleteTarget === member.prId ? null : member.prId); }}
-                            className="p-0.5 rounded text-muted-fg/50 hover:text-red-300 transition-colors"
+                            className="p-0.5 rounded text-muted-fg/50 hover:text-red-300 transition-colors duration-100"
                             title="Remove PR"
                           >
                             <Trash size={12} />
@@ -243,7 +243,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                       </div>
                     </div>
                     {deleteTarget === member.prId ? (
-                      <div className="mt-1.5 rounded border border-red-500/30 bg-red-500/8 p-2 space-y-2">
+                      <div className="mt-1.5 bg-red-500/5 rounded-lg p-2 space-y-2">
                         <div className="text-[11px] text-red-200">Remove this PR from the queue?</div>
                         <label className="flex items-center gap-1.5 text-[11px] text-muted-fg cursor-pointer">
                           <input type="checkbox" checked={deleteCloseGh} onChange={(e) => setDeleteCloseGh(e.target.checked)} className="rounded" />
@@ -264,9 +264,9 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
           </div>
 
           {/* Errors/results */}
-          {landError ? <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">{landError}</div> : null}
+          {landError ? <div className="bg-red-500/5 rounded-lg px-3 py-2 text-xs text-red-200">{landError}</div> : null}
           {landResult ? (
-            <div className={cn("rounded border px-3 py-2 text-xs", landResult.success ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : "border-red-500/40 bg-red-500/10 text-red-200")}>
+            <div className={cn("rounded-lg px-3 py-2 text-xs", landResult.success ? "bg-emerald-500/8 text-emerald-200" : "bg-red-500/5 text-red-200")}>
               {landResult.success ? `Landed PR #${landResult.prNumber}` : `Failed: ${landResult.error ?? "unknown"}`}
             </div>
           ) : null}

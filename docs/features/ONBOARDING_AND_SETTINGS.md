@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-23
 
 ---
 
@@ -232,6 +232,60 @@ These settings persist to `.ade/local.yaml` under `ai.permissions.claude` and `a
 
 Chat settings persist to `.ade/local.yaml` under `ai.chat`.
 
+**Lane Templates**: Manage reusable lane initialization templates.
+
+**Settings → Lane Templates**
+
+- **Template List**: CRUD for lane templates (create, edit, duplicate, delete)
+- **Template Fields**:
+  - Name and description
+  - Environment file mappings (source → destination, with variable substitution)
+  - Port range (start port, range size)
+  - Docker Compose file path (optional)
+  - Install command (e.g., `npm install`, `pip install -r requirements.txt`)
+- **Default Template**: Set a project-level default template for new lanes
+
+**Proxy & Preview**: Configure lane-level hostname isolation and preview URLs.
+
+**Settings → Proxy & Preview**
+
+- **Enable Proxy**: Toggle on/off (default: off)
+- **Proxy Port**: Single port for the reverse proxy (default: 8080)
+- **Hostname Pattern**: Template for lane hostnames (default: `<lane-slug>.localhost`)
+- **Auto-Setup**: Automatically register lanes with proxy on creation
+- **Port Detection**: Auto-detect dev server ports in lanes
+
+**Compute Backends**: Configure available execution environments for lanes and missions.
+
+**Settings → Compute Backends**
+
+*Local* (Default)
+- No additional configuration required
+- Uses host machine resources
+
+*VPS*
+- Relay server address
+- Pairing code / SSH key configuration
+- Set as Night Shift default (route after-hours work to VPS)
+
+*Daytona* (Opt-in)
+- API key
+- Region selection
+- Default resource allocation (CPU, RAM, disk)
+- Auto-stop timeout (idle workspace cleanup)
+- Set as mission default (route orchestrated work to Daytona sandbox)
+
+Note: Daytona integration is always opt-in. It provides isolated cloud sandbox environments but is never required for ADE functionality.
+
+**Browser Profiles**: Configure isolated browser profiles for per-lane preview.
+
+**Settings → Browser Profiles**
+
+- **Enable**: Toggle browser profile isolation on/off
+- **Chrome Path**: Path to Chrome/Chromium executable
+- **Profile Directory**: Base directory for lane-specific browser profiles
+- **Auto-Launch**: Automatically open preview URL in isolated profile on lane start
+
 **Automations**: Embedded `AutomationsSection` showing all automation rules with enable/disable toggles, "Run Now" buttons, and history links. Provides a summary view without leaving Settings.
 
 **Terminal Profiles**: Manage terminal launch profiles. Default profiles include Shell, Claude, Codex, and Aider. Users can add custom profiles with name, command, args, cwd, and environment variables. Profiles are persisted via `kvDb`.
@@ -329,6 +383,25 @@ SettingsPage (route: /settings)
   |    +-- SendOnEnterToggle
   |    +-- PerProviderChatSettings (sandbox/permission mode per provider)
   |    +-- ChatBudgetInput
+  +-- LaneTemplatesSection
+  |    +-- TemplateList (CRUD: create, edit, duplicate, delete)
+  |    +-- TemplateEditor (name, env files, port range, Docker path, install cmd)
+  |    +-- DefaultTemplatePicker
+  +-- ProxyPreviewSection
+  |    +-- EnableProxyToggle
+  |    +-- ProxyPortInput
+  |    +-- HostnamePatternInput
+  |    +-- AutoSetupToggle
+  |    +-- PortDetectionToggle
+  +-- ComputeBackendsSection
+  |    +-- LocalBackendCard (default, no config)
+  |    +-- VpsBackendCard (relay address, pairing, Night Shift default toggle)
+  |    +-- DaytonaBackendCard (API key, region, resources, auto-stop, mission default toggle)
+  +-- BrowserProfilesSection
+  |    +-- EnableToggle
+  |    +-- ChromePathInput
+  |    +-- ProfileDirectoryInput
+  |    +-- AutoLaunchToggle
   +-- AutomationsSection (per-rule summary with run-now, history, toggle)
   +-- TerminalProfilesSection (profile CRUD: name, command, args, cwd, env)
   +-- KeybindingsSection (table: action, scope, default, override, effective + conflict detection)

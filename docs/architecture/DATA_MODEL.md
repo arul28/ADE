@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-23
 
 ---
 
@@ -1068,6 +1068,50 @@ Updated whenever a project is opened. Used to restore the last-opened project on
 - `lane_overlay_policies` table for workspace-level overrides
 - Schema version tracking for non-idempotent migrations
 - Database compaction / vacuum scheduling
+
+#### Planned Tables
+
+```sql
+-- Lane port allocation tracking
+CREATE TABLE lane_port_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lane_id TEXT NOT NULL REFERENCES lanes(id),
+    port_start INTEGER NOT NULL,
+    port_end INTEGER NOT NULL,
+    allocated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    released_at TEXT,
+    UNIQUE(lane_id),
+    CHECK(port_start < port_end)
+);
+
+-- Lane proxy registration
+CREATE TABLE lane_proxy_registrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lane_id TEXT NOT NULL REFERENCES lanes(id),
+    hostname TEXT NOT NULL,
+    target_port INTEGER NOT NULL,
+    proxy_port INTEGER NOT NULL DEFAULT 8080,
+    registered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_health_check TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive', 'error')),
+    UNIQUE(hostname),
+    UNIQUE(lane_id)
+);
+
+-- Lane compute backend metadata
+CREATE TABLE lane_compute_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lane_id TEXT NOT NULL REFERENCES lanes(id),
+    backend_type TEXT NOT NULL CHECK(backend_type IN ('local', 'vps', 'daytona')),
+    workspace_id TEXT,  -- Daytona workspace ID or VPS machine ID
+    workspace_url TEXT, -- Remote access URL if applicable
+    preview_url TEXT,   -- Generated preview URL
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    stopped_at TEXT,
+    metadata_json TEXT, -- Backend-specific metadata
+    UNIQUE(lane_id)
+);
+```
 
 ---
 

@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-19
+> Last updated: 2026-02-23
 
 This document describes how ADE protects user data, source code, and development workflows. ADE is a fully local-first desktop application — all code, configuration, and AI processing remain on the user's machine.
 
@@ -308,3 +308,34 @@ The audit trail provides a complete record of significant operations for debuggi
 | Confidence heuristics for proposals | Done | Confidence scoring (high/medium/low) displayed in ConflictsPage proposal list |
 
 **Overall status**: DONE. Core local security model (process isolation, preload bridge, config trust, operation tracking, path validation, force push safety, secret redaction, proposal confidence) is fully implemented. ADE is a local-only application with no cloud backend — AI features are powered by local CLI tools via the agent SDKs (AgentExecutor interface).
+
+---
+
+## Compute Backend Trust Models
+
+Each compute backend has a different trust model:
+
+| Backend | Trust Level | Data Location | Network Access | Credential Handling |
+|---------|------------|---------------|----------------|-------------------|
+| Local | Full trust | On-device | Host network | OS keychain |
+| VPS | Controlled trust | Remote (user-owned) | SSH tunnel | Forwarded via relay |
+| Daytona | Third-party trust | Daytona cloud | Daytona network | API key + workspace isolation |
+
+**Decision Matrix**:
+- Sensitive/proprietary code — Local or VPS
+- Experimental/throwaway work — Any backend
+- CI-like isolation needed — Daytona (opt-in)
+- Night Shift autonomous work — VPS or Daytona
+
+Daytona workspaces are isolated: each gets its own filesystem, network namespace, and port space. Credentials are never shared between workspaces. API keys are stored in the system keychain, not in project files.
+
+## Per-Lane Proxy Security
+
+The per-lane hostname proxy (*.localhost) provides security isolation:
+
+- **Cookie Isolation**: Each lane hostname is a separate origin — browsers enforce cookie separation automatically
+- **Auth State Isolation**: OAuth redirects target lane-specific hostnames, preventing cross-lane auth confusion
+- **Port Isolation**: Each lane gets a dedicated port range, preventing port collisions
+- **No Cross-Lane Access**: Proxy only routes to the lane matching the Host header — no lane can access another's dev server
+
+The proxy runs locally and does not expose any ports externally. All *.localhost traffic stays on the loopback interface.

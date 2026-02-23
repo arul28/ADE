@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-20
+> Last updated: 2026-02-23
 >
 > Roadmap note: future sequencing and planned architecture expansion (orchestrator, MCP, relay, iOS, machine hub) are maintained in `docs/final-plan.md`.
 
@@ -51,6 +51,10 @@ ADE exposes its internal capabilities to AI processes through a Model Context Pr
 ### Trust Boundary at the Process Level
 
 Electron's process model provides a natural trust boundary. The main process (Node.js) is trusted and has full filesystem and process access. The renderer process (Chromium) is untrusted and communicates exclusively through a typed IPC bridge. This prevents any renderer-side vulnerability from directly accessing the filesystem or spawning processes.
+
+### Pluggable Compute Backends
+
+ADE supports pluggable compute backends for lane and mission execution. The `ComputeBackend` interface abstracts environment lifecycle (create, destroy, exec, preview URL) across Local (default), VPS (remote relay), and Daytona (opt-in cloud sandbox) backends. This allows agents to execute in isolated environments without changing orchestration logic.
 
 ### Git Worktrees as the Isolation Primitive
 
@@ -126,6 +130,12 @@ The Local Core Engine is the brain of ADE. It runs exclusively in Electron's mai
 | `missionPlanningService` | `missionPlanningService.ts` | AI-powered and deterministic mission planning |
 | `orchestratorService` | `orchestratorService.ts` | Run/step/attempt state machine, claim management, context snapshots |
 | `agentChatService` | `agentChatService.ts` | Agent chat session lifecycle, Codex App Server JSON-RPC client, Claude multi-turn backend, ChatEvent streaming |
+| `laneEnvironmentService` | *Planned* | Lane environment initialization (env files, ports, Docker, deps) |
+| `laneProxyService` | *Planned* | Per-lane hostname proxy (*.localhost routing) |
+| `previewLaunchService` | *Planned* | Preview URL generation and browser launch |
+| `browserProfileService` | *Planned* | Chrome profile isolation per lane |
+| `computeBackendService` | *Planned* | Compute backend abstraction and selection |
+| `daytonaService` | *Planned* | Daytona SDK integration (opt-in cloud sandbox) |
 
 All services are instantiated in `main.ts` and wired together through dependency injection. The `AppContext` type aggregates all service instances and is passed to the IPC registration layer.
 
@@ -279,6 +289,13 @@ Mission created --> missionService
 
 Real-time events (PTY data, process status changes, test run updates, AI streaming tokens) are broadcast to all renderer windows via a `broadcast()` utility that iterates over `BrowserWindow.getAllWindows()`.
 
+### External Dependencies
+
+| Dependency | Usage | Required |
+|------------|-------|----------|
+| Daytona SDK | Opt-in cloud sandbox compute for lane/mission execution | No (opt-in) |
+| Docker | Lane environment initialization (optional containerized deps) | No (optional) |
+
 ---
 
 ## Implementation Status
@@ -302,8 +319,9 @@ Current codebase status is feature-rich across lanes, files, terminals, conflict
 | MCP server (`apps/mcp-server`) | Complete |
 | MCP permission/policy layer | Complete |
 | MCP call audit logging | Complete |
-| AI orchestrator (Claude session + MCP) | Planned (Phase 3) |
+| AI orchestrator (Claude session + MCP) | ~70% Complete (Phase 3) — missions overhaul shipped |
+| Compute backend abstraction (Phase 5.5) | Planned |
 
-Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is the next implementation target. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
+Phases 1 (Agent SDK Integration), 1.5 (Agent Chat Integration), and 2 (MCP Server) are complete. Phase 3 (AI Orchestrator) is ~70% complete — missions overhaul shipped (fail-hard planner, PR strategies, inter-agent messaging, AgentChannels UI). Phase 5.5 (Compute Backend Abstraction) is planned. For authoritative phase sequencing, dependencies, and next implementation tasks, see:
 
 - `docs/final-plan.md`
