@@ -270,6 +270,12 @@ declare global {
         getProject: () => Promise<ProjectInfo>;
         openExternal: (url: string) => Promise<void>;
         revealPath: (path: string) => Promise<void>;
+        writeClipboardText: (text: string) => Promise<void>;
+        openPathInEditor: (args: {
+          rootPath: string;
+          relativePath?: string;
+          target: "finder" | "vscode" | "cursor" | "zed";
+        }) => Promise<void>;
       };
       project: {
         openRepo: () => Promise<ProjectInfo>;
