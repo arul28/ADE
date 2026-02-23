@@ -149,7 +149,7 @@ const ORCHESTRATOR_CHAT_METADATA_KEY = "orchestratorChat";
 const ORCHESTRATOR_CHAT_SESSION_METADATA_KEY = "orchestratorChatSession";
 const MAX_PERSISTED_STEERING_DIRECTIVES = 200;
 const MAX_PERSISTED_CHAT_MESSAGES = 200;
-const HEALTH_SWEEP_INTERVAL_MS = 15_000;
+const HEALTH_SWEEP_INTERVAL_MS = 5_000;
 const HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT = 200;
 const STALE_ATTEMPT_GRACE_MS = 10_000;
 const WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS = 120_000;
@@ -3581,6 +3581,24 @@ export function createAiOrchestratorService(args: {
             stepKey
           );
           emitWorkerDigest(buildWorkerDigestFromAttempt({ graph, attempt }));
+
+          try {
+            ensureThreadForTarget({
+              missionId: graph.run.missionId,
+              target: {
+                kind: "worker",
+                runId: attempt.runId,
+                stepId: attempt.stepId,
+                stepKey: stepKey,
+                attemptId: attempt.id,
+                sessionId: attempt.executorSessionId ?? null,
+                laneId: stepForAttempt?.laneId ?? null,
+              },
+              fallbackTitle: `Worker: ${stepTitle}`,
+            });
+          } catch (_threadErr) {
+            /* best-effort */
+          }
         }
         recordMissionMetricSample({
           missionId: graph.run.missionId,
@@ -5253,7 +5271,8 @@ export function createAiOrchestratorService(args: {
         const child = await laneService.createChild({
           parentLaneId: baseLaneId,
           name: requestedName,
-          description: `Auto-created by orchestrator for mission ${args.missionId} (${root.title || root.stepKey}).`
+          description: `Auto-created by orchestrator for mission ${args.missionId} (${root.title || root.stepKey}).`,
+          folder: `Mission: ${mission.title}`
         });
         laneId = child.id;
         createdLaneIds.push(child.id);
@@ -5456,11 +5475,41 @@ export function createAiOrchestratorService(args: {
       source: "dag_shape"
     });
 
-    // ── Dynamic parallelism cap ─────────────────────────────────
-    let parallelismCap: number;
-    const scopeCaps: Record<string, number> = { small: 2, medium: 4, large: 8, very_large: 16 };
+    // ── Compute DAG max width ─────────────────────────────────
+    const stepDepthMap = new Map<string, number>();
+    const depsByKey = new Map<string, string[]>();
+    for (const d of descriptors) {
+      depsByKey.set(d.stepKey, d.dependencyStepKeys);
+    }
+    const computeDepth = (key: string, visited: Set<string>): number => {
+      if (stepDepthMap.has(key)) return stepDepthMap.get(key)!;
+      if (visited.has(key)) return 0; // cycle guard
+      visited.add(key);
+      const deps = depsByKey.get(key) ?? [];
+      const depth = deps.length === 0 ? 0 : Math.max(...deps.map((d) => computeDepth(d, visited))) + 1;
+      stepDepthMap.set(key, depth);
+      return depth;
+    };
+    for (const d of descriptors) {
+      computeDepth(d.stepKey, new Set());
+    }
+    const depthCounts = new Map<number, number>();
+    for (const depth of stepDepthMap.values()) {
+      depthCounts.set(depth, (depthCounts.get(depth) ?? 0) + 1);
+    }
+    const dagMaxWidth = depthCounts.size > 0 ? Math.max(...depthCounts.values()) : 1;
 
-    // AI planner cap takes priority over scope heuristic
+    decisionLog.push({
+      timestamp: now,
+      decision: `DAG max width = ${dagMaxWidth}`,
+      reason: `${stepDepthMap.size} steps across ${depthCounts.size} depth levels`,
+      source: "dag_shape"
+    });
+
+    // ── Dynamic parallelism cap ─────────────────────────────────
+    // Priority: (1) AI planner cap, (2) DAG max width, (3) prompt overrides, (4) safety ceiling
+    let parallelismCap: number;
+
     const plannerCapResolved = resolveMissionParallelismCap(missionId);
     const plannerRationale = resolveMissionPlannerRationale(missionId);
 
@@ -5475,7 +5524,13 @@ export function createAiOrchestratorService(args: {
         source: "override"
       });
     } else {
-      parallelismCap = scopeCaps[estimatedScope] ?? 4;
+      parallelismCap = dagMaxWidth;
+      decisionLog.push({
+        timestamp: now,
+        decision: `Parallelism cap set to ${parallelismCap} from DAG max width`,
+        reason: `No valid AI planner cap; using structural DAG width as fallback`,
+        source: "dag_shape"
+      });
     }
 
     if (HIGH_PARALLELISM_KEYWORDS.test(userPrompt)) {
@@ -5509,7 +5564,7 @@ export function createAiOrchestratorService(args: {
     decisionLog.push({
       timestamp: now,
       decision: `Parallelism cap set to ${parallelismCap}`,
-      reason: `Scope ${estimatedScope}, lane count ${laneCount}`,
+      reason: `DAG max width ${dagMaxWidth}, scope ${estimatedScope}, lane count ${laneCount}`,
       source: "policy"
     });
 
@@ -5733,6 +5788,13 @@ export function createAiOrchestratorService(args: {
 
     transitionMissionStatus(missionId, "in_progress");
     void syncMissionFromRun(started.run.id, "mission_run_started");
+
+    setTimeout(() => {
+      void orchestratorService.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "initial_ramp_up",
+      }).catch(() => {});
+    }, 500);
 
     return {
       blockedByPlanReview: false,

@@ -71,6 +71,7 @@ export type LaneSummary = {
   color: string | null;
   icon: LaneIcon | null;
   tags: string[];
+  folder?: string | null;
   createdAt: string;
   archivedAt?: string | null;
 };
@@ -1020,6 +1021,7 @@ export type CreateChildLaneArgs = {
   parentLaneId: string;
   name: string;
   description?: string;
+  folder?: string;
 };
 
 export type ImportBranchLaneArgs = {
@@ -3792,6 +3794,7 @@ export type MissionExecutionPolicy = {
   recoveryLoop?: RecoveryLoopPolicy;
   integrationPr?: IntegrationPrPolicy;
   prStrategy?: PrStrategy;
+  useAgentTeams?: boolean;
 };
 
 export type CompletionDiagnostic = {
