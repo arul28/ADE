@@ -48,6 +48,7 @@ type PtyEntry = {
   lastRuntimeSignalState: TerminalRuntimeState;
   lastRuntimeSignalPreview: string | null;
   disposed: boolean;
+  createdAt: number;
 };
 
 type RuntimeStateEntry = {
@@ -147,6 +148,22 @@ export function createPtyService({
 }) {
   const ptys = new Map<string, PtyEntry>();
   const runtimeStates = new Map<string, RuntimeStateEntry>();
+  /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
+  const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** Tool types that run a CLI tool inside the shell and should auto-close when the tool exits */
+  const TOOL_TYPES_WITH_AUTO_CLOSE = new Set<TerminalToolType>([
+    "claude", "codex", "claude-orchestrated", "codex-orchestrated",
+    "aider", "cursor", "continue"
+  ]);
+
+  const clearToolAutoCloseTimer = (ptyId: string) => {
+    const timer = toolAutoCloseTimers.get(ptyId);
+    if (timer) {
+      clearTimeout(timer);
+      toolAutoCloseTimers.delete(ptyId);
+    }
+  };
 
   const clearIdleTimer = (sessionId: string) => {
     const state = runtimeStates.get(sessionId);
@@ -253,6 +270,7 @@ export function createPtyService({
     if (!entry) return;
     if (entry.disposed) return;
     entry.disposed = true;
+    clearToolAutoCloseTimer(ptyId);
 
     try {
       entry.transcriptStream?.end();
@@ -492,7 +510,8 @@ export function createPtyService({
         lastRuntimeSignalAt: 0,
         lastRuntimeSignalState: "running",
         lastRuntimeSignalPreview: null,
-        disposed: false
+        disposed: false,
+        createdAt: Date.now()
       };
       ptys.set(ptyId, entry);
 
@@ -505,14 +524,44 @@ export function createPtyService({
         updatePreviewThrottled(entry, data);
         broadcastData({ ptyId, sessionId, data });
 
-        const runtimeState = runtimeStateFromOsc133Chunk(data, runtimeStates.get(sessionId)?.state ?? "running");
+        const prevState = runtimeStates.get(sessionId)?.state ?? "running";
+        const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
         setRuntimeState(sessionId, runtimeState);
         if (runtimeState === "running") {
           scheduleIdleTransition(sessionId);
+          clearToolAutoCloseTimer(ptyId);
         } else {
           clearIdleTimer(sessionId);
         }
         emitRuntimeSignalThrottled(entry, runtimeState);
+
+        // Auto-close tool-typed PTYs when the CLI tool exits back to shell prompt.
+        // When a tool like claude/codex exits (via /exit, completion, etc.), the outer
+        // shell stays alive and returns to its prompt, detected as "waiting-input".
+        // We auto-dispose after a brief delay to let final output flush.
+        if (
+          runtimeState === "waiting-input" &&
+          (prevState === "running" || prevState === "idle") &&
+          entry.toolTypeHint &&
+          TOOL_TYPES_WITH_AUTO_CLOSE.has(entry.toolTypeHint) &&
+          !toolAutoCloseTimers.has(ptyId) &&
+          Date.now() - entry.createdAt > 5_000  // ignore initial shell prompt
+        ) {
+          toolAutoCloseTimers.set(
+            ptyId,
+            setTimeout(() => {
+              toolAutoCloseTimers.delete(ptyId);
+              if (entry.disposed) return;
+              logger.info("pty.tool_exit_auto_close", { ptyId, sessionId, toolType: entry.toolTypeHint });
+              try {
+                entry.pty.kill();
+              } catch {
+                // If kill fails, force close via closeEntry
+                closeEntry(ptyId, 0);
+              }
+            }, 1500)
+          );
+        }
 
         if (!entry.resumeCommand || entry.resumeCommandIsFallback) {
           entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-12_000);
@@ -671,6 +720,7 @@ export function createPtyService({
       }
       if (entry.disposed) return;
       entry.disposed = true;
+      clearToolAutoCloseTimer(ptyId);
       try {
         entry.transcriptStream?.end();
       } catch {
