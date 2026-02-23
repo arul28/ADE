@@ -170,6 +170,7 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "lanes", "color text", "color");
   addColumnIfMissing(db, "lanes", "icon text", "icon");
   addColumnIfMissing(db, "lanes", "tags_json text", "tags_json");
+  addColumnIfMissing(db, "lanes", "folder text", "folder");
   createIndexIfColumnsExist(db, "create index if not exists idx_lanes_project_id on lanes(project_id)", "lanes", ["project_id"]);
   createIndexIfColumnsExist(
     db,

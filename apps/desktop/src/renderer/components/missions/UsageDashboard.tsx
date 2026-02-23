@@ -48,6 +48,7 @@ type UsageDashboardProps = {
 export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps) {
   const [stats, setStats] = useState<AggregatedUsageStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchUsage = useCallback(async () => {
     try {
@@ -55,8 +56,9 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
         missionId: missionId ?? null
       });
       setStats(result);
-    } catch {
-      // silently handle
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setLoading(false);
     }
@@ -91,6 +93,8 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
     ? `Usage for: ${missionTitle ?? "Selected Mission"}`
     : "Usage: All Missions";
 
+  const isEmpty = stats.summary.totalSessions === 0 && (stats.summary.totalInputTokens + stats.summary.totalOutputTokens) === 0;
+
   return (
     <div className="flex flex-col gap-3 p-4 overflow-y-auto">
       {/* Scope indicator */}
@@ -98,6 +102,24 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
         {scopeLabel}
       </div>
 
+      {/* Error banner */}
+      {error && (
+        <div className="rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          Failed to load usage data: {error}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {isEmpty ? (
+        <div className="flex flex-col items-center justify-center py-10 text-center gap-2">
+          <span className="text-sm font-medium text-muted-fg">No usage data yet</span>
+          <span className="text-xs text-muted-fg/70 leading-relaxed max-w-xs">
+            Usage metrics will appear here once AI agents begin processing steps.
+            This includes token counts, costs, compute time, and model breakdowns.
+          </span>
+        </div>
+      ) : (
+      <>
       {/* Summary Cards */}
       <div className="grid grid-cols-4 gap-2">
         <SummaryCard icon={Pulse} label="Sessions" value={String(stats.summary.totalSessions)} sub={stats.summary.activeSessions > 0 ? `${stats.summary.activeSessions} active` : undefined} />
@@ -202,6 +224,8 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
             ))}
           </div>
         </section>
+      )}
+      </>
       )}
     </div>
   );

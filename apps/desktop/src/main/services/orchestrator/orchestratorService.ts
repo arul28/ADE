@@ -1224,7 +1224,7 @@ export function createOrchestratorService({
       orchestrator.maxParallelWorkers ?? orchestrator.max_parallel_workers,
       out.maxParallelWorkers,
       1,
-      16
+      32
     );
     const mergePolicy = String(orchestrator.defaultMergePolicy ?? orchestrator.default_merge_policy ?? "").trim();
     if (mergePolicy === "sequential" || mergePolicy === "batch-at-end" || mergePolicy === "per-step") {
@@ -4127,7 +4127,7 @@ export function createOrchestratorService({
         Number.isFinite(plannerParallelismRaw) && plannerParallelismRaw > 0 ? Math.floor(plannerParallelismRaw) : null;
       const autopilotParallelismCap = Math.max(
         1,
-        Math.min(runtimeConfig.maxParallelWorkers, plannerParallelismCap ?? runtimeConfig.maxParallelWorkers)
+        Math.min(32, plannerParallelismCap ?? runtimeConfig.maxParallelWorkers)
       );
 
       const descriptors = missionSteps.map((row, index) => {
@@ -4366,7 +4366,18 @@ export function createOrchestratorService({
     async startReadyAutopilotAttempts(args: { runId: string; reason?: string }): Promise<number> {
       const runId = String(args.runId ?? "").trim();
       if (!runId.length) return 0;
-      if (autopilotRunLocks.has(runId)) return 0;
+      if (autopilotRunLocks.has(runId)) {
+        if (args.reason === "initial_ramp_up") {
+          let waited = 0;
+          while (autopilotRunLocks.has(runId) && waited < 2000) {
+            await new Promise((r) => setTimeout(r, 100));
+            waited += 100;
+          }
+          if (autopilotRunLocks.has(runId)) return 0;
+        } else {
+          return 0;
+        }
+      }
 
       autopilotRunLocks.add(runId);
       try {
