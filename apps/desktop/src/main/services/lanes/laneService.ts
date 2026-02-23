@@ -36,6 +36,7 @@ type LaneRow = {
   color: string | null;
   icon: string | null;
   tags_json: string | null;
+  folder: string | null;
   created_at: string;
   archived_at: string | null;
   status: string;
@@ -103,6 +104,7 @@ function toLaneSummary(args: {
     color: row.color,
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
+    folder: row.folder,
     createdAt: row.created_at,
     archivedAt: row.archived_at
   };
@@ -400,6 +402,7 @@ export function createLaneService({
     baseRef: string;
     startPoint: string;
     parentLaneId: string | null;
+    folder?: string;
   }): Promise<LaneSummary> => {
     const laneId = randomUUID();
     const now = new Date().toISOString();
@@ -417,11 +420,11 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, null, ?, 'active', ?, null)
       `,
-      [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, now]
+      [laneId, projectId, args.name, args.description ?? null, args.baseRef, branchRef, worktreePath, args.parentLaneId, args.folder ?? null, now]
     );
 
     const row = getLaneRow(laneId);
@@ -559,7 +562,8 @@ export function createLaneService({
         description: args.description,
         baseRef: parent.branch_ref,
         startPoint: parentHeadSha,
-        parentLaneId: parent.id
+        parentLaneId: parent.id,
+        folder: args.folder
       });
     },
 

@@ -369,6 +369,16 @@ function buildPlannerPrompt(args: {
     "",
     "Additional context bundle (JSON):",
     stableStringify(args.contextBundle ?? {}),
+    "",
+    "## ADE Platform Capabilities",
+    "You are planning for the ADE (Autonomous Development Environment) platform. Available capabilities:",
+    "- **Lanes**: Isolated git worktrees for parallel development. Each step can execute in its own lane.",
+    "- **Merge Conflict Resolution**: Built-in AI-powered merge conflict detection and resolution.",
+    "- **Agent Teams**: Multiple AI agents can work in parallel on different steps.",
+    "- **MCP Tools**: Model Context Protocol tools for file operations, terminal commands, web access, and more.",
+    "- **Context Packs**: Curated sets of files and documentation that provide focused context to agents.",
+    "- **Integration Chain**: Automated PR creation, code review, and branch integration pipeline.",
+    "- **Parallel Execution**: Steps without dependencies can execute simultaneously across multiple agents.",
     ""
   ];
 
@@ -383,6 +393,12 @@ function buildPlannerPrompt(args: {
       `- Executor preferences: planning=${p.planning.model ?? "codex"}, implementation=${p.implementation.model ?? "codex"}, testing=${p.testing.model ?? "codex"}, integration=${p.integration.model ?? "codex"}.`,
       ""
     );
+    if (p.testing.mode === "none") {
+      lines.push(
+        "HARD CONSTRAINT — TESTING DISABLED: The user has explicitly disabled testing. You MUST NOT generate any test, validation, or verification steps. Do not include steps of type \"test\", \"validation\", \"test_review\", or any step whose purpose is running tests. This is a non-negotiable requirement.",
+        ""
+      );
+    }
   }
 
   lines.push("Output: one JSON object only.");
@@ -1081,6 +1097,13 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         validationErrors: [],
         attempts: plannerAttempts
       };
+      // Strip test-type steps when testing is disabled
+      if (args.policy?.testing?.mode === "none" && plan.steps) {
+        plan.steps = plan.steps.filter(
+          (s) => !["test", "validation", "test_review"].includes(s.taskType ?? "")
+        );
+      }
+
       args.logger?.info?.("missions.planner.success", {
         plannerRunId,
         requestedEngine,
