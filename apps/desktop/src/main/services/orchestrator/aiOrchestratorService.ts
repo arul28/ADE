@@ -68,6 +68,7 @@ import type {
   RecoveryLoopIteration,
   OrchestratorContextView,
   IntegrationPrPolicy,
+  PrStrategy,
   SLASH_COMMAND_TRANSLATIONS
 } from "../../../shared/types";
 import {
@@ -86,6 +87,13 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
 import { planMissionOnce, plannerPlanToMissionSteps, MissionPlanningError } from "../missions/missionPlanningService";
+
+function inferPrStrategy(args: { laneCount: number; lanesAreCoupled: boolean; userOverride?: PrStrategy }): PrStrategy {
+  if (args.userOverride) return args.userOverride;
+  if (args.laneCount === 1) return { kind: "per-lane" };
+  if (args.lanesAreCoupled) return { kind: "integration" };
+  return { kind: "queue" };
+}
 
 type MissionRunStartArgs = {
   missionId: string;
@@ -4991,11 +4999,14 @@ export function createAiOrchestratorService(args: {
         // ── PR Creation at Run End (strategy-driven) ──────────────────────────
         try {
           const runPolicy = resolveActivePolicy(mission.id);
-          const prStrategy = runPolicy.prStrategy ?? { kind: "manual" };
           const integrationPrPolicy = runPolicy.integrationPr ?? DEFAULT_INTEGRATION_PR_POLICY;
           const teamManifest = runTeamManifests.get(runId);
           const graphLaneCount = new Set(graph.steps.map((s) => s.laneId).filter(Boolean)).size;
           const usedMultipleLanes = (teamManifest && teamManifest.parallelLanes.length > 1) || graphLaneCount > 1;
+          const prStrategy = runPolicy.prStrategy ?? inferPrStrategy({
+            laneCount: graphLaneCount,
+            lanesAreCoupled: false
+          });
 
           if (prStrategy.kind === "manual") {
             logger.debug("ai_orchestrator.pr_strategy_manual", { missionId: mission.id, runId });
@@ -5083,6 +5094,49 @@ export function createAiOrchestratorService(args: {
                 error: perLaneError instanceof Error ? perLaneError.message : String(perLaneError)
               });
             }
+          } else if (prStrategy.kind === "queue" && prService && usedMultipleLanes) {
+            try {
+              const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+              const targetBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+
+              const queueResult = await prService.createQueuePrs({
+                laneIds: laneIdArray,
+                targetBranch,
+                draft: prStrategy.draft ?? true,
+                autoRebase: prStrategy.autoRebase ?? true,
+                ciGating: prStrategy.ciGating ?? false
+              });
+
+              for (const pr of queueResult.prs) {
+                emitOrchestratorMessage(
+                  mission.id,
+                  `Queue PR #${pr.githubPrNumber} created: ${pr.githubUrl}`
+                );
+              }
+              for (const err of queueResult.errors) {
+                emitOrchestratorMessage(
+                  mission.id,
+                  `Queue PR for ${err.laneId} failed: ${err.error}`
+                );
+              }
+              logger.info("ai_orchestrator.queue_prs_created", {
+                missionId: mission.id,
+                runId,
+                groupId: queueResult.groupId,
+                prCount: queueResult.prs.length,
+                errorCount: queueResult.errors.length
+              });
+            } catch (queueError) {
+              logger.warn("ai_orchestrator.queue_pr_creation_failed", {
+                missionId: mission.id,
+                runId,
+                error: queueError instanceof Error ? queueError.message : String(queueError)
+              });
+              emitOrchestratorMessage(
+                mission.id,
+                `Queue PR creation failed: ${queueError instanceof Error ? queueError.message : String(queueError)}`
+              );
+            }
           }
         } catch (prStrategyError) {
           logger.debug("ai_orchestrator.pr_strategy_trigger_failed", {
@@ -5120,6 +5174,28 @@ export function createAiOrchestratorService(args: {
           workerStates.delete(attemptId);
           attemptRuntimeTrackers.delete(attemptId);
           deletePersistedAttemptRuntimeState(attemptId);
+        }
+
+        // Clean up mission-keyed in-memory maps when mission reaches a terminal state.
+        const missionTerminal =
+          nextMissionStatus === "completed" ||
+          nextMissionStatus === "failed" ||
+          nextMissionStatus === "canceled";
+        if (missionTerminal) {
+          const mid = mission.id;
+          chatMessages.delete(mid);
+          activeSteeringDirectives.delete(mid);
+          activeChatSessions.delete(mid);
+          chatTurnQueues.delete(mid);
+          // Clean planner session and associated session-keyed maps.
+          const plannerState = plannerSessionByMissionId.get(mid);
+          if (plannerState) {
+            plannerSessionByMissionId.delete(mid);
+            const sid = plannerState.sessionId;
+            plannerSessionBySessionId.delete(sid);
+            sessionRuntimeSignals.delete(sid);
+            sessionSignalQueues.delete(sid);
+          }
         }
       }
     } catch (error) {

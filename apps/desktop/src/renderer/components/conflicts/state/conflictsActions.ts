@@ -15,8 +15,8 @@ export async function fetchBatchAssessment(dispatch: Dispatch<ConflictsAction>) 
     if (result.progress) {
       dispatch({ type: "SET_PROGRESS", progress: result.progress });
     }
-  } catch (err: any) {
-    dispatch({ type: "SET_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_LOADING", loading: false });
   }
@@ -39,8 +39,8 @@ export async function fetchGitConflictState(dispatch: Dispatch<ConflictsAction>,
   try {
     const state = await window.ade.git.getConflictState(laneId);
     dispatch({ type: "SET_GIT_CONFLICT", state });
-  } catch (err: any) {
-    dispatch({ type: "SET_GIT_CONFLICT_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_GIT_CONFLICT_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_GIT_CONFLICT_BUSY", busy: false });
   }
@@ -92,8 +92,8 @@ export async function prepareResolverSession(
     dispatch({ type: "SET_RESOLVER_CWD_LANE_ID", laneId: result.cwdLaneId });
     dispatch({ type: "SET_RESOLVER_MODAL_PHASE", phase: "running" });
     return result;
-  } catch (err: any) {
-    dispatch({ type: "SET_EXTERNAL_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_EXTERNAL_ERROR", error: err instanceof Error ? err.message : String(err) });
     dispatch({ type: "SET_RESOLVER_MODAL_PHASE", phase: "configure" });
     return null;
   }
@@ -110,8 +110,8 @@ export async function finalizeResolverSession(
     dispatch({ type: "SET_LAST_EXTERNAL_RUN", run: summary });
     dispatch({ type: "SET_RESOLVER_MODAL_PHASE", phase: "done" });
     return summary;
-  } catch (err: any) {
-    dispatch({ type: "SET_EXTERNAL_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_EXTERNAL_ERROR", error: err instanceof Error ? err.message : String(err) });
     dispatch({ type: "SET_RESOLVER_MODAL_PHASE", phase: "done" });
     return null;
   }
@@ -150,8 +150,8 @@ export async function continueGitOperation(
       await window.ade.git.rebaseContinue(laneId);
     }
     await fetchGitConflictState(dispatch, laneId);
-  } catch (err: any) {
-    dispatch({ type: "SET_CONTINUE_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_CONTINUE_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_CONTINUE_BUSY", busy: false });
   }
@@ -174,8 +174,8 @@ export async function abortGitOperation(
     dispatch({ type: "SET_ABORT_OPEN", open: false });
     dispatch({ type: "SET_ABORT_CONFIRM", text: "" });
     await fetchGitConflictState(dispatch, laneId);
-  } catch (err: any) {
-    dispatch({ type: "SET_ABORT_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_ABORT_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_ABORT_BUSY", busy: false });
   }
@@ -196,8 +196,8 @@ export async function commitExternalRun(
       type: "SET_EXTERNAL_COMMIT_INFO",
       info: `Committed ${result.commitSha.slice(0, 8)}: ${result.message}`,
     });
-  } catch (err: any) {
-    dispatch({ type: "SET_EXTERNAL_COMMIT_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_EXTERNAL_COMMIT_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_EXTERNAL_COMMIT_BUSY", runId: null });
   }
@@ -227,8 +227,8 @@ export async function prepareAndSendProposal(
   try {
     const preview = await window.ade.conflicts.prepareProposal({ laneId, peerLaneId });
     dispatch({ type: "SET_PROPOSAL_PREVIEW", preview });
-  } catch (err: any) {
-    dispatch({ type: "SET_PREPARE_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_PREPARE_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_PREPARE_BUSY", busy: false });
   }
@@ -247,8 +247,8 @@ export async function applyProposal(
   try {
     await window.ade.conflicts.applyProposal({ laneId, proposalId, applyMode, commitMessage });
     await fetchProposals(dispatch, laneId);
-  } catch (err: any) {
-    dispatch({ type: "SET_PROPOSAL_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_PROPOSAL_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_PROPOSAL_BUSY", busy: false });
   }
@@ -265,8 +265,8 @@ export async function undoProposal(
   try {
     await window.ade.conflicts.undoProposal({ laneId, proposalId });
     await fetchProposals(dispatch, laneId);
-  } catch (err: any) {
-    dispatch({ type: "SET_PROPOSAL_ERROR", error: err?.message ?? String(err) });
+  } catch (err: unknown) {
+    dispatch({ type: "SET_PROPOSAL_ERROR", error: err instanceof Error ? err.message : String(err) });
   } finally {
     dispatch({ type: "SET_PROPOSAL_BUSY", busy: false });
   }

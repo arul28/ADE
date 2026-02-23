@@ -63,7 +63,7 @@ function ConflictsPageInner() {
         if (multiTargetParam && laneIds.has(multiTargetParam)) {
           dispatch({ type: "SET_MULTI_MERGE_TARGET", laneId: multiTargetParam });
         }
-        if (modeParam === "integration" || modeParam === "stacked") {
+        if (modeParam === "integration" || modeParam === "queue") {
           dispatch({ type: "SET_MULTI_MERGE_MODE", mode: modeParam });
         }
       }
@@ -89,10 +89,14 @@ function ConflictsPageInner() {
     <div className="flex h-full flex-col">
       {/* Tab bar */}
       <div className="flex items-center gap-1 bg-card/40 backdrop-blur-sm border-b border-border/10 px-4 py-2">
-        <div className="flex items-center rounded-lg bg-card/80 p-0.5 gap-0.5">
+        <div role="tablist" aria-label="Conflict resolution modes" className="flex items-center rounded-lg bg-card/80 p-0.5 gap-0.5">
           {TABS.map((tab) => (
             <button
               key={tab.id}
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={`conflicts-tabpanel-${tab.id}`}
+              id={`conflicts-tab-${tab.id}`}
               onClick={() => dispatch({ type: "SET_ACTIVE_TAB", tab: tab.id })}
               className={cn(
                 "px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-150",
@@ -108,9 +112,15 @@ function ConflictsPageInner() {
       </div>
 
       {/* Active tab content */}
-      <div className="min-h-0 flex-1">
-        {activeTab === "merge-one" ? <MergeOneLaneTab /> : <MergeMultipleLanesTab />}
-      </div>
+      {activeTab === "merge-one" ? (
+        <div role="tabpanel" id="conflicts-tabpanel-merge-one" aria-labelledby="conflicts-tab-merge-one" className="min-h-0 flex-1">
+          <MergeOneLaneTab />
+        </div>
+      ) : (
+        <div role="tabpanel" id="conflicts-tabpanel-merge-multiple" aria-labelledby="conflicts-tab-merge-multiple" className="min-h-0 flex-1">
+          <MergeMultipleLanesTab />
+        </div>
+      )}
     </div>
   );
 }

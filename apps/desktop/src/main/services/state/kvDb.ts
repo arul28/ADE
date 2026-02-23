@@ -7,8 +7,38 @@ import type { Logger } from "../logging/logger";
 
 export type SqlValue = string | number | null | Uint8Array;
 
+/**
+ * Well-known KV key registry. Services store typed JSON under these key
+ * patterns. The registry is advisory -- callers use `getJson<T>` to specify
+ * the expected shape -- but having the keys in one place aids discoverability
+ * and prevents key collisions.
+ *
+ * Known key patterns:
+ *   "onboarding:status"           -> OnboardingStatus
+ *   "ci:import_state"             -> CiImportState
+ *   "keybinding:overrides"        -> KeybindingOverride[]
+ *   "trusted_shared_hash"         -> string
+ *   "context_doc_last_run"        -> { provider; generatedAt; prdPath; archPath }
+ *   "dock:<projectId>"            -> DockLayout
+ *   "file-tree:<projectId>"       -> unknown (file tree state)
+ *   "graph-state:<projectId>"     -> GraphPersistedState
+ *   "terminal-profiles:<projId>"  -> TerminalProfilesSnapshot
+ *   "auto-rebase:<laneId>"        -> StoredStatus
+ *   "restack-suggestion:<laneId>" -> StoredSuggestionState
+ */
+
 export type AdeDb = {
-  getJson: <T>(key: string) => T | null;
+  /**
+   * Retrieve a JSON value from the KV store. Callers should always supply the
+   * expected type parameter `T` to get type-safe access, e.g.
+   * `db.getJson<MyType>("my:key")`.
+   */
+  getJson: <T = unknown>(key: string) => T | null;
+
+  /**
+   * Persist a JSON-serializable value under `key`. Passing `null` or
+   * `undefined` will store the literal JSON `null`.
+   */
   setJson: (key: string, value: unknown) => void;
 
   run: (sql: string, params?: SqlValue[]) => void;
@@ -794,6 +824,69 @@ function migrate(db: Database) {
   `);
   db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
   db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
+
+  // PR groups: add columns for queue overhaul
+  addColumnIfMissing(db, "pr_groups", "name text", "name");
+  addColumnIfMissing(db, "pr_groups", "auto_rebase integer not null default 0", "auto_rebase");
+  addColumnIfMissing(db, "pr_groups", "ci_gating integer not null default 0", "ci_gating");
+  addColumnIfMissing(db, "pr_groups", "target_branch text", "target_branch");
+
+  // Migrate "stacked" → "queue" group type
+  db.run(`update pr_groups set group_type = 'queue' where group_type = 'stacked'`);
+
+  // Integration proposals table (dry-merge simulation results)
+  db.run(`
+    create table if not exists integration_proposals (
+      id text primary key,
+      project_id text not null,
+      source_lane_ids_json text not null,
+      base_branch text not null,
+      steps_json text not null,
+      overall_outcome text not null,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
+
+  // Queue landing state table (crash recovery for sequential landing)
+  db.run(`
+    create table if not exists queue_landing_state (
+      id text primary key,
+      group_id text not null,
+      project_id text not null,
+      state text not null,
+      entries_json text not null,
+      current_position integer not null default 0,
+      started_at text not null,
+      completed_at text,
+      foreign key(group_id) references pr_groups(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_queue_landing_state_group on queue_landing_state(group_id)");
+
+  // Rebase dismiss/defer persistence
+  db.run(`
+    create table if not exists rebase_dismissed (
+      lane_id text not null,
+      project_id text not null,
+      dismissed_at text not null,
+      primary key(lane_id, project_id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_rebase_dismissed_project on rebase_dismissed(project_id)");
+  db.run(`
+    create table if not exists rebase_deferred (
+      lane_id text not null,
+      project_id text not null,
+      deferred_until text not null,
+      primary key(lane_id, project_id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_rebase_deferred_project on rebase_deferred(project_id)");
 
   // Phase 1 missions model foundation.
   db.run(`

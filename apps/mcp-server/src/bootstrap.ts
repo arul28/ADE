@@ -15,6 +15,7 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
+import { createPrService } from "../../desktop/src/main/services/prs/prService";
 
 export type AdeMcpPaths = {
   adeDir: string;
@@ -45,6 +46,7 @@ export type AdeMcpRuntime = {
   missionService: ReturnType<typeof createMissionService>;
   ptyService: ReturnType<typeof createPtyService>;
   testService: ReturnType<typeof createTestService>;
+  prService?: ReturnType<typeof createPrService>;
   dispose: () => void;
 };
 

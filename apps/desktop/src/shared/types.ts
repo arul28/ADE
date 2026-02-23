@@ -1,3 +1,26 @@
+// ---------------------------------------------------------------------------
+// Metadata type aliases
+// ---------------------------------------------------------------------------
+// Many domain objects carry a `metadata` bag typed as `Record<string, unknown>`.
+// The shapes below document the most common patterns so consumers can narrow
+// without casting to `any`. Existing callsites that write arbitrary keys remain
+// compatible because each alias extends Record<string, unknown>.
+// ---------------------------------------------------------------------------
+
+/** Metadata stored on operation rows (git operations service). Known keys:
+ *  path, count, amend, message, commitSha, stashRef, mode, branchName, etc. */
+export type OperationMetadata = Record<string, unknown> & {
+  error?: string;
+};
+
+/** Metadata stored on orchestrator run/step/attempt rows. Known keys:
+ *  integrationStage, mergeMode, sourceLaneIds, targetLaneId, prId, etc. */
+export type OrchestratorMetadata = Record<string, unknown>;
+
+/** Metadata stored on mission step rows. Known keys:
+ *  instructions, missionGoal, laneId, etc. */
+export type MissionStepMetadata = Record<string, unknown>;
+
 export type AppInfo = {
   appVersion: string;
   isPackaged: boolean;
@@ -202,7 +225,10 @@ export type ConflictEventPayload =
       chips: ConflictChip[];
       completedPairs: number;
       totalPairs: number;
-    };
+    }
+  | { type: "rebase-started"; laneId: string; timestamp: string }
+  | { type: "rebase-completed"; laneId: string; success: boolean; timestamp: string }
+  | { type: "rebase-needs-updated"; needs: RebaseNeed[]; timestamp: string };
 
 export type ConflictProposalSource = "subscription" | "local";
 export type ConflictProposalStatus = "pending" | "applied" | "rejected";
@@ -486,6 +512,57 @@ export type PrEventPayload =
       state: PrState;
       checksStatus: PrChecksStatus;
       reviewStatus: PrReviewStatus;
+    }
+  | {
+      type: "queue-step";
+      groupId: string;
+      prId: string;
+      entryState: QueueEntryState;
+      position: number;
+      timestamp: string;
+    }
+  | {
+      type: "queue-state";
+      groupId: string;
+      state: QueueState;
+      currentPosition: number;
+      timestamp: string;
+    }
+  | {
+      type: "integration-step";
+      groupId: string;
+      laneId: string;
+      outcome: IntegrationProposalStep["outcome"];
+      position: number;
+      timestamp: string;
+    }
+  | {
+      type: "integration-state";
+      groupId: string;
+      flowState: IntegrationFlowState;
+      timestamp: string;
+    }
+  | {
+      type: "rebase-status";
+      laneId: string;
+      behindBy: number;
+      conflictPredicted: boolean;
+      timestamp: string;
+    }
+  | {
+      type: "resolution-progress";
+      laneId: string;
+      provider: "codex" | "claude";
+      confidence: number;
+      filesResolved: number;
+      filesTotal: number;
+      timestamp: string;
+    }
+  | {
+      type: "proposal-stale";
+      proposalId: string;
+      reason: string;
+      timestamp: string;
     };
 
 export type LandResult = {
@@ -521,6 +598,22 @@ export type UpdatePrDescriptionArgs = {
 export type LandPrArgs = {
   prId: string;
   method: MergeMethod;
+};
+
+export type DeletePrArgs = {
+  prId: string;
+  closeOnGitHub?: boolean;
+  archiveLane?: boolean;
+};
+
+export type DeletePrResult = {
+  prId: string;
+  laneId: string;
+  removedLocal: boolean;
+  githubClosed: boolean;
+  githubCloseError: string | null;
+  laneArchived: boolean;
+  laneArchiveError: string | null;
 };
 
 export type LandStackArgs = {
@@ -1518,12 +1611,18 @@ export type AiTaskRoutingKey =
 
 export type AiTaskProvider = "auto" | "claude" | "codex";
 
+// TODO(config-naming): AiTaskRoutingRule and all AI config types below accept both camelCase
+// and snake_case variants for backwards compatibility with YAML/JSON config files authored in
+// either convention. New fields MUST use camelCase only. Once a migration pass normalizes
+// persisted configs to camelCase, remove the snake_case aliases and update the config loader.
 export type AiTaskRoutingRule = {
   provider?: AiTaskProvider;
   model?: string;
   timeoutMs?: number;
+  /** @deprecated Use timeoutMs */
   timeout_ms?: number;
   maxOutputTokens?: number;
+  /** @deprecated Use maxOutputTokens */
   max_output_tokens?: number;
   temperature?: number;
 };
@@ -1568,6 +1667,7 @@ export type AiFeatureToggles = Partial<Record<AiFeatureKey, boolean>>;
 
 export type AiBudgetLimit = {
   dailyLimit?: number;
+  /** @deprecated Use dailyLimit */
   daily_limit?: number;
 };
 
@@ -1575,28 +1675,38 @@ export type AiBudgets = Partial<Record<AiFeatureKey, AiBudgetLimit>>;
 
 export type AiClaudePermissionSettings = {
   permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+  /** @deprecated Use permissionMode */
   permission_mode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
   settingsSources?: Array<"user" | "project" | "local">;
+  /** @deprecated Use settingsSources */
   settings_sources?: Array<"user" | "project" | "local">;
   maxBudgetUsd?: number;
+  /** @deprecated Use maxBudgetUsd */
   max_budget_usd?: number;
   sandbox?: boolean;
   dangerouslySkipPermissions?: boolean;
+  /** @deprecated Use dangerouslySkipPermissions */
   dangerously_skip_permissions?: boolean;
   allowedTools?: string[];
+  /** @deprecated Use allowedTools */
   allowed_tools?: string[];
 };
 
 export type AiCodexPermissionSettings = {
   sandboxPermissions?: "read-only" | "workspace-write" | "danger-full-access";
+  /** @deprecated Use sandboxPermissions */
   sandbox_permissions?: "read-only" | "workspace-write" | "danger-full-access";
   approvalMode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
+  /** @deprecated Use approvalMode */
   approval_mode?: "untrusted" | "on-request" | "on-failure" | "never" | "suggest" | "auto-edit" | "full-auto";
   writablePaths?: string[];
+  /** @deprecated Use writablePaths */
   writable_paths?: string[];
   commandAllowlist?: string[];
+  /** @deprecated Use commandAllowlist */
   command_allowlist?: string[];
   configPath?: string;
+  /** @deprecated Use configPath */
   config_path?: string;
 };
 
@@ -1607,79 +1717,110 @@ export type AiPermissionSettings = {
 
 export type AiConflictResolutionConfig = {
   changeTarget?: "target" | "source" | "ai_decides";
+  /** @deprecated Use changeTarget */
   change_target?: "target" | "source" | "ai_decides";
   postResolution?: "unstaged" | "staged" | "commit";
+  /** @deprecated Use postResolution */
   post_resolution?: "unstaged" | "staged" | "commit";
   prBehavior?: "do_nothing" | "open_pr" | "add_to_existing";
+  /** @deprecated Use prBehavior */
   pr_behavior?: "do_nothing" | "open_pr" | "add_to_existing";
   autonomy?: "propose_only" | "auto_apply";
   autoApplyThreshold?: number;
+  /** @deprecated Use autoApplyThreshold */
   auto_apply_threshold?: number;
 };
 
 export type AiOrchestratorConfig = {
   requirePlanReview?: boolean;
+  /** @deprecated Use requirePlanReview */
   require_plan_review?: boolean;
   maxParallelWorkers?: number;
+  /** @deprecated Use maxParallelWorkers */
   max_parallel_workers?: number;
   defaultMergePolicy?: "sequential" | "batch-at-end" | "per-step";
+  /** @deprecated Use defaultMergePolicy */
   default_merge_policy?: "sequential" | "batch-at-end" | "per-step";
   defaultConflictHandoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
+  /** @deprecated Use defaultConflictHandoff */
   default_conflict_handoff?: "auto-resolve" | "ask-user" | "orchestrator-decides";
   workerHeartbeatIntervalMs?: number;
+  /** @deprecated Use workerHeartbeatIntervalMs */
   worker_heartbeat_interval_ms?: number;
   workerHeartbeatTimeoutMs?: number;
+  /** @deprecated Use workerHeartbeatTimeoutMs */
   worker_heartbeat_timeout_ms?: number;
   workerIdleTimeoutMs?: number;
+  /** @deprecated Use workerIdleTimeoutMs */
   worker_idle_timeout_ms?: number;
   stepTimeoutDefaultMs?: number;
+  /** @deprecated Use stepTimeoutDefaultMs */
   step_timeout_default_ms?: number;
   maxRetriesPerStep?: number;
+  /** @deprecated Use maxRetriesPerStep */
   max_retries_per_step?: number;
   contextPressureThreshold?: number;
+  /** @deprecated Use contextPressureThreshold */
   context_pressure_threshold?: number;
   progressiveLoading?: boolean;
+  /** @deprecated Use progressiveLoading */
   progressive_loading?: boolean;
   maxTotalTokenBudget?: number;
+  /** @deprecated Use maxTotalTokenBudget */
   max_total_token_budget?: number;
   maxPerStepTokenBudget?: number;
+  /** @deprecated Use maxPerStepTokenBudget */
   max_per_step_token_budget?: number;
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
+  /** @deprecated Use defaultExecutionPolicy */
   default_execution_policy?: Partial<MissionExecutionPolicy>;
   defaultDepthTier?: MissionDepthTier;
+  /** @deprecated Use defaultDepthTier */
   default_depth_tier?: MissionDepthTier;
   defaultPlannerProvider?: AiTaskProvider;
+  /** @deprecated Use defaultPlannerProvider */
   default_planner_provider?: AiTaskProvider;
   autoResolveInterventions?: boolean;
+  /** @deprecated Use autoResolveInterventions */
   auto_resolve_interventions?: boolean;
   interventionConfidenceThreshold?: number;
+  /** @deprecated Use interventionConfidenceThreshold */
   intervention_confidence_threshold?: number;
 };
 
 export type AiChatConfig = {
   defaultProvider?: "codex" | "claude" | "last_used";
+  /** @deprecated Use defaultProvider */
   default_provider?: "codex" | "claude" | "last_used";
   defaultApprovalPolicy?: "auto" | "approve_mutations" | "approve_all";
+  /** @deprecated Use defaultApprovalPolicy */
   default_approval_policy?: "auto" | "approve_mutations" | "approve_all";
   sendOnEnter?: boolean;
+  /** @deprecated Use sendOnEnter */
   send_on_enter?: boolean;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
+  /** @deprecated Use codexSandbox */
   codex_sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   claudePermissionMode?: "plan" | "acceptEdits" | "bypassPermissions";
+  /** @deprecated Use claudePermissionMode */
   claude_permission_mode?: "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
+  /** @deprecated Use sessionBudgetUsd */
   session_budget_usd?: number;
 };
 export type AiConfig = {
   mode?: ProviderMode;
   defaultProvider?: AiTaskProvider;
+  /** @deprecated Use defaultProvider */
   default_provider?: AiTaskProvider;
   taskRouting?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
+  /** @deprecated Use taskRouting */
   task_routing?: Partial<Record<AiTaskRoutingKey, AiTaskRoutingRule>>;
   features?: AiFeatureToggles;
   budgets?: AiBudgets;
   permissions?: AiPermissionSettings;
   conflictResolution?: AiConflictResolutionConfig;
+  /** @deprecated Use conflictResolution */
   conflict_resolution?: AiConflictResolutionConfig;
   orchestrator?: AiOrchestratorConfig;
   chat?: AiChatConfig;
@@ -2362,6 +2503,7 @@ export type AutomationRun = {
   actionsCompleted: number;
   actionsTotal: number;
   errorMessage: string | null;
+  /** Trigger-specific context. Shape depends on triggerType (session-end, commit, schedule, manual). */
   triggerMetadata: Record<string, unknown> | null;
 };
 
@@ -2583,7 +2725,7 @@ export type MissionStep = {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
-  metadata: Record<string, unknown> | null;
+  metadata: MissionStepMetadata | null;
 };
 
 export type MissionEvent = {
@@ -2925,7 +3067,7 @@ export type OrchestratorRun = {
   startedAt: string | null;
   completedAt: string | null;
   lastError: string | null;
-  metadata: Record<string, unknown> | null;
+  metadata: OrchestratorMetadata | null;
   completionDiagnostics?: CompletionDiagnostic[];
 };
 
@@ -2948,7 +3090,7 @@ export type OrchestratorStep = {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
-  metadata: Record<string, unknown> | null;
+  metadata: OrchestratorMetadata | null;
 };
 
 export type OrchestratorAttemptResultEnvelope = {
@@ -2979,7 +3121,7 @@ export type OrchestratorAttempt = {
   startedAt: string | null;
   completedAt: string | null;
   resultEnvelope: OrchestratorAttemptResultEnvelope | null;
-  metadata: Record<string, unknown> | null;
+  metadata: OrchestratorMetadata | null;
 };
 
 export type OrchestratorClaim = {
@@ -3516,6 +3658,7 @@ export type PrepareResolverSessionArgs = {
   provider: ExternalConflictResolverProvider;
   targetLaneId: string;
   sourceLaneIds: string[];
+  cwdLaneId?: string;
   integrationLaneName?: string;
   scenario?: ResolverSessionScenario;
 };
@@ -3550,7 +3693,9 @@ export type SuggestResolverTargetResult = {
 // PR Tab Enhancement (Phase 8+)
 // --------------------------------
 
-export type PrGroupType = "stacked" | "integration";
+export type PrGroupType = "queue" | "integration";
+/** @deprecated Use PrGroupType "queue" instead */
+export type PrGroupTypeLegacy = "stacked" | "integration";
 export type PrGroupMemberRole = "source" | "integration" | "target";
 
 export type PrGroup = {
@@ -3586,18 +3731,27 @@ export type PrMergeContext = {
   members: PrGroupContextMember[];
 };
 
-export type CreateStackedPrsArgs = {
+export type CreateQueuePrsArgs = {
   laneIds: string[];
   targetBranch: string;
   titles?: Record<string, string>;
   draft?: boolean;
+  autoRebase?: boolean;
+  ciGating?: boolean;
+  queueName?: string;
 };
 
-export type CreateStackedPrsResult = {
+/** @deprecated Use CreateQueuePrsArgs */
+export type CreateStackedPrsArgs = CreateQueuePrsArgs;
+
+export type CreateQueuePrsResult = {
   groupId: string;
   prs: PrSummary[];
   errors: Array<{ laneId: string; error: string }>;
 };
+
+/** @deprecated Use CreateQueuePrsResult */
+export type CreateStackedPrsResult = CreateQueuePrsResult;
 
 export type CreateIntegrationPrArgs = {
   sourceLaneIds: string[];
@@ -3619,6 +3773,142 @@ export type LandStackEnhancedArgs = {
   rootLaneId: string;
   method: MergeMethod;
   mode: "sequential" | "all-at-once";
+};
+
+// --------------------------------
+// Integration Proposal Types
+// --------------------------------
+
+export type IntegrationProposalStep = {
+  laneId: string;
+  laneName: string;
+  position: number;
+  outcome: "clean" | "conflict" | "blocked" | "pending";
+  conflictingFiles: Array<{ path: string; conflictMarkers: string }>;
+  diffStat: { insertions: number; deletions: number; filesChanged: number };
+};
+
+export type IntegrationProposal = {
+  proposalId: string;
+  sourceLaneIds: string[];
+  baseBranch: string;
+  steps: IntegrationProposalStep[];
+  overallOutcome: "clean" | "conflict" | "blocked";
+  createdAt: string;
+};
+
+export type SimulateIntegrationArgs = {
+  sourceLaneIds: string[];
+  baseBranch: string;
+};
+
+export type CommitIntegrationArgs = {
+  proposalId: string;
+  integrationLaneName: string;
+  title: string;
+  body?: string;
+  draft?: boolean;
+  pauseOnConflict?: boolean;
+};
+
+// --------------------------------
+// Rebase Types
+// --------------------------------
+
+export type RebaseNeed = {
+  laneId: string;
+  laneName: string;
+  baseBranch: string;
+  behindBy: number;
+  conflictPredicted: boolean;
+  conflictingFiles: string[];
+  prId: string | null;
+  groupContext: string | null;
+  dismissedAt: string | null;
+  deferredUntil: string | null;
+};
+
+export type RebaseLaneArgs = {
+  laneId: string;
+  aiAssisted?: boolean;
+  provider?: "codex" | "claude";
+  autoApplyThreshold?: number;
+};
+
+export type RebaseResult = {
+  laneId: string;
+  success: boolean;
+  conflictingFiles: string[];
+  error?: string;
+  resolvedByAi?: boolean;
+  agentSessionId?: string;
+};
+
+export type RebaseEventPayload =
+  | { type: "rebase-needs-updated"; needs: RebaseNeed[]; timestamp: string }
+  | { type: "rebase-started"; laneId: string; timestamp: string }
+  | { type: "rebase-completed"; laneId: string; success: boolean; timestamp: string };
+
+// --------------------------------
+// Resolution Config Types
+// --------------------------------
+
+export type ResolutionMode = "automatic" | "manual";
+export type ResolutionConfig = {
+  mode: ResolutionMode;
+  confidenceThreshold: number;
+  postResolution: "stage-only" | "auto-commit" | "auto-commit-push";
+  provider: "codex" | "claude";
+};
+
+// --------------------------------
+// Queue / Integration State Types
+// --------------------------------
+
+export type QueueEntryState = "pending" | "landing" | "rebasing" | "resolving" | "landed" | "failed" | "paused" | "skipped";
+export type QueueState = "idle" | "landing" | "paused" | "completed" | "cancelled";
+export type IntegrationFlowState = "proposal" | "creating" | "merging" | "conflict" | "resolving" | "completed" | "failed";
+
+export type LandQueueNextArgs = {
+  groupId: string;
+  method: MergeMethod;
+  autoResolve?: boolean;
+  confidenceThreshold?: number;
+};
+
+export type QueueLandingEntry = {
+  prId: string;
+  laneId: string;
+  laneName: string;
+  position: number;
+  state: QueueEntryState;
+  error?: string;
+};
+
+export type QueueLandingState = {
+  queueId: string;
+  groupId: string;
+  state: QueueState;
+  entries: QueueLandingEntry[];
+  currentPosition: number;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+// --------------------------------
+// PrHealth Unified Type
+// --------------------------------
+
+export type PrHealth = {
+  prId: string;
+  laneId: string;
+  state: PrState;
+  checksStatus: PrChecksStatus;
+  reviewStatus: PrReviewStatus;
+  conflictAnalysis: PrConflictAnalysis | null;
+  rebaseNeeded: boolean;
+  behindBy: number;
+  mergeContext: PrMergeContext | null;
 };
 
 export type PrConflictAnalysis = {
@@ -3644,7 +3934,7 @@ export type PrWithConflicts = PrSummary & {
 // Conflicts Tab Multi-Merge State
 // --------------------------------
 
-export type MultiMergeMode = "stacked" | "integration";
+export type MultiMergeMode = "queue" | "integration";
 
 export type MultiMergeLaneEntry = {
   laneId: string;
@@ -3807,6 +4097,7 @@ export type PhaseModelChoice = "claude" | "codex";
 export type PrStrategy =
   | { kind: "integration"; targetBranch?: string; draft?: boolean }
   | { kind: "per-lane"; targetBranch?: string; draft?: boolean }
+  | { kind: "queue"; targetBranch?: string; draft?: boolean; autoRebase?: boolean; ciGating?: boolean }
   | { kind: "manual" };
 
 export type MissionExecutionPolicy = {
@@ -4393,7 +4684,7 @@ export type IntegrationPrPolicy = {
 };
 
 export const DEFAULT_INTEGRATION_PR_POLICY: IntegrationPrPolicy = {
-  enabled: true,
+  enabled: false,
   createIntegrationLane: true,
   autoResolveConflicts: true,
   draft: true

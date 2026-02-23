@@ -24,6 +24,7 @@ import { createAgentChatService } from "./services/chat/agentChatService";
 import { createGithubService } from "./services/github/githubService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
+import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { detectDefaultBaseRef, ensureAdeExcluded, resolveRepoRoot, toProjectInfo, upsertProjectRow } from "./services/projects/projectService";
 import { IPC } from "../shared/ipc";
 import type { AppContext } from "./services/ipc/registerIpc";
@@ -329,7 +330,13 @@ app.whenReady().then(async () => {
       operationService,
       aiIntegrationService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
-      onEvent: (event) => broadcast(IPC.conflictsEvent, event)
+      onEvent: (event) => {
+        broadcast(IPC.conflictsEvent, event);
+        // Forward rebase events to the dedicated rebaseEvent channel
+        if (event.type === "rebase-started" || event.type === "rebase-completed" || event.type === "rebase-needs-updated") {
+          broadcast(IPC.rebaseEvent, event);
+        }
+      }
     });
 
     autoRebaseService = createAutoRebaseService({
@@ -374,6 +381,15 @@ app.whenReady().then(async () => {
       projectConfigService,
       onEvent: (event) => broadcast(IPC.prsEvent, event)
     });
+
+    const queueLandingService = createQueueLandingService({
+      db,
+      logger,
+      projectId,
+      prService,
+      emitEvent: (event) => broadcast(IPC.prsEvent, event)
+    });
+    queueLandingService.init();
 
     const fileService = createFileService({
       laneService,
@@ -659,6 +675,7 @@ app.whenReady().then(async () => {
       githubService,
       prService,
       prPollingService,
+      queueLandingService,
       jobEngine,
       automationService,
       automationPlannerService,

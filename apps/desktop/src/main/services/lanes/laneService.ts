@@ -290,8 +290,17 @@ export function createLaneService({
   };
 
   const listLanes = async ({ includeArchived = false }: { includeArchived?: boolean } = {}): Promise<LaneSummary[]> => {
-    await ensurePrimaryLane();
-    await syncPrimaryLaneBranchRef();
+    // Best-effort primary lane bootstrap -- failures should not block listing.
+    try {
+      await ensurePrimaryLane();
+    } catch (err) {
+      console.warn("[laneService] ensurePrimaryLane failed, continuing with existing lanes:", err instanceof Error ? err.message : String(err));
+    }
+    try {
+      await syncPrimaryLaneBranchRef();
+    } catch (err) {
+      console.warn("[laneService] syncPrimaryLaneBranchRef failed, continuing:", err instanceof Error ? err.message : String(err));
+    }
 
     const rows = getAllLaneRows(includeArchived);
     const contextRows = getAllLaneRows(true);
@@ -341,20 +350,46 @@ export function createLaneService({
       return status;
     };
 
+    const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0 };
     const out: LaneSummary[] = [];
     for (const row of rows) {
-      const status = await resolveStatus(row.id);
-      const parentStatus = row.parent_lane_id ? await resolveStatus(row.parent_lane_id) : null;
-      const stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
-      out.push(
-        toLaneSummary({
-          row,
-          status,
-          parentStatus,
-          childCount: childCountMap.get(row.id) ?? 0,
-          stackDepth
-        })
-      );
+      try {
+        let status: LaneStatus;
+        try {
+          status = await resolveStatus(row.id);
+        } catch {
+          console.warn(`[laneService] resolveStatus failed for lane ${row.id}, using default`);
+          status = defaultStatus;
+        }
+        let parentStatus: LaneStatus | null = null;
+        if (row.parent_lane_id) {
+          try {
+            parentStatus = await resolveStatus(row.parent_lane_id);
+          } catch {
+            console.warn(`[laneService] resolveStatus failed for parent lane ${row.parent_lane_id}, using default`);
+            parentStatus = defaultStatus;
+          }
+        }
+        let stackDepth = 0;
+        try {
+          stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
+        } catch {
+          console.warn(`[laneService] computeStackDepth failed for lane ${row.id}, defaulting to 0`);
+        }
+        out.push(
+          toLaneSummary({
+            row,
+            status,
+            parentStatus,
+            childCount: childCountMap.get(row.id) ?? 0,
+            stackDepth
+          })
+        );
+      } catch (err) {
+        // If building the summary for a single lane fails entirely, skip it
+        // rather than crashing the whole list operation.
+        console.warn(`[laneService] Failed to build summary for lane ${row.id}, skipping:`, err instanceof Error ? err.message : String(err));
+      }
     }
     return out;
   };
@@ -607,15 +642,63 @@ export function createLaneService({
     },
 
     async getChildren(laneId: string): Promise<LaneSummary[]> {
-      const children = await listLanes({ includeArchived: false });
-      return children
-        .filter((lane) => lane.parentLaneId === laneId)
-        .sort((a, b) => {
-          const aTs = Date.parse(a.createdAt);
-          const bTs = Date.parse(b.createdAt);
-          if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
-          return a.name.localeCompare(b.name);
-        });
+      // Query only children rows directly instead of fetching and filtering all lanes.
+      const childRows = getChildrenRows(laneId, false);
+      if (childRows.length === 0) return [];
+
+      const allRows = getAllLaneRows(true);
+      const rowsById = new Map(allRows.map((row) => [row.id, row] as const));
+      const activeRows = allRows.filter((row) => row.status !== "archived");
+      const depthMemo = new Map<string, number>();
+
+      // Count children of each child (grandchildren count)
+      const childCountMap = new Map<string, number>();
+      for (const row of activeRows) {
+        if (!row.parent_lane_id) continue;
+        childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
+      }
+
+      // Resolve parent status for all children (they share the same parent)
+      const parentRow = rowsById.get(laneId);
+      let parentStatus: LaneStatus | null = null;
+      if (parentRow) {
+        const grandParent = parentRow.parent_lane_id ? rowsById.get(parentRow.parent_lane_id) : null;
+        try {
+          parentStatus = await computeLaneStatus(
+            parentRow.worktree_path,
+            grandParent?.branch_ref ?? parentRow.base_ref,
+            parentRow.branch_ref
+          );
+        } catch {
+          parentStatus = { dirty: false, ahead: 0, behind: 0 };
+        }
+      }
+
+      const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0 };
+      const out: LaneSummary[] = [];
+      for (const row of childRows) {
+        let status: LaneStatus;
+        try {
+          const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
+          status = await computeLaneStatus(
+            row.worktree_path,
+            parent?.branch_ref ?? row.base_ref,
+            row.branch_ref
+          );
+        } catch {
+          status = defaultStatus;
+        }
+        out.push(
+          toLaneSummary({
+            row,
+            status,
+            parentStatus,
+            childCount: childCountMap.get(row.id) ?? 0,
+            stackDepth: computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo }),
+          })
+        );
+      }
+      return out;
     },
 
     async getStackChain(laneId: string): Promise<StackChainItem[]> {
@@ -964,6 +1047,19 @@ export function createLaneService({
       if (row.lane_type === "primary") {
         throw new Error("Primary lane cannot be archived");
       }
+
+      // Guard: prevent archiving if lane is a member of an active PR group
+      const activeGroupMember = db.get<{ group_id: string }>(
+        `select m.group_id from pr_group_members m
+         join pr_groups g on g.id = m.group_id
+         where m.lane_id = ? and g.project_id = ?
+         limit 1`,
+        [laneId, projectId]
+      );
+      if (activeGroupMember) {
+        throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
+      }
+
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
     },
@@ -1032,6 +1128,8 @@ export function createLaneService({
       }
 
       db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
+      db.run("delete from pr_group_members where lane_id = ?", [laneId]);
+      db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
       db.run("delete from session_deltas where lane_id = ?", [laneId]);
       db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
       db.run("delete from operations where lane_id = ?", [laneId]);

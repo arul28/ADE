@@ -108,6 +108,20 @@ import type {
   GitSyncArgs,
   GitHubStatus,
   CreatePrFromLaneArgs,
+  CreateQueuePrsArgs,
+  CreateQueuePrsResult,
+  SimulateIntegrationArgs,
+  IntegrationProposal,
+  CommitIntegrationArgs,
+  LandQueueNextArgs,
+  QueueLandingState,
+  PrHealth,
+  RebaseNeed,
+  RebaseLaneArgs,
+  RebaseResult,
+  RebaseEventPayload,
+  DeletePrArgs,
+  DeletePrResult,
   LinkPrToLaneArgs,
   PrEventPayload,
   PrCheck,
@@ -534,6 +548,7 @@ declare global {
         listEventsSince: (args: ListPackEventsSinceArgs) => Promise<PackEvent[]>;
         listCheckpoints: (args?: { laneId?: string; limit?: number }) => Promise<Checkpoint[]>;
         getHeadVersion: (packKey: string) => Promise<PackHeadVersion>;
+        getDeltaDigest: (args: import("../shared/types").PackDeltaDigestArgs) => Promise<import("../shared/types").PackDeltaDigestV1>;
         onEvent: (cb: (ev: PackEvent) => void) => () => void;
       };
       github: {
@@ -552,17 +567,32 @@ declare global {
         getComments: (prId: string) => Promise<PrComment[]>;
         getReviews: (prId: string) => Promise<PrReview[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
+        delete: (args: DeletePrArgs) => Promise<DeletePrResult>;
         draftDescription: (laneId: string, model?: string) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         openInGitHub: (prId: string) => Promise<void>;
         createStacked: (args: import("../shared/types").CreateStackedPrsArgs) => Promise<import("../shared/types").CreateStackedPrsResult>;
+        createQueue: (args: CreateQueuePrsArgs) => Promise<CreateQueuePrsResult>;
         createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
+        simulateIntegration: (args: SimulateIntegrationArgs) => Promise<IntegrationProposal>;
+        commitIntegration: (args: CommitIntegrationArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
+        landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
+        getHealth: (prId: string) => Promise<PrHealth>;
+        getQueueState: (groupId: string) => Promise<QueueLandingState | null>;
         getConflictAnalysis: (prId: string) => Promise<import("../shared/types").PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         listWithConflicts: () => Promise<import("../shared/types").PrWithConflicts[]>;
         onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
+      };
+      rebase: {
+        scanNeeds: () => Promise<RebaseNeed[]>;
+        getNeed: (laneId: string) => Promise<RebaseNeed | null>;
+        dismiss: (laneId: string) => Promise<void>;
+        defer: (laneId: string, until: string) => Promise<void>;
+        execute: (args: RebaseLaneArgs) => Promise<RebaseResult>;
+        onEvent: (cb: (ev: RebaseEventPayload) => void) => () => void;
       };
       history: {
         listOperations: (args?: ListOperationsArgs) => Promise<OperationRecord[]>;

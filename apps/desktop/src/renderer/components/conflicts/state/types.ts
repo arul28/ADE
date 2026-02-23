@@ -251,7 +251,7 @@ export const initialConflictsState: ConflictsState = {
   integrationBusy: false,
   integrationError: null,
   integrationLaneId: null,
-  multiMergeMode: "stacked",
+  multiMergeMode: "queue",
   multiMergeTargetLaneId: null,
   multiMergeSourceLaneIds: [],
   multiMergeIntegrationName: "integration",

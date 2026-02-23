@@ -41,7 +41,7 @@ export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
   integration: { mode: "auto", model: "codex" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
-  prStrategy: { kind: "integration", targetBranch: "main", draft: true }
+  prStrategy: { kind: "manual" }
 };
 
 // ─────────────────────────────────────────────────────
@@ -60,7 +60,8 @@ export function depthTierToPolicy(tier: MissionDepthTier): MissionExecutionPolic
         testReview: { mode: "off" },
         integration: { mode: "off" },
         merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: true }
+        completion: { allowCompletionWithRisk: true },
+        prStrategy: { kind: "manual" }
       };
     case "deep":
       return {
@@ -72,7 +73,8 @@ export function depthTierToPolicy(tier: MissionDepthTier): MissionExecutionPolic
         testReview: { mode: "required", model: "codex" },
         integration: { mode: "auto", model: "codex" },
         merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: false }
+        completion: { allowCompletionWithRisk: false },
+        prStrategy: { kind: "integration", targetBranch: "main", draft: false }
       };
     case "standard":
     default:
@@ -85,7 +87,8 @@ export function depthTierToPolicy(tier: MissionDepthTier): MissionExecutionPolic
         testReview: { mode: "off" },
         integration: { mode: "auto", model: "codex" },
         merge: { mode: "off" },
-        completion: { allowCompletionWithRisk: true }
+        completion: { allowCompletionWithRisk: true },
+        prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false }
       };
   }
 }

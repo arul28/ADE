@@ -1269,8 +1269,10 @@ function GraphInner() {
         }, 450);
         return;
       }
-      setBatchProgress({ completedPairs: event.completedPairs, totalPairs: event.totalPairs });
-      void refreshRiskBatch();
+      if (event.type === "prediction-complete") {
+        setBatchProgress({ completedPairs: event.completedPairs, totalPairs: event.totalPairs });
+        void refreshRiskBatch();
+      }
     });
     const unsubPtyData = window.ade.pty.onData(() => {
       void refreshActivity();

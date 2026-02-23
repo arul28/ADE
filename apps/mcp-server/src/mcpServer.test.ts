@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { createMcpRequestHandler } from "./mcpServer";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createMcpRequestHandler, _resetGlobalAskUserRateLimit } from "./mcpServer";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 
@@ -103,7 +103,8 @@ function createRuntime() {
     conflictService: {
       runPrediction: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
       getLaneStatus: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, status: "merge-ready" })),
-      listOverlaps: vi.fn(async () => [])
+      listOverlaps: vi.fn(async () => []),
+      rebaseLane: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, status: "clean", conflictedFiles: [] }))
     },
     gitService: {
       getConflictState: vi.fn(async () => ({ laneId: "lane-1", kind: null, inProgress: false, conflictedFiles: [], canContinue: false, canAbort: false })),
@@ -133,6 +134,13 @@ function createRuntime() {
       listRuns: vi.fn(() => [{ id: "test-run-1", status: "running" }]),
       stop: vi.fn(),
       getLogTail: vi.fn(() => "")
+    },
+    prService: {
+      simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
+      createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
+      createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
+      getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
+      landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" }))
     },
     dispose: vi.fn()
   } as any;
@@ -292,7 +300,7 @@ describe("mcpServer", () => {
     const fixture = createRuntime();
     const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler);
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
 
     const suiteResult = await callTool(handler, "run_tests", {
       laneId: "lane-1",
@@ -448,5 +456,305 @@ describe("mcpServer", () => {
     const finishArgs = operationFinish.mock.calls[0]?.[0] ?? {};
     expect(finishArgs.status).toBe("succeeded");
     expect(finishArgs.metadataPatch?.resultStatus).toBe("success");
+  });
+
+  // ---------- Issue 1: Consolidated authorization tests ----------
+
+  it("denies run_tests without mutation authorization", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
+
+    const response = await callTool(handler, "run_tests", {
+      laneId: "lane-1",
+      suiteId: "unit",
+      waitForCompletion: false
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("denies create_queue without mutation authorization", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
+
+    const response = await callTool(handler, "create_queue", {
+      laneIds: ["lane-1"],
+      targetBranch: "main"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("denies create_integration without mutation authorization", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
+
+    const response = await callTool(handler, "create_integration", {
+      sourceLaneIds: ["lane-1"],
+      integrationLaneName: "integration",
+      baseBranch: "main",
+      title: "Integration PR"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("denies rebase_lane without mutation authorization", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
+
+    const response = await callTool(handler, "rebase_lane", {
+      laneId: "lane-1"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  it("denies land_queue_next without mutation authorization", async () => {
+    const { runtime } = createRuntime();
+    const handler = createMcpRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent", allowMutations: false });
+
+    const response = await callTool(handler, "land_queue_next", {
+      groupId: "group-1",
+      method: "merge"
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Policy denied");
+  });
+
+  // ---------- Issue 2: Global rate limit tests ----------
+
+  afterEach(() => {
+    _resetGlobalAskUserRateLimit();
+  });
+
+  it("enforces global ask_user rate limit across sessions", async () => {
+    _resetGlobalAskUserRateLimit();
+
+    // Create two independent sessions (simulating session recycling)
+    const fixture1 = createRuntime();
+    const handler1 = createMcpRequestHandler({ runtime: fixture1.runtime, serverVersion: "test" });
+    await initialize(handler1);
+
+    const fixture2 = createRuntime();
+    const handler2 = createMcpRequestHandler({ runtime: fixture2.runtime, serverVersion: "test" });
+    await initialize(handler2);
+
+    // Fire 6 calls from session 1 (per-session limit)
+    for (let i = 0; i < 6; i++) {
+      const r = await callTool(handler1, "ask_user", {
+        missionId: "mission-1",
+        title: `Question ${i}`,
+        body: `Body ${i}`
+      });
+      expect(r?.isError).toBeUndefined();
+    }
+
+    // Session 1 should be rate-limited (per-session: 6/min)
+    const overLimit = await callTool(handler1, "ask_user", {
+      missionId: "mission-1",
+      title: "Over limit",
+      body: "Should fail"
+    });
+    expect(overLimit.isError).toBe(true);
+    expect(JSON.stringify(overLimit.structuredContent ?? {})).toContain("rate limit");
+
+    // Session 2 can still fire up to its per-session limit (6)
+    // but global limit is 20, so with 6 from session 1, session 2 can do 6 more
+    for (let i = 0; i < 6; i++) {
+      const r = await callTool(handler2, "ask_user", {
+        missionId: "mission-1",
+        title: `S2 Question ${i}`,
+        body: `S2 Body ${i}`
+      });
+      expect(r?.isError).toBeUndefined();
+    }
+  });
+
+  // ---------- Issue 3: Coverage for previously untested tools ----------
+
+  it("routes get_lane_status and returns lane/diff/conflict info", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "get_lane_status", { laneId: "lane-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.lane.id).toBe("lane-1");
+    expect(response.structuredContent.diff).toBeDefined();
+    expect(response.structuredContent.rebaseStatus).toBe("idle");
+    expect(fixture.runtime.diffService.getChanges).toHaveBeenCalledWith("lane-1");
+    expect(fixture.runtime.conflictService.getLaneStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+  });
+
+  it("routes check_conflicts with a single laneId", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "check_conflicts", { laneId: "lane-1" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.assessment).toBeDefined();
+    expect(fixture.runtime.conflictService.runPrediction).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "lane-1" })
+    );
+  });
+
+  it("routes create_lane with authorization and returns lane summary", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    const response = await callTool(handler, "create_lane", { name: "new-feature" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.lane.id).toBe("lane-new");
+    expect(response.structuredContent.lane.name).toBe("new-feature");
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "new-feature" })
+    );
+  });
+
+  it("routes simulate_integration as a read-only dry-merge", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "simulate_integration", {
+      sourceLaneIds: ["lane-1", "lane-2"],
+      baseBranch: "main"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.simulateIntegration).toHaveBeenCalledWith({
+      sourceLaneIds: ["lane-1", "lane-2"],
+      baseBranch: "main"
+    });
+  });
+
+  it("routes create_queue with authorization", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    const response = await callTool(handler, "create_queue", {
+      laneIds: ["lane-1", "lane-2"],
+      targetBranch: "main"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.createQueuePrs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneIds: ["lane-1", "lane-2"],
+        targetBranch: "main"
+      })
+    );
+  });
+
+  it("routes create_integration with authorization", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    const response = await callTool(handler, "create_integration", {
+      sourceLaneIds: ["lane-1"],
+      integrationLaneName: "integration-branch",
+      baseBranch: "main",
+      title: "Integration PR"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.createIntegrationPr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceLaneIds: ["lane-1"],
+        integrationLaneName: "integration-branch",
+        baseBranch: "main",
+        title: "Integration PR"
+      })
+    );
+  });
+
+  it("routes rebase_lane with authorization", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    const response = await callTool(handler, "rebase_lane", {
+      laneId: "lane-1",
+      aiAssisted: true
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.conflictService.rebaseLane).toHaveBeenCalledWith(
+      expect.objectContaining({ laneId: "lane-1", aiAssisted: true })
+    );
+  });
+
+  it("routes get_pr_health as a read-only tool", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "get_pr_health", { prId: "pr-123" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.prId).toBe("pr-123");
+    expect(fixture.runtime.prService.getPrHealth).toHaveBeenCalledWith("pr-123");
+  });
+
+  it("routes land_queue_next with authorization", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    const response = await callTool(handler, "land_queue_next", {
+      groupId: "group-1",
+      method: "squash"
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.landQueueNext).toHaveBeenCalledWith(
+      expect.objectContaining({ groupId: "group-1", method: "squash" })
+    );
+  });
+
+  it("get_lane_status returns error for unknown lane", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.laneService.list = vi.fn(async () => []);
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler);
+    const response = await callTool(handler, "get_lane_status", { laneId: "nonexistent" });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Lane not found");
+  });
+
+  it("run_tests requires either suiteId or command", async () => {
+    const fixture = createRuntime();
+    const handler = createMcpRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator", allowMutations: true });
+    const response = await callTool(handler, "run_tests", { laneId: "lane-1" });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? {})).toContain("suiteId or command");
   });
 });

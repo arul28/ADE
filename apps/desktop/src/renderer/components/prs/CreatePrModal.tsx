@@ -6,7 +6,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import type { LaneSummary, MergeMethod, PrSummary, RiskMatrixEntry } from "../../../shared/types";
 
-type CreateMode = "normal" | "stacked" | "integration";
+type CreateMode = "normal" | "queue" | "integration";
 type WizardStep = "select-type" | "configure" | "execute";
 
 const MERGE_METHODS: { id: MergeMethod; label: string; desc: string }[] = [
@@ -17,7 +17,7 @@ const MERGE_METHODS: { id: MergeMethod; label: string; desc: string }[] = [
 
 const MODES: { id: CreateMode; label: string; icon: React.ElementType; desc: string }[] = [
   { id: "normal", label: "Normal PR", icon: GitPullRequest, desc: "Single lane creates one PR." },
-  { id: "stacked", label: "Stacked PRs", icon: Layers, desc: "Multiple lanes, each targets the previous." },
+  { id: "queue", label: "Queue PRs", icon: Layers, desc: "Multiple lanes targeting the same branch, landed sequentially." },
   { id: "integration", label: "Integration PR", icon: GitMerge, desc: "Merge lanes into integration branch, then PR." },
 ];
 
@@ -44,9 +44,9 @@ export function CreatePrModal({
   const [normalTitle, setNormalTitle] = React.useState("");
   const [normalDraft, setNormalDraft] = React.useState(false);
 
-  // Stacked PRs
-  const [stackedLaneIds, setStackedLaneIds] = React.useState<string[]>([]);
-  const [stackedDraft, setStackedDraft] = React.useState(false);
+  // Queue PRs
+  const [queueLaneIds, setQueueLaneIds] = React.useState<string[]>([]);
+  const [queueDraft, setQueueDraft] = React.useState(false);
 
   // Integration PR
   const [integrationSources, setIntegrationSources] = React.useState<string[]>([]);
@@ -71,8 +71,8 @@ export function CreatePrModal({
         setIntegrationTitle(result.title);
         setIntegrationBody(result.body);
       }
-    } catch (err: any) {
-      setExecError(err?.message ?? String(err));
+    } catch (err: unknown) {
+      setExecError(err instanceof Error ? err.message : String(err));
     } finally {
       setDrafting(false);
     }
@@ -95,8 +95,8 @@ export function CreatePrModal({
       setNormalLaneId("");
       setNormalTitle("");
       setNormalDraft(false);
-      setStackedLaneIds([]);
-      setStackedDraft(false);
+      setQueueLaneIds([]);
+      setQueueDraft(false);
       setIntegrationSources([]);
       setIntegrationName("integration");
       setIntegrationTitle("");
@@ -138,8 +138,8 @@ export function CreatePrModal({
       }
       setIntegrationRiskRows(rows);
       setStep("execute");
-    } catch (err: any) {
-      setExecError(err?.message ?? String(err));
+    } catch (err: unknown) {
+      setExecError(err instanceof Error ? err.message : String(err));
       setStep("execute");
     } finally {
       setBusy(false);
@@ -165,8 +165,8 @@ export function CreatePrModal({
       }
       setIntegrationMergeResults(result.mergeResults);
       setResults([result.pr]);
-    } catch (err: any) {
-      setExecError(err?.message ?? String(err));
+    } catch (err: unknown) {
+      setExecError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -189,12 +189,12 @@ export function CreatePrModal({
           draft: normalDraft,
         });
         setResults([pr]);
-      } else if (mode === "stacked") {
+      } else if (mode === "queue") {
         const baseBranch = primaryLane?.branchRef ?? "main";
-        const result = await window.ade.prs.createStacked({
-          laneIds: stackedLaneIds,
+        const result = await window.ade.prs.createQueue({
+          laneIds: queueLaneIds,
           targetBranch: baseBranch,
-          draft: stackedDraft,
+          draft: queueDraft,
         });
         if (result.errors.length > 0) {
           setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
@@ -202,8 +202,8 @@ export function CreatePrModal({
         setResults(result.prs);
       }
       setStep("execute");
-    } catch (err: any) {
-      setExecError(err?.message ?? String(err));
+    } catch (err: unknown) {
+      setExecError(err instanceof Error ? err.message : String(err));
       setStep("execute");
     } finally {
       setBusy(false);
@@ -212,8 +212,8 @@ export function CreatePrModal({
 
   const nonPrimaryLanes = React.useMemo(() => lanes.filter((l) => l.laneType !== "primary"), [lanes]);
 
-  const toggleStackedLane = (laneId: string) => {
-    setStackedLaneIds((prev) =>
+  const toggleQueueLane = (laneId: string) => {
+    setQueueLaneIds((prev) =>
       prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId]
     );
   };
@@ -333,11 +333,11 @@ export function CreatePrModal({
                 </>
               )}
 
-              {mode === "stacked" && (
+              {mode === "queue" && (
                 <>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-fg">
-                      Select lanes (in stack order)
+                      Select lanes (in queue order)
                     </label>
                     <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-card/50 p-2 space-y-1">
                       {nonPrimaryLanes.map((lane) => (
@@ -345,13 +345,13 @@ export function CreatePrModal({
                           key={lane.id}
                           className={cn(
                             "flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer",
-                            stackedLaneIds.includes(lane.id) ? "bg-accent/10" : "hover:bg-muted/30"
+                            queueLaneIds.includes(lane.id) ? "bg-accent/10" : "hover:bg-muted/30"
                           )}
                         >
                           <input
                             type="checkbox"
-                            checked={stackedLaneIds.includes(lane.id)}
-                            onChange={() => toggleStackedLane(lane.id)}
+                            checked={queueLaneIds.includes(lane.id)}
+                            onChange={() => toggleQueueLane(lane.id)}
                           />
                           <span className="truncate font-medium text-fg">{lane.name}</span>
                           <span className="ml-auto text-[11px] text-muted-fg">{lane.branchRef}</span>
@@ -360,7 +360,7 @@ export function CreatePrModal({
                     </div>
                   </div>
                   <label className="flex items-center gap-2 text-xs text-fg">
-                    <input type="checkbox" checked={stackedDraft} onChange={(e) => setStackedDraft(e.target.checked)} />
+                    <input type="checkbox" checked={queueDraft} onChange={(e) => setQueueDraft(e.target.checked)} />
                     Create as drafts
                   </label>
                 </>
@@ -486,7 +486,7 @@ export function CreatePrModal({
                     disabled={
                       busy ||
                       (mode === "normal" && !normalLaneId) ||
-                      (mode === "stacked" && stackedLaneIds.length === 0) ||
+                      (mode === "queue" && queueLaneIds.length === 0) ||
                       (mode === "integration" && (integrationSources.length === 0 || !integrationName.trim()))
                     }
                     onClick={() => void handleCreate()}

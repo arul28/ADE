@@ -1,0 +1,357 @@
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+} from "react";
+import type {
+  PrWithConflicts,
+  PrMergeContext,
+  PrCheck,
+  PrComment,
+  PrReview,
+  PrStatus,
+  MergeMethod,
+  RebaseNeed,
+  RebaseEventPayload,
+  QueueLandingState,
+  PrEventPayload,
+  LaneSummary,
+} from "../../../../shared/types";
+
+type PrTab = "normal" | "queue" | "integration" | "rebase";
+
+type InlineTerminalState = {
+  ptyId: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  startedAt: string;
+  exitCode: number | null;
+  minimized: boolean;
+} | null;
+
+type PrsState = {
+  activeTab: PrTab;
+  prs: PrWithConflicts[];
+  lanes: LaneSummary[];
+  mergeContextByPrId: Record<string, PrMergeContext>;
+  selectedPrId: string | null;
+  selectedQueueGroupId: string | null;
+  selectedRebaseItemId: string | null;
+  mergeMethod: MergeMethod;
+  loading: boolean;
+  error: string | null;
+
+  // Detail state
+  detailStatus: PrStatus | null;
+  detailChecks: PrCheck[];
+  detailReviews: PrReview[];
+  detailComments: PrComment[];
+  detailBusy: boolean;
+
+  // Rebase state
+  rebaseNeeds: RebaseNeed[];
+
+  // Queue state
+  queueStates: Record<string, QueueLandingState>;
+
+  // Inline terminal
+  inlineTerminal: InlineTerminalState;
+
+  // Resolver preferences
+  resolverModel: "codex" | "claude";
+  resolverReasoningLevel: string;
+};
+
+type PrsContextValue = PrsState & {
+  setActiveTab: (tab: PrTab) => void;
+  setSelectedPrId: (id: string | null) => void;
+  setSelectedQueueGroupId: (id: string | null) => void;
+  setSelectedRebaseItemId: (id: string | null) => void;
+  setMergeMethod: (method: MergeMethod) => void;
+  setResolverModel: (model: "codex" | "claude") => void;
+  setResolverReasoningLevel: (level: string) => void;
+  setInlineTerminal: (terminal: InlineTerminalState) => void;
+  refresh: () => Promise<void>;
+};
+
+const PrsContext = createContext<PrsContextValue | null>(null);
+
+const LS_MODEL_KEY = "ade:prs:resolverModel";
+
+function readPersistedModel(): "codex" | "claude" {
+  try {
+    const v = localStorage.getItem(LS_MODEL_KEY);
+    if (v === "codex" || v === "claude") return v;
+  } catch {
+    /* ignore */
+  }
+  return "claude";
+}
+
+export function PrsProvider({ children }: { children: React.ReactNode }) {
+  const [activeTab, setActiveTab] = useState<PrTab>("normal");
+  const [prs, setPrs] = useState<PrWithConflicts[]>([]);
+  const [lanes, setLanes] = useState<LaneSummary[]>([]);
+  const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(null);
+  const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(null);
+  const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(null);
+  const [mergeMethod, setMergeMethod] = useState<MergeMethod>("squash");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Detail state
+  const [detailStatus, setDetailStatus] = useState<PrStatus | null>(null);
+  const [detailChecks, setDetailChecks] = useState<PrCheck[]>([]);
+  const [detailReviews, setDetailReviews] = useState<PrReview[]>([]);
+  const [detailComments, setDetailComments] = useState<PrComment[]>([]);
+  const [detailBusy, setDetailBusy] = useState(false);
+
+  // Rebase state
+  const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
+
+  // Queue state
+  const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
+
+  // Inline terminal
+  const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
+
+  // Resolver preferences
+  const [resolverModel, setResolverModelRaw] = useState<"codex" | "claude">(readPersistedModel);
+  const [resolverReasoningLevel, setResolverReasoningLevel] = useState("medium");
+
+  const setResolverModel = useCallback((model: "codex" | "claude") => {
+    setResolverModelRaw(model);
+    try {
+      localStorage.setItem(LS_MODEL_KEY, model);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Concurrency guard for refresh
+  const refreshInFlight = React.useRef(false);
+
+  // Load merge contexts for all PRs
+  const loadMergeContexts = useCallback(async (prList: PrWithConflicts[]) => {
+    const contexts: Record<string, PrMergeContext> = {};
+    await Promise.all(
+      prList.map(async (pr) => {
+        try {
+          const ctx = await window.ade.prs.getMergeContext(pr.id);
+          contexts[pr.id] = ctx;
+        } catch {
+          /* skip failures */
+        }
+      }),
+    );
+    setMergeContextByPrId(contexts);
+  }, []);
+
+  // Core refresh (guarded against concurrent calls)
+  const refresh = useCallback(async () => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    setLoading(true);
+    setError(null);
+    try {
+      const [prList, laneList] = await Promise.all([
+        window.ade.prs.listWithConflicts(),
+        window.ade.lanes.list(),
+      ]);
+      setPrs(prList);
+      setLanes(laneList);
+
+      // Clear selectedPrId if the PR no longer exists
+      setSelectedPrId((prev) => {
+        if (prev && !prList.some((pr) => pr.id === prev)) return null;
+        return prev;
+      });
+
+      await loadMergeContexts(prList);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+      refreshInFlight.current = false;
+    }
+  }, [loadMergeContexts]);
+
+  // Initial load
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Load detail data when selected PR changes
+  useEffect(() => {
+    if (!selectedPrId) {
+      setDetailStatus(null);
+      setDetailChecks([]);
+      setDetailReviews([]);
+      setDetailComments([]);
+      return;
+    }
+
+    let cancelled = false;
+    setDetailBusy(true);
+
+    Promise.all([
+      window.ade.prs.getStatus(selectedPrId),
+      window.ade.prs.getChecks(selectedPrId),
+      window.ade.prs.getReviews(selectedPrId),
+      window.ade.prs.getComments(selectedPrId),
+    ])
+      .then(([status, checks, reviews, comments]) => {
+        if (cancelled) return;
+        setDetailStatus(status);
+        setDetailChecks(checks);
+        setDetailReviews(reviews);
+        setDetailComments(comments);
+      })
+      .catch((err) => {
+        console.warn("[PrsContext] Failed to load PR detail data:", err);
+      })
+      .finally(() => {
+        if (!cancelled) setDetailBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPrId]);
+
+  // Subscribe to PR events
+  useEffect(() => {
+    const unsub = window.ade.prs.onEvent((event: PrEventPayload) => {
+      if (event.type === "prs-updated") {
+        // Full refresh on PR list change
+        refresh();
+      } else if (event.type === "queue-state") {
+        setQueueStates((prev) => {
+          const existing = prev[event.groupId];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [event.groupId]: {
+              ...existing,
+              state: event.state,
+              currentPosition: event.currentPosition,
+            },
+          };
+        });
+      } else if (event.type === "queue-step") {
+        // Refresh queue state for the group
+        window.ade.prs.getQueueState(event.groupId).then((qs) => {
+          if (qs) {
+            setQueueStates((prev) => ({ ...prev, [event.groupId]: qs }));
+          }
+        }).catch((err) => {
+          console.warn("[PrsContext] Failed to fetch queue state for group:", event.groupId, err);
+        });
+      }
+    });
+    return unsub;
+  }, [refresh]);
+
+  // Subscribe to rebase events
+  useEffect(() => {
+    const unsub = window.ade.rebase.onEvent((event: RebaseEventPayload) => {
+      if (event.type === "rebase-needs-updated") {
+        setRebaseNeeds(event.needs);
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Periodic rebase needs scan (cancelled flag guards against setState after unmount)
+  useEffect(() => {
+    let cancelled = false;
+    const scan = () => {
+      window.ade.rebase.scanNeeds().then((needs) => {
+        if (!cancelled) setRebaseNeeds(needs);
+      }).catch((err) => {
+        console.warn("[PrsContext] Failed to scan rebase needs:", err);
+      });
+    };
+    scan();
+    const timer = setInterval(scan, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const value = useMemo<PrsContextValue>(
+    () => ({
+      activeTab,
+      prs,
+      lanes,
+      mergeContextByPrId,
+      selectedPrId,
+      selectedQueueGroupId,
+      selectedRebaseItemId,
+      mergeMethod,
+      loading,
+      error,
+      detailStatus,
+      detailChecks,
+      detailReviews,
+      detailComments,
+      detailBusy,
+      rebaseNeeds,
+      queueStates,
+      inlineTerminal,
+      resolverModel,
+      resolverReasoningLevel,
+      setActiveTab,
+      setSelectedPrId,
+      setSelectedQueueGroupId,
+      setSelectedRebaseItemId,
+      setMergeMethod,
+      setResolverModel,
+      setResolverReasoningLevel,
+      setInlineTerminal,
+      refresh,
+    }),
+    // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
+    // setMergeMethod, setResolverReasoningLevel, and setInlineTerminal are intentionally
+    // excluded from this dependency array because they are useState setters which are
+    // guaranteed to be referentially stable across re-renders per the React useState contract.
+    // setResolverModel is included because it's a useCallback wrapper (not a raw setter).
+    [
+      activeTab,
+      prs,
+      lanes,
+      mergeContextByPrId,
+      selectedPrId,
+      selectedQueueGroupId,
+      selectedRebaseItemId,
+      mergeMethod,
+      loading,
+      error,
+      detailStatus,
+      detailChecks,
+      detailReviews,
+      detailComments,
+      detailBusy,
+      rebaseNeeds,
+      queueStates,
+      inlineTerminal,
+      resolverModel,
+      resolverReasoningLevel,
+      setResolverModel,
+      refresh,
+    ],
+  );
+
+  return <PrsContext.Provider value={value}>{children}</PrsContext.Provider>;
+}
+
+export function usePrs(): PrsContextValue {
+  const ctx = useContext(PrsContext);
+  if (!ctx) throw new Error("usePrs must be used within PrsProvider");
+  return ctx;
+}

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { runGit } from "../../desktop/src/main/services/git/git";
-import type { ContextExportLevel, MissionInterventionStatus } from "../../desktop/src/shared/types";
+import type { ContextExportLevel, MergeMethod, MissionInterventionStatus } from "../../desktop/src/shared/types";
 import type { AdeMcpRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
@@ -240,18 +240,118 @@ const TOOL_SPECS: ToolSpec[] = [
         stageAll: { type: "boolean", default: true }
       }
     }
+  },
+  {
+    name: "simulate_integration",
+    description: "Dry-merge N lanes sequentially using git merge-tree, returning per-step conflict analysis without creating any branches or PRs",
+    inputSchema: {
+      type: "object",
+      required: ["sourceLaneIds", "baseBranch"],
+      additionalProperties: false,
+      properties: {
+        sourceLaneIds: { type: "array", items: { type: "string", minLength: 1 } },
+        baseBranch: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "create_queue",
+    description: "Create a queue PR group with ordered lanes, each targeting the same branch for sequential landing",
+    inputSchema: {
+      type: "object",
+      required: ["laneIds", "targetBranch"],
+      additionalProperties: false,
+      properties: {
+        laneIds: { type: "array", items: { type: "string", minLength: 1 } },
+        targetBranch: { type: "string", minLength: 1 },
+        titles: { type: "object", additionalProperties: { type: "string" } },
+        draft: { type: "boolean" },
+        autoRebase: { type: "boolean" },
+        ciGating: { type: "boolean" },
+        queueName: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "create_integration",
+    description: "Create an integration lane, merge source lanes into it, and create a single integration PR",
+    inputSchema: {
+      type: "object",
+      required: ["sourceLaneIds", "integrationLaneName", "baseBranch", "title"],
+      additionalProperties: false,
+      properties: {
+        sourceLaneIds: { type: "array", items: { type: "string", minLength: 1 } },
+        integrationLaneName: { type: "string", minLength: 1 },
+        baseBranch: { type: "string", minLength: 1 },
+        title: { type: "string", minLength: 1 },
+        body: { type: "string" },
+        draft: { type: "boolean" }
+      }
+    }
+  },
+  {
+    name: "rebase_lane",
+    description: "Rebase a lane onto its base branch, optionally using AI to resolve conflicts",
+    inputSchema: {
+      type: "object",
+      required: ["laneId"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        aiAssisted: { type: "boolean" },
+        provider: { type: "string" },
+        autoApplyThreshold: { type: "number", minimum: 0, maximum: 1 }
+      }
+    }
+  },
+  {
+    name: "get_pr_health",
+    description: "Get unified health status for a PR including checks, reviews, conflicts, and rebase status",
+    inputSchema: {
+      type: "object",
+      required: ["prId"],
+      additionalProperties: false,
+      properties: {
+        prId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "land_queue_next",
+    description: "Land the next pending PR in a queue group sequentially",
+    inputSchema: {
+      type: "object",
+      required: ["groupId", "method"],
+      additionalProperties: false,
+      properties: {
+        groupId: { type: "string", minLength: 1 },
+        method: { type: "string", minLength: 1 },
+        autoResolve: { type: "boolean" },
+        confidenceThreshold: { type: "number", minimum: 0, maximum: 1 }
+      }
+    }
   }
 ];
 
 const READ_ONLY_TOOLS = new Set([
   "read_context",
   "check_conflicts",
-  "run_tests",
   "get_lane_status",
-  "list_lanes"
+  "list_lanes",
+  "simulate_integration",
+  "get_pr_health"
 ]);
 
-const MUTATION_TOOLS = new Set(["create_lane", "merge_lane", "commit_changes"]);
+const MUTATION_TOOLS = new Set([
+  "create_lane",
+  "merge_lane",
+  "commit_changes",
+  "run_tests",
+  "create_queue",
+  "create_integration",
+  "rebase_lane",
+  "land_queue_next"
+]);
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -338,6 +438,13 @@ function sanitizeForAudit(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
+function requirePrService(runtime: AdeMcpRuntime): NonNullable<AdeMcpRuntime["prService"]> {
+  if (!runtime.prService) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "prService is not available in this MCP runtime configuration");
+  }
+  return runtime.prService;
+}
+
 function extractLaneId(args: Record<string, unknown>): string | null {
   const fromPrimary = asOptionalTrimmedString(args.laneId);
   if (fromPrimary) return fromPrimary;
@@ -346,10 +453,15 @@ function extractLaneId(args: Record<string, unknown>): string | null {
   return null;
 }
 
+function stripInjectionChars(value: string): string {
+  return value.replace(/[\n\r\0]/g, " ");
+}
+
 function shellEscapeArg(value: string): string {
-  if (!value.length) return "''";
-  if (/^[a-zA-Z0-9_./:-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
+  const sanitized = stripInjectionChars(value);
+  if (!sanitized.length) return "''";
+  if (/^[a-zA-Z0-9_./:-]+$/.test(sanitized)) return sanitized;
+  return `'${sanitized.replace(/'/g, `'"'"'`)}'`;
 }
 
 function clipText(value: string, maxChars: number): string {
@@ -401,7 +513,13 @@ function resolveSpawnContextFile(args: {
   }
 
   if (contextFilePathRaw.length) {
+    if (path.isAbsolute(contextFilePathRaw)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be a relative path within the project directory");
+    }
     const abs = path.resolve(args.runtime.projectRoot, contextFilePathRaw);
+    if (!abs.startsWith(args.runtime.projectRoot + path.sep) && abs !== args.runtime.projectRoot) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "contextFilePath must be within the project directory");
+    }
     if (!fs.existsSync(abs)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `contextFilePath does not exist: ${contextFilePathRaw}`);
     }
@@ -825,14 +943,38 @@ function ensureSpawnAuthorized(session: SessionState): void {
   );
 }
 
+// Global ask_user rate limit shared across all sessions to prevent
+// bypass via session recycling. Limits to 20 calls per 60s globally.
+const GLOBAL_ASK_USER_RATE_LIMIT = {
+  maxCalls: 20,
+  windowMs: 60_000,
+  events: [] as number[]
+};
+
+/** @internal Exported for test cleanup only. */
+export function _resetGlobalAskUserRateLimit(): void {
+  GLOBAL_ASK_USER_RATE_LIMIT.events = [];
+}
+
 function ensureAskUserAllowed(session: SessionState): void {
   const now = Date.now();
-  const cutoff = now - session.askUserRateLimit.windowMs;
-  session.askUserEvents = session.askUserEvents.filter((ts) => ts >= cutoff);
+
+  // Enforce global rate limit (shared across all sessions)
+  const globalCutoff = now - GLOBAL_ASK_USER_RATE_LIMIT.windowMs;
+  GLOBAL_ASK_USER_RATE_LIMIT.events = GLOBAL_ASK_USER_RATE_LIMIT.events.filter((ts) => ts >= globalCutoff);
+  if (GLOBAL_ASK_USER_RATE_LIMIT.events.length >= GLOBAL_ASK_USER_RATE_LIMIT.maxCalls) {
+    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "ask_user global rate limit exceeded.");
+  }
+
+  // Enforce per-session rate limit (stricter, per-caller)
+  const sessionCutoff = now - session.askUserRateLimit.windowMs;
+  session.askUserEvents = session.askUserEvents.filter((ts) => ts >= sessionCutoff);
   if (session.askUserEvents.length >= session.askUserRateLimit.maxCalls) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "ask_user rate limit exceeded.");
   }
+
   session.askUserEvents.push(now);
+  GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
 }
 
 async function runTool(args: {
@@ -1014,6 +1156,7 @@ async function runTool(args: {
 
   if (name === "run_tests") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
     const suiteId = asOptionalTrimmedString(toolArgs.suiteId);
     const command = asOptionalTrimmedString(toolArgs.command);
     const waitForCompletion = asBoolean(toolArgs.waitForCompletion, true);
@@ -1098,6 +1241,109 @@ async function runTool(args: {
     };
   }
 
+  if (name === "simulate_integration") {
+    const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds)
+      ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
+      : [];
+    if (!sourceLaneIds.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "sourceLaneIds is required and must be non-empty");
+    }
+    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.simulateIntegration({ sourceLaneIds, baseBranch });
+    return result;
+  }
+
+  if (name === "create_queue") {
+    ensureMutationAuthorized({ runtime, session, toolName: name });
+    const laneIds = Array.isArray(toolArgs.laneIds)
+      ? toolArgs.laneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
+      : [];
+    if (!laneIds.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "laneIds is required and must be non-empty");
+    }
+    const targetBranch = assertNonEmptyString(toolArgs.targetBranch, "targetBranch");
+    const titles = isRecord(toolArgs.titles) ? toolArgs.titles as Record<string, string> : undefined;
+    const draft = typeof toolArgs.draft === "boolean" ? toolArgs.draft : undefined;
+    const autoRebase = typeof toolArgs.autoRebase === "boolean" ? toolArgs.autoRebase : undefined;
+    const ciGating = typeof toolArgs.ciGating === "boolean" ? toolArgs.ciGating : undefined;
+    const queueName = asOptionalTrimmedString(toolArgs.queueName);
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.createQueuePrs({
+      laneIds,
+      targetBranch,
+      ...(titles ? { titles } : {}),
+      ...(draft !== undefined ? { draft } : {}),
+      ...(autoRebase !== undefined ? { autoRebase } : {}),
+      ...(ciGating !== undefined ? { ciGating } : {}),
+      ...(queueName ? { queueName } : {})
+    });
+    return result;
+  }
+
+  if (name === "create_integration") {
+    ensureMutationAuthorized({ runtime, session, toolName: name });
+    const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds)
+      ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
+      : [];
+    if (!sourceLaneIds.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "sourceLaneIds is required and must be non-empty");
+    }
+    const integrationLaneName = assertNonEmptyString(toolArgs.integrationLaneName, "integrationLaneName");
+    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
+    const title = assertNonEmptyString(toolArgs.title, "title");
+    const body = asOptionalTrimmedString(toolArgs.body);
+    const draft = typeof toolArgs.draft === "boolean" ? toolArgs.draft : undefined;
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.createIntegrationPr({
+      sourceLaneIds,
+      integrationLaneName,
+      baseBranch,
+      title,
+      ...(body ? { body } : {}),
+      ...(draft !== undefined ? { draft } : {})
+    });
+    return result;
+  }
+
+  if (name === "rebase_lane") {
+    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    ensureMutationAuthorized({ runtime, session, laneId, toolName: name });
+    const aiAssisted = typeof toolArgs.aiAssisted === "boolean" ? toolArgs.aiAssisted : undefined;
+    const provider = asOptionalTrimmedString(toolArgs.provider);
+    const autoApplyThreshold = typeof toolArgs.autoApplyThreshold === "number" ? toolArgs.autoApplyThreshold : undefined;
+    const result = await runtime.conflictService.rebaseLane({
+      laneId,
+      ...(aiAssisted !== undefined ? { aiAssisted } : {}),
+      ...(provider ? { provider: provider as "codex" | "claude" | undefined } : {}),
+      ...(autoApplyThreshold !== undefined ? { autoApplyThreshold } : {})
+    });
+    return result;
+  }
+
+  if (name === "get_pr_health") {
+    const prId = assertNonEmptyString(toolArgs.prId, "prId");
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.getPrHealth(prId);
+    return result;
+  }
+
+  if (name === "land_queue_next") {
+    ensureMutationAuthorized({ runtime, session, toolName: name });
+    const groupId = assertNonEmptyString(toolArgs.groupId, "groupId");
+    const method = assertNonEmptyString(toolArgs.method, "method");
+    const autoResolve = typeof toolArgs.autoResolve === "boolean" ? toolArgs.autoResolve : undefined;
+    const confidenceThreshold = typeof toolArgs.confidenceThreshold === "number" ? toolArgs.confidenceThreshold : undefined;
+    const prSvc = requirePrService(runtime);
+    const result = await prSvc.landQueueNext({
+      groupId,
+      method: method as MergeMethod,
+      ...(autoResolve !== undefined ? { autoResolve } : {}),
+      ...(confidenceThreshold !== undefined ? { confidenceThreshold } : {})
+    });
+    return result;
+  }
+
   if (name === "read_context") {
     const scope = asTrimmedString(toolArgs.scope) || "project";
     const level = normalizeExportLevel(toolArgs.level, "standard");
@@ -1158,7 +1404,9 @@ async function runTool(args: {
     const stepId = asOptionalTrimmedString(toolArgs.stepId);
     const attemptId = asOptionalTrimmedString(toolArgs.attemptId);
     const toolWhitelist = normalizeToolWhitelist(toolArgs.toolWhitelist);
-    const title = asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`;
+    const title = stripInjectionChars(
+      asOptionalTrimmedString(toolArgs.title) ?? `MCP Agent (${provider}${permissionMode === "plan" ? " · plan" : ""})`
+    );
     const context = safeObject(toolArgs.context);
 
     const contextRef = resolveSpawnContextFile({
@@ -1506,14 +1754,9 @@ export function createMcpRequestHandler(args: {
 
       try {
         const result = await auditToolCall(toolName, toolArgs, async () => {
-          if (MUTATION_TOOLS.has(toolName)) {
-            ensureMutationAuthorized({
-              runtime,
-              session,
-              laneId: extractLaneId(toolArgs),
-              toolName
-            });
-          }
+          // Authorization is handled per-tool inside runTool() where each mutation
+          // tool calls ensureMutationAuthorized() with the correct lane context.
+          // No blanket pre-check here — that caused double-checks with inconsistent scope.
 
           if (READ_ONLY_TOOLS.has(toolName) || MUTATION_TOOLS.has(toolName) || toolName === "spawn_agent" || toolName === "ask_user") {
             return await runTool({ runtime, session, name: toolName, toolArgs });

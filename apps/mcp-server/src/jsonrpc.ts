@@ -293,6 +293,18 @@ async function dispatchPayload(args: {
       return;
     }
 
+    if (parsed.length > MAX_BATCH_SIZE) {
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: JsonRpcErrorCode.invalidRequest,
+          message: `JSON-RPC batch size ${parsed.length} exceeds maximum of ${MAX_BATCH_SIZE}`
+        }
+      }, transport);
+      return;
+    }
+
     const results = (
       await Promise.all(parsed.map((entry) => handleSingleMessage(entry, handler)))
     ).filter((entry): entry is JsonRpcResponse => entry != null);
@@ -308,6 +320,9 @@ async function dispatchPayload(args: {
     writeMessage(response, transport);
   }
 }
+
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
+const MAX_BATCH_SIZE = 100;
 
 export function startJsonRpcServer(handler: JsonRpcHandler): () => void {
   let buffer: Buffer = Buffer.alloc(0);
@@ -352,6 +367,22 @@ export function startJsonRpcServer(handler: JsonRpcHandler): () => void {
 
     const part: Buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
     buffer = buffer.length ? (Buffer.concat([buffer, part]) as Buffer) : part;
+
+    if (buffer.length > MAX_BUFFER_BYTES) {
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: JsonRpcErrorCode.parseError,
+          message: `Input buffer exceeded maximum size of ${MAX_BUFFER_BYTES} bytes`
+        }
+      }, responseTransport ?? "framed");
+      stopped = true;
+      process.stdin.off("data", onData);
+      process.nextTick(() => process.exit(1));
+      return;
+    }
+
     void drain();
   };
 

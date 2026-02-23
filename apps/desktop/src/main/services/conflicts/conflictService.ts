@@ -48,7 +48,12 @@ import type {
   FinalizeResolverSessionArgs,
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
-  ResolverSessionScenario
+  ResolverSessionScenario,
+  RebaseNeed,
+  RebaseLaneArgs,
+  RebaseResult,
+  RebaseEventPayload,
+  IntegrationProposalStep
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -560,6 +565,29 @@ export function createConflictService({
 }) {
   const pairLocks = new Map<string, Promise<void>>();
   const pairQueued = new Set<string>();
+
+  // Rebase tracking state
+  // Rebase dismiss/defer: persisted to DB, loaded into cache for fast reads
+  const rebaseDismissed = new Map<string, string>(); // laneId -> ISO timestamp
+  const rebaseDeferred = new Map<string, string>();  // laneId -> ISO timestamp (until)
+  const activeRebaseLanes = new Set<string>(); // concurrency guard
+
+  // Load persisted dismiss/defer from DB on init
+  try {
+    const dismissRows = db.all<{ lane_id: string; dismissed_at: string }>(
+      `select lane_id, dismissed_at from rebase_dismissed where project_id = ?`,
+      [projectId]
+    );
+    for (const row of dismissRows) rebaseDismissed.set(row.lane_id, row.dismissed_at);
+
+    const deferRows = db.all<{ lane_id: string; deferred_until: string }>(
+      `select lane_id, deferred_until from rebase_deferred where project_id = ?`,
+      [projectId]
+    );
+    for (const row of deferRows) rebaseDeferred.set(row.lane_id, row.deferred_until);
+  } catch {
+    // Tables may not exist yet — will be created lazily
+  }
 
   const runSerializedPairTask = async (pairId: string, task: () => Promise<void>): Promise<void> => {
     const active = pairLocks.get(pairId);
@@ -3364,7 +3392,20 @@ export function createConflictService({
     const integrationLane = scenario === "integration-merge"
       ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
       : null;
-    const cwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : (integrationLane?.id ?? sourceLaneIds[0]!);
+    const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
+    const defaultCwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : (integrationLane?.id ?? sourceLaneIds[0]!);
+    let cwdLaneId = defaultCwdLaneId;
+
+    // For multi-source integration, always run in integration lane worktree.
+    if (sourceLaneIds.length > 1 && integrationLane?.id) {
+      cwdLaneId = integrationLane.id;
+    } else if (
+      requestedCwdLaneId &&
+      (requestedCwdLaneId === targetLaneId || sourceLaneIds.includes(requestedCwdLaneId))
+    ) {
+      cwdLaneId = requestedCwdLaneId;
+    }
+
     const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
     if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
 
@@ -3543,6 +3584,332 @@ export function createConflictService({
     };
   };
 
+  // ---------------------------------------------------------------------------
+  // Rebase tracking methods
+  // ---------------------------------------------------------------------------
+
+  const simulateChainedMerge = async (args: {
+    sourceLaneIds: string[];
+    baseBranch: string;
+  }): Promise<IntegrationProposalStep[]> => {
+    const lanes = await listActiveLanes();
+    const laneMap = new Map(lanes.map((l) => [l.id, l]));
+    const steps: IntegrationProposalStep[] = [];
+
+    // Start from the base branch HEAD
+    let accumulatedSha = await readHeadSha(projectRoot, args.baseBranch);
+
+    for (let i = 0; i < args.sourceLaneIds.length; i++) {
+      const laneId = args.sourceLaneIds[i];
+      const lane = laneMap.get(laneId);
+      if (!lane) {
+        steps.push({
+          laneId,
+          laneName: laneId,
+          position: i,
+          outcome: "blocked",
+          conflictingFiles: [],
+          diffStat: { insertions: 0, deletions: 0, filesChanged: 0 }
+        });
+        continue;
+      }
+
+      const laneHeadSha = await readHeadSha(lane.worktreePath, "HEAD");
+      const mergeBase = await readMergeBase(projectRoot, accumulatedSha, laneHeadSha);
+
+      const merge = await runGitMergeTree({
+        cwd: projectRoot,
+        mergeBase,
+        branchA: accumulatedSha,
+        branchB: laneHeadSha,
+        timeoutMs: 60_000
+      });
+
+      const conflictingFiles = merge.conflicts.map((c) => ({
+        path: c.path,
+        conflictMarkers: c.markerPreview
+      }));
+
+      const outcome: IntegrationProposalStep["outcome"] =
+        conflictingFiles.length > 0 ? "conflict" : merge.exitCode === 0 ? "clean" : "blocked";
+
+      // Parse diffStat from the numstat between mergeBase and laneHead
+      const numstat = await readDiffNumstat(projectRoot, mergeBase, laneHeadSha);
+
+      steps.push({
+        laneId,
+        laneName: lane.name,
+        position: i,
+        outcome,
+        conflictingFiles,
+        diffStat: {
+          insertions: numstat.insertions,
+          deletions: numstat.deletions,
+          filesChanged: numstat.files.size
+        }
+      });
+
+      // If the merge was clean and we got a write-tree sha, advance the accumulated tree.
+      // The first line of stdout from --write-tree is the resulting tree sha on success.
+      if (outcome === "clean" && merge.usedWriteTree && merge.stdout.trim()) {
+        const firstLine = merge.stdout.trim().split(/\r?\n/)[0].trim();
+        if (/^[0-9a-f]{40}$/.test(firstLine)) {
+          accumulatedSha = firstLine;
+        } else {
+          // fallback: use the lane head (sequential simulation approximation)
+          accumulatedSha = laneHeadSha;
+        }
+      } else if (outcome === "clean") {
+        accumulatedSha = laneHeadSha;
+      }
+      // On conflict, keep the current accumulated sha so subsequent steps simulate
+      // from the last known-good state.
+    }
+
+    return steps;
+  };
+
+  const scanRebaseNeeds = async (): Promise<RebaseNeed[]> => {
+    const lanes = await listActiveLanes();
+    const needs: RebaseNeed[] = [];
+
+    // Skip primary lane — it IS the base, rebasing it is nonsensical
+    const nonPrimaryLanes = lanes.filter((l) => l.laneType !== "primary");
+    for (const lane of nonPrimaryLanes) {
+      try {
+        const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+
+        // Count how many commits the lane is behind base
+        const behindRes = await runGit(
+          ["rev-list", "--count", `${laneHead}..${baseHead}`],
+          { cwd: projectRoot, timeoutMs: 15_000 }
+        );
+        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
+
+        if (behindBy === 0) continue;
+
+        // Dry merge-tree to predict conflicts
+        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+        const merge = await runGitMergeTree({
+          cwd: projectRoot,
+          mergeBase,
+          branchA: baseHead,
+          branchB: laneHead,
+          timeoutMs: 60_000
+        });
+
+        const conflictingFiles = merge.conflicts.map((c) => c.path);
+
+        needs.push({
+          laneId: lane.id,
+          laneName: lane.name,
+          baseBranch: lane.baseRef,
+          behindBy,
+          conflictPredicted: conflictingFiles.length > 0,
+          conflictingFiles,
+          prId: null,
+          groupContext: null,
+          dismissedAt: rebaseDismissed.get(lane.id) ?? null,
+          deferredUntil: rebaseDeferred.get(lane.id) ?? null
+        });
+      } catch (err) {
+        logger.warn(`scanRebaseNeeds: failed for lane ${lane.id}`, { error: err });
+      }
+    }
+
+    // Emit rebase-needs-updated so renderer gets notified
+    if (onEvent) {
+      onEvent({ type: "rebase-needs-updated", needs, timestamp: new Date().toISOString() });
+    }
+
+    return needs;
+  };
+
+  const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
+    const lanes = await listActiveLanes();
+    const lane = lanes.find((l) => l.id === laneId);
+    if (!lane || lane.laneType === "primary") return null;
+
+    try {
+      const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+      const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+
+      const behindRes = await runGit(
+        ["rev-list", "--count", `${laneHead}..${baseHead}`],
+        { cwd: projectRoot, timeoutMs: 15_000 }
+      );
+      const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
+
+      if (behindBy === 0) return null;
+
+      const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+      const merge = await runGitMergeTree({
+        cwd: projectRoot,
+        mergeBase,
+        branchA: baseHead,
+        branchB: laneHead,
+        timeoutMs: 60_000
+      });
+
+      const conflictingFiles = merge.conflicts.map((c) => c.path);
+
+      return {
+        laneId: lane.id,
+        laneName: lane.name,
+        baseBranch: lane.baseRef,
+        behindBy,
+        conflictPredicted: conflictingFiles.length > 0,
+        conflictingFiles,
+        prId: null,
+        groupContext: null,
+        dismissedAt: rebaseDismissed.get(lane.id) ?? null,
+        deferredUntil: rebaseDeferred.get(lane.id) ?? null
+      };
+    } catch (err) {
+      logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
+      return null;
+    }
+  };
+
+  const dismissRebase = (laneId: string): void => {
+    const now = new Date().toISOString();
+    rebaseDismissed.set(laneId, now);
+    try {
+      db.run(
+        `insert into rebase_dismissed(lane_id, project_id, dismissed_at)
+         values (?, ?, ?)
+         on conflict(lane_id, project_id) do update set dismissed_at = excluded.dismissed_at`,
+        [laneId, projectId, now]
+      );
+    } catch {
+      // Table may not exist yet — in-memory fallback
+    }
+  };
+
+  const deferRebase = (laneId: string, until: string): void => {
+    rebaseDeferred.set(laneId, until);
+    try {
+      db.run(
+        `insert into rebase_deferred(lane_id, project_id, deferred_until)
+         values (?, ?, ?)
+         on conflict(lane_id, project_id) do update set deferred_until = excluded.deferred_until`,
+        [laneId, projectId, until]
+      );
+    } catch {
+      // Table may not exist yet — in-memory fallback
+    }
+  };
+
+  const rebaseLane = async (args: RebaseLaneArgs): Promise<RebaseResult> => {
+    // Concurrency guard: prevent parallel rebase on same lane (corrupts git state)
+    // Acquire lock immediately to avoid race between check and async operations
+    if (activeRebaseLanes.has(args.laneId)) {
+      return {
+        laneId: args.laneId,
+        success: false,
+        conflictingFiles: [],
+        error: `Rebase already in progress for lane ${args.laneId}`
+      };
+    }
+    activeRebaseLanes.add(args.laneId);
+
+    try {
+      const lanes = await listActiveLanes();
+      const lane = lanes.find((l) => l.id === args.laneId);
+      if (!lane) {
+        return {
+          laneId: args.laneId,
+          success: false,
+          conflictingFiles: [],
+          error: `Lane ${args.laneId} not found`
+        };
+      }
+
+      // Check for dirty worktree before rebase
+      const dirtyCheck = await runGit(
+        ["status", "--porcelain"],
+        { cwd: lane.worktreePath, timeoutMs: 10_000 }
+      );
+      if (dirtyCheck.exitCode === 0 && dirtyCheck.stdout.trim().length > 0) {
+        return {
+          laneId: args.laneId,
+          success: false,
+          conflictingFiles: [],
+          error: "Worktree has uncommitted changes. Commit or stash before rebasing."
+        };
+      }
+
+      if (args.aiAssisted) {
+        logger.info(`rebaseLane: AI-assisted rebase requested for lane ${args.laneId}`, {
+          provider: args.provider ?? "codex",
+          autoApplyThreshold: args.autoApplyThreshold
+        });
+      }
+
+      if (onEvent) {
+        onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: new Date().toISOString() });
+      }
+
+      const rebaseRes = await runGit(
+        ["rebase", lane.baseRef],
+        { cwd: lane.worktreePath, timeoutMs: 120_000 }
+      );
+
+      if (rebaseRes.exitCode === 0) {
+        // Clear any dismissal/deferral on successful rebase
+        rebaseDismissed.delete(args.laneId);
+        rebaseDeferred.delete(args.laneId);
+        try {
+          db.run(`delete from rebase_dismissed where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
+          db.run(`delete from rebase_deferred where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
+        } catch { /* table may not exist */ }
+
+        if (onEvent) {
+          onEvent({ type: "rebase-completed", laneId: args.laneId, success: true, timestamp: new Date().toISOString() });
+        }
+
+        return {
+          laneId: args.laneId,
+          success: true,
+          conflictingFiles: [],
+          resolvedByAi: false
+        };
+      }
+
+      // Rebase failed — parse conflicting files and abort
+      const statusRes = await runGit(
+        ["diff", "--name-only", "--diff-filter=U"],
+        { cwd: lane.worktreePath, timeoutMs: 15_000 }
+      );
+      const conflictingFiles = statusRes.exitCode === 0
+        ? parseDiffNameOnly(statusRes.stdout)
+        : [];
+
+      // Abort the failed rebase to leave the worktree clean
+      const abortRes = await runGit(["rebase", "--abort"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+      if (abortRes.exitCode !== 0) {
+        logger.error(`rebaseLane: Failed to abort rebase for lane ${args.laneId}`, {
+          stderr: abortRes.stderr
+        });
+      }
+
+      if (onEvent) {
+        onEvent({ type: "rebase-completed", laneId: args.laneId, success: false, timestamp: new Date().toISOString() });
+      }
+
+      return {
+        laneId: args.laneId,
+        success: false,
+        conflictingFiles,
+        error: rebaseRes.stderr.trim() || "Rebase failed with conflicts",
+        resolvedByAi: false
+      };
+    } finally {
+      activeRebaseLanes.delete(args.laneId);
+    }
+  };
+
   return {
     getLaneStatus,
     listOverlaps,
@@ -3560,6 +3927,12 @@ export function createConflictService({
     undoProposal,
     prepareResolverSession,
     finalizeResolverSession,
-    suggestResolverTarget
+    suggestResolverTarget,
+    simulateChainedMerge,
+    scanRebaseNeeds,
+    getRebaseNeed,
+    dismissRebase,
+    deferRebase,
+    rebaseLane
   };
 }

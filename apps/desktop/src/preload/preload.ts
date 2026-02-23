@@ -82,6 +82,8 @@ import type {
   GitSyncArgs,
   GitHubStatus,
   CreatePrFromLaneArgs,
+  DeletePrArgs,
+  DeletePrResult,
   LinkPrToLaneArgs,
   PrEventPayload,
   PrCheck,
@@ -138,6 +140,8 @@ import type {
   PackExport,
   PackHeadVersion,
   PackSummary,
+  PackDeltaDigestArgs,
+  PackDeltaDigestV1,
   PackVersion,
   PackVersionSummary,
   Checkpoint,
@@ -180,14 +184,26 @@ import type {
   FinalizeResolverSessionArgs,
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
+  CreateQueuePrsArgs,
+  CreateQueuePrsResult,
   CreateStackedPrsArgs,
   CreateStackedPrsResult,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
+  SimulateIntegrationArgs,
+  IntegrationProposal,
+  CommitIntegrationArgs,
   LandStackEnhancedArgs,
+  LandQueueNextArgs,
+  QueueLandingState,
   PrConflictAnalysis,
   PrMergeContext,
+  PrHealth,
   PrWithConflicts,
+  RebaseNeed,
+  RebaseLaneArgs,
+  RebaseResult,
+  RebaseEventPayload,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
   ReparentLaneArgs,
@@ -719,6 +735,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.packsListCheckpoints, args),
     getHeadVersion: async (packKey: string): Promise<PackHeadVersion> =>
       ipcRenderer.invoke(IPC.packsGetHeadVersion, { packKey }),
+    getDeltaDigest: async (args: PackDeltaDigestArgs): Promise<PackDeltaDigestV1> =>
+      ipcRenderer.invoke(IPC.packsGetDeltaDigest, args),
     onEvent: (cb: (ev: PackEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PackEvent) => cb(payload);
       ipcRenderer.on(IPC.packsEvent, listener);
@@ -741,6 +759,7 @@ contextBridge.exposeInMainWorld("ade", {
     getComments: async (prId: string): Promise<PrComment[]> => ipcRenderer.invoke(IPC.prsGetComments, { prId }),
     getReviews: async (prId: string): Promise<PrReview[]> => ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateDescription, args),
+    delete: async (args: DeletePrArgs): Promise<DeletePrResult> => ipcRenderer.invoke(IPC.prsDelete, args),
     draftDescription: async (laneId: string, model?: string): Promise<{ title: string; body: string }> =>
       ipcRenderer.invoke(IPC.prsDraftDescription, { laneId, model }),
     land: async (args: LandPrArgs): Promise<LandResult> => ipcRenderer.invoke(IPC.prsLand, args),
@@ -748,20 +767,48 @@ contextBridge.exposeInMainWorld("ade", {
     openInGitHub: async (prId: string): Promise<void> => ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
     createStacked: (args: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> =>
       ipcRenderer.invoke(IPC.prsCreateStacked, args),
+    createQueue: (args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> =>
+      ipcRenderer.invoke(IPC.prsCreateQueue, args),
     createIntegration: (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> =>
       ipcRenderer.invoke(IPC.prsCreateIntegration, args),
+    simulateIntegration: (args: SimulateIntegrationArgs): Promise<IntegrationProposal> =>
+      ipcRenderer.invoke(IPC.prsSimulateIntegration, args),
+    commitIntegration: (args: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> =>
+      ipcRenderer.invoke(IPC.prsCommitIntegration, args),
     landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
+    landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
+      ipcRenderer.invoke(IPC.prsLandQueueNext, args),
+    getHealth: (prId: string): Promise<PrHealth> =>
+      ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
+    getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
+      ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
-      ipcRenderer.invoke(IPC.prsGetConflictAnalysis, prId),
+      ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>
-      ipcRenderer.invoke(IPC.prsGetMergeContext, prId),
+      ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
     listWithConflicts: (): Promise<PrWithConflicts[]> =>
       ipcRenderer.invoke(IPC.prsListWithConflicts),
     onEvent: (cb: (ev: PrEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);
       return () => ipcRenderer.removeListener(IPC.prsEvent, listener);
+    }
+  },
+  rebase: {
+    scanNeeds: async (): Promise<RebaseNeed[]> => ipcRenderer.invoke(IPC.rebaseScanNeeds),
+    getNeed: async (laneId: string): Promise<RebaseNeed | null> =>
+      ipcRenderer.invoke(IPC.rebaseGetNeed, { laneId }),
+    dismiss: async (laneId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.rebaseDismiss, { laneId }),
+    defer: async (laneId: string, until: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.rebaseDefer, { laneId, until }),
+    execute: async (args: RebaseLaneArgs): Promise<RebaseResult> =>
+      ipcRenderer.invoke(IPC.rebaseExecute, args),
+    onEvent: (cb: (ev: RebaseEventPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RebaseEventPayload) => cb(payload);
+      ipcRenderer.on(IPC.rebaseEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.rebaseEvent, listener);
     }
   },
   history: {

@@ -72,14 +72,30 @@ import type {
   GitSyncArgs,
   GitHubStatus,
   CreatePrFromLaneArgs,
+  CreateStackedPrsArgs,
+  CreateStackedPrsResult,
+  CreateIntegrationPrArgs,
+  CreateIntegrationPrResult,
+  CreateQueuePrsArgs,
+  CreateQueuePrsResult,
+  CommitIntegrationArgs,
+  DeletePrArgs,
+  DeletePrResult,
+  IntegrationProposal,
   LinkPrToLaneArgs,
   LandResult,
+  LandStackEnhancedArgs,
+  LandQueueNextArgs,
   PrCheck,
   PrComment,
+  PrConflictAnalysis,
+  PrHealth,
   PrMergeContext,
   PrReview,
   PrStatus,
   PrSummary,
+  QueueLandingState,
+  SimulateIntegrationArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
   LandStackArgs,
@@ -286,6 +302,7 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
+import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import { readGlobalState, writeGlobalState } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -328,6 +345,7 @@ export type AppContext = {
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
+  queueLandingService: ReturnType<typeof createQueueLandingService>;
   jobEngine: ReturnType<typeof createJobEngine>;
   automationService: ReturnType<typeof createAutomationService>;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService>;
@@ -835,7 +853,10 @@ export function registerIpc({
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    shell.showItemInFolder(raw);
+    // Basic path boundary validation — reject obvious traversal patterns
+    const normalized = path.resolve(raw);
+    if (normalized !== raw && raw.includes("..")) return;
+    shell.showItemInFolder(normalized);
   });
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
@@ -2569,6 +2590,11 @@ export function registerIpc({
     return await ctx.prService.updateDescription(arg);
   });
 
+  ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
+    const ctx = getCtx();
+    return await ctx.prService.delete(arg);
+  });
+
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: { laneId: string; model?: string }): Promise<{ title: string; body: string }> => {
     const ctx = getCtx();
     return await ctx.prService.draftDescription(arg.laneId, arg.model);
@@ -2589,17 +2615,39 @@ export function registerIpc({
     return await ctx.prService.openInGitHub(arg.prId);
   });
 
-  ipcMain.handle(IPC.prsCreateStacked, async (_event, arg) => getCtx().prService.createStackedPrs(arg));
+  ipcMain.handle(IPC.prsCreateStacked, async (_event, arg: CreateStackedPrsArgs): Promise<CreateStackedPrsResult> => getCtx().prService.createStackedPrs(arg));
 
-  ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg) => getCtx().prService.createIntegrationPr(arg));
+  ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => getCtx().prService.createIntegrationPr(arg));
 
-  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg) => getCtx().prService.landStackEnhanced(arg));
+  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => getCtx().prService.landStackEnhanced(arg));
 
-  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg) => getCtx().prService.getConflictAnalysis(arg));
+  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
 
-  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg));
+  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg.prId));
 
   ipcMain.handle(IPC.prsListWithConflicts, async () => getCtx().prService.listWithConflicts());
+
+  ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => getCtx().prService.createQueuePrs(arg));
+
+  ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
+
+  ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => getCtx().prService.commitIntegration(arg));
+
+  ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => getCtx().prService.landQueueNext(arg));
+
+  ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
+
+  ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> => getCtx().prService.getQueueState(arg.groupId));
+
+  ipcMain.handle(IPC.rebaseScanNeeds, async () => getCtx().conflictService.scanRebaseNeeds());
+
+  ipcMain.handle(IPC.rebaseGetNeed, async (_event, arg) => getCtx().conflictService.getRebaseNeed(arg.laneId));
+
+  ipcMain.handle(IPC.rebaseDismiss, async (_event, arg) => getCtx().conflictService.dismissRebase(arg.laneId));
+
+  ipcMain.handle(IPC.rebaseDefer, async (_event, arg) => getCtx().conflictService.deferRebase(arg.laneId, arg.until));
+
+  ipcMain.handle(IPC.rebaseExecute, async (_event, arg) => getCtx().conflictService.rebaseLane(arg));
 
   ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
     const ctx = getCtx();

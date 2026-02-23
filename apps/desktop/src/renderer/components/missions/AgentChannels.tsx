@@ -95,9 +95,11 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
 
   useEffect(() => {
     void refreshMessages(selectedThreadId);
+    // Only poll for active threads — closed/completed threads won't receive new messages.
+    if (selectedThread && selectedThread.status !== "active") return;
     const interval = setInterval(() => void refreshMessages(selectedThreadId), 6_000);
     return () => clearInterval(interval);
-  }, [refreshMessages, selectedThreadId]);
+  }, [refreshMessages, selectedThreadId, selectedThread]);
 
   // Listen for thread events
   useEffect(() => {
@@ -153,9 +155,8 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
     setSending(true);
     setInput("");
     try {
-      onSendMessage(selectedThreadId, trimmed);
-      // Refresh messages after send
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // onSendMessage may or may not return a promise — await it either way
+      await Promise.resolve(onSendMessage(selectedThreadId, trimmed));
       await refreshMessages(selectedThreadId);
     } finally {
       setSending(false);

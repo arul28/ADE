@@ -27,7 +27,7 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
     if (this.state.hasError) {
       return (
         <div className="flex h-screen w-screen flex-col items-center justify-center gap-3 bg-bg p-4 text-fg">
-          <div className="max-w-[720px] rounded border border-red-300 bg-red-50 p-4 text-sm text-red-900">
+          <div className="max-w-[720px] rounded border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
             <div className="font-semibold">Renderer crashed</div>
             <div className="mt-1 text-xs">{this.state.message || "Unknown error"}</div>
           </div>

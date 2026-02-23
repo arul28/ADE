@@ -4,12 +4,14 @@ import { initialConflictsState, type ConflictsState, type ConflictsAction } from
 import { fetchBatchAssessment, fetchRestackSuggestions } from "./conflictsActions";
 import type { ConflictEventPayload } from "../../../../shared/types";
 
-type ConflictsContextValue = {
-  state: ConflictsState;
-  dispatch: Dispatch<ConflictsAction>;
-};
-
-const ConflictsContext = createContext<ConflictsContextValue | null>(null);
+/**
+ * Split into two contexts so that components which only need `dispatch`
+ * (e.g. event handlers, action triggers) do not re-render when state changes.
+ * `dispatch` from useReducer is referentially stable, so the DispatchContext
+ * value never changes and its consumers never re-render due to state updates.
+ */
+const ConflictsStateContext = createContext<ConflictsState | null>(null);
+const ConflictsDispatchContext = createContext<Dispatch<ConflictsAction> | null>(null);
 
 export function ConflictsProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(conflictsReducer, initialConflictsState);
@@ -47,21 +49,28 @@ export function ConflictsProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  const value = React.useMemo(() => ({ state, dispatch }), [state]);
-
-  return <ConflictsContext.Provider value={value}>{children}</ConflictsContext.Provider>;
-}
-
-export function useConflicts(): ConflictsContextValue {
-  const ctx = useContext(ConflictsContext);
-  if (!ctx) throw new Error("useConflicts must be used within ConflictsProvider");
-  return ctx;
+  return (
+    <ConflictsDispatchContext.Provider value={dispatch}>
+      <ConflictsStateContext.Provider value={state}>
+        {children}
+      </ConflictsStateContext.Provider>
+    </ConflictsDispatchContext.Provider>
+  );
 }
 
 export function useConflictsState(): ConflictsState {
-  return useConflicts().state;
+  const state = useContext(ConflictsStateContext);
+  if (state === null) throw new Error("useConflictsState must be used within ConflictsProvider");
+  return state;
 }
 
 export function useConflictsDispatch(): Dispatch<ConflictsAction> {
-  return useConflicts().dispatch;
+  const dispatch = useContext(ConflictsDispatchContext);
+  if (dispatch === null) throw new Error("useConflictsDispatch must be used within ConflictsProvider");
+  return dispatch;
+}
+
+/** Combined hook for callers that need both state and dispatch. */
+export function useConflicts(): { state: ConflictsState; dispatch: Dispatch<ConflictsAction> } {
+  return { state: useConflictsState(), dispatch: useConflictsDispatch() };
 }

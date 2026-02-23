@@ -25,7 +25,8 @@ const PRESET_QUICK: MissionExecutionPolicy = {
   testReview: { mode: "off" },
   integration: { mode: "off" },
   merge: { mode: "off" },
-  completion: { allowCompletionWithRisk: true }
+  completion: { allowCompletionWithRisk: true },
+  prStrategy: { kind: "manual" }
 };
 
 const PRESET_STANDARD: MissionExecutionPolicy = {
@@ -38,7 +39,7 @@ const PRESET_STANDARD: MissionExecutionPolicy = {
   integration: { mode: "auto", model: "codex" },
   merge: { mode: "off" },
   completion: { allowCompletionWithRisk: true },
-  prStrategy: { kind: "integration", targetBranch: "main", draft: true }
+  prStrategy: { kind: "queue", targetBranch: "main", draft: true, autoRebase: true, ciGating: false }
 };
 
 const PRESET_THOROUGH: MissionExecutionPolicy = {
@@ -287,12 +288,19 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
                   const prev = value.prStrategy;
                   const targetBranch = (prev && "targetBranch" in prev ? prev.targetBranch : undefined) ?? "main";
                   const draft = prev && "draft" in prev ? prev.draft : true;
-                  onChange({ ...value, prStrategy: { kind, targetBranch, draft } });
+                  if (kind === "queue") {
+                    const autoRebase = prev && "autoRebase" in prev ? prev.autoRebase : true;
+                    const ciGating = prev && "ciGating" in prev ? prev.ciGating : false;
+                    onChange({ ...value, prStrategy: { kind, targetBranch, draft, autoRebase, ciGating } });
+                  } else {
+                    onChange({ ...value, prStrategy: { kind, targetBranch, draft } });
+                  }
                 }
               }}
             >
               <option value="integration">Integration PR</option>
               <option value="per-lane">Per-Lane PRs</option>
+              <option value="queue">Queue (ordered merge)</option>
               <option value="manual">Manual (no auto-PR)</option>
             </select>
           </div>
@@ -318,6 +326,34 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
                   className="rounded"
                 />
                 Draft PR
+              </label>
+            </div>
+          )}
+          {value.prStrategy?.kind === "queue" && (
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1 text-xs text-muted-fg cursor-pointer whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={(value.prStrategy && "autoRebase" in value.prStrategy ? value.prStrategy.autoRebase : true) ?? true}
+                  onChange={(e) => {
+                    const prev = value.prStrategy as Extract<PrStrategy, { kind: "queue" }>;
+                    onChange({ ...value, prStrategy: { ...prev, autoRebase: e.target.checked } });
+                  }}
+                  className="rounded"
+                />
+                Auto-rebase
+              </label>
+              <label className="flex items-center gap-1 text-xs text-muted-fg cursor-pointer whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={(value.prStrategy && "ciGating" in value.prStrategy ? value.prStrategy.ciGating : false) ?? false}
+                  onChange={(e) => {
+                    const prev = value.prStrategy as Extract<PrStrategy, { kind: "queue" }>;
+                    onChange({ ...value, prStrategy: { ...prev, ciGating: e.target.checked } });
+                  }}
+                  className="rounded"
+                />
+                CI gating
               </label>
             </div>
           )}

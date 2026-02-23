@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import { ArrowDown, ArrowUp, Check, Circle, SpinnerGap, X } from "@phosphor-icons/react";
 import { useAppStore } from "../../../state/appStore";
 import { useConflictsState, useConflictsDispatch } from "../state/ConflictsContext";
@@ -12,6 +13,7 @@ function pairKey(a: string, b: string): string {
 }
 
 export function MultiMergePreviewPane() {
+  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const dispatch = useConflictsDispatch();
   const {
@@ -61,7 +63,7 @@ export function MultiMergePreviewPane() {
     dispatch({ type: "SET_MULTI_MERGE_SOURCES", laneIds: arr });
   };
 
-  const executeStackedPrs = async () => {
+  const executeQueuePrs = async () => {
     const targetBranch = (() => {
       const targetLane = lanes.find((l) => l.id === multiMergeTargetLaneId);
       if (targetLane) {
@@ -74,7 +76,7 @@ export function MultiMergePreviewPane() {
     setExecError(null);
     setExecResult(null);
     try {
-      const result = await window.ade.prs.createStacked({
+      const result = await window.ade.prs.createQueue({
         laneIds: multiMergeSourceLaneIds,
         targetBranch,
         draft: false,
@@ -82,48 +84,18 @@ export function MultiMergePreviewPane() {
       if (result.errors.length > 0) {
         setExecError(result.errors.map((e) => `${e.laneId}: ${e.error}`).join("\n"));
       }
-      setExecResult(`Created ${result.prs.length} stacked PR(s)`);
-    } catch (err: any) {
-      setExecError(err?.message ?? String(err));
+      setExecResult(`Created ${result.prs.length} queue PR(s)`);
+    } catch (err: unknown) {
+      setExecError(err instanceof Error ? err.message : String(err));
     } finally {
       setExecBusy(false);
     }
   };
 
-  const executeIntegrationMerge = async () => {
-    const baseBranch = (() => {
-      const targetLane = lanes.find((l) => l.id === multiMergeTargetLaneId);
-      if (targetLane) {
-        const ref = targetLane.branchRef.trim();
-        return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
-      }
-      return primaryLane?.branchRef ?? "main";
-    })();
-    const name = multiMergeIntegrationName.trim();
-    if (!name) return;
-
-    setExecBusy(true);
+  const continueIntegrationInPrWorkflow = () => {
     setExecError(null);
-    setExecResult(null);
-    try {
-      const result = await window.ade.prs.createIntegration({
-        sourceLaneIds: multiMergeSourceLaneIds,
-        integrationLaneName: name,
-        baseBranch,
-        title: `Integration: ${name}`,
-        draft: false,
-      });
-      const failedMerges = result.mergeResults.filter((r) => !r.success);
-      if (failedMerges.length > 0) {
-        setExecError(failedMerges.map((r) => `${r.laneId}: ${r.error ?? "failed"}`).join("\n"));
-      }
-      dispatch({ type: "SET_INTEGRATION_LANE_ID", laneId: result.integrationLaneId });
-      setExecResult(`Created integration PR #${result.pr.githubPrNumber}`);
-    } catch (err: any) {
-      setExecError(err?.message ?? String(err));
-    } finally {
-      setExecBusy(false);
-    }
+    setExecResult("Continue in PRs tab to create an integration proposal and only create GitHub PR after conflict resolution.");
+    navigate("/prs");
   };
 
   // Per-pair conflict risk from batch matrix data
@@ -142,7 +114,7 @@ export function MultiMergePreviewPane() {
       {/* Mode selector */}
       <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-1">
         <div className="flex text-xs font-medium">
-          {(["stacked", "integration"] as const).map((mode) => (
+          {(["queue", "integration"] as const).map((mode) => (
             <button
               key={mode}
               onClick={() => dispatch({ type: "SET_MULTI_MERGE_MODE", mode })}
@@ -153,7 +125,7 @@ export function MultiMergePreviewPane() {
                   : "text-muted-fg hover:text-fg hover:bg-muted/40"
               )}
             >
-              {mode === "stacked" ? "Stacked Merge" : "Integration Merge"}
+              {mode === "queue" ? "Queue Merge" : "Integration Merge"}
             </button>
           ))}
         </div>
@@ -316,15 +288,15 @@ export function MultiMergePreviewPane() {
 
       {/* Action area */}
       <div className="rounded-lg border border-border/10 bg-card/50 backdrop-blur-sm shadow-card p-3.5">
-        {multiMergeMode === "stacked" ? (
+        {multiMergeMode === "queue" ? (
           <Button
             size="sm"
             variant="primary"
             className="w-full shadow-card font-semibold tracking-wide"
             disabled={multiMergeSourceLaneIds.length === 0 || !multiMergeTargetLaneId || execBusy}
-            onClick={() => void executeStackedPrs()}
+            onClick={() => void executeQueuePrs()}
           >
-            {execBusy ? "Creating PRs..." : "Create Stacked PRs"}
+            {execBusy ? "Creating PRs..." : "Create Queue PRs"}
           </Button>
         ) : (
           <Button
@@ -337,9 +309,9 @@ export function MultiMergePreviewPane() {
               !multiMergeIntegrationName.trim() ||
               execBusy
             }
-            onClick={() => void executeIntegrationMerge()}
+            onClick={continueIntegrationInPrWorkflow}
           >
-            {execBusy ? "Creating..." : "Create Integration PR"}
+            Open PR Workflow
           </Button>
         )}
       </div>

@@ -77,6 +77,7 @@ async function prepareResolverSessionDirect(args: {
   provider: ExternalConflictResolverProvider;
   targetLaneId: string;
   sourceLaneIds: string[];
+  cwdLaneId?: string;
   scenario: ResolverSessionScenario;
 }): Promise<{ result: PrepareResolverSessionResult | null; error: string | null }> {
   try {
@@ -158,6 +159,10 @@ export function ResolverTerminalModal({
   const [postActionError, setPostActionError] = React.useState<string | null>(null);
 
   const ptyIdRef = React.useRef<string | null>(null);
+  const prepResultRef = React.useRef<PrepareResolverSessionResult | null>(null);
+
+  // Keep prepResultRef in sync so the exit handler always reads the latest value
+  React.useEffect(() => { prepResultRef.current = prepResult; }, [prepResult]);
 
   const runPostResolutionActions = React.useCallback(
     async (laneId: string): Promise<{ autoCommitted: boolean; autoPushed: boolean; error: string | null }> => {
@@ -189,7 +194,7 @@ export function ResolverTerminalModal({
     [postResolution.autoCommit, postResolution.autoPush, postResolution.commitMessage]
   );
 
-  // Reset state when modal closes
+  // Reset state when modal closes or lane props change while open
   React.useEffect(() => {
     if (open) return;
     const id = setTimeout(() => {
@@ -212,7 +217,7 @@ export function ResolverTerminalModal({
       ptyIdRef.current = null;
     }, 200);
     return () => clearTimeout(id);
-  }, [open, postResolutionDefaults]);
+  }, [open, postResolutionDefaults, sourceLaneId, targetLaneId]);
 
   // Listen for PTY exit
   React.useEffect(() => {
@@ -222,8 +227,9 @@ export function ResolverTerminalModal({
       const code = ev.exitCode ?? -1;
       setExitCode(code);
 
-      if (prepResult) {
-        finalizeResolverSessionDirect({ runId: prepResult.runId, exitCode: code }).then(async ({ summary, error }) => {
+      const currentPrepResult = prepResultRef.current;
+      if (currentPrepResult) {
+        finalizeResolverSessionDirect({ runId: currentPrepResult.runId, exitCode: code }).then(async ({ summary, error }) => {
           const status: DoneStatus = code === 0 ? "completed" : "failed";
           setDoneStatus(status);
 
@@ -234,7 +240,7 @@ export function ResolverTerminalModal({
             setErrorMsg(error);
           }
 
-          const laneIdForPost = prepResult.cwdLaneId ?? null;
+          const laneIdForPost = currentPrepResult.cwdLaneId ?? null;
           let autoCommitted = false;
           let autoPushed = false;
           let postError: string | null = null;
@@ -262,7 +268,7 @@ export function ResolverTerminalModal({
       }
     });
     return unsub;
-  }, [ptyId, prepResult, onCompleted, runPostResolutionActions]);
+  }, [ptyId, onCompleted, runPostResolutionActions]);
 
   // Run handler
   const handleRun = async () => {
@@ -279,6 +285,7 @@ export function ResolverTerminalModal({
       provider,
       targetLaneId,
       sourceLaneIds: sources,
+      cwdLaneId: cwdLaneId ?? undefined,
       scenario: scenarioToUse,
     });
 
@@ -291,9 +298,8 @@ export function ResolverTerminalModal({
     setPrepResult(result);
 
     try {
-      const effectiveCwd = cwdLaneId ?? result.cwdLaneId;
       const pty = await window.ade.pty.create({
-        laneId: effectiveCwd,
+        laneId: result.cwdLaneId,
         cwd: result.cwdWorktreePath,
         cols: 100,
         rows: 30,
