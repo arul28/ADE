@@ -53,7 +53,7 @@ const SCALE = 2;
 const IDLE_TIMEOUT_MS = 10_000;
 const AUTO_ROTATE_SPEED = 0.4;
 const MAX_EDGE_PARTICLES = 20;
-const OVERVIEW_POS = new THREE.Vector3(0, 0, 50);
+const OVERVIEW_POS = new THREE.Vector3(0, -30, 55);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -95,8 +95,8 @@ function CameraController({
     }
     const target = new THREE.Vector3(
       targetPos[0],
-      targetPos[1],
-      targetPos[2] + 15,
+      targetPos[1] - 15,
+      targetPos[2] + 18,
     );
     camera.position.lerp(target, 0.03);
     camera.lookAt(targetPos[0], targetPos[1], targetPos[2]);
@@ -495,7 +495,7 @@ export function Graph3DScene({
     <div className={`relative w-full h-full ${className ?? ""}`}>
       {/* R3F Canvas */}
       <Canvas
-        camera={{ position: [0, 0, 50], fov: 60 }}
+        camera={{ position: [OVERVIEW_POS.x, OVERVIEW_POS.y, OVERVIEW_POS.z], fov: 60 }}
         gl={{
           antialias: true,
           alpha: true,

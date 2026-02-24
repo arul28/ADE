@@ -325,7 +325,7 @@ Each compute backend has a different trust model:
 - Sensitive/proprietary code — Local or VPS
 - Experimental/throwaway work — Any backend
 - CI-like isolation needed — Daytona (opt-in)
-- Night Shift autonomous work — VPS or Daytona
+- Night Shift agent autonomous work — VPS or Daytona
 
 Daytona workspaces are isolated: each gets its own filesystem, network namespace, and port space. Credentials are never shared between workspaces. API keys are stored in the system keychain, not in project files.
 

@@ -101,7 +101,7 @@ Key UI subsystems:
 | Graph | Workspace topology and risk overlays |
 | PRs | PR creation/linking, checks/reviews, stacked + integration flows |
 | History | Operation/checkpoint/pack event timeline |
-| Automations | Trigger-action workflows and planner-driven draft flows |
+| Agents | Autonomous agent system: automation, Night Shift, watcher, and review agents with identity/policy profiles |
 | Missions | AI orchestrator control center: mission intake, lifecycle board, interventions, artifacts, outcomes |
 | Settings | Subscription provider config, trust levels, keybindings, terminal profiles, and data controls |
 
@@ -239,7 +239,7 @@ Communication between the renderer and main process is organized into a broad ty
 | Lanes / Git / Conflicts / PRs | `ade.lanes.*`, `ade.git.*`, `ade.conflicts.*`, `ade.prs.*` | invoke/handle + selected events |
 | Terminals / Sessions / Files | `ade.pty.*`, `ade.sessions.*`, `ade.files.*` | invoke/handle + high-frequency stream events |
 | Context / Packs / History / Graph | `ade.context.*`, `ade.packs.*`, `ade.history.*`, `ade.graph.*` | invoke/handle + pack events |
-| Processes / Tests / Automations | `ade.processes.*`, `ade.tests.*`, `ade.automations.*` | invoke/handle + runtime events |
+| Processes / Tests / Agents | `ade.processes.*`, `ade.tests.*`, `ade.agents.*` | invoke/handle + runtime events |
 | Missions / Orchestrator | `ade.missions.*`, `ade.orchestrator.*` | invoke/handle + lifecycle events |
 | AI Integration | `ade.ai.*` | invoke/handle + streaming events |
 | Agent Chat | `ade.agentChat.*` | invoke/handle + ChatEvent stream |
@@ -300,7 +300,7 @@ Real-time events (PTY data, process status changes, test run updates, AI streami
 
 ## Implementation Status
 
-Current codebase status is feature-rich across lanes, files, terminals, conflicts, packs/context, PRs, automations, missions, orchestrator runtime, and AI-powered planning via CLI subscriptions.
+Current codebase status is feature-rich across lanes, files, terminals, conflicts, packs/context, PRs, agents, missions, orchestrator runtime, and AI-powered planning via CLI subscriptions.
 
 | Component | Status |
 |-----------|--------|

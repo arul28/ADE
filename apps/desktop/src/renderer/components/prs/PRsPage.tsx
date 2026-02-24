@@ -53,6 +53,33 @@ function PRsPageInner() {
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
 
+  React.useEffect(() => {
+    const syncTabFromUrl = () => {
+      try {
+        const fromSearch = new URLSearchParams(window.location.search).get("tab");
+        const fromHash = (() => {
+          const hash = window.location.hash ?? "";
+          const queryIndex = hash.indexOf("?");
+          if (queryIndex < 0) return null;
+          return new URLSearchParams(hash.slice(queryIndex + 1)).get("tab");
+        })();
+        const tab = fromSearch ?? fromHash;
+        if (tab === "normal" || tab === "queue" || tab === "integration" || tab === "rebase") {
+          setActiveTab(tab);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    syncTabFromUrl();
+    window.addEventListener("popstate", syncTabFromUrl);
+    window.addEventListener("hashchange", syncTabFromUrl);
+    return () => {
+      window.removeEventListener("popstate", syncTabFromUrl);
+      window.removeEventListener("hashchange", syncTabFromUrl);
+    };
+  }, [setActiveTab]);
+
   // Classify PRs by type
   const { normalPrs, queuePrs, integrationPrs } = React.useMemo(() => {
     const normal: PrWithConflicts[] = [];

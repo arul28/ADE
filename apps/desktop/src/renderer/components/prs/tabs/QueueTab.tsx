@@ -117,6 +117,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
   const [landBusy, setLandBusy] = React.useState(false);
   const [landError, setLandError] = React.useState<string | null>(null);
   const [landResult, setLandResult] = React.useState<LandResult | null>(null);
+  const [archiveOnLand, setArchiveOnLand] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
@@ -161,7 +162,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
     if (!selectedGroup) return;
     setLandBusy(true); setLandError(null); setLandResult(null);
     try {
-      const result = await window.ade.prs.landQueueNext({ groupId: selectedGroup.groupId, method: mergeMethod });
+      const result = await window.ade.prs.landQueueNext({ groupId: selectedGroup.groupId, method: mergeMethod, archiveLane: archiveOnLand });
       setLandResult(result);
       await onRefresh();
     } catch (err: unknown) {
@@ -289,27 +290,41 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                 {selectedGroup.members.length} PRs in pipeline
               </div>
             </div>
-            <button
-              type="button"
-              disabled={landBusy}
-              onClick={() => void handleLandNext()}
-              className="font-mono font-bold uppercase tracking-[1px]"
-              style={{
-                fontSize: 11,
-                background: "#A78BFA",
-                color: "#0F0D14",
-                border: "none",
-                padding: "8px 16px",
-                cursor: landBusy ? "not-allowed" : "pointer",
-                opacity: landBusy ? 0.4 : 1,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <ArrowsDownUp size={13} weight="bold" />
-              {landBusy ? "LANDING..." : "LAND SORT"}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "#71717A", cursor: "pointer" }}
+                className="font-mono"
+              >
+                <input
+                  type="checkbox"
+                  checked={archiveOnLand}
+                  onChange={(e) => setArchiveOnLand(e.target.checked)}
+                  style={{ accentColor: "#A78BFA" }}
+                />
+                Archive lane
+              </label>
+              <button
+                type="button"
+                disabled={landBusy}
+                onClick={() => void handleLandNext()}
+                className="font-mono font-bold uppercase tracking-[1px]"
+                style={{
+                  fontSize: 11,
+                  background: "#A78BFA",
+                  color: "#0F0D14",
+                  border: "none",
+                  padding: "8px 16px",
+                  cursor: landBusy ? "not-allowed" : "pointer",
+                  opacity: landBusy ? 0.4 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <ArrowsDownUp size={13} weight="bold" />
+                {landBusy ? "LANDING..." : "LAND NEXT"}
+              </button>
+            </div>
           </div>
 
           {/* ===== Queue Status section ===== */}
@@ -693,7 +708,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
         </div>
       ),
     },
-  }), [queueGroups, selectedGroup, selectedGroupId, landBusy, landError, landResult, mergeMethod, deleteTarget, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectGroup, onRefresh]);
+  }), [queueGroups, selectedGroup, selectedGroupId, landBusy, landError, landResult, archiveOnLand, mergeMethod, deleteTarget, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectGroup, onRefresh]);
 
   return <PaneTilingLayout layoutId="prs:queue:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

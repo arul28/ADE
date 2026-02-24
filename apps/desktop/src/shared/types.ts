@@ -598,6 +598,7 @@ export type UpdatePrDescriptionArgs = {
 export type LandPrArgs = {
   prId: string;
   method: MergeMethod;
+  archiveLane?: boolean;
 };
 
 export type DeletePrArgs = {
@@ -3794,10 +3795,38 @@ export type IntegrationProposalStep = {
   diffStat: { insertions: number; deletions: number; filesChanged: number };
 };
 
+export type IntegrationPairwiseResult = {
+  laneAId: string;
+  laneAName: string;
+  laneBId: string;
+  laneBName: string;
+  outcome: "clean" | "conflict";
+  conflictingFiles: Array<{
+    path: string;
+    conflictMarkers: string;
+    oursExcerpt: string | null;
+    theirsExcerpt: string | null;
+    diffHunk: string | null;
+  }>;
+};
+
+export type IntegrationLaneSummary = {
+  laneId: string;
+  laneName: string;
+  outcome: "clean" | "conflict" | "blocked";
+  commitHash: string;
+  commitCount: number;
+  conflictsWith: string[];
+  diffStat: { insertions: number; deletions: number; filesChanged: number };
+};
+
 export type IntegrationProposal = {
   proposalId: string;
   sourceLaneIds: string[];
   baseBranch: string;
+  pairwiseResults: IntegrationPairwiseResult[];
+  laneSummaries: IntegrationLaneSummary[];
+  // Kept for backward compatibility with existing consumers.
   steps: IntegrationProposalStep[];
   overallOutcome: "clean" | "conflict" | "blocked";
   createdAt: string;
@@ -3938,6 +3967,7 @@ export type IntegrationFlowState = "proposal" | "creating" | "merging" | "confli
 export type LandQueueNextArgs = {
   groupId: string;
   method: MergeMethod;
+  archiveLane?: boolean;
   autoResolve?: boolean;
   confidenceThreshold?: number;
 };

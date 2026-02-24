@@ -48,7 +48,7 @@ Main-process responsibilities:
 - Git operations and conflict-state handling
 - Packs/checkpoints/events/versioning pipeline
 - Mission lifecycle state and intervention tracking
-- Automations and job engine execution
+- Agents (automation, Night Shift, watcher, review) and job engine execution
 - Process/test runners
 - AI integration (AgentExecutor interface, dual SDK, MCP server)
 - Agent chat service (Codex App Server + Claude multi-turn chat sessions)
@@ -74,7 +74,7 @@ Core service groups:
 - Context and risk systems: pack service, conflict service, restack suggestion service, auto-rebase service, job engine
 - AI Integration: AI integration service (AgentExecutor interface, dual SDK), AI orchestrator service, MCP server, GitHub service, PR service + polling
 - Agent Chat: agent chat service (CodexChatBackend via App Server JSON-RPC, ClaudeChatBackend via community provider multi-turn)
-- Automation: automation service + automation planner service
+- Agents: agent service (automation, Night Shift, watcher, review agents) + agent planner service + agent identity service
 - Missions: mission service (Phase 1 mission lifecycle CRUD + eventing)
 
 Additional runtime loops:
@@ -88,7 +88,7 @@ Additional runtime loops:
 
 IPC channel constants live in `apps/desktop/src/shared/ipc.ts` and are registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
-As of 2026-02-23, the contract includes `292` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github, automations/missions, layout/graph, processes/tests, and settings/config domains.
+As of 2026-02-23, the contract includes `292` channels spanning app/project, lanes, sessions/pty, files/git, conflicts/context/packs, PRs/github, agents/missions, layout/graph, processes/tests, and settings/config domains.
 
 High-frequency/broadcast event channels include:
 
@@ -100,7 +100,7 @@ High-frequency/broadcast event channels include:
 - `ade.conflicts.event`
 - `ade.packs.event`
 - `ade.prs.event`
-- `ade.automations.event`
+- `ade.agents.event`
 - `ade.missions.event`
 - `ade.lanes.restackSuggestions.event`
 - `ade.lanes.autoRebase.event`
@@ -132,7 +132,7 @@ This keeps the app process alive while replacing all project-scoped services.
 On `before-quit`, ADE performs defensive cleanup (each step isolated by try/catch):
 
 - Stop head watcher
-- Dispose polling and automation/job loops
+- Dispose polling and agent/job loops
 - Dispose file watchers
 - Stop tests and managed processes
 - Dispose PTY sessions
@@ -151,7 +151,7 @@ Desktop architecture is mature and production-oriented for current scope:
 - Project switching is implemented with full context teardown/rebuild.
 - Broad typed IPC contract is implemented and actively used by renderer surfaces.
 - Security boundaries (`contextIsolation`, preload-only IPC surface) are enforced.
-- Head-change and session-end pipelines keep packs/conflicts/automations synchronized.
+- Head-change and session-end pipelines keep packs/conflicts/agents synchronized.
 - AI integration service provides local AI execution via AgentExecutor interface (dual SDK) and MCP server.
 - Agent chat service provides native interactive chat with Codex (via App Server) and Claude (via community provider) with full session tracking.
 

@@ -523,7 +523,7 @@ Lanes can execute on different compute backends:
 | Backend  | Description                           | Use Case                           |
 |----------|---------------------------------------|------------------------------------|
 | Local    | Default. Processes run on host machine | Solo development, full control     |
-| VPS      | Remote relay via ADE machine registry  | Night Shift, remote capacity       |
+| VPS      | Remote relay via ADE machine registry  | Night Shift agents, remote capacity |
 | Daytona  | Opt-in cloud sandbox via Daytona SDK   | Isolated environments, CI-like     |
 
 Backend selection can be configured:

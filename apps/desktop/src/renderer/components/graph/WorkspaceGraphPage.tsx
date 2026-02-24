@@ -1,3 +1,4 @@
+// @refresh reset — GraphInner has 100+ hooks; force clean remount on HMR.
 import "@xyflow/react/dist/style.css";
 import React from "react";
 import {
@@ -21,7 +22,7 @@ import {
   getBezierPath,
   useReactFlow
 } from "@xyflow/react";
-import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning, Cube, SquaresFour } from "@phosphor-icons/react";
+import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, GitMerge, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning, Cube, SquaresFour } from "@phosphor-icons/react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type {
   BatchAssessmentResult,
@@ -77,6 +78,9 @@ type GraphNodeData = {
   mergeDisappearing: boolean;
   isIntegration: boolean;
   focusGlow: boolean;
+  isVirtualProposal: boolean;
+  proposalOutcome?: "clean" | "conflict" | "blocked";
+  proposalId?: string;
 };
 
 type RestackPublishOutcome =
@@ -98,12 +102,13 @@ type GraphPrOverlay = {
 };
 
 type GraphEdgeData = {
-  edgeType: "topology" | "stack" | "risk" | "integration";
+  edgeType: "topology" | "stack" | "risk" | "integration" | "proposal";
   riskLevel?: "none" | "low" | "medium" | "high";
   overlapCount?: number;
   stale?: boolean;
   dimmed?: boolean;
   highlight?: boolean;
+  proposalConflict?: boolean;
   pr?: GraphPrOverlay;
 };
 
@@ -197,6 +202,33 @@ function batchOperationLabel(operation: string): string {
 
 function edgePairKey(a: string, b: string): string {
   return a < b ? `${a}::${b}` : `${b}::${a}`;
+}
+
+function proposalSourceLaneIds(proposal: IntegrationProposal): string[] {
+  const sourceLaneIds = (proposal as { sourceLaneIds?: unknown }).sourceLaneIds;
+  if (!Array.isArray(sourceLaneIds)) return [];
+  return sourceLaneIds.filter((laneId): laneId is string => typeof laneId === "string");
+}
+
+function proposalSteps(proposal: IntegrationProposal): IntegrationProposal["steps"] {
+  const steps = (proposal as { steps?: unknown }).steps;
+  return Array.isArray(steps) ? (steps as IntegrationProposal["steps"]) : [];
+}
+
+function proposalLaneSummaries(proposal: IntegrationProposal): IntegrationProposal["laneSummaries"] {
+  const laneSummaries = (proposal as { laneSummaries?: unknown }).laneSummaries;
+  return Array.isArray(laneSummaries) ? (laneSummaries as IntegrationProposal["laneSummaries"]) : [];
+}
+
+function proposalPairwiseResults(proposal: IntegrationProposal): IntegrationProposal["pairwiseResults"] {
+  const pairwiseResults = (proposal as { pairwiseResults?: unknown }).pairwiseResults;
+  return Array.isArray(pairwiseResults) ? (pairwiseResults as IntegrationProposal["pairwiseResults"]) : [];
+}
+
+function laneSummaryConflictsWith(laneSummary: IntegrationProposal["laneSummaries"][number]): string[] {
+  const conflictsWith = (laneSummary as { conflictsWith?: unknown }).conflictsWith;
+  if (!Array.isArray(conflictsWith)) return [];
+  return conflictsWith.filter((laneId): laneId is string => typeof laneId === "string");
 }
 
 function sameIdSet(a: string[], b: string[]): boolean {
@@ -306,6 +338,12 @@ function riskStrokeColor(level: GraphEdgeData["riskLevel"]): string {
   if (level === "medium") return "#f59e0b";
   if (level === "low") return "#16a34a";
   return "#6b7280";
+}
+
+function proposalOutcomeColor(outcome: GraphNodeData["proposalOutcome"]): string {
+  if (outcome === "blocked") return "#EF4444";
+  if (outcome === "conflict") return "#F59E0B";
+  return "#22C55E";
 }
 
 function prOverlayColor(pr: GraphPrOverlay): string {
@@ -608,6 +646,53 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
   );
 }
 
+function GraphProposalNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
+  const borderColor = proposalOutcomeColor(data.proposalOutcome);
+  return (
+    <div
+      className={cn(
+        "group relative rounded-lg border-2 border-dashed bg-card/90 px-2 py-1.5 text-[11px] shadow-sm transition-all duration-150",
+        selected && "ring-2 ring-accent",
+        data.dimmed && "opacity-30",
+        data.highlight && "shadow-[0_2px_8px_rgba(0,0,0,0.2)]"
+      )}
+      style={{ width: 220, minHeight: 84, borderColor }}
+    >
+      <div className="flex items-center justify-between gap-1">
+        <span
+          className="inline-flex items-center rounded px-1 py-0 text-[9px] font-semibold uppercase tracking-[0.08em]"
+          style={{ color: borderColor, backgroundColor: `${borderColor}1f`, border: `1px solid ${borderColor}55` }}
+        >
+          PROPOSED
+        </span>
+        {data.proposalOutcome ? (
+          <span className="text-[10px] font-medium uppercase tracking-wide" style={{ color: borderColor }}>
+            {data.proposalOutcome}
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-1 flex items-center gap-1 text-fg">
+        <GitMerge size={14} weight="bold" style={{ color: borderColor }} />
+        <span className="truncate font-semibold">{data.lane.name}</span>
+      </div>
+      <div className="mt-0.5 truncate text-[10px] text-muted-fg">{data.lane.baseRef}</div>
+      <Handle
+        id="target"
+        type="target"
+        position={Position.Top}
+        style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
+      />
+      <Handle
+        id="source"
+        type="source"
+        position={Position.Bottom}
+        style={{ width: 8, height: 8, opacity: 0, pointerEvents: "none", border: 0, background: "transparent" }}
+      />
+      <div className="pointer-events-none absolute inset-0 rounded-lg opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:shadow-[0_2px_8px_rgba(0,0,0,0.2)]" />
+    </div>
+  );
+}
+
 function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, selected } = props;
   const [path, labelX, labelY] = getBezierPath({
@@ -620,7 +705,11 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   });
   const pr = data?.pr;
   const color =
-    data?.edgeType === "integration"
+    data?.edgeType === "proposal"
+      ? data.proposalConflict
+        ? "#F59E0B"
+        : "#22C55E"
+      : data?.edgeType === "integration"
       ? "#A78BFA"
       : data?.edgeType === "risk"
         ? riskStrokeColor(data.riskLevel)
@@ -629,8 +718,8 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
           : data?.edgeType === "stack"
             ? "#38bdf8"
             : "#6b7280";
-  const width = data?.edgeType === "integration" ? 2.4 : pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
-  const dash = data?.edgeType === "risk" ? "5 3" : data?.edgeType === "integration" ? "8 4" : undefined;
+  const width = data?.edgeType === "proposal" ? 2.2 : data?.edgeType === "integration" ? 2.4 : pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
+  const dash = data?.edgeType === "proposal" ? "6 4" : data?.edgeType === "risk" ? "5 3" : data?.edgeType === "integration" ? "8 4" : undefined;
   const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
   const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : data?.stale ? 0.55 : 0.9;
   const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";
@@ -687,7 +776,7 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   );
 }
 
-const nodeTypes = { lane: GraphLaneNode };
+const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
 
 function isIntegrationLane(lane: LaneSummary): boolean {
@@ -864,8 +953,11 @@ function GraphInner() {
     return ensured.presets.find((entry) => entry.name === ensured.activePreset) ?? ensured.presets[0]!;
   }, [graphState]);
 
-  const activeSnapshot = React.useMemo(() => preset.byViewMode[viewMode], [preset, viewMode]);
-  const filters = activeSnapshot.filters;
+  const activeSnapshot = React.useMemo(
+    () => preset.byViewMode[viewMode] ?? createSnapshot(viewMode),
+    [preset, viewMode]
+  );
+  const filters = activeSnapshot.filters ?? buildDefaultFilter();
 
   const environmentByLaneId = React.useMemo(() => {
     const compiled = environmentMappings
@@ -1003,20 +1095,16 @@ function GraphInner() {
   const integrationSourcesByLaneId = React.useMemo(() => {
     const map = new Map<string, string[]>();
     for (const proposal of integrationProposals) {
-      // Find integration lanes that were created from this proposal
-      for (const lane of lanes) {
-        if (!isIntegrationLane(lane)) continue;
-        // Match by description containing proposalId or by source lane overlap
-        const proposalSources = proposal.sourceLaneIds;
-        if (proposalSources.length > 0) {
-          const existing = map.get(lane.id) ?? [];
-          const merged = new Set([...existing, ...proposalSources]);
-          map.set(lane.id, [...merged]);
-        }
-      }
+      const integrationLaneId = proposal.integrationLaneId ?? null;
+      if (!integrationLaneId || !laneById.has(integrationLaneId)) continue;
+      const proposalSources = proposalSourceLaneIds(proposal).filter((laneId) => laneById.has(laneId));
+      if (proposalSources.length === 0) continue;
+      const existing = map.get(integrationLaneId) ?? [];
+      const merged = new Set([...existing, ...proposalSources]);
+      map.set(integrationLaneId, [...merged]);
     }
     return map;
-  }, [integrationProposals, lanes]);
+  }, [integrationProposals, laneById]);
 
   const connectedToHoveredNode = React.useMemo(() => {
     if (!hoveredNodeId) return new Set<string>();
@@ -1275,6 +1363,30 @@ function GraphInner() {
     return () => window.clearTimeout(timer);
   }, [searchParams, loadedGraphState, lanes, nodes, reactFlow, setSearchParams]);
 
+  // E3b: Handle ?focusProposal= query param
+  React.useEffect(() => {
+    const focusParam = searchParams.get("focusProposal");
+    if (!focusParam || !loadedGraphState || nodes.length === 0) return;
+    const proposalNodeId = `proposal:${focusParam}`;
+    const targetNode = nodes.find((node) => node.id === proposalNodeId);
+    if (!targetNode) return;
+    setFocusLaneId(proposalNodeId);
+    // Center on the focused proposal node
+    const timer = window.setTimeout(() => {
+      void reactFlow.fitView({ nodes: [targetNode], duration: 500, padding: 0.4 });
+      // Clear the param after initial focus
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("focusProposal");
+        return next;
+      }, { replace: true });
+      // Clear glow after 4 seconds
+      const glowTimer = window.setTimeout(() => setFocusLaneId(null), 4000);
+      return () => window.clearTimeout(glowTimer);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchParams, loadedGraphState, nodes, reactFlow, setSearchParams]);
+
   React.useEffect(() => {
     const laneId = nodeTooltip?.laneId ?? null;
     if (!laneId) {
@@ -1403,6 +1515,7 @@ function GraphInner() {
     const positions = Object.keys(savedPositions).length > 0 ? { ...autoPositions, ...savedPositions } : autoPositions;
 
     const nextNodes: Array<Node<GraphNodeData>> = [];
+    const virtualProposalNodes: Array<{ nodeId: string; proposal: IntegrationProposal; sourceLaneIds: string[] }> = [];
     for (const lane of lanes) {
       if (hiddenByCollapse.has(lane.id)) continue;
       const pos = positions[lane.id] ?? { x: 0, y: 0 };
@@ -1437,11 +1550,95 @@ function GraphInner() {
           mergeInProgress: Boolean(mergeInProgressByLaneId[lane.id]),
           mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id]),
           isIntegration: isIntegrationLane(lane),
-          focusGlow: focusLaneId === lane.id
+          focusGlow: focusLaneId === lane.id,
+          isVirtualProposal: false
         },
         selected: selectedLaneIds.includes(lane.id),
         draggable: true
       });
+    }
+
+    for (const [proposalIndex, proposal] of integrationProposals.entries()) {
+      const hasRealIntegrationLane = Boolean(proposal.integrationLaneId && laneById.has(proposal.integrationLaneId));
+      if (proposal.status !== "proposed" || hasRealIntegrationLane) continue;
+      const sourceLaneIds = proposalSourceLaneIds(proposal).filter((laneId) => laneById.has(laneId));
+      if (sourceLaneIds.length === 0) continue;
+      const normalizedProposalId =
+        typeof proposal.proposalId === "string" && proposal.proposalId.trim().length > 0
+          ? proposal.proposalId.trim()
+          : null;
+      const fallbackProposalKey = `legacy-${proposalIndex + 1}-${proposal.createdAt ?? "unknown"}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+      const proposalKey = normalizedProposalId ?? fallbackProposalKey;
+      const shortProposalId = (normalizedProposalId ?? fallbackProposalKey).slice(0, 12);
+
+      const sourcePositions = sourceLaneIds
+        .map((laneId) => positions[laneId])
+        .filter((pos): pos is { x: number; y: number } => Boolean(pos));
+      const anchor =
+        sourcePositions.length > 0
+          ? {
+              x: sourcePositions.reduce((sum, pos) => sum + pos.x, 0) / sourcePositions.length,
+              y: sourcePositions.reduce((sum, pos) => sum + pos.y, 0) / sourcePositions.length
+            }
+          : { x: 0, y: 0 };
+
+      const nodeId = `proposal:${proposalKey}`;
+      const pos = positions[nodeId] ?? { x: anchor.x, y: anchor.y + 180 };
+      const connectedToHover = hoveredNodeId ? hoveredNodeId === nodeId || sourceLaneIds.includes(hoveredNodeId) : false;
+      const dimmedByHover = Boolean(hoveredNodeId) && !connectedToHover;
+      const proposalTitle = proposal.title?.trim() || `Integration proposal ${shortProposalId}`;
+      const proposalLane: LaneSummary = {
+        id: nodeId,
+        name: proposalTitle,
+        description: `Virtual proposal ${shortProposalId}`,
+        laneType: "attached",
+        baseRef: proposal.baseBranch,
+        branchRef: proposal.integrationLaneName?.trim() || `proposal/${proposalKey}`,
+        worktreePath: "",
+        attachedRootPath: null,
+        parentLaneId: null,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: null,
+        isEditProtected: true,
+        status: { dirty: false, ahead: 0, behind: 0 },
+        color: null,
+        icon: null,
+        tags: ["proposal"],
+        createdAt: proposal.createdAt,
+        archivedAt: null
+      };
+      nextNodes.push({
+        id: nodeId,
+        type: "proposal",
+        position: pos,
+        data: {
+          lane: proposalLane,
+          status: "unknown",
+          remoteSync: null,
+          autoRebaseStatus: null,
+          activeSessions: 0,
+          collapsedChildCount: 0,
+          dimmed: dimmedByHover,
+          activityBucket: "medium",
+          viewMode,
+          lastActivityAt: proposal.createdAt ?? null,
+          environment: null,
+          highlight: Boolean(hoveredNodeId) && connectedToHover,
+          restackFailed: false,
+          restackPulse: false,
+          mergeInProgress: false,
+          mergeDisappearing: false,
+          isIntegration: true,
+          focusGlow: focusLaneId === nodeId,
+          isVirtualProposal: true,
+          proposalOutcome: proposal.overallOutcome,
+          proposalId: normalizedProposalId ?? undefined
+        },
+        selected: false,
+        draggable: false
+      });
+      virtualProposalNodes.push({ nodeId, proposal, sourceLaneIds });
     }
     setNodes(nextNodes);
 
@@ -1467,6 +1664,27 @@ function GraphInner() {
           ? !connectedToNodeHover
           : false;
       return { highlight, dimmed };
+    };
+    const laneHasProposalConflict = (proposal: IntegrationProposal, sourceLaneId: string): boolean => {
+      const steps = proposalSteps(proposal);
+      const laneSummaries = proposalLaneSummaries(proposal);
+      const pairwiseResults = proposalPairwiseResults(proposal);
+      const step = steps.find((entry) => entry?.laneId === sourceLaneId);
+      if (step && (step.outcome === "conflict" || step.outcome === "blocked")) return true;
+      const laneSummary = laneSummaries.find((entry) => entry?.laneId === sourceLaneId);
+      if (laneSummary) {
+        if (laneSummary.outcome === "conflict" || laneSummary.outcome === "blocked") return true;
+        if (laneSummaryConflictsWith(laneSummary).length > 0) return true;
+      }
+      for (const pairwise of pairwiseResults) {
+        if (pairwise?.laneAId !== sourceLaneId && pairwise?.laneBId !== sourceLaneId) continue;
+        if (pairwise.outcome === "conflict") return true;
+      }
+      // NOTE: Previously checked workspace-wide statusByLane and riskByPair here,
+      // but those reflect general workspace conflict/risk state and are not
+      // proposal-specific, causing false positives. Only proposal data (steps,
+      // laneSummaries, pairwiseResults) is used now.
+      return false;
     };
 
     if (viewMode === "all" || viewMode === "stack") {
@@ -1562,6 +1780,31 @@ function GraphInner() {
       }
     }
 
+    for (const proposalNode of virtualProposalNodes) {
+      for (const srcId of proposalNode.sourceLaneIds) {
+        if (hiddenByCollapse.has(srcId)) continue;
+        if (!laneById.has(srcId)) continue;
+        const edgeId = `proposal:${srcId}:${proposalNode.nodeId}`;
+        const visual = edgeVisualState(edgeId, srcId, proposalNode.nodeId);
+        nextEdges.push({
+          id: edgeId,
+          source: srcId,
+          target: proposalNode.nodeId,
+          sourceHandle: "source",
+          targetHandle: "target",
+          type: "custom",
+          data: {
+            edgeType: "proposal",
+            proposalConflict: laneHasProposalConflict(proposalNode.proposal, srcId),
+            ...visual
+          },
+          markerEnd: { type: MarkerType.ArrowClosed },
+          animated: true,
+          selected: visual.highlight
+        });
+      }
+    }
+
     setEdges(nextEdges);
   }, [
     activityBucketByLaneId,
@@ -1573,6 +1816,7 @@ function GraphInner() {
     focusLaneId,
     hiddenByCollapse,
     hoveredNodeId,
+    integrationProposals,
     integrationSourcesByLaneId,
     laneById,
     laneMatchesFilters,
@@ -1619,7 +1863,10 @@ function GraphInner() {
 
   const findDropTarget = React.useCallback(
     (node: Node<GraphNodeData>): Node<GraphNodeData> | null => {
-      const targetCandidates = nodes.filter((candidate) => candidate.id !== node.id && !hiddenByCollapse.has(candidate.id));
+      if (node.data.isVirtualProposal) return null;
+      const targetCandidates = nodes.filter(
+        (candidate) => candidate.id !== node.id && !candidate.data.isVirtualProposal && !hiddenByCollapse.has(candidate.id)
+      );
       const nodeDims = nodeDimensions(node.data.lane, node.data.activityBucket, viewMode);
       const nodeCenter = { x: node.position.x + nodeDims.width / 2, y: node.position.y + nodeDims.height / 2 };
       for (const candidate of targetCandidates) {
@@ -1669,6 +1916,7 @@ function GraphInner() {
   );
 
   const onNodeDragStart = React.useCallback((_event: React.MouseEvent, node: Node<GraphNodeData>) => {
+    if (node.data.isVirtualProposal) return;
     nodeDragActiveRef.current = true;
     dragOriginRef.current.set(node.id, { x: node.position.x, y: node.position.y });
     if (dropPreviewTimerRef.current != null) {
@@ -1676,11 +1924,21 @@ function GraphInner() {
       dropPreviewTimerRef.current = null;
     }
     setDropPreview(null);
+    // Clear hover state so the dimming effect doesn't persist through the drag.
+    setHoveredNodeId(null);
+    setHoveredEdgeId(null);
+    setEdgeHover(null);
+    if (nodeHoverTimerRef.current != null) {
+      window.clearTimeout(nodeHoverTimerRef.current);
+      nodeHoverTimerRef.current = null;
+    }
+    setNodeTooltip(null);
     setDragTrail({ laneId: node.id, from: { x: node.position.x, y: node.position.y }, to: { x: node.position.x, y: node.position.y } });
   }, []);
 
   const onNodeDrag = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
+      if (node.data.isVirtualProposal) return;
       const origin = dragOriginRef.current.get(node.id);
       if (!origin) return;
       setDragTrail({ laneId: node.id, from: origin, to: { x: node.position.x, y: node.position.y } });
@@ -1926,6 +2184,7 @@ function GraphInner() {
 
   const onNodeDragStop = React.useCallback(
     (_event: React.MouseEvent, node: Node<GraphNodeData>) => {
+      if (node.data.isVirtualProposal) return;
       nodeDragActiveRef.current = false;
       const origin = dragOriginRef.current.get(node.id);
       setDragTrail(null);
@@ -1934,6 +2193,15 @@ function GraphInner() {
         dropPreviewTimerRef.current = null;
       }
       setDropPreview(null);
+      // Clear hover state so the node-rebuild effect doesn't dim non-connected nodes.
+      setHoveredNodeId(null);
+      setHoveredEdgeId(null);
+      setEdgeHover(null);
+      if (nodeHoverTimerRef.current != null) {
+        window.clearTimeout(nodeHoverTimerRef.current);
+        nodeHoverTimerRef.current = null;
+      }
+      setNodeTooltip(null);
       dragOriginRef.current.delete(node.id);
       const latestNodes = reactFlow.getNodes();
       saveNodePositions(latestNodes.map((existing) => (existing.id === node.id ? { ...existing, position: node.position } : existing)));
@@ -2516,6 +2784,104 @@ function GraphInner() {
   }
 
   const allNodesHidden = nodes.length > 0 && nodes.every((node) => node.data.dimmed);
+  const graph3DNodeById = new Map(nodes.map((node) => [node.id, node]));
+  const graph3DNodes: Graph3DNode[] = (() => {
+    if (nodes.length === 0) return [];
+
+    const positionedNodes = nodes
+      .map((node) => ({ node, x: node.position.x, y: node.position.y }))
+      .filter((entry) => Number.isFinite(entry.x) && Number.isFinite(entry.y));
+    if (positionedNodes.length === 0) return [];
+
+    const bounds = positionedNodes.reduce(
+      (acc, entry) => ({
+        minX: Math.min(acc.minX, entry.x),
+        maxX: Math.max(acc.maxX, entry.x),
+        minY: Math.min(acc.minY, entry.y),
+        maxY: Math.max(acc.maxY, entry.y)
+      }),
+      {
+        minX: Number.POSITIVE_INFINITY,
+        maxX: Number.NEGATIVE_INFINITY,
+        minY: Number.POSITIVE_INFINITY,
+        maxY: Number.NEGATIVE_INFINITY
+      }
+    );
+
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+    const spanX = Math.max(1, bounds.maxX - bounds.minX);
+    const spanY = Math.max(1, bounds.maxY - bounds.minY);
+    const scale = 18 / Math.max(spanX, spanY);
+
+    const to3DStatus = (node: Node<GraphNodeData>): Graph3DNode["status"] => {
+      if (node.data.lane.laneType === "primary") return "primary";
+      if (node.data.status === "conflict-active" || node.data.status === "conflict-predicted") return "conflict";
+      if (node.data.proposalOutcome === "conflict" || node.data.proposalOutcome === "blocked") return "conflict";
+      if (node.data.mergeInProgress || node.data.mergeDisappearing) return "merged";
+      if (node.data.activityBucket === "high" || node.data.activeSessions > 0) return "active";
+      return "idle";
+    };
+
+    const to3DType = (node: Node<GraphNodeData>): Graph3DNode["type"] => {
+      if (node.data.lane.laneType === "primary") return "primary";
+      if (node.data.lane.laneType === "attached" || node.data.isVirtualProposal) return "attached";
+      return "worktree";
+    };
+
+    return positionedNodes.map(({ node, x, y }) => ({
+      id: node.id,
+      label: node.data.lane.name,
+      x: (x - centerX) * scale,
+      y: (centerY - y) * scale,
+      status: to3DStatus(node),
+      type: to3DType(node)
+    }));
+  })();
+  const graph3DEdges: Graph3DEdge[] = (() => {
+    if (edges.length === 0 || graph3DNodes.length === 0) return [];
+
+    const visibleNodeIds = new Set(graph3DNodes.map((node) => node.id));
+    const to3DEdgeType = (edge: Edge<GraphEdgeData>): Graph3DEdge["type"] => {
+      const edgeType = edge.data?.edgeType ?? edge.id.split(":")[0];
+      if (edgeType === "stack") return "stack";
+      if (edgeType === "risk") return "risk";
+      if (edgeType === "proposal") return edge.data?.proposalConflict ? "risk" : "topology";
+      return "topology";
+    };
+
+    return edges
+      .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+      .map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+        type: to3DEdgeType(edge)
+      }));
+  })();
+  const handle3DNodeClick = (nodeId: string) => {
+    const node = graph3DNodeById.get(nodeId);
+    if (!node) return;
+
+    if (node.data.isVirtualProposal) {
+      setSelectedLaneIds([]);
+      if (node.data.proposalId) {
+        navigate(`/prs?tab=integration&proposalId=${encodeURIComponent(node.data.proposalId)}`);
+      }
+      return;
+    }
+
+    setSelectedLaneIds([node.id]);
+    if (collapsedLaneIds.has(node.id)) {
+      updateGraphSnapshot((snapshot) => ({
+        ...snapshot,
+        collapsedLaneIds: snapshot.collapsedLaneIds.filter((entry) => entry !== node.id)
+      }));
+      return;
+    }
+
+    navigate(`/lanes?laneId=${encodeURIComponent(node.id)}&focus=single`);
+  };
+  const showNoVisibleLanesIn3D = allNodesHidden || graph3DNodes.length === 0;
 
   return (
     <div className="relative h-full w-full">
@@ -2820,24 +3186,34 @@ function GraphInner() {
       {is3DView ? (
         /* 3D Graph View */
         <div className="absolute inset-0 pt-[52px]">
-          <Graph3DScene
-            nodes={lanes.map<Graph3DNode>((lane, i) => ({
-              id: lane.id,
-              label: lane.name,
-              x: (i % 5) * 4 - 8,
-              y: Math.floor(i / 5) * 4 - 4,
-              status: lane.laneType === "primary" ? "primary" : "idle",
-              type: lane.laneType === "primary" ? "primary" : "worktree",
-            }))}
-            edges={lanes
-              .filter((lane) => lane.parentLaneId)
-              .map<Graph3DEdge>((lane) => ({
-                source: lane.parentLaneId!,
-                target: lane.id,
-                type: "topology",
-              }))}
-            onNodeClick={(nodeId) => navigate(`/lanes/${nodeId}`)}
-          />
+          {showNoVisibleLanesIn3D ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center pt-[52px]">
+              <div className="pointer-events-auto rounded-lg border border-border/10 bg-card/90 backdrop-blur-sm shadow-card px-5 py-4 text-center">
+                <Funnel size={24} weight="regular" className="mx-auto mb-2 text-muted-fg" />
+                <div className="text-sm font-medium text-fg">No visible lanes</div>
+                <div className="mt-1 text-xs text-muted-fg">All lanes are hidden by the current filters.</div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3 text-xs"
+                  onClick={() => {
+                    updateGraphSnapshot((snapshot) => ({
+                      ...snapshot,
+                      filters: buildDefaultFilter()
+                    }));
+                  }}
+                >
+                  Reset Filters
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Graph3DScene
+              nodes={graph3DNodes}
+              edges={graph3DEdges}
+              onNodeClick={handle3DNodeClick}
+            />
+          )}
         </div>
       ) : (
       <div className="absolute inset-0 pt-[52px]">
@@ -2852,6 +3228,14 @@ function GraphInner() {
           onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
           onNodeClick={(_event, node) => {
+            if (node.data.isVirtualProposal) {
+              setSelectedLaneIds([]);
+              setNodes((prev) => prev.map((entry) => ({ ...entry, selected: entry.id === node.id })));
+              if (node.data.proposalId) {
+                navigate(`/prs?tab=integration&proposalId=${encodeURIComponent(node.data.proposalId)}`);
+              }
+              return;
+            }
             setSelectedLaneIds([node.id]);
             setNodes((prev) => prev.map((entry) => ({ ...entry, selected: entry.id === node.id })));
             if (collapsedLaneIds.has(node.id)) {
@@ -2864,6 +3248,18 @@ function GraphInner() {
             navigate(`/lanes?laneId=${encodeURIComponent(node.id)}&focus=single`);
           }}
           onNodeMouseEnter={(event, node) => {
+            // Suppress hover highlights while a drag is active to prevent
+            // stale hoveredNodeId from dimming nodes after drag ends.
+            if (nodeDragActiveRef.current) return;
+            if (node.data.isVirtualProposal) {
+              setHoveredNodeId(null);
+              setNodeTooltip(null);
+              if (nodeHoverTimerRef.current != null) {
+                window.clearTimeout(nodeHoverTimerRef.current);
+                nodeHoverTimerRef.current = null;
+              }
+              return;
+            }
             setHoveredNodeId(node.id);
             if (nodeHoverTimerRef.current != null) {
               window.clearTimeout(nodeHoverTimerRef.current);
@@ -2873,10 +3269,13 @@ function GraphInner() {
             }, 400);
           }}
           onNodeMouseMove={(event, node) => {
+            if (nodeDragActiveRef.current) return;
+            if (node.data.isVirtualProposal) return;
             if (nodeTooltip?.laneId !== node.id) return;
             setNodeTooltip({ x: event.clientX + 12, y: event.clientY + 12, laneId: node.id });
           }}
           onNodeMouseLeave={() => {
+            if (nodeDragActiveRef.current) return;
             setHoveredNodeId(null);
             if (nodeHoverTimerRef.current != null) {
               window.clearTimeout(nodeHoverTimerRef.current);
@@ -2885,10 +3284,15 @@ function GraphInner() {
             setNodeTooltip(null);
           }}
           onSelectionChange={(selection) => {
-            const selected = selection.nodes.map((node) => node.id);
+            const selected = selection.nodes.filter((node) => !node.data.isVirtualProposal).map((node) => node.id);
             setSelectedLaneIds((prev) => (sameIdSet(prev, selected) ? prev : selected));
           }}
           onNodeContextMenu={(event, node) => {
+            if (node.data.isVirtualProposal) {
+              event.preventDefault();
+              setContextMenu(null);
+              return;
+            }
             event.preventDefault();
             setContextMenu({
               laneId: node.id,
@@ -2897,6 +3301,7 @@ function GraphInner() {
             });
           }}
           onNodeDoubleClick={(_event, node) => {
+            if (node.data.isVirtualProposal) return;
             if (!collapsedLaneIds.has(node.id)) return;
             updateGraphSnapshot((snapshot) => ({
               ...snapshot,
@@ -2904,7 +3309,9 @@ function GraphInner() {
             }));
           }}
           onEdgeClick={(_event, edge) => {
-            const [prefix, laneAId, laneBId] = edge.id.split(":");
+            const prefix = edge.data?.edgeType ?? edge.id.split(":")[0];
+            const laneAId = edge.source;
+            const laneBId = edge.target;
             if (!laneAId || !laneBId) return;
             const data = edge.data;
             if (prefix === "risk") {
@@ -2952,11 +3359,12 @@ function GraphInner() {
                 });
             }
           }}
-          onEdgeMouseEnter={(_event, edge) => setHoveredEdgeId(edge.id)}
+          onEdgeMouseEnter={(_event, edge) => { if (!nodeDragActiveRef.current) setHoveredEdgeId(edge.id); }}
           onEdgeMouseMove={(event, edge) => {
             setHoveredEdgeId(edge.id);
             const data = edge.data;
-            const [_, laneAId, laneBId] = edge.id.split(":");
+            const laneAId = edge.source;
+            const laneBId = edge.target;
             const pr = data?.pr ?? null;
             const prLines = pr
               ? [

@@ -180,13 +180,15 @@ The dashboard includes:
 - **Usage bar per feature**: Visual progress bars showing AI calls made per feature (narratives, conflict proposals, PR descriptions, terminal summaries, mission planning, orchestrator) within the current billing period.
 - **Session totals**: Aggregate token/call counts per provider (Claude, Codex) with breakdown by feature.
 - **Subscription status**: Detected subscription tier for each provider (Claude Pro/Max, ChatGPT Plus/Pro) with known rate limits displayed when available. ADE reads rate limit headers from CLI responses when exposed.
-- **Budget controls**: Per-feature call limits that users can set. When a limit is reached, ADE pauses AI calls for that feature and surfaces a notification. Budget controls are the foundation for Night Shift budget caps (Phase 4).
+- **Budget controls**: Per-feature call limits that users can set. When a limit is reached, ADE pauses AI calls for that feature and surfaces a notification. Budget controls are the foundation for agent guardrails and Night Shift agent budget caps (Phase 4).
 - **Usage history**: Sparkline or bar chart showing daily/weekly AI usage trends.
 - **Export**: Usage data exportable as JSON for external tracking.
 
 Usage data is stored locally in SQLite (`ai_usage_log` table) with columns: `id`, `timestamp`, `feature`, `provider`, `model`, `input_tokens`, `output_tokens`, `duration_ms`, `success`, `session_id` (optional link to terminal/mission session).
 
-The usage dashboard connects to Night Shift (Phase 4) by providing the budget enforcement infrastructure — Night Shift budget caps reuse the same per-feature limits and usage counters.
+**Implementation status**: The backend infrastructure (`ai_usage_log` table, `logUsage()` recording, daily budget enforcement via `checkBudget()`, aggregated usage queries, and token cost estimation) is fully implemented. A usage dashboard component exists in the Missions tab (`UsageDashboard.tsx`) showing summary cards, model breakdowns, mission breakdowns, and recent sessions. The Settings-embedded version with per-feature progress bars and sparkline history is not yet built.
+
+The usage dashboard connects to the Agents hub (Phase 4) by providing the budget enforcement infrastructure — agent guardrails (including Night Shift agent budget caps) reuse the same per-feature limits and usage counters.
 
 **AI Permissions & Sandbox Configuration**: A dedicated section for controlling how Claude and Codex agents operate when invoked by ADE. These settings determine the security posture and autonomy level of AI agents across all ADE features.
 
@@ -266,7 +268,7 @@ Chat settings persist to `.ade/local.yaml` under `ai.chat`.
 *VPS*
 - Relay server address
 - Pairing code / SSH key configuration
-- Set as Night Shift default (route after-hours work to VPS)
+- Set as Night Shift agent default (route after-hours agent work to VPS)
 
 *Daytona* (Opt-in)
 - API key
@@ -286,7 +288,7 @@ Note: Daytona integration is always opt-in. It provides isolated cloud sandbox e
 - **Profile Directory**: Base directory for lane-specific browser profiles
 - **Auto-Launch**: Automatically open preview URL in isolated profile on lane start
 
-**Automations**: Embedded `AutomationsSection` showing all automation rules with enable/disable toggles, "Run Now" buttons, and history links. Provides a summary view without leaving Settings.
+**Agents**: Embedded `AgentsSection` showing all agents with type badges, enable/disable toggles, "Run Now" buttons, and history links. Includes agent identity management (create, edit, clone, delete identities with version history), Night Shift global settings (time window, compute backend default, morning digest delivery time, global budget cap, subscription utilization mode with maximize/conservative/fixed options, conservative capacity percentage, weekly reserve percentage for daytime use, multi-batch scheduling toggle, and a live subscription status panel showing current tier, rate limit state, estimated overnight capacity, and projected utilization), and watcher agent settings (default poll interval, GitHub API rate limit awareness). Provides a summary view without leaving Settings.
 
 **Terminal Profiles**: Manage terminal launch profiles. Default profiles include Shell, Claude, Codex, and Aider. Users can add custom profiles with name, command, args, cwd, and environment variables. Profiles are persisted via `kvDb`.
 
@@ -351,7 +353,7 @@ OnboardingPage (route: /onboarding, 7-step wizard)
   |    +-- Process list editor (add/edit/remove)
   |    +-- Test suite editor (add/edit/remove)
   |    +-- Stack button editor (add/edit/remove)
-  |    +-- Automation rule editor (add/edit/remove)
+  |    +-- Agent rule editor (add/edit/remove)
   |    +-- Append/Replace mode toggle
   +-- DetectBranchesStep (branch table with ahead/behind/remote columns)
   +-- ImportBranchesStep (sequential import with parent lane selection)
@@ -402,7 +404,10 @@ SettingsPage (route: /settings)
   |    +-- ChromePathInput
   |    +-- ProfileDirectoryInput
   |    +-- AutoLaunchToggle
-  +-- AutomationsSection (per-rule summary with run-now, history, toggle)
+  +-- AgentsSection
+  |    +-- AgentSummaryList (per-agent summary with type badge, run-now, history, toggle)
+  |    +-- AgentIdentitiesManager (CRUD for identities, preset library, version history)
+  |    +-- NightShiftGlobalSettings (time window, compute backend, digest time, budget cap, subscription utilization mode, conservative %, weekly reserve %, multi-batch toggle, subscription status panel)
   +-- TerminalProfilesSection (profile CRUD: name, command, args, cwd, env)
   +-- KeybindingsSection (table: action, scope, default, override, effective + conflict detection)
   +-- GitHubSection (local PAT management, PR polling interval)
@@ -452,7 +457,7 @@ stackButtons:
   - id: "install"
     label: "Install"
     processId: "install"
-automations: []
+agents: []
 ```
 
 **`.ade/local.yaml`** (local, gitignored):
@@ -593,9 +598,9 @@ interface OnboardingStatus {
 | ONBOARD-030 | Suggested provider config in onboarding | Default context tool generators (Codex, Claude) and conflict resolvers generated in suggested config | DONE |
 | ONBOARD-031 | GitHub settings section | Local PAT management and PR polling interval configuration | DONE |
 | ONBOARD-032 | AI feature toggles UI and persistence | Per-feature AI enable/disable toggles with master toggle, persisted to `local.yaml` under `ai.features` | TODO |
-| ONBOARD-033 | AI usage dashboard with per-feature tracking | Real-time usage tracking surface with per-feature progress bars, session totals, and usage history | TODO |
-| ONBOARD-034 | Budget controls with daily limits | Per-feature AI call limits with notification when limits are reached; foundation for Night Shift budget caps | TODO |
-| ONBOARD-035 | Subscription status detection and display | Detected subscription tier display per provider with known rate limits from CLI response headers | TODO |
+| ONBOARD-033 | AI usage dashboard with per-feature tracking | Real-time usage tracking surface with per-feature progress bars, session totals, and usage history. Backend: `ai_usage_log` table, `logUsage()`, aggregated usage query IPC, and cost estimation are DONE. A usage dashboard UI exists in Missions tab (`UsageDashboard.tsx`). Remaining: dedicated Settings-embedded dashboard with per-feature progress bars and usage history sparklines | PARTIAL |
+| ONBOARD-034 | Budget controls with daily limits | Per-feature AI call limits with notification when limits are reached; foundation for agent guardrails and Night Shift agent budget caps. Backend: daily budget enforcement via `checkBudget()` is DONE — blocks execution when daily limit exceeded. Budget config read from `ai.budgets` in `local.yaml` is DONE. Remaining: Settings UI to configure budget limits, soft warning notifications before limit reached | PARTIAL |
+| ONBOARD-035 | Subscription status detection and display | Detected subscription tier display per provider with known rate limits from CLI response headers. Backend: subscription mode detection (guest vs subscription) is DONE. Remaining: tier detection (Pro/Max for Claude, Plus/Pro for Codex), rate limit header parsing from Claude/Codex CLI responses, Settings UI display | PARTIAL |
 | ONBOARD-036 | AI permissions & sandbox configuration UI | Dedicated section for Claude permission mode, Codex sandbox level, approval mode, writable paths, command allowlist. Persisted to `local.yaml` under `ai.permissions` | TODO |
 | ONBOARD-037 | Dynamic model picker for task routing | Per-task model dropdown populated from `supportedModels()` (Claude) and hardcoded list (Codex). Users can assign any model to any task type | TODO |
 | ONBOARD-038 | Settings honoring behavior display | Show whether .claude/settings.json and codex.toml exist, explain override behavior, allow opt-in for project settings sources | TODO |

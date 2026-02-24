@@ -15,6 +15,8 @@ import type {
   DeletePrArgs,
   DeletePrResult,
   GitHubRepoRef,
+  IntegrationLaneSummary,
+  IntegrationPairwiseResult,
   IntegrationProposal,
   IntegrationProposalStep,
   IntegrationResolutionState,
@@ -274,6 +276,203 @@ function parsePrDraftJson(text: string): { title: string; body: string } | null 
     return { title, body: `${body}\n` };
   } catch {
     return null;
+  }
+}
+
+function parseDiffStatOutput(stdout: string): IntegrationProposalStep["diffStat"] {
+  const match = stdout.match(
+    /(\d+)\s+files?\s+changed(?:,\s+(\d+)\s+insertions?\(\+\))?(?:,\s+(\d+)\s+deletions?\(-\))?/i
+  );
+  if (!match) return { insertions: 0, deletions: 0, filesChanged: 0 };
+  return {
+    insertions: Number(match[2] ?? 0),
+    deletions: Number(match[3] ?? 0),
+    filesChanged: Number(match[1] ?? 0)
+  };
+}
+
+function parseMergeTreeConflictPaths(output: string): string[] {
+  // git merge-tree --write-tree uses NUL bytes (\0) to separate sections
+  // (tree OID, conflicted file info, informational messages).
+  // Replace NUL bytes with newlines so the line-based parser can process all sections.
+  const lines = output.replace(/\0/g, "\n").split("\n");
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  const addPath = (candidate: string | undefined) => {
+    const value = (candidate ?? "").trim();
+    if (!value.length || seen.has(value)) return;
+    // Skip placeholder entries
+    if (value.startsWith("(") && value.endsWith(")")) return;
+    // Skip bare OIDs (tree OID on first line of --write-tree output; SHA-1 or SHA-256)
+    if (/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(value)) return;
+    seen.add(value);
+    paths.push(value);
+  };
+
+  // Collect all CONFLICT lines up-front so we can do efficient lookups.
+  const conflictLineTexts = lines
+    .map((l) => (l ?? "").trim())
+    .filter((l) => l.startsWith("CONFLICT"));
+
+  // Also detect if any line looks like a bare path (used for the catch-all at the end of the loop).
+  // A bare path is a non-empty line that doesn't match any known prefix and looks like a file path.
+  // We'll use this regex to test: contains a '/' or a '.ext' and no spaces at the start.
+  // Known prefixes in git merge-tree informational messages (section after file list).
+  const GIT_MSG_PREFIXES = [
+    "CONFLICT", "Auto-merging", "Removing", "Adding", "Skipping",
+    "Merging", "Already", "Applying", "Using", "Falling", "Updating",
+    "warning:", "error:", "hint:", "fatal:", "note:"
+  ];
+  const looksLikePath = (l: string) => {
+    if (l.length === 0 || l.length > 500) return false;
+    // Exclude known git message prefixes
+    for (const prefix of GIT_MSG_PREFIXES) {
+      if (l.startsWith(prefix)) return false;
+    }
+    // Exclude stage entries (handled by stageMatch)
+    if (/^[0-7]{6}\s/.test(l)) return false;
+    // Exclude legacy "changed in both" markers
+    if (/^\s*(?:changed|added|removed|modified) in both\s*$/i.test(l)) return false;
+    // Exclude bare OIDs
+    if (/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(l)) return false;
+    // A bare conflict path from git has no leading/trailing whitespace (already trimmed)
+    // and typically looks like a relative file path: contains '/' or has a file extension.
+    // Paths with spaces exist but are rare in code repos; to avoid false-positives
+    // from sentence-like lines, require that the line looks path-like.
+    return /\//.test(l) || /\.\w+$/.test(l);
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = (lines[i] ?? "").trim();
+    if (!line.length) continue;
+
+    // --write-tree "Conflicted file info" section: "<mode> <oid> <stage>\t<filename>"
+    // e.g. "100644 abc123def456... 2\tpath/to/file.ts"
+    // Stages: 1=base, 2=ours, 3=theirs — any file here is conflicted.
+    const stageMatch = line.match(/^[0-7]{6}\s+[0-9a-f]{40,64}\s+[123]\s+(.+)$/i);
+    if (stageMatch?.[1]) {
+      addPath(stageMatch[1]);
+      continue;
+    }
+
+    // "CONFLICT (content): Merge conflict in path/to/file"
+    const mergeConflictMatch = line.match(/^CONFLICT \([^)]+\): (?:Merge conflict in |content )(.+)$/);
+    if (mergeConflictMatch?.[1]) {
+      addPath(mergeConflictMatch[1]);
+      continue;
+    }
+
+    // "CONFLICT (modify/delete): path/to/file deleted in HEAD and modified in feature"
+    // "CONFLICT (rename/delete): path/to/file renamed to ... was deleted in ..."
+    // Use a NON-greedy match before the first " deleted| renamed| modified| added" to get the path.
+    const actionMatch = line.match(
+      /^CONFLICT \([^)]+\):\s+(.+?)\s+(?:deleted|renamed|modified|added|was)\s/
+    );
+    if (actionMatch?.[1]) {
+      addPath(actionMatch[1]);
+      continue;
+    }
+
+    // "CONFLICT (rename/rename): ... in path/to/file ..."
+    // Fallback: capture path after " in " when there's no action word before the path.
+    const conflictInMatch = line.match(/^CONFLICT \([^)]+\):.*\bMerge conflict in (.+?)(?:\s*$)/);
+    if (conflictInMatch?.[1]) {
+      addPath(conflictInMatch[1]);
+      continue;
+    }
+
+    // Catch-all: any CONFLICT line with a path-like token after the colon
+    const genericConflict = line.match(/^CONFLICT \([^)]+\):\s+(.+)$/);
+    if (genericConflict?.[1]) {
+      // Try to extract a file path from the message: a/b/c.ext or a/b/c (with slash)
+      const pathTokens = genericConflict[1].match(/(?:^|\s)([\w./@-]+(?:\/[\w.@-]+)+(?:\.\w+)?)(?:\s|$)/g)
+        ?? genericConflict[1].match(/(?:^|\s)([\w./-]+\.\w+)(?:\s|$)/g);
+      if (pathTokens) {
+        for (const token of pathTokens) addPath(token.trim());
+      }
+      continue;
+    }
+
+    // "Auto-merging path/to/file" — always extract the path. When --write-tree is used,
+    // the CONFLICT line may not immediately follow (it can appear later in the
+    // informational messages section, separated from Auto-merging by other lines).
+    // If the file truly auto-merged cleanly it will be deduplicated by `addPath` anyway,
+    // and the conflict status is already determined by the exit code + structured section.
+    const autoMergeMatch = line.match(/^Auto-merging (.+)$/);
+    if (autoMergeMatch?.[1]) {
+      // Check if any CONFLICT line exists anywhere in the output that mentions this path,
+      // or if the structured section already captured it. If the structured section
+      // captured this path, addPath deduplicates. Otherwise look for a nearby CONFLICT.
+      const nextLine = (lines[i + 1] ?? "").trim();
+      if (nextLine.startsWith("CONFLICT")) {
+        addPath(autoMergeMatch[1]);
+      } else if (seen.has(autoMergeMatch[1].trim())) {
+        // Already captured from the structured section — skip
+      } else {
+        // Check if there's any CONFLICT line in the entire output mentioning this file
+        const filePath = autoMergeMatch[1].trim();
+        const hasConflictForFile = conflictLineTexts.some((lt) => lt.includes(filePath));
+        if (hasConflictForFile) addPath(filePath);
+      }
+      continue;
+    }
+
+    // Legacy merge-tree output: lines that look like file paths with conflict markers
+    // "changed in both" / "added in both" patterns from old merge-tree format
+    const bothMatch = line.match(/^\s*(?:changed|added|removed|modified) in both\s*$/i);
+    if (bothMatch) {
+      // The path is usually on the previous line
+      const prevLine = (lines[i - 1] ?? "").trim();
+      if (prevLine && !prevLine.startsWith("CONFLICT") && !prevLine.startsWith("Auto-merging")) {
+        addPath(prevLine);
+      }
+      continue;
+    }
+
+    // --write-tree bare path fallback: git merge-tree --write-tree outputs conflicted
+    // file paths as bare lines (one per line) between the tree OID and the messages
+    // section. These lines don't have any prefix — just the file path.
+    if (looksLikePath(line)) {
+      addPath(line);
+    }
+  }
+
+  return paths;
+}
+
+function parseMergeTreeTreeOid(stdout: string): string | null {
+  // The --write-tree output may use NUL bytes to separate sections (oid\0conflict-info\0messages).
+  // Replace NUL with newline so the first line is just the OID.
+  const first = stdout
+    .replace(/\0/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!first) return null;
+  // Accept SHA-1 (40 chars) or SHA-256 (64 chars)
+  return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(first) ? first : null;
+}
+
+function parseNameOnlyPaths(stdout: string): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const rawLine of stdout.split("\n")) {
+    const path = rawLine.trim();
+    if (!path.length || seen.has(path)) continue;
+    seen.add(path);
+    paths.push(path);
+  }
+  return paths;
+}
+
+function parseJsonArrayOrEmpty<T>(raw: unknown): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  if (typeof raw !== "string") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -1102,19 +1301,30 @@ export function createPrService({
       try {
         await githubService.apiRequest({
           method: "DELETE",
-          path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${encodeURIComponent(headBranch)}`
+          path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
         });
         branchDeleted = true;
       } catch (error) {
         logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: error instanceof Error ? error.message : String(error) });
       }
 
-      await laneService.archive({ laneId: row.lane_id });
+      // Remove PR from any group membership before archiving (lane archive blocks if still in a group)
+      db.run("delete from pr_group_members where pr_id = ?", [row.id]);
+
+      let laneArchived = false;
+      if (args.archiveLane) {
+        try {
+          await laneService.archive({ laneId: row.lane_id });
+          laneArchived = true;
+        } catch (archiveErr) {
+          logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr) });
+        }
+      }
 
       operationService.finish({
         operationId: op.operationId,
         status: "succeeded",
-        metadataPatch: { mergeCommitSha, branchDeleted }
+        metadataPatch: { mergeCommitSha, branchDeleted, laneArchived }
       });
 
       await refreshOne(row.id).catch(() => {});
@@ -1125,14 +1335,24 @@ export function createPrService({
         success: true,
         mergeCommitSha,
         branchDeleted,
-        laneArchived: true,
+        laneArchived,
         error: null
       };
     } catch (error) {
+      const rawMsg = error instanceof Error ? error.message : String(error);
+      // Provide actionable guidance for common GitHub API errors
+      let userMsg = rawMsg;
+      if (rawMsg.includes("Resource not accessible by personal access token")) {
+        userMsg = "GitHub token lacks permission to merge PRs. For fine-grained PATs, enable 'Contents: write' and 'Pull requests: write'. For classic PATs, enable the 'repo' scope.";
+      } else if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
+        userMsg = "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
+      } else if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
+        userMsg = "PR has merge conflicts. Rebase or resolve conflicts before merging.";
+      }
       operationService.finish({
         operationId: op.operationId,
         status: "failed",
-        metadataPatch: { error: error instanceof Error ? error.message : String(error) }
+        metadataPatch: { error: rawMsg }
       });
       return {
         prId: row.id,
@@ -1141,7 +1361,7 @@ export function createPrService({
         mergeCommitSha: null,
         branchDeleted: false,
         laneArchived: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: userMsg
       };
     }
   };
@@ -1618,102 +1838,300 @@ export function createPrService({
     const now = nowIso();
     const lanes = await laneService.list({ includeArchived: false });
     const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
-    const steps: IntegrationProposalStep[] = [];
+    const laneOrder = new Map(args.sourceLaneIds.map((laneId, index) => [laneId, index]));
+    const zeroDiffStat: IntegrationProposalStep["diffStat"] = { insertions: 0, deletions: 0, filesChanged: 0 };
 
-    // Resolve base branch SHA
-    const baseResult = await runGitOrThrow(
+    // Resolve base branch SHA once, then compare each lane head against it.
+    const baseSha = (await runGitOrThrow(
       ["rev-parse", args.baseBranch],
       { cwd: projectRoot, timeoutMs: 10_000 }
-    );
-    let currentTreeBase = baseResult.trim();
+    )).trim();
+
+    const laneSummariesById = new Map<
+      string,
+      {
+        laneId: string;
+        laneName: string;
+        position: number;
+        headSha: string | null;
+        commitHash: string;
+        commitCount: number;
+        diffStat: IntegrationProposalStep["diffStat"];
+      }
+    >();
 
     for (let i = 0; i < args.sourceLaneIds.length; i++) {
       const laneId = args.sourceLaneIds[i]!;
       const lane = laneMap.get(laneId);
       if (!lane) {
-        steps.push({
+        laneSummariesById.set(laneId, {
           laneId,
           laneName: laneId,
           position: i,
-          outcome: "blocked",
-          conflictingFiles: [],
-          diffStat: { insertions: 0, deletions: 0, filesChanged: 0 }
+          headSha: null,
+          commitHash: "",
+          commitCount: 0,
+          diffStat: zeroDiffStat
         });
         continue;
       }
 
-      const headResult = await runGitOrThrow(
-        ["rev-parse", branchNameFromRef(lane.branchRef)],
-        { cwd: projectRoot, timeoutMs: 10_000 }
-      );
-      const headSha = headResult.trim();
+      try {
+        const headSha = (await runGitOrThrow(
+          ["rev-parse", branchNameFromRef(lane.branchRef)],
+          { cwd: projectRoot, timeoutMs: 10_000 }
+        )).trim();
 
-      // git merge-tree --write-tree <base> <source>
-      const mergeTreeResult = await runGit(
-        ["merge-tree", "--write-tree", currentTreeBase, headSha],
-        { cwd: projectRoot, timeoutMs: 30_000 }
-      );
+        const commitCountResult = await runGit(
+          ["rev-list", "--count", `${baseSha}..${headSha}`],
+          { cwd: projectRoot, timeoutMs: 10_000 }
+        );
+        const commitCount = commitCountResult.exitCode === 0 ? asNumber(commitCountResult.stdout.trim()) : 0;
 
-      const hasConflict = mergeTreeResult.exitCode !== 0;
-      const conflictingFiles: IntegrationProposalStep["conflictingFiles"] = [];
+        const diffStatResult = await runGit(
+          ["diff", "--shortstat", `${baseSha}..${headSha}`],
+          { cwd: projectRoot, timeoutMs: 10_000 }
+        );
+        const diffStat = diffStatResult.exitCode === 0 ? parseDiffStatOutput(diffStatResult.stdout) : zeroDiffStat;
+        const shortHashResult = await runGit(
+          ["rev-parse", "--short", headSha],
+          { cwd: projectRoot, timeoutMs: 10_000 }
+        );
+        const commitHash = shortHashResult.exitCode === 0
+          ? shortHashResult.stdout.trim()
+          : headSha.slice(0, 8);
 
-      // The tree OID is always on the first line of stdout, even in conflict case
-      const treeOid = mergeTreeResult.stdout.trim().split("\n")[0]?.trim();
-
-      if (hasConflict) {
-        // Parse conflicting file paths from stderr/stdout
-        const lines = (mergeTreeResult.stdout + "\n" + mergeTreeResult.stderr).split("\n");
-        const conflictPaths: string[] = [];
-        for (const line of lines) {
-          const match = line.match(/CONFLICT \([^)]+\): (?:Merge conflict in |content )(.+)/);
-          if (match?.[1]) {
-            conflictPaths.push(match[1].trim());
-          }
-        }
-        // Extract detailed conflict info for each file
-        for (const filePath of conflictPaths) {
-          if (treeOid) {
-            const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
-            conflictingFiles.push({
-              path: filePath,
-              conflictMarkers: detail.conflictMarkers,
-              oursExcerpt: detail.oursExcerpt || null,
-              theirsExcerpt: detail.theirsExcerpt || null,
-              diffHunk: detail.diffHunk || null
-            });
-          } else {
-            conflictingFiles.push({ path: filePath, conflictMarkers: "", oursExcerpt: null, theirsExcerpt: null, diffHunk: null });
-          }
-        }
-      } else {
-        // On success, use the tree OID for chaining
-        if (treeOid) currentTreeBase = treeOid;
+        laneSummariesById.set(laneId, {
+          laneId,
+          laneName: lane.name,
+          position: i,
+          headSha,
+          commitHash,
+          commitCount,
+          diffStat
+        });
+      } catch {
+        laneSummariesById.set(laneId, {
+          laneId,
+          laneName: lane.name,
+          position: i,
+          headSha: null,
+          commitHash: "",
+          commitCount: 0,
+          diffStat: zeroDiffStat
+        });
       }
-
-      // Count diff stat (use baseBranch ref, not tree OID which git-diff can't resolve)
-      const diffStatResult = await runGit(
-        ["diff", "--stat", args.baseBranch, headSha],
-        { cwd: projectRoot, timeoutMs: 10_000 }
-      );
-      const statMatch = diffStatResult.stdout.match(/(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/);
-
-      steps.push({
-        laneId,
-        laneName: lane.name,
-        position: i,
-        outcome: hasConflict ? "conflict" : "clean",
-        conflictingFiles,
-        diffStat: {
-          filesChanged: statMatch ? Number(statMatch[1]) : 0,
-          insertions: statMatch ? Number(statMatch[2] ?? 0) : 0,
-          deletions: statMatch ? Number(statMatch[3] ?? 0) : 0
-        }
-      });
     }
 
-    const overallOutcome = steps.some((s) => s.outcome === "blocked")
+    const pairwiseResults: IntegrationPairwiseResult[] = [];
+    for (let i = 0; i < args.sourceLaneIds.length; i++) {
+      const laneAId = args.sourceLaneIds[i]!;
+      const laneA = laneSummariesById.get(laneAId);
+      if (!laneA) continue;
+
+      for (let j = i + 1; j < args.sourceLaneIds.length; j++) {
+        const laneBId = args.sourceLaneIds[j]!;
+        const laneB = laneSummariesById.get(laneBId);
+        if (!laneB) continue;
+
+        if (!laneA.headSha || !laneB.headSha) {
+          continue;
+        }
+
+        // Use --merge-base to correctly specify the common ancestor (git 2.38+).
+        // Fallback to legacy 3-arg form for older git versions.
+        let mergeTreeResult = await runGit(
+          ["merge-tree", "--write-tree", "--messages", `--merge-base=${baseSha}`, laneA.headSha, laneB.headSha],
+          { cwd: projectRoot, timeoutMs: 30_000 }
+        );
+        if (mergeTreeResult.exitCode !== 0 && (
+          mergeTreeResult.stderr.includes("unknown option") ||
+          mergeTreeResult.stderr.includes("unrecognized argument") ||
+          mergeTreeResult.stderr.includes("unknown switch")
+        )) {
+          // Older git without --write-tree/--messages/--merge-base support: use legacy 3-arg form
+          mergeTreeResult = await runGit(
+            ["merge-tree", baseSha, laneA.headSha, laneB.headSha],
+            { cwd: projectRoot, timeoutMs: 30_000 }
+          );
+        }
+        // Exit code 128 indicates a fatal git error (e.g. invalid refs), not a merge conflict.
+        // Skip this pair entirely so it doesn't pollute conflict analysis.
+        if (mergeTreeResult.exitCode === 128) {
+          logger.warn("prs.merge_tree_fatal", {
+            laneAId,
+            laneBId,
+            exitCode: mergeTreeResult.exitCode,
+            stderr: mergeTreeResult.stderr.trim()
+          });
+          continue;
+        }
+        const hasConflict = mergeTreeResult.exitCode !== 0;
+        const conflictingFiles: IntegrationProposalStep["conflictingFiles"] = [];
+
+        if (hasConflict) {
+          const treeOid = parseMergeTreeTreeOid(mergeTreeResult.stdout);
+          const mergeTreeCombined = `${mergeTreeResult.stdout}\n${mergeTreeResult.stderr}`;
+          let conflictPaths = parseMergeTreeConflictPaths(mergeTreeCombined);
+          logger.info("prs.merge_tree_conflict_parse", {
+            laneAId,
+            laneBId,
+            exitCode: mergeTreeResult.exitCode,
+            treeOid: treeOid ?? "(null)",
+            stdoutLen: mergeTreeResult.stdout.length,
+            stderrLen: mergeTreeResult.stderr.length,
+            stdoutPreview: mergeTreeResult.stdout.replace(/\0/g, "\\0").slice(0, 500),
+            stderrPreview: mergeTreeResult.stderr.slice(0, 300),
+            parsedPathCount: conflictPaths.length,
+            parsedPaths: conflictPaths.slice(0, 10)
+          });
+          if (conflictPaths.length === 0) {
+            // Fallback: try legacy 3-arg form which may produce different output.
+            const fallbackTreeResult = await runGit(
+              ["merge-tree", baseSha, laneA.headSha, laneB.headSha],
+              { cwd: projectRoot, timeoutMs: 30_000 }
+            );
+            const fallbackCombined = `${fallbackTreeResult.stdout}\n${fallbackTreeResult.stderr}`;
+            conflictPaths = parseMergeTreeConflictPaths(fallbackCombined);
+            logger.info("prs.merge_tree_conflict_fallback_legacy", {
+              laneAId,
+              laneBId,
+              exitCode: fallbackTreeResult.exitCode,
+              stdoutLen: fallbackTreeResult.stdout.length,
+              stdoutPreview: fallbackTreeResult.stdout.replace(/\0/g, "\\0").slice(0, 500),
+              parsedPathCount: conflictPaths.length,
+              parsedPaths: conflictPaths.slice(0, 10)
+            });
+          }
+          if (conflictPaths.length === 0) {
+            // Heuristic fallback: overlap of files changed by both lanes from the same base.
+            const [changedAResult, changedBResult] = await Promise.all([
+              runGit(["diff", "--name-only", `${baseSha}..${laneA.headSha}`], { cwd: projectRoot, timeoutMs: 15_000 }),
+              runGit(["diff", "--name-only", `${baseSha}..${laneB.headSha}`], { cwd: projectRoot, timeoutMs: 15_000 })
+            ]);
+            const changedA = changedAResult.exitCode === 0 ? parseNameOnlyPaths(changedAResult.stdout) : [];
+            const changedB = changedBResult.exitCode === 0 ? parseNameOnlyPaths(changedBResult.stdout) : [];
+            const changedASet = new Set(changedA);
+            conflictPaths = changedB.filter((path) => changedASet.has(path));
+            logger.info("prs.merge_tree_conflict_fallback_heuristic", {
+              laneAId,
+              laneBId,
+              changedACount: changedA.length,
+              changedBCount: changedB.length,
+              overlapCount: conflictPaths.length,
+              overlapPaths: conflictPaths.slice(0, 10)
+            });
+          }
+          for (const filePath of conflictPaths) {
+            if (treeOid) {
+              const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
+              conflictingFiles.push({
+                path: filePath,
+                conflictMarkers: detail.conflictMarkers,
+                oursExcerpt: detail.oursExcerpt || null,
+                theirsExcerpt: detail.theirsExcerpt || null,
+                diffHunk: detail.diffHunk || null
+              });
+            } else {
+              // No tree OID: generate excerpts from per-file diffs against base
+              let oursExcerpt: string | null = null;
+              let theirsExcerpt: string | null = null;
+              try {
+                const [diffA, diffB] = await Promise.all([
+                  runGit(["diff", `${baseSha}..${laneA.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 }),
+                  runGit(["diff", `${baseSha}..${laneB.headSha}`, "--", filePath], { cwd: projectRoot, timeoutMs: 10_000 })
+                ]);
+                if (diffA.exitCode === 0 && diffA.stdout.trim()) oursExcerpt = diffA.stdout.slice(0, 500);
+                if (diffB.exitCode === 0 && diffB.stdout.trim()) theirsExcerpt = diffB.stdout.slice(0, 500);
+              } catch { /* best-effort */ }
+              conflictingFiles.push({
+                path: filePath,
+                conflictMarkers: "",
+                oursExcerpt,
+                theirsExcerpt,
+                diffHunk: null
+              });
+            }
+          }
+        }
+
+        pairwiseResults.push({
+          laneAId,
+          laneAName: laneA.laneName,
+          laneBId,
+          laneBName: laneB.laneName,
+          outcome: hasConflict ? "conflict" : "clean",
+          conflictingFiles
+        });
+      }
+    }
+
+    logger.info("prs.integration_pairwise_summary", {
+      totalPairs: pairwiseResults.length,
+      conflictPairs: pairwiseResults.filter((p) => p.outcome === "conflict").length,
+      pairsWithFiles: pairwiseResults.filter((p) => p.conflictingFiles.length > 0).length,
+      details: pairwiseResults.map((p) => ({
+        laneA: p.laneAName, laneB: p.laneBName,
+        outcome: p.outcome, fileCount: p.conflictingFiles.length,
+        filePaths: p.conflictingFiles.map((f) => f.path).slice(0, 5)
+      }))
+    });
+
+    const conflictingPeersByLaneId = new Map<string, Set<string>>();
+    const conflictingFilesByLaneId = new Map<string, Map<string, IntegrationProposalStep["conflictingFiles"][number]>>();
+    for (const laneId of args.sourceLaneIds) {
+      conflictingPeersByLaneId.set(laneId, new Set<string>());
+      conflictingFilesByLaneId.set(laneId, new Map<string, IntegrationProposalStep["conflictingFiles"][number]>());
+    }
+
+    for (const pair of pairwiseResults) {
+      if (pair.outcome !== "conflict") continue;
+      conflictingPeersByLaneId.get(pair.laneAId)?.add(pair.laneBId);
+      conflictingPeersByLaneId.get(pair.laneBId)?.add(pair.laneAId);
+      const laneAFiles = conflictingFilesByLaneId.get(pair.laneAId);
+      const laneBFiles = conflictingFilesByLaneId.get(pair.laneBId);
+      for (const file of pair.conflictingFiles) {
+        if (laneAFiles && !laneAFiles.has(file.path)) laneAFiles.set(file.path, file);
+        if (laneBFiles && !laneBFiles.has(file.path)) laneBFiles.set(file.path, file);
+      }
+    }
+
+    const laneSummaries: IntegrationLaneSummary[] = args.sourceLaneIds.map((laneId) => {
+      const laneSummary = laneSummariesById.get(laneId);
+      const laneName = laneSummary?.laneName ?? laneId;
+      const conflictsWith = Array.from(conflictingPeersByLaneId.get(laneId) ?? []);
+      conflictsWith.sort((a, b) => (laneOrder.get(a) ?? 0) - (laneOrder.get(b) ?? 0));
+
+      const outcome: IntegrationLaneSummary["outcome"] = !laneSummary?.headSha
+        ? "blocked"
+        : conflictsWith.length > 0
+          ? "conflict"
+          : "clean";
+
+      return {
+        laneId,
+        laneName,
+        commitHash: laneSummary?.commitHash ?? "",
+        commitCount: laneSummary?.commitCount ?? 0,
+        outcome,
+        conflictsWith,
+        diffStat: laneSummary?.diffStat ?? zeroDiffStat
+      };
+    });
+
+    // Keep legacy "steps" as a projection of lane summaries for backward compatibility.
+    const steps: IntegrationProposalStep[] = laneSummaries.map((laneSummary) => ({
+      laneId: laneSummary.laneId,
+      laneName: laneSummary.laneName,
+      position: laneSummariesById.get(laneSummary.laneId)?.position ?? 0,
+      outcome: laneSummary.outcome,
+      conflictingFiles: Array.from(conflictingFilesByLaneId.get(laneSummary.laneId)?.values() ?? []),
+      diffStat: laneSummary.diffStat
+    }));
+
+    const overallOutcome = laneSummaries.some((lane) => lane.outcome === "blocked")
       ? "blocked"
-      : steps.some((s) => s.outcome === "conflict")
+      : laneSummaries.some((lane) => lane.outcome === "conflict")
         ? "conflict"
         : "clean";
 
@@ -1721,6 +2139,8 @@ export function createPrService({
       proposalId,
       sourceLaneIds: args.sourceLaneIds,
       baseBranch: args.baseBranch,
+      pairwiseResults,
+      laneSummaries,
       steps,
       overallOutcome,
       createdAt: now,
@@ -1729,8 +2149,19 @@ export function createPrService({
 
     // Persist in DB
     db.run(
-      `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [proposalId, projectId, JSON.stringify(args.sourceLaneIds), args.baseBranch, JSON.stringify(steps), overallOutcome, now, "proposed"]
+      `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, pairwise_results_json, lane_summaries_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        proposalId,
+        projectId,
+        JSON.stringify(args.sourceLaneIds),
+        args.baseBranch,
+        JSON.stringify(steps),
+        JSON.stringify(pairwiseResults),
+        JSON.stringify(laneSummaries),
+        overallOutcome,
+        now,
+        "proposed"
+      ]
     );
 
     return proposal;
@@ -1781,7 +2212,7 @@ export function createPrService({
       if (!row) continue;
       const state = (row.state ?? "").toLowerCase();
       if (state === "open" || state === "draft") {
-        return await land({ prId: member.pr_id, method: args.method });
+        return await land({ prId: member.pr_id, method: args.method, archiveLane: args.archiveLane });
       }
     }
 
@@ -1875,6 +2306,7 @@ export function createPrService({
       title: string; body: string; draft: number;
       integration_lane_name: string; status: string;
       integration_lane_id: string | null; resolution_state_json: string | null;
+      pairwise_results_json: string | null; lane_summaries_json: string | null;
     }>(
       `select * from integration_proposals where project_id = ? and status = 'proposed' order by created_at desc`,
       [projectId]
@@ -1883,6 +2315,8 @@ export function createPrService({
       proposalId: String(row.id),
       sourceLaneIds: JSON.parse(String(row.source_lane_ids_json)) as string[],
       baseBranch: String(row.base_branch),
+      pairwiseResults: parseJsonArrayOrEmpty<IntegrationPairwiseResult>(row.pairwise_results_json),
+      laneSummaries: parseJsonArrayOrEmpty<IntegrationLaneSummary>(row.lane_summaries_json),
       steps: JSON.parse(String(row.steps_json)) as IntegrationProposalStep[],
       overallOutcome: String(row.overall_outcome) as IntegrationProposal["overallOutcome"],
       createdAt: String(row.created_at),
@@ -2028,27 +2462,82 @@ export function createPrService({
       { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
     );
 
+    // If merge succeeded without conflicts, mark step as resolved and return early
+    if (mergeRes.exitCode === 0) {
+      const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
+        ? JSON.parse(String(proposalRow.resolution_state_json))
+        : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+
+      resolutionState.stepResolutions[args.laneId] = "merged-clean";
+      resolutionState.updatedAt = nowIso();
+
+      db.run(
+        `update integration_proposals set resolution_state_json = ? where id = ?`,
+        [JSON.stringify(resolutionState), args.proposalId]
+      );
+
+      logger.info("prs.integration_resolution.no_conflicts", {
+        proposalId: args.proposalId,
+        laneId: args.laneId,
+        message: "Merge succeeded without conflicts; no AI resolution needed"
+      });
+
+      return { chatSessionId: null as unknown as string, integrationLaneId };
+    }
+
     // Get conflicting files from git status
     const statusRes = await runGit(
       ["status", "--porcelain"],
       { cwd: integrationLane.worktreePath, timeoutMs: 10_000 }
     );
+    if (statusRes.exitCode !== 0) {
+      throw new Error(`git status failed in integration lane: ${statusRes.stderr.trim()}`);
+    }
     const conflictFiles = statusRes.stdout
       .split("\n")
-      .filter((line) => line.startsWith("UU") || line.startsWith("AA") || line.startsWith("DD"))
+      .filter((line) => {
+        const code = line.slice(0, 2);
+        return code === "UU" || code === "AA" || code === "DD" || code === "DU" || code === "UD" || code === "AU" || code === "UA";
+      })
       .map((line) => line.slice(3).trim());
 
     // Create agent chat session
-    const session = await agentChatService.createSession({
-      laneId: integrationLaneId,
-      provider: args.provider,
-      model: args.model,
-      reasoningEffort: args.reasoningEffort
-    });
+    let session: Awaited<ReturnType<typeof agentChatService.createSession>>;
+    try {
+      session = await agentChatService.createSession({
+        laneId: integrationLaneId,
+        provider: args.provider,
+        model: args.model,
+        reasoningEffort: args.reasoningEffort
+      });
 
-    // Build and send resolution prompt
-    const prompt = buildIntegrationResolutionPrompt(conflictFiles, sourceLane.name, args.autoApprove);
-    await agentChatService.sendMessage({ sessionId: session.id, text: prompt });
+      // Build and send resolution prompt
+      const prompt = buildIntegrationResolutionPrompt(conflictFiles, sourceLane.name, args.autoApprove);
+      await agentChatService.sendMessage({ sessionId: session.id, text: prompt });
+    } catch (error) {
+      // Fix 6: If AI provider call fails, update resolution state to "error" so UI can show the failure
+      const errorResolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
+        ? JSON.parse(String(proposalRow.resolution_state_json))
+        : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+
+      errorResolutionState.stepResolutions[args.laneId] = "pending";
+      errorResolutionState.activeChatSessionId = null;
+      errorResolutionState.activeLaneId = null;
+      errorResolutionState.updatedAt = nowIso();
+
+      db.run(
+        `update integration_proposals set resolution_state_json = ? where id = ?`,
+        [JSON.stringify(errorResolutionState), args.proposalId]
+      );
+
+      logger.error("prs.integration_resolution.ai_failed", {
+        proposalId: args.proposalId,
+        laneId: args.laneId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      throw error;
+    }
 
     // Update resolution state
     const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
@@ -2076,19 +2565,29 @@ export function createPrService({
   ): string => {
     const fileList = conflictFiles.map((f) => `  - ${f}`).join("\n");
     const modeInstruction = autoApprove
-      ? "Apply changes directly. Resolve all conflicts and commit the result."
-      : "Show your proposed changes and wait for approval before committing.";
+      ? `Mode: AUTOMATIC — Apply changes directly. Resolve all conflicts, stage with \`git add\`, and commit to finalize the merge. Report what you did after.`
+      : `Mode: MANUAL — Show your proposed resolution for each file and explain your reasoning. Wait for explicit approval before running \`git add\` and \`git commit\`. Present changes one file at a time so the user can review each.`;
 
     return [
-      `You are resolving merge conflicts in an integration lane.`,
-      `The branch "${sourceLaneName}" is being merged and has conflicts in the following files:`,
+      `# Integration Lane Conflict Resolution`,
+      ``,
+      `You are working in an **integration lane** — a temporary branch that combines code from multiple feature lanes (branches) into one cohesive codebase. Important context:`,
+      ``,
+      `- The **original feature lanes are NOT modified**. All changes happen only in this integration lane.`,
+      `- Your job is to produce a clean merge that preserves ALL functionality from every lane.`,
+      `- The branch "${sourceLaneName}" is being merged into the integration lane and has conflicts.`,
+      ``,
+      `## Conflicting Files`,
       fileList,
       ``,
-      `Instructions:`,
-      `1. Examine each conflicting file and understand both sides of the conflict.`,
-      `2. Resolve all conflicts by editing the files to produce the correct merged result.`,
-      `3. After resolving, run \`git add\` on each resolved file and \`git commit\` to finalize the merge.`,
-      `4. Explain your resolution choices briefly.`,
+      `## Resolution Strategy`,
+      `1. **Read each conflicting file** to understand both sides of every conflict marker (\`<<<<<<<\`, \`=======\`, \`>>>>>>>\`).`,
+      `2. **Understand the intent** of each side — what feature or fix does each change implement?`,
+      `3. **Resolve by combining both sides** when possible. If changes are in different parts of the file, include both. If they modify the same code, create a version that preserves the functionality of both.`,
+      `4. **Never drop functionality** from either side. If in doubt, keep both implementations and ensure they work together.`,
+      `5. **After resolving each file**, run \`git add <file>\` to mark it resolved.`,
+      `6. **After all files are resolved**, run \`git commit --no-edit\` to finalize the merge.`,
+      `7. **Report what you changed** and why for each file.`,
       ``,
       modeInstruction
     ].join("\n");
@@ -2118,9 +2617,15 @@ export function createPrService({
       ["status", "--porcelain"],
       { cwd: integrationLane.worktreePath, timeoutMs: 10_000 }
     );
+    if (statusRes.exitCode !== 0) {
+      throw new Error(`git status failed in integration lane: ${statusRes.stderr.trim()}`);
+    }
     const conflictFiles = statusRes.stdout
       .split("\n")
-      .filter((line) => line.startsWith("UU") || line.startsWith("AA") || line.startsWith("DD"))
+      .filter((line) => {
+        const code = line.slice(0, 2);
+        return code === "UU" || code === "AA" || code === "DD" || code === "DU" || code === "UD" || code === "AU" || code === "UA";
+      })
       .map((line) => line.slice(3).trim());
 
     const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json

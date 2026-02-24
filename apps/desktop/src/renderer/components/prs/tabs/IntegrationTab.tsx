@@ -1,6 +1,7 @@
 import React from "react";
-import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise } from "@phosphor-icons/react";
+import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, ArrowSquareOut, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, ShieldCheck, Gear } from "@phosphor-icons/react";
 import type {
+  AgentChatModelInfo,
   AgentChatProvider,
   IntegrationProposal,
   IntegrationResolutionState,
@@ -17,7 +18,7 @@ import { PrRebaseBanner } from "../PrRebaseBanner";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
 import { AgentChatPane } from "../../chat/AgentChatPane";
-import { IntegrationStepDetail } from "../IntegrationStepDetail";
+import { ConflictFilePreview } from "../ConflictFilePreview";
 
 const TILING_TREE: PaneSplit = {
   type: "split",
@@ -158,6 +159,99 @@ function LaneStatusBadge({ outcome }: { outcome: "clean" | "conflict" | "blocked
   );
 }
 
+type ConflictPreviewFile = {
+  path: string;
+  conflictMarkers: string;
+  oursExcerpt: string | null;
+  theirsExcerpt: string | null;
+  diffHunk: string | null;
+};
+
+type ProposalLaneCard = {
+  laneId: string;
+  laneName: string;
+  outcome: "clean" | "conflict" | "blocked" | "pending";
+  commitHash: string | null;
+  commitCount: number | null;
+  baseBranch: string;
+  position: number;
+};
+
+type ProposalConflictPair = {
+  key: string;
+  laneAId: string;
+  laneAName: string;
+  laneBId: string;
+  laneBName: string;
+  outcome: "conflict" | "blocked";
+  fileCount: number;
+  files: ConflictPreviewFile[];
+};
+
+function readQueryParam(name: string): string | null {
+  try {
+    const fromSearch = new URLSearchParams(window.location.search).get(name);
+    if (fromSearch) return fromSearch;
+    const hash = window.location.hash ?? "";
+    const queryIndex = hash.indexOf("?");
+    if (queryIndex >= 0) {
+      return new URLSearchParams(hash.slice(queryIndex + 1)).get(name);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null) return null;
+  return value as Record<string, unknown>;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function toOutcome(value: unknown): "clean" | "conflict" | "blocked" | "pending" {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "clean" || normalized === "ready" || normalized === "merge-ready") return "clean";
+  if (normalized === "conflict" || normalized === "conflicted" || normalized === "conflict-predicted") return "conflict";
+  if (normalized === "blocked" || normalized === "error") return "blocked";
+  return "pending";
+}
+
+function toConflictPreviewFile(file: unknown): ConflictPreviewFile | null {
+  if (typeof file === "string" && file.trim().length > 0) {
+    return {
+      path: file.trim(),
+      conflictMarkers: "",
+      oursExcerpt: null,
+      theirsExcerpt: null,
+      diffHunk: null,
+    };
+  }
+  const rec = asRecord(file);
+  if (!rec) return null;
+  const path = asString(rec.path);
+  if (!path) return null;
+  return {
+    path,
+    conflictMarkers: asString(rec.conflictMarkers ?? rec.markerPreview) ?? "",
+    oursExcerpt: asString(rec.oursExcerpt),
+    theirsExcerpt: asString(rec.theirsExcerpt),
+    diffHunk: asString(rec.diffHunk ?? rec.patch),
+  };
+}
+
 /* ======== Main component ======== */
 
 type IntegrationTabProps = {
@@ -184,19 +278,25 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   // Proposals state
   const [proposals, setProposals] = React.useState<IntegrationProposal[]>([]);
+  const [proposalsLoaded, setProposalsLoaded] = React.useState(false);
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
+  const [urlProposalId, setUrlProposalId] = React.useState<string | null>(() => readQueryParam("proposalId"));
   const [commitBusy, setCommitBusy] = React.useState(false);
   const [commitError, setCommitError] = React.useState<string | null>(null);
   const [resimBusy, setResimBusy] = React.useState(false);
   const [deleteProposalBusy, setDeleteProposalBusy] = React.useState(false);
 
   // New integration resolution state
-  const [expandedStepLaneId, setExpandedStepLaneId] = React.useState<string | null>(null);
+  const [expandedPairKeys, setExpandedPairKeys] = React.useState<string[]>([]);
   const [resolutionState, setResolutionState] = React.useState<IntegrationResolutionState | null>(null);
   const [activeChatLaneId, setActiveChatLaneId] = React.useState<string | null>(null);
   const [activeChatSessionId, setActiveChatSessionId] = React.useState<string | null>(null);
   const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
   const [resolvingLaneId, setResolvingLaneId] = React.useState<string | null>(null);
+  const [aiProvider, setAiProvider] = React.useState<AgentChatProvider>("claude");
+  const [aiModels, setAiModels] = React.useState<AgentChatModelInfo[]>([]);
+  const [aiModel, setAiModel] = React.useState<string>("sonnet");
+  const [aiReasoningEffort, setAiReasoningEffort] = React.useState<string>("medium");
 
   const loadProposals = React.useCallback(async () => {
     try {
@@ -204,6 +304,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       setProposals(result);
     } catch {
       /* swallow */
+    } finally {
+      setProposalsLoaded(true);
     }
   }, []);
 
@@ -227,17 +329,45 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const selectedPr = React.useMemo(() => prs.find((p) => p.id === selectedPrId) ?? null, [prs, selectedPrId]);
   const selectedMergeContext = selectedPr ? mergeContextByPrId[selectedPr.id] ?? null : null;
 
+  React.useEffect(() => {
+    const syncFromUrl = () => setUrlProposalId(readQueryParam("proposalId"));
+    window.addEventListener("popstate", syncFromUrl);
+    window.addEventListener("hashchange", syncFromUrl);
+    return () => {
+      window.removeEventListener("popstate", syncFromUrl);
+      window.removeEventListener("hashchange", syncFromUrl);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!proposalsLoaded || !urlProposalId) return;
+    if (selectedProposalId === urlProposalId) return;
+    if (!proposals.some((p) => p.proposalId === urlProposalId)) return;
+    onSelectPr(null);
+    setSelectedProposalId(urlProposalId);
+  }, [onSelectPr, proposals, proposalsLoaded, selectedProposalId, urlProposalId]);
+
   // Auto-select first item (PR or proposal)
   React.useEffect(() => {
+    if (!proposalsLoaded) return;
     if (selectedPrId && prs.some((p) => p.id === selectedPrId)) return;
     if (selectedProposalId && proposals.some((p) => p.proposalId === selectedProposalId)) return;
-    if (prs.length > 0) {
-      handleSelectPr(prs[0].id);
-    } else if (proposals.length > 0) {
-      handleSelectProposal(proposals[0].proposalId);
+    if (urlProposalId) {
+      const proposal = proposals.find((p) => p.proposalId === urlProposalId);
+      if (proposal) {
+        onSelectPr(null);
+        setSelectedProposalId(proposal.proposalId);
+        return;
+      }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prs, proposals, selectedPrId, selectedProposalId]);
+    if (prs.length > 0) {
+      onSelectPr(prs[0].id);
+      setSelectedProposalId(null);
+    } else if (proposals.length > 0) {
+      onSelectPr(null);
+      setSelectedProposalId(proposals[0].proposalId);
+    }
+  }, [onSelectPr, proposals, proposalsLoaded, prs, selectedPrId, selectedProposalId, urlProposalId]);
 
   const handleCommitProposal = async (p: IntegrationProposal) => {
     setCommitBusy(true);
@@ -296,7 +426,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   React.useEffect(() => {
     if (!selectedProposal) {
       setResolutionState(null);
-      setExpandedStepLaneId(null);
+      setExpandedPairKeys([]);
       setActiveChatLaneId(null);
       setActiveChatSessionId(null);
       return;
@@ -314,49 +444,335 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     return () => { cancelled = true; };
   }, [selectedProposal?.proposalId, selectedProposal?.resolutionState]);
 
-  const handleResolveWithAI = async (stepLaneId: string, provider: AgentChatProvider, model: string, reasoningEffort?: string) => {
+  React.useEffect(() => {
     if (!selectedProposal) return;
-    setResolvingLaneId(stepLaneId);
-    try {
-      // 1. If no integration lane exists, create one first
-      let currentResState = resolutionState;
-      if (!currentResState?.integrationLaneId) {
-        setCreateLaneBusy(true);
-        try {
-          const result = await window.ade.prs.createIntegrationLaneForProposal({
-            proposalId: selectedProposal.proposalId,
-          });
-          currentResState = {
-            integrationLaneId: result.integrationLaneId,
-            stepResolutions: {},
-            activeChatSessionId: null,
-            activeLaneId: null,
-            updatedAt: new Date().toISOString(),
+    setExpandedPairKeys([]);
+  }, [selectedProposal?.proposalId]);
+
+  const proposalLaneCards = React.useMemo<ProposalLaneCard[]>(() => {
+    if (!selectedProposal) return [];
+    const sourceOrder = new Map(selectedProposal.sourceLaneIds.map((laneId, index) => [laneId, index]));
+    const proposalRecord = asRecord(selectedProposal);
+    const rawLaneSummaries = Array.isArray(proposalRecord?.laneSummaries) ? proposalRecord.laneSummaries : null;
+
+    if (rawLaneSummaries && rawLaneSummaries.length > 0) {
+      return rawLaneSummaries
+        .map((rawLane, index) => {
+          const laneRecord = asRecord(rawLane);
+          const laneId =
+            asString(laneRecord?.laneId ?? laneRecord?.id ?? laneRecord?.sourceLaneId) ??
+            selectedProposal.steps[index]?.laneId ??
+            `lane-${index + 1}`;
+          return {
+            laneId,
+            laneName: asString(laneRecord?.laneName ?? laneRecord?.name) ?? laneById.get(laneId)?.name ?? laneId,
+            outcome: toOutcome(laneRecord?.status ?? laneRecord?.outcome ?? laneRecord?.readiness),
+            commitHash:
+              asString(
+                laneRecord?.commitHash ??
+                laneRecord?.headSha ??
+                laneRecord?.sha ??
+                laneRecord?.commitSha ??
+                laneRecord?.latestCommitHash,
+              ) ?? null,
+            commitCount: asNumber(laneRecord?.commitCount ?? laneRecord?.commits ?? laneRecord?.commitTotal),
+            baseBranch: asString(laneRecord?.baseBranch) ?? selectedProposal.baseBranch,
+            position: asNumber(laneRecord?.position) ?? sourceOrder.get(laneId) ?? index,
           };
-          // Mark clean lanes as merged-clean
-          for (const cleanId of result.mergedCleanLanes) {
-            currentResState.stepResolutions[cleanId] = "merged-clean";
-          }
-          for (const conflictId of result.conflictingLanes) {
-            currentResState.stepResolutions[conflictId] = "pending";
-          }
-          setResolutionState(currentResState);
-        } finally {
-          setCreateLaneBusy(false);
+        })
+        .sort((a, b) => a.position - b.position);
+    }
+
+    if (Array.isArray(selectedProposal.pairwiseResults) && selectedProposal.pairwiseResults.length > 0) {
+      const nameByLaneId = new Map<string, string>();
+      const outcomeByLaneId = new Map<string, ProposalLaneCard["outcome"]>();
+
+      for (const sourceLaneId of selectedProposal.sourceLaneIds) {
+        outcomeByLaneId.set(sourceLaneId, "clean");
+      }
+      for (const pair of selectedProposal.pairwiseResults) {
+        if (pair.laneAId) nameByLaneId.set(pair.laneAId, pair.laneAName || nameByLaneId.get(pair.laneAId) || pair.laneAId);
+        if (pair.laneBId) nameByLaneId.set(pair.laneBId, pair.laneBName || nameByLaneId.get(pair.laneBId) || pair.laneBId);
+        if (pair.outcome === "conflict") {
+          if (pair.laneAId) outcomeByLaneId.set(pair.laneAId, "conflict");
+          if (pair.laneBId) outcomeByLaneId.set(pair.laneBId, "conflict");
         }
       }
 
-      // 2. Start resolution for this lane
+      return selectedProposal.sourceLaneIds
+        .map((laneId, index) => ({
+          laneId,
+          laneName: nameByLaneId.get(laneId) ?? laneById.get(laneId)?.name ?? laneId,
+          outcome: outcomeByLaneId.get(laneId) ?? "clean",
+          commitHash: null,
+          commitCount: null,
+          baseBranch: selectedProposal.baseBranch,
+          position: sourceOrder.get(laneId) ?? index,
+        }))
+        .sort((a, b) => a.position - b.position);
+    }
+
+    return selectedProposal.steps
+      .map((step, index) => ({
+        laneId: step.laneId,
+        laneName: step.laneName,
+        outcome: step.outcome,
+        commitHash: null,
+        commitCount: null,
+        baseBranch: selectedProposal.baseBranch,
+        position: sourceOrder.get(step.laneId) ?? (Number.isFinite(step.position) ? step.position : index),
+      }))
+      .sort((a, b) => a.position - b.position);
+  }, [laneById, selectedProposal]);
+
+  const proposalPairwiseConflicts = React.useMemo<ProposalConflictPair[]>(() => {
+    if (!selectedProposal) return [];
+    const proposalRecord = asRecord(selectedProposal);
+    const pairwiseCandidates: unknown[] = [];
+    const possibleArrays = [
+      proposalRecord?.pairwiseResults,
+      proposalRecord?.pairwiseConflicts,
+      proposalRecord?.pairwiseConflictPairs,
+      proposalRecord?.conflictingPairs,
+      proposalRecord?.pairwisePairs,
+      proposalRecord?.conflictPairs,
+    ];
+    for (const value of possibleArrays) {
+      if (Array.isArray(value)) pairwiseCandidates.push(...value);
+    }
+
+    // Build a lookup: laneId -> conflictingFiles from steps, so we can enrich
+    // pairwise entries that have outcome "conflict" but empty conflictingFiles.
+    const stepFilesByLaneId = new Map<string, ConflictPreviewFile[]>();
+    for (const step of selectedProposal.steps) {
+      if (step.conflictingFiles.length > 0) {
+        stepFilesByLaneId.set(
+          step.laneId,
+          step.conflictingFiles.map((f) => ({
+            path: f.path,
+            conflictMarkers: f.conflictMarkers ?? "",
+            oursExcerpt: f.oursExcerpt ?? null,
+            theirsExcerpt: f.theirsExcerpt ?? null,
+            diffHunk: f.diffHunk ?? null,
+          })),
+        );
+      }
+    }
+
+    if (pairwiseCandidates.length > 0) {
+      const normalized = pairwiseCandidates
+        .map((rawPair, index) => {
+          const pairRecord = asRecord(rawPair);
+          if (!pairRecord) return null;
+          const laneARecord = asRecord(pairRecord.laneA);
+          const laneBRecord = asRecord(pairRecord.laneB);
+          const laneAId =
+            asString(pairRecord.laneAId ?? laneARecord?.id ?? pairRecord.leftLaneId ?? pairRecord.sourceLaneId) ??
+            `pair-${index + 1}-a`;
+          const laneBId =
+            asString(pairRecord.laneBId ?? laneBRecord?.id ?? pairRecord.rightLaneId ?? pairRecord.targetLaneId) ??
+            `${selectedProposal.baseBranch}-${index + 1}`;
+          const laneAName =
+            asString(pairRecord.laneAName ?? laneARecord?.name ?? pairRecord.leftLaneName ?? pairRecord.sourceLaneName) ??
+            laneById.get(laneAId)?.name ??
+            laneAId;
+          const laneBName =
+            asString(pairRecord.laneBName ?? laneBRecord?.name ?? pairRecord.rightLaneName ?? pairRecord.targetLaneName) ??
+            laneById.get(laneBId)?.name ??
+            laneBId;
+          const rawFiles = Array.isArray(pairRecord.files)
+            ? pairRecord.files
+            : Array.isArray(pairRecord.conflictingFiles)
+              ? pairRecord.conflictingFiles
+              : Array.isArray(pairRecord.conflicts)
+                ? pairRecord.conflicts
+                : Array.isArray(pairRecord.paths)
+                  ? pairRecord.paths
+                  : [];
+          let files = rawFiles
+            .map((file) => toConflictPreviewFile(file))
+            .filter((file): file is ConflictPreviewFile => Boolean(file));
+          const outcome = toOutcome(pairRecord.outcome ?? pairRecord.status);
+
+          // Fallback: when pairwise entry has "conflict" outcome but empty files,
+          // try to recover file paths from the per-lane step data. The step's
+          // conflictingFiles is the union of all pairwise files for that lane,
+          // so intersecting the two lane's files gives a reasonable approximation.
+          if (files.length === 0 && (outcome === "conflict" || outcome === "blocked")) {
+            const aFiles = stepFilesByLaneId.get(laneAId) ?? [];
+            const bFiles = stepFilesByLaneId.get(laneBId) ?? [];
+            if (aFiles.length > 0 && bFiles.length > 0) {
+              const bPathSet = new Set(bFiles.map((f) => f.path));
+              const intersection = aFiles.filter((f) => bPathSet.has(f.path));
+              files = intersection.length > 0 ? intersection : [...aFiles, ...bFiles];
+            } else if (aFiles.length > 0) {
+              files = aFiles;
+            } else if (bFiles.length > 0) {
+              files = bFiles;
+            }
+            // Deduplicate by path
+            const seenPaths = new Set<string>();
+            files = files.filter((f) => {
+              if (seenPaths.has(f.path)) return false;
+              seenPaths.add(f.path);
+              return true;
+            });
+          }
+
+          const fileCount = asNumber(pairRecord.fileCount ?? pairRecord.conflictFileCount ?? pairRecord.count) ?? files.length;
+          if (outcome !== "conflict" && outcome !== "blocked" && Math.max(fileCount, files.length) === 0) {
+            return null;
+          }
+          return {
+            key: `${laneAId}::${laneBId}::${index}`,
+            laneAId,
+            laneAName,
+            laneBId,
+            laneBName,
+            outcome: outcome === "blocked" ? "blocked" : "conflict",
+            fileCount: Math.max(fileCount, files.length),
+            files,
+          };
+        })
+        .filter((pair): pair is ProposalConflictPair => Boolean(pair))
+        .sort((a, b) => b.fileCount - a.fileCount || a.laneAName.localeCompare(b.laneAName));
+      if (normalized.length > 0) return normalized;
+    }
+
+    return selectedProposal.steps
+      .filter((step) => step.outcome === "conflict" || step.outcome === "blocked" || step.conflictingFiles.length > 0)
+      .map((step, index) => ({
+        key: `${step.laneId}::${selectedProposal.baseBranch}::${index}`,
+        laneAId: step.laneId,
+        laneAName: step.laneName,
+        laneBId: selectedProposal.baseBranch,
+        laneBName: selectedProposal.baseBranch,
+        outcome: step.outcome === "blocked" ? "blocked" : "conflict",
+        fileCount: step.conflictingFiles.length,
+        files: step.conflictingFiles.map((file) => ({
+          path: file.path,
+          conflictMarkers: file.conflictMarkers ?? "",
+          oursExcerpt: file.oursExcerpt ?? null,
+          theirsExcerpt: file.theirsExcerpt ?? null,
+          diffHunk: file.diffHunk ?? null,
+        })),
+      }));
+  }, [laneById, selectedProposal]);
+
+  const proposalConflictSteps = React.useMemo(
+    () => (selectedProposal ? selectedProposal.steps.filter((step) => step.outcome === "conflict" || step.outcome === "blocked" || step.conflictingFiles.length > 0) : []),
+    [selectedProposal],
+  );
+
+  const proposalConflictingPairs = proposalPairwiseConflicts;
+  const conflictPairCountByLaneId = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const laneId of selectedProposal?.sourceLaneIds ?? []) counts.set(laneId, 0);
+    for (const pair of proposalConflictingPairs) {
+      counts.set(pair.laneAId, (counts.get(pair.laneAId) ?? 0) + 1);
+      counts.set(pair.laneBId, (counts.get(pair.laneBId) ?? 0) + 1);
+    }
+    return counts;
+  }, [proposalConflictingPairs, selectedProposal?.sourceLaneIds]);
+  const isLegacySequentialProposal = React.useMemo(() => {
+    if (!selectedProposal) return false;
+    const hasLaneSummaries = Array.isArray(selectedProposal.laneSummaries) && selectedProposal.laneSummaries.length > 0;
+    const hasPairwise = Array.isArray(selectedProposal.pairwiseResults) && selectedProposal.pairwiseResults.length > 0;
+    return selectedProposal.sourceLaneIds.length > 1 && !hasLaneSummaries && !hasPairwise;
+  }, [selectedProposal]);
+
+  const totalProposalConflictFiles = React.useMemo(() => {
+    const pairwiseTotal = proposalConflictingPairs.reduce((sum, pair) => sum + Math.max(pair.fileCount, pair.files.length), 0);
+    if (pairwiseTotal > 0) return pairwiseTotal;
+    return proposalConflictSteps.reduce((sum, step) => sum + step.conflictingFiles.length, 0);
+  }, [proposalConflictSteps, proposalConflictingPairs]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    window.ade.agentChat.models({ provider: aiProvider })
+      .then((result) => {
+        if (cancelled) return;
+        setAiModels(result);
+        setAiModel((prev) => {
+          if (result.length > 0 && !result.some((model) => model.id === prev)) {
+            return result[0].id;
+          }
+          return prev;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setAiModels([]);
+      });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- aiModel intentionally excluded to avoid re-fetch loop
+  }, [aiProvider]);
+
+  const selectedAiModelInfo = React.useMemo(
+    () => aiModels.find((model) => model.id === aiModel),
+    [aiModel, aiModels],
+  );
+  const reasoningOptions = selectedAiModelInfo?.reasoningEfforts ?? [];
+
+  React.useEffect(() => {
+    if (reasoningOptions.length === 0) return;
+    if (!reasoningOptions.some((effort) => effort.effort === aiReasoningEffort)) {
+      setAiReasoningEffort(reasoningOptions[0]?.effort ?? "medium");
+    }
+  }, [aiReasoningEffort, reasoningOptions]);
+
+  const ensureIntegrationLaneForResolution = React.useCallback(async (): Promise<IntegrationResolutionState | null> => {
+    if (!selectedProposal) return null;
+    if (resolutionState?.integrationLaneId) return resolutionState;
+    setCreateLaneBusy(true);
+    try {
+      const result = await window.ade.prs.createIntegrationLaneForProposal({
+        proposalId: selectedProposal.proposalId,
+      });
+      const nextState: IntegrationResolutionState = {
+        integrationLaneId: result.integrationLaneId,
+        stepResolutions: {},
+        activeChatSessionId: null,
+        activeLaneId: null,
+        updatedAt: new Date().toISOString(),
+      };
+      for (const cleanId of result.mergedCleanLanes) {
+        nextState.stepResolutions[cleanId] = "merged-clean";
+      }
+      for (const conflictId of result.conflictingLanes) {
+        nextState.stepResolutions[conflictId] = "pending";
+      }
+      setResolutionState(nextState);
+      return nextState;
+    } catch (err: unknown) {
+      setCommitError(err instanceof Error ? err.message : String(err));
+      return null;
+    } finally {
+      setCreateLaneBusy(false);
+    }
+  }, [resolutionState, selectedProposal]);
+
+  const handleResolveWithAI = async (
+    stepLaneId: string,
+    provider: AgentChatProvider,
+    model: string,
+    reasoningEffort?: string,
+    autoApprove = false,
+  ) => {
+    if (!selectedProposal) return;
+    setResolvingLaneId(stepLaneId);
+    try {
+      const resState = await ensureIntegrationLaneForResolution();
+      if (!resState?.integrationLaneId) return;
+
       const result = await window.ade.prs.startIntegrationResolution({
         proposalId: selectedProposal.proposalId,
         laneId: stepLaneId,
         provider,
         model,
         reasoningEffort,
-        autoApprove: false,
+        autoApprove,
       });
 
-      // 3. Update resolution state
       setResolutionState((prev) => prev ? {
         ...prev,
         stepResolutions: { ...prev.stepResolutions, [stepLaneId]: "resolving" },
@@ -364,13 +780,65 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         activeLaneId: stepLaneId,
       } : prev);
 
-      // 4. Show embedded chat
       setActiveChatLaneId(result.integrationLaneId);
       setActiveChatSessionId(result.chatSessionId);
     } catch (err: unknown) {
       setCommitError(err instanceof Error ? err.message : String(err));
     } finally {
       setResolvingLaneId(null);
+    }
+  };
+
+  const handleAutoResolveAll = async () => {
+    if (!selectedProposal) return;
+
+    // Derive the list of lane IDs that need resolution.
+    // Prefer pairwise results (modern proposals), fall back to legacy steps.
+    let conflictLaneIds: string[];
+    if (proposalConflictingPairs.length > 0) {
+      // Collect unique lane IDs from pairwise conflict pairs
+      const seen = new Set<string>();
+      for (const pair of proposalConflictingPairs) {
+        seen.add(pair.laneAId);
+        seen.add(pair.laneBId);
+      }
+      conflictLaneIds = Array.from(seen);
+    } else if (proposalConflictSteps.length > 0) {
+      conflictLaneIds = proposalConflictSteps.map((step) => step.laneId);
+    } else {
+      // Nothing to resolve
+      setCommitError("No conflicts found to auto-resolve.");
+      return;
+    }
+
+    const resState = await ensureIntegrationLaneForResolution();
+    if (!resState?.integrationLaneId) return;
+
+    for (const laneId of conflictLaneIds) {
+      setResolvingLaneId(laneId);
+      try {
+        const result = await window.ade.prs.startIntegrationResolution({
+          proposalId: selectedProposal.proposalId,
+          laneId,
+          provider: aiProvider,
+          model: aiModel,
+          reasoningEffort: reasoningOptions.length > 0 ? aiReasoningEffort : undefined,
+          autoApprove: true,
+        });
+        setResolutionState((prev) => prev ? {
+          ...prev,
+          stepResolutions: { ...prev.stepResolutions, [laneId]: "resolving" },
+          activeChatSessionId: result.chatSessionId,
+          activeLaneId: laneId,
+        } : prev);
+        setActiveChatLaneId(result.integrationLaneId);
+        setActiveChatSessionId(result.chatSessionId);
+      } catch (err: unknown) {
+        setCommitError(err instanceof Error ? err.message : String(err));
+        break;
+      } finally {
+        setResolvingLaneId(null);
+      }
     }
   };
 
@@ -395,14 +863,55 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     }
   };
 
+  const togglePairExpansion = (key: string) => {
+    setExpandedPairKeys((prev) => (prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]));
+  };
+
+  const nextManualResolutionLaneId = React.useMemo(() => {
+    for (const step of proposalConflictSteps) {
+      const status = resolutionState?.stepResolutions[step.laneId];
+      if (status !== "resolved" && status !== "merged-clean") return step.laneId;
+    }
+    return proposalConflictSteps[0]?.laneId ?? null;
+  }, [proposalConflictSteps, resolutionState?.stepResolutions]);
+
+  const handleStartManualResolution = () => {
+    if (!nextManualResolutionLaneId) return;
+    void handleResolveWithAI(
+      nextManualResolutionLaneId,
+      aiProvider,
+      aiModel,
+      reasoningOptions.length > 0 ? aiReasoningEffort : undefined,
+      false,
+    );
+  };
+
   // Compute whether all steps are resolved
   const allStepsResolved = React.useMemo(() => {
     if (!selectedProposal || !resolutionState) return false;
+
+    // Check pairwise results first (modern proposals may have empty steps)
+    if (proposalConflictingPairs.length > 0) {
+      // Collect unique lane IDs involved in conflicts
+      const conflictLaneIds = new Set<string>();
+      for (const pair of proposalConflictingPairs) {
+        conflictLaneIds.add(pair.laneAId);
+        conflictLaneIds.add(pair.laneBId);
+      }
+      if (conflictLaneIds.size === 0) return false;
+      return Array.from(conflictLaneIds).every((laneId) => {
+        const res = resolutionState.stepResolutions[laneId];
+        return res === "resolved" || res === "merged-clean";
+      });
+    }
+
+    // Fall back to legacy steps — guard against vacuously true when empty
+    if (selectedProposal.steps.length === 0) return false;
     return selectedProposal.steps.every((step) => {
       const res = resolutionState.stepResolutions[step.laneId];
       return res === "resolved" || res === "merged-clean";
     });
-  }, [selectedProposal, resolutionState]);
+  }, [selectedProposal, resolutionState, proposalConflictingPairs]);
 
   const mergeSourcesResolved = React.useMemo(() => {
     if (!selectedPr) return [];
@@ -693,6 +1202,28 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   overlappingFileCount={selectedPr.conflictAnalysis?.overlapCount}
                 />
               )}
+              <button
+                className="flex items-center font-mono font-bold uppercase tracking-[1px]"
+                style={{
+                  fontSize: 9,
+                  gap: 4,
+                  padding: "2px 8px",
+                  background: "#A78BFA18",
+                  color: "#A78BFA",
+                  border: "1px solid #A78BFA30",
+                  cursor: "pointer",
+                }}
+                title="View related lanes in the workspace graph"
+                onClick={() => {
+                  const laneId = selectedPr.laneId;
+                  window.location.hash = laneId
+                    ? `#/graph?focusLane=${encodeURIComponent(laneId)}`
+                    : "#/graph";
+                }}
+              >
+                <ArrowSquareOut size={12} weight="bold" />
+                GRAPH
+              </button>
             </div>
           </div>
 
@@ -768,36 +1299,61 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             {mergeSourcesResolved.map((s) => {
               const outcome = stepOutcomeByLaneId.get(s.laneId);
               const lane = laneById.get(s.laneId);
+              const borderColor =
+                outcome === "clean" ? "#22C55E" :
+                outcome === "conflict" ? "#F59E0B" :
+                outcome === "blocked" ? "#EF4444" : "#27272A";
+              const step = simulateResult?.steps.find((st) => st.laneId === s.laneId);
               return (
                 <div
                   key={s.laneId}
-                  className="flex items-center justify-between"
                   style={{
-                    padding: "8px 10px",
+                    padding: "10px 12px",
                     background: outcome === "clean" ? "#22C55E06" : outcome === "conflict" ? "#F59E0B06" : outcome === "blocked" ? "#EF444406" : "#0C0A10",
-                    borderLeft: outcome ? `2px solid ${outcome === "clean" ? "#22C55E" : outcome === "conflict" ? "#F59E0B" : outcome === "blocked" ? "#EF4444" : "#27272A"}` : "2px solid #27272A",
+                    borderLeft: `3px solid ${borderColor}`,
+                    border: `1px solid ${borderColor}20`,
+                    borderLeftWidth: 3,
                   }}
                 >
-                  <div className="flex items-center" style={{ gap: 8 }}>
-                    {outcome && <OutcomeDot outcome={outcome} />}
-                    {!outcome && simulateBusy && (
-                      <span className="inline-flex items-center justify-center" style={{ width: 20, height: 20, background: "#71717A18" }}>
-                        <Clock size={12} weight="regular" style={{ color: "#71717A" }} className="animate-pulse" />
+                  <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                    <div className="flex items-center" style={{ gap: 8 }}>
+                      {outcome && <OutcomeDot outcome={outcome} />}
+                      {!outcome && simulateBusy && (
+                        <span className="inline-flex items-center justify-center" style={{ width: 20, height: 20, background: "#71717A18" }}>
+                          <Clock size={12} weight="regular" style={{ color: "#71717A" }} className="animate-pulse" />
+                        </span>
+                      )}
+                      <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#FAFAFA" }}>
+                        {s.laneName}
                       </span>
-                    )}
-                    <span className="font-mono font-semibold" style={{ fontSize: 12, color: "#FAFAFA" }}>
-                      {s.laneName}
-                    </span>
-                    {lane?.branchRef && (
-                      <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>
-                        {normalizeBranchName(lane.branchRef)}
-                      </span>
-                    )}
+                      {lane?.branchRef && (
+                        <span className="font-mono" style={{ fontSize: 10, color: "#52525B" }}>
+                          {normalizeBranchName(lane.branchRef)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center" style={{ gap: 6 }}>
+                      {step && (
+                        <span className="font-mono" style={{ fontSize: 10, color: "#71717A" }}>
+                          {step.diffStat.filesChanged} file{step.diffStat.filesChanged !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {outcome && <LaneStatusBadge outcome={outcome} />}
+                      {!outcome && simulateBusy && <LaneStatusBadge outcome="pending" />}
+                    </div>
                   </div>
-                  <div className="flex items-center" style={{ gap: 6 }}>
-                    {outcome && <LaneStatusBadge outcome={outcome} />}
-                    {!outcome && simulateBusy && <LaneStatusBadge outcome="pending" />}
-                  </div>
+                  {step && (
+                    <div className="font-mono" style={{ marginTop: 4, marginLeft: 28, fontSize: 10, color: "#52525B" }}>
+                      <span style={{ color: "#22C55E" }}>+{step.diffStat.insertions}</span>
+                      {" "}
+                      <span style={{ color: "#EF4444" }}>-{step.diffStat.deletions}</span>
+                      {step.conflictingFiles.length > 0 && (
+                        <span style={{ color: "#F59E0B", marginLeft: 8 }}>
+                          {step.conflictingFiles.length} conflicting file{step.conflictingFiles.length !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1129,6 +1685,31 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 PROPOSED
               </span>
               <OutcomeBadge outcome={selectedProposal.overallOutcome} />
+              <button
+                className="flex items-center font-mono font-bold uppercase tracking-[1px]"
+                style={{
+                  fontSize: 9,
+                  gap: 4,
+                  padding: "2px 8px",
+                  background: "#A78BFA18",
+                  color: "#A78BFA",
+                  border: "1px solid #A78BFA30",
+                  cursor: "pointer",
+                }}
+                title="View this proposal in the workspace graph"
+                onClick={() => {
+                  const integrationLaneId = resolutionState?.integrationLaneId ?? selectedProposal.sourceLaneIds[0];
+                  const proposalKey = selectedProposal.proposalId;
+                  const params = new URLSearchParams();
+                  if (integrationLaneId) params.set("focusLane", integrationLaneId);
+                  if (proposalKey) params.set("focusProposal", proposalKey);
+                  const qs = params.toString();
+                  window.location.hash = qs ? `#/graph?${qs}` : "#/graph";
+                }}
+              >
+                <ArrowSquareOut size={12} weight="bold" />
+                VIEW IN GRAPH
+              </button>
             </div>
           </div>
 
@@ -1170,7 +1751,47 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           </div>
         </div>
 
-        {/* ---- Source Lanes (expandable rows) ---- */}
+        {isLegacySequentialProposal && (
+          <div
+            style={{
+              background: "#F59E0B08",
+              border: "1px solid #F59E0B30",
+              padding: 12,
+              marginBottom: 20,
+            }}
+          >
+            <div className="flex items-center justify-between" style={{ gap: 10 }}>
+              <div>
+                <div className="font-mono font-semibold" style={{ fontSize: 11, color: "#F59E0B" }}>
+                  Legacy simulation data detected
+                </div>
+                <div className="font-mono" style={{ fontSize: 10, color: "#D4A857", marginTop: 3 }}>
+                  This proposal was generated before pairwise conflict metadata. Outcomes can look queue-like. Re-simulate for accurate pairwise conflicts.
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={resimBusy}
+                className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                style={{
+                  fontSize: 10,
+                  height: 28,
+                  padding: "0 10px",
+                  background: "transparent",
+                  color: "#F59E0B",
+                  border: "1px solid #F59E0B50",
+                  cursor: resimBusy ? "not-allowed" : "pointer",
+                  opacity: resimBusy ? 0.5 : 1,
+                }}
+                onClick={() => void handleResimulate(selectedProposal)}
+              >
+                {resimBusy ? "SIMULATING..." : "RE-SIMULATE"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ---- Source lanes ---- */}
         <div
           style={{
             background: "#13101A",
@@ -1182,26 +1803,81 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
             <SectionHeader>SOURCE LANES</SectionHeader>
             <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A1A1AA" }}>
-              {selectedProposal.steps.length} LANE{selectedProposal.steps.length !== 1 ? "S" : ""}
+              {proposalLaneCards.length} LANE{proposalLaneCards.length !== 1 ? "S" : ""}
             </span>
           </div>
-          <div className="flex flex-col" style={{ gap: 4 }}>
-            {selectedProposal.steps.map((step) => (
-              <IntegrationStepDetail
-                key={step.laneId}
-                step={step}
-                lane={laneById.get(step.laneId)}
-                expanded={expandedStepLaneId === step.laneId}
-                onToggle={() => setExpandedStepLaneId(expandedStepLaneId === step.laneId ? null : step.laneId)}
-                resolution={resolutionState?.stepResolutions[step.laneId]}
-                onResolveWithAI={(provider, model, reasoningEffort) =>
-                  void handleResolveWithAI(step.laneId, provider, model, reasoningEffort)
-                }
-                resolving={resolvingLaneId === step.laneId || createLaneBusy}
-              />
-            ))}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: 10,
+            }}
+          >
+            {proposalLaneCards.map((lane) => {
+              const pairCount = conflictPairCountByLaneId.get(lane.laneId) ?? 0;
+              const borderColor =
+                lane.outcome === "conflict" ? "#F59E0B" :
+                lane.outcome === "blocked" ? "#EF4444" :
+                lane.outcome === "clean" ? "#22C55E" : "#1E1B26";
+              const laneInfo = laneById.get(lane.laneId);
+              return (
+                <div
+                  key={`source-lane-${lane.laneId}-${lane.position}`}
+                  style={{
+                    background: "#0C0A10",
+                    border: `1px solid ${borderColor}40`,
+                    borderTop: `2px solid ${borderColor}`,
+                    padding: 12,
+                    minWidth: 0,
+                  }}
+                >
+                  <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 10 }}>
+                    <span className="truncate font-mono font-bold" style={{ fontSize: 12, color: "#FAFAFA" }}>
+                      {lane.laneName}
+                    </span>
+                    <LaneStatusBadge outcome={lane.outcome} />
+                  </div>
+                  <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 4 }}>
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                      COMMIT
+                    </span>
+                    <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>
+                      {lane.commitHash ? lane.commitHash.slice(0, 8) : "N/A"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 4 }}>
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                      COMMITS
+                    </span>
+                    <span className="font-mono" style={{ fontSize: 11, color: "#A1A1AA" }}>
+                      {lane.commitCount ?? "N/A"}
+                    </span>
+                  </div>
+                  {laneInfo?.branchRef && (
+                    <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 4 }}>
+                      <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                        BRANCH
+                      </span>
+                      <span className="font-mono truncate" style={{ fontSize: 10, color: "#71717A", maxWidth: 120 }}>
+                        {normalizeBranchName(laneInfo.branchRef)}
+                      </span>
+                    </div>
+                  )}
+                  {pairCount > 0 && (
+                    <div
+                      className="flex items-center"
+                      style={{ gap: 4, marginTop: 6, paddingTop: 6, borderTop: "1px solid #1E1B2680" }}
+                    >
+                      <Warning size={10} weight="fill" style={{ color: "#F59E0B" }} />
+                      <span className="font-mono" style={{ fontSize: 9, color: "#F59E0B" }}>
+                        Conflicts with {pairCount} other lane{pairCount !== 1 ? "s" : ""}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
-          {/* Target lane indicator */}
           <div className="flex items-center" style={{ gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #1E1B2680" }}>
             <ArrowRight size={12} weight="bold" style={{ color: "#52525B" }} />
             <LaneChip name={selectedProposal.baseBranch} variant="accent" />
@@ -1209,16 +1885,507 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           </div>
         </div>
 
+        {/* ---- Conflict Analysis (consolidated view) ---- */}
+        <div
+          style={{
+            background: "#13101A",
+            border: "1px solid #1E1B26",
+            padding: 16,
+            marginBottom: 20,
+          }}
+        >
+          <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
+            <SectionHeader>CONFLICT ANALYSIS</SectionHeader>
+            <OutcomeBadge outcome={selectedProposal.overallOutcome} />
+          </div>
+
+          {/* ---- Conflict Matrix (visual heatmap grid) ---- */}
+          {proposalLaneCards.length > 1 && (
+            <div style={{ marginBottom: 16 }}>
+              <div
+                className="font-mono font-bold uppercase tracking-[1px]"
+                style={{ fontSize: 9, color: "#52525B", marginBottom: 8 }}
+              >
+                CONFLICT MATRIX
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "auto" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: 0, width: 24 }} />
+                      {proposalLaneCards.map((col) => (
+                        <th
+                          key={`matrix-col-${col.laneId}`}
+                          className="font-mono font-bold uppercase tracking-[1px]"
+                          style={{
+                            fontSize: 8,
+                            color: "#71717A",
+                            padding: "4px 6px",
+                            textAlign: "center",
+                            maxWidth: 80,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={col.laneName}
+                        >
+                          {col.laneName.length > 10 ? `${col.laneName.slice(0, 10)}...` : col.laneName}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proposalLaneCards.map((row) => (
+                      <tr key={`matrix-row-${row.laneId}`}>
+                        <td
+                          className="font-mono font-bold uppercase tracking-[1px]"
+                          style={{
+                            fontSize: 8,
+                            color: "#71717A",
+                            padding: "4px 6px",
+                            textAlign: "right",
+                            maxWidth: 80,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={row.laneName}
+                        >
+                          {row.laneName.length > 10 ? `${row.laneName.slice(0, 10)}...` : row.laneName}
+                        </td>
+                        {proposalLaneCards.map((col) => {
+                          const isSelf = row.laneId === col.laneId;
+                          const pair = proposalConflictingPairs.find(
+                            (p) =>
+                              (p.laneAId === row.laneId && p.laneBId === col.laneId) ||
+                              (p.laneAId === col.laneId && p.laneBId === row.laneId)
+                          );
+                          const hasConflictCell = Boolean(pair);
+                          const cellBg = isSelf
+                            ? "#1E1B26"
+                            : hasConflictCell
+                              ? pair?.outcome === "blocked" ? "#EF444430" : "#F59E0B30"
+                              : "#22C55E15";
+                          const cellBorder = isSelf
+                            ? "#27272A"
+                            : hasConflictCell
+                              ? pair?.outcome === "blocked" ? "#EF444450" : "#F59E0B50"
+                              : "#22C55E30";
+                          return (
+                            <td
+                              key={`matrix-cell-${row.laneId}-${col.laneId}`}
+                              style={{
+                                width: 32,
+                                height: 28,
+                                padding: 0,
+                                textAlign: "center",
+                                background: cellBg,
+                                border: `1px solid ${cellBorder}`,
+                                cursor: hasConflictCell ? "pointer" : "default",
+                              }}
+                              title={
+                                isSelf
+                                  ? row.laneName
+                                  : hasConflictCell
+                                    ? `${row.laneName} x ${col.laneName}: ${Math.max(pair?.fileCount ?? 0, pair?.files.length ?? 0)} files`
+                                    : `${row.laneName} x ${col.laneName}: clean`
+                              }
+                              onClick={() => {
+                                if (pair) togglePairExpansion(pair.key);
+                              }}
+                            >
+                              {isSelf ? (
+                                <span style={{ color: "#52525B", fontSize: 10 }}>--</span>
+                              ) : hasConflictCell ? (
+                                <Warning size={12} weight="fill" style={{ color: pair?.outcome === "blocked" ? "#EF4444" : "#F59E0B" }} />
+                              ) : (
+                                <CheckCircle size={12} weight="fill" style={{ color: "#22C55E" }} />
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ---- Expandable conflict pairs list ---- */}
+          {proposalConflictingPairs.length === 0 ? (
+            <div
+              className="flex items-center"
+              style={{
+                gap: 8,
+                padding: "12px",
+                background: "#22C55E08",
+                border: "1px solid #22C55E20",
+              }}
+            >
+              <CheckCircle size={16} weight="fill" style={{ color: "#22C55E" }} />
+              <span className="font-mono" style={{ fontSize: 11, color: "#22C55E" }}>
+                All lanes merge cleanly. No conflicts detected.
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col" style={{ gap: 6 }}>
+              <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#52525B" }}>
+                  CONFLICTING PAIRS
+                </span>
+                <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A1A1AA" }}>
+                  {proposalConflictingPairs.length} PAIR{proposalConflictingPairs.length !== 1 ? "S" : ""}
+                </span>
+              </div>
+              {proposalConflictingPairs.map((pair) => {
+                const expanded = expandedPairKeys.includes(pair.key);
+                const pairFileCount = Math.max(pair.fileCount, pair.files.length);
+                const resolutionA = resolutionState?.stepResolutions[pair.laneAId];
+                const resolutionB = resolutionState?.stepResolutions[pair.laneBId];
+                const isResolvedA = resolutionA === "resolved" || resolutionA === "merged-clean";
+                const isResolvedB = resolutionB === "resolved" || resolutionB === "merged-clean";
+                const isResolved = isResolvedA && isResolvedB;
+                return (
+                  <div
+                    key={`pair-${pair.key}`}
+                    style={{
+                      background: "#0C0A10",
+                      border: isResolved ? "1px solid #22C55E30" : "1px solid #F59E0B25",
+                      borderLeft: isResolved ? "3px solid #22C55E" : "3px solid #F59E0B",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between text-left"
+                      style={{
+                        padding: "10px 12px",
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                      }}
+                      onClick={() => togglePairExpansion(pair.key)}
+                    >
+                      <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
+                        {expanded ? (
+                          <CaretDown size={12} weight="bold" style={{ color: "#71717A" }} />
+                        ) : (
+                          <CaretRight size={12} weight="bold" style={{ color: "#71717A" }} />
+                        )}
+                        <OutcomeDot outcome={isResolved ? "clean" : pair.outcome} />
+                        <span className="truncate font-mono font-semibold" style={{ fontSize: 11, color: "#FAFAFA" }}>
+                          {pair.laneAName}
+                        </span>
+                        <span className="font-mono" style={{ fontSize: 11, color: "#52525B" }}>x</span>
+                        <span className="truncate font-mono font-semibold" style={{ fontSize: 11, color: "#FAFAFA" }}>
+                          {pair.laneBName}
+                        </span>
+                      </div>
+                      <div className="flex items-center" style={{ gap: 8 }}>
+                        {isResolved && (
+                          <span
+                            className="font-mono font-bold uppercase tracking-[1px]"
+                            style={{ fontSize: 8, padding: "1px 5px", background: "#22C55E18", color: "#22C55E" }}
+                          >
+                            RESOLVED
+                          </span>
+                        )}
+                        <span className="font-mono" style={{ fontSize: 10, color: isResolved ? "#22C55E" : "#F59E0B" }}>
+                          {pairFileCount > 0 ? `${pairFileCount} file${pairFileCount !== 1 ? "s" : ""}` : "paths unavailable"}
+                        </span>
+                      </div>
+                    </button>
+
+                    {expanded && (
+                      <div style={{ padding: "0 12px 12px" }}>
+                        {pair.files.length > 0 ? (
+                          <div className="flex flex-col" style={{ gap: 4 }}>
+                            {pair.files.map((file) => (
+                              <div key={`${pair.key}-${file.path}`}>
+                                {/* Reason label */}
+                                <div
+                                  className="flex items-center"
+                                  style={{
+                                    gap: 6,
+                                    padding: "4px 8px",
+                                    marginBottom: 2,
+                                    background: "#F59E0B06",
+                                  }}
+                                >
+                                  <Warning size={10} weight="fill" style={{ color: "#F59E0B" }} />
+                                  <span className="font-mono" style={{ fontSize: 9, color: "#F59E0B" }}>
+                                    Both lanes modified this file
+                                  </span>
+                                </div>
+                                <ConflictFilePreview file={file} />
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div
+                            className="font-mono"
+                            style={{
+                              fontSize: 11,
+                              color: "#71717A",
+                              padding: "8px 10px",
+                              background: "#F59E0B06",
+                              borderLeft: "2px solid #F59E0B30",
+                            }}
+                          >
+                            Specific file paths will be available after full merge simulation with replay.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ---- Summary bar ---- */}
+          {proposalConflictingPairs.length > 0 && (
+            <div
+              className="flex items-center"
+              style={{
+                gap: 8,
+                marginTop: 14,
+                padding: "10px 12px",
+                background: selectedProposal.overallOutcome === "conflict" ? "#F59E0B08" : "#EF444408",
+                borderTop: `1px solid ${selectedProposal.overallOutcome === "conflict" ? "#F59E0B20" : "#EF444420"}`,
+              }}
+            >
+              <Warning size={14} weight="fill" style={{ color: selectedProposal.overallOutcome === "blocked" ? "#EF4444" : "#F59E0B" }} />
+              <span className="font-mono" style={{ fontSize: 11, color: selectedProposal.overallOutcome === "blocked" ? "#EF4444" : "#F59E0B" }}>
+                {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""} {proposalConflictingPairs.length !== 1 ? "have" : "has"} conflicts
+                {totalProposalConflictFiles > 0 && ` across ${totalProposalConflictFiles} file${totalProposalConflictFiles !== 1 ? "s" : ""}`}.
+                {selectedProposal.overallOutcome === "blocked"
+                  ? " Integration is blocked until issues are resolved."
+                  : " Integration cannot proceed without resolution."}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* ---- Resolve with AI card ---- */}
+        {selectedProposal.overallOutcome === "conflict" && (
+          <div
+            style={{
+              background: "#13101A",
+              border: "1px solid #A78BFA30",
+              borderLeft: "3px solid #A78BFA",
+              padding: 0,
+              marginBottom: 20,
+              overflow: "hidden",
+            }}
+          >
+            {/* Card header */}
+            <div
+              style={{
+                padding: "14px 16px 12px",
+                background: "#A78BFA08",
+                borderBottom: "1px solid #A78BFA20",
+              }}
+            >
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <Sparkle size={18} weight="fill" style={{ color: "#A78BFA" }} />
+                <span
+                  className="font-mono font-bold uppercase tracking-[1px]"
+                  style={{ fontSize: 12, color: "#A78BFA" }}
+                >
+                  RESOLVE WITH AI
+                </span>
+              </div>
+              <div className="font-mono" style={{ fontSize: 10, color: "#71717A", marginTop: 6 }}>
+                {totalProposalConflictFiles} conflict file{totalProposalConflictFiles === 1 ? "" : "s"} across {proposalConflictingPairs.length} lane pair{proposalConflictingPairs.length !== 1 ? "s" : ""}. Choose a resolution mode below.
+              </div>
+            </div>
+
+            {/* Resolution mode descriptions */}
+            <div style={{ padding: "12px 16px" }}>
+              <div className="flex" style={{ gap: 12, marginBottom: 14 }}>
+                <div
+                  style={{
+                    flex: 1,
+                    padding: "10px 12px",
+                    background: "#0C0A10",
+                    border: "1px solid #1E1B26",
+                  }}
+                >
+                  <div className="flex items-center" style={{ gap: 6, marginBottom: 6 }}>
+                    <ShieldCheck size={14} weight="fill" style={{ color: "#F59E0B" }} />
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#F59E0B" }}>
+                      MANUAL MODE
+                    </span>
+                  </div>
+                  <div className="font-mono" style={{ fontSize: 10, color: "#71717A", lineHeight: "16px" }}>
+                    You review each AI-proposed change before it is applied. Best for critical code.
+                  </div>
+                </div>
+                <div
+                  style={{
+                    flex: 1,
+                    padding: "10px 12px",
+                    background: "#0C0A10",
+                    border: "1px solid #1E1B26",
+                  }}
+                >
+                  <div className="flex items-center" style={{ gap: 6, marginBottom: 6 }}>
+                    <Robot size={14} weight="fill" style={{ color: "#A78BFA" }} />
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 9, color: "#A78BFA" }}>
+                      AUTOMATIC MODE
+                    </span>
+                  </div>
+                  <div className="font-mono" style={{ fontSize: 10, color: "#71717A", lineHeight: "16px" }}>
+                    AI resolves all conflicts automatically. You can review the results after.
+                  </div>
+                </div>
+              </div>
+
+              {/* AI configuration row */}
+              <div
+                className="font-mono font-bold uppercase tracking-[1px]"
+                style={{ fontSize: 9, color: "#52525B", marginBottom: 8 }}
+              >
+                AI CONFIGURATION
+              </div>
+              <div className="flex items-center flex-wrap" style={{ gap: 8, marginBottom: 14 }}>
+                <div className="flex items-center" style={{ gap: 4 }}>
+                  <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 8, color: "#52525B" }}>
+                    PROVIDER
+                  </span>
+                  <select
+                    value={aiProvider}
+                    onChange={(e) => setAiProvider(e.target.value as AgentChatProvider)}
+                    className="font-mono"
+                    style={{
+                      fontSize: 10,
+                      height: 28,
+                      padding: "0 8px",
+                      background: "#0C0A10",
+                      color: "#FAFAFA",
+                      border: "1px solid #A78BFA30",
+                      outline: "none",
+                    }}
+                  >
+                    <option value="claude">CLAUDE</option>
+                    <option value="codex">CODEX</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center" style={{ gap: 4 }}>
+                  <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 8, color: "#52525B" }}>
+                    MODEL
+                  </span>
+                  <select
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                    className="font-mono"
+                    style={{
+                      fontSize: 10,
+                      height: 28,
+                      padding: "0 8px",
+                      background: "#0C0A10",
+                      color: "#FAFAFA",
+                      border: "1px solid #A78BFA30",
+                      outline: "none",
+                    }}
+                  >
+                    {aiModels.map((model) => (
+                      <option key={`ai-model-${model.id}`} value={model.id}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                    {aiModels.length === 0 && <option value={aiModel}>{aiModel}</option>}
+                  </select>
+                </div>
+
+                {reasoningOptions.length > 0 && (
+                  <div className="flex items-center" style={{ gap: 4 }}>
+                    <span className="font-mono font-bold uppercase tracking-[1px]" style={{ fontSize: 8, color: "#52525B" }}>
+                      REASONING
+                    </span>
+                    <select
+                      value={aiReasoningEffort}
+                      onChange={(e) => setAiReasoningEffort(e.target.value)}
+                      className="font-mono"
+                      style={{
+                        fontSize: 10,
+                        height: 28,
+                        padding: "0 8px",
+                        background: "#0C0A10",
+                        color: "#FAFAFA",
+                        border: "1px solid #A78BFA30",
+                        outline: "none",
+                      }}
+                    >
+                      {reasoningOptions.map((option) => (
+                        <option key={`reasoning-${option.effort}`} value={option.effort}>
+                          {option.description}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex items-center" style={{ gap: 10 }}>
+                <button
+                  type="button"
+                  disabled={!nextManualResolutionLaneId || createLaneBusy || Boolean(resolvingLaneId)}
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 32,
+                    padding: "0 14px",
+                    background: "transparent",
+                    color: "#F59E0B",
+                    border: "1px solid #F59E0B50",
+                    cursor: !nextManualResolutionLaneId || createLaneBusy || Boolean(resolvingLaneId) ? "not-allowed" : "pointer",
+                    opacity: !nextManualResolutionLaneId || createLaneBusy || Boolean(resolvingLaneId) ? 0.5 : 1,
+                  }}
+                  onClick={() => handleStartManualResolution()}
+                >
+                  <ShieldCheck size={12} weight="fill" style={{ marginRight: 6 }} />
+                  {createLaneBusy ? "PREPARING..." : "RESOLVE MANUALLY"}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={(proposalConflictSteps.length === 0 && proposalConflictingPairs.length === 0) || createLaneBusy || Boolean(resolvingLaneId)}
+                  className="inline-flex items-center font-mono font-bold uppercase tracking-[1px] transition-all duration-100"
+                  style={{
+                    fontSize: 10,
+                    height: 32,
+                    padding: "0 14px",
+                    background: "#A78BFA",
+                    color: "#0F0D14",
+                    border: "none",
+                    cursor: (proposalConflictSteps.length === 0 && proposalConflictingPairs.length === 0) || createLaneBusy || Boolean(resolvingLaneId) ? "not-allowed" : "pointer",
+                    opacity: (proposalConflictSteps.length === 0 && proposalConflictingPairs.length === 0) || createLaneBusy || Boolean(resolvingLaneId) ? 0.5 : 1,
+                  }}
+                  onClick={() => void handleAutoResolveAll()}
+                >
+                  <Robot size={12} weight="fill" style={{ marginRight: 6 }} />
+                  {resolvingLaneId ? "RESOLVING..." : "AUTO-RESOLVE ALL"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ---- Embedded chat (when resolving) ---- */}
         {activeChatSessionId && activeChatLaneId && (
           <div
             style={{
               background: "#13101A",
-              border: "1px solid #1E1B26",
+              border: "1px solid #A78BFA30",
               marginBottom: 20,
               overflow: "hidden",
             }}
           >
+            {/* Resolution header bar */}
             <div
               style={{
                 padding: "10px 16px",
@@ -1226,9 +2393,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
+                background: "#A78BFA08",
               }}
             >
-              <SectionHeader>AI CONFLICT RESOLUTION</SectionHeader>
+              <div className="flex items-center" style={{ gap: 10 }}>
+                <Sparkle size={14} weight="fill" style={{ color: "#A78BFA" }} />
+                <SectionHeader>AI CONFLICT RESOLUTION</SectionHeader>
+              </div>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <Button
                   size="sm"
@@ -1254,7 +2425,94 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 </Button>
               </div>
             </div>
-            <div style={{ height: 500 }}>
+
+            {/* Resolution progress panel */}
+            {resolutionState && selectedProposal && (
+              <div
+                style={{
+                  padding: "10px 16px",
+                  borderBottom: "1px solid #1E1B26",
+                  background: "#0C0A10",
+                }}
+              >
+                <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+                  <span
+                    className="font-mono font-bold uppercase tracking-[1px]"
+                    style={{ fontSize: 9, color: "#52525B" }}
+                  >
+                    RESOLUTION PROGRESS
+                  </span>
+                  <span className="font-mono" style={{ fontSize: 10, color: "#71717A" }}>
+                    {Object.values(resolutionState.stepResolutions).filter((s) => s === "resolved" || s === "merged-clean").length}
+                    {" / "}
+                    {Object.keys(resolutionState.stepResolutions).length} lanes processed
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center" style={{ gap: 6 }}>
+                  {selectedProposal.steps.map((step) => {
+                    const status = resolutionState.stepResolutions[step.laneId];
+                    const isActive = resolutionState.activeLaneId === step.laneId;
+                    const statusConfig = {
+                      "resolved":     { label: "RESOLVED",    color: "#22C55E", bg: "#22C55E18" },
+                      "merged-clean": { label: "CLEAN",       color: "#22C55E", bg: "#22C55E18" },
+                      "resolving":    { label: "RESOLVING...",color: "#A78BFA", bg: "#A78BFA18" },
+                      "failed":       { label: "FAILED",      color: "#EF4444", bg: "#EF444418" },
+                      "pending":      { label: "PENDING",     color: "#71717A", bg: "#71717A18" },
+                    }[status ?? "pending"] ?? { label: "PENDING", color: "#71717A", bg: "#71717A18" };
+                    return (
+                      <div
+                        key={`progress-${step.laneId}`}
+                        className="flex items-center"
+                        style={{
+                          gap: 6,
+                          padding: "4px 8px",
+                          background: isActive ? "#A78BFA12" : "#0F0D14",
+                          border: isActive ? "1px solid #A78BFA40" : "1px solid #1E1B26",
+                        }}
+                      >
+                        <span className="font-mono font-semibold truncate" style={{ fontSize: 10, color: "#FAFAFA", maxWidth: 100 }}>
+                          {step.laneName}
+                        </span>
+                        <span
+                          className="font-mono font-bold uppercase tracking-[1px]"
+                          style={{
+                            fontSize: 8,
+                            padding: "1px 4px",
+                            background: statusConfig.bg,
+                            color: statusConfig.color,
+                          }}
+                        >
+                          {statusConfig.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Active lane status bar */}
+                {resolutionState.activeLaneId && (
+                  <div
+                    className="flex items-center"
+                    style={{
+                      gap: 6,
+                      marginTop: 8,
+                      paddingTop: 8,
+                      borderTop: "1px solid #1E1B2680",
+                    }}
+                  >
+                    <Gear size={10} weight="fill" style={{ color: "#A78BFA" }} className="animate-spin" />
+                    <span className="font-mono" style={{ fontSize: 10, color: "#A78BFA" }}>
+                      Resolving: {proposalLaneCards.find((l) => l.laneId === resolutionState.activeLaneId)?.laneName ?? resolutionState.activeLaneId}
+                    </span>
+                    <span className="font-mono" style={{ fontSize: 10, color: "#52525B", marginLeft: 8 }}>
+                      Mode: {resolutionState.stepResolutions[resolutionState.activeLaneId] === "resolving" ? "active" : "idle"}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Chat pane with increased height */}
+            <div style={{ height: 640 }}>
               <AgentChatPane
                 laneId={activeChatLaneId}
                 lockSessionId={activeChatSessionId}
@@ -1314,7 +2572,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                 onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#A78BFA50"; e.currentTarget.style.color = "#FAFAFA"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#27272A"; e.currentTarget.style.color = "#A1A1AA"; }}
                 onClick={() => {
-                  window.location.hash = `/graph?focusLane=${resolutionState.integrationLaneId}`;
+                  window.location.hash = `#/graph?focusLane=${encodeURIComponent(resolutionState.integrationLaneId)}`;
                 }}
               >
                 <GitBranch size={14} weight="regular" style={{ marginRight: 6 }} />
@@ -1429,7 +2687,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedStepLaneId, resolutionState, activeChatLaneId, activeChatSessionId, createLaneBusy, resolvingLaneId, allStepsResolved]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, stepOutcomeByLaneId, proposals, proposalsLoaded, selectedProposal, selectedProposalId, commitBusy, commitError, resimBusy, deleteProposalBusy, expandedPairKeys, resolutionState, activeChatLaneId, activeChatSessionId, createLaneBusy, resolvingLaneId, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, aiProvider, aiModels, aiModel, aiReasoningEffort, reasoningOptions, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
 
   return <PaneTilingLayout layoutId="prs:integration:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

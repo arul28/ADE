@@ -172,7 +172,7 @@ type RefreshRequest = {
 | `RefreshLanePack` | Session end, HEAD change | Compute session delta, regenerate lane pack markdown, update project pack |
 | `AutoNarrative` | After `RefreshLanePack` (when subscription CLI tool is available) | Generate AI narrative via Vercel AI SDK, apply via marker-based replacement |
 | `PredictConflicts` | HEAD change, lane dirty change (debounced 900-1500ms), periodic (120s) | Run dry-merge simulation across lane pairs via conflictService |
-| `RunAutomation` | User-defined trigger (HEAD change, manual, etc.) | Execute automation action scripts via automationService (Phase 8) |
+| `RunAutomation` | User-defined trigger (HEAD change, manual, etc.) | Execute agent action scripts via automationService (Phase 8) |
 
 #### Not Yet Implemented
 
@@ -369,7 +369,7 @@ const handleHeadChanged = ({ laneId, reason }) => {
 
 | Service | Direction | Purpose |
 |---------|-----------|---------|
-| Automation Service | Downstream | `RunAutomation` job executes user-defined scripts |
+| Automation Service | Downstream | `RunAutomation` job executes agent-defined scripts |
 | Checkpoint Service | Downstream | `CreateCheckpoint` job creates immutable snapshots |
 
 ---
@@ -395,7 +395,7 @@ const handleHeadChanged = ({ laneId, reason }) => {
 - `dispose()` method for cleaning up timers on shutdown
 - Structured error logging for failed jobs
 - Integration wiring in `main.ts` with head watcher routing
-- Automation jobs: `automationService` triggers job execution on HEAD changes and other events (Phase 8)
+- Agent jobs: `automationService` triggers job execution on HEAD changes and other events (Phase 8)
 - Auto-narrative pipeline: deterministic pack refresh followed by async AI narrative generation via Vercel AI SDK
 
 ### Not Yet Implemented

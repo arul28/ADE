@@ -1,5 +1,5 @@
 import React from "react";
-import { Warning, CaretDown, CaretRight, Code } from "@phosphor-icons/react";
+import { Warning, Code, File, FileTs, FileJs, FileCss, FileJsx, FilePy, FileHtml } from "@phosphor-icons/react";
 
 type ConflictFile = {
   path: string;
@@ -9,8 +9,50 @@ type ConflictFile = {
   diffHunk: string | null;
 };
 
+function getFileIcon(path: string) {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const iconMap: Record<string, React.ElementType> = {
+    ts: FileTs,
+    tsx: FileTs,
+    js: FileJs,
+    jsx: FileJsx,
+    css: FileCss,
+    scss: FileCss,
+    py: FilePy,
+    html: FileHtml,
+    htm: FileHtml,
+  };
+  return iconMap[ext] ?? File;
+}
+
+function getLanguageHint(path: string): string | null {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const langMap: Record<string, string> = {
+    ts: "TypeScript",
+    tsx: "TypeScript/JSX",
+    js: "JavaScript",
+    jsx: "JavaScript/JSX",
+    css: "CSS",
+    scss: "SCSS",
+    py: "Python",
+    html: "HTML",
+    json: "JSON",
+    yaml: "YAML",
+    yml: "YAML",
+    md: "Markdown",
+    rs: "Rust",
+    go: "Go",
+    java: "Java",
+    swift: "Swift",
+  };
+  return langMap[ext] ?? null;
+}
+
 export function ConflictFilePreview({ file }: { file: ConflictFile }) {
   const [showRawMarkers, setShowRawMarkers] = React.useState(false);
+  const FileIcon = getFileIcon(file.path);
+  const langHint = getLanguageHint(file.path);
+  const hasDetailContent = file.oursExcerpt || file.theirsExcerpt || file.diffHunk || file.conflictMarkers;
 
   return (
     <div
@@ -25,37 +67,62 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
         className="flex items-center justify-between"
         style={{
           padding: "8px 12px",
-          borderBottom: "1px solid #1E1B26",
+          borderBottom: hasDetailContent ? "1px solid #1E1B26" : "none",
           background: "#13101A",
         }}
       >
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <Warning size={14} weight="fill" style={{ color: "#F59E0B" }} />
+        <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
+          <FileIcon size={16} weight="duotone" style={{ color: "#F59E0B", flexShrink: 0 }} />
           <span
-            className="font-mono font-semibold"
-            style={{ fontSize: 11, color: "#FAFAFA" }}
+            className="font-mono font-semibold truncate"
+            style={{ fontSize: 12, color: "#FAFAFA" }}
           >
             {file.path}
           </span>
+          {langHint && (
+            <span
+              className="font-mono font-bold uppercase tracking-[1px]"
+              style={{
+                fontSize: 8,
+                padding: "1px 5px",
+                background: "#A78BFA12",
+                color: "#A78BFA",
+                border: "1px solid #A78BFA20",
+                flexShrink: 0,
+              }}
+            >
+              {langHint}
+            </span>
+          )}
         </div>
-        {file.conflictMarkers && (
-          <button
-            type="button"
-            className="flex items-center font-mono font-bold uppercase tracking-[1px] transition-colors duration-100"
-            style={{
-              fontSize: 9,
-              padding: "2px 8px",
-              background: showRawMarkers ? "#A78BFA18" : "transparent",
-              color: showRawMarkers ? "#A78BFA" : "#52525B",
-              border: `1px solid ${showRawMarkers ? "#A78BFA30" : "#27272A"}`,
-              cursor: "pointer",
-            }}
-            onClick={() => setShowRawMarkers(!showRawMarkers)}
+        <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+          <Warning size={12} weight="fill" style={{ color: "#F59E0B" }} />
+          <span
+            className="font-mono font-bold uppercase tracking-[1px]"
+            style={{ fontSize: 8, color: "#F59E0B" }}
           >
-            <Code size={10} weight="bold" style={{ marginRight: 4 }} />
-            RAW
-          </button>
-        )}
+            CONFLICT
+          </span>
+          {file.conflictMarkers && (
+            <button
+              type="button"
+              className="flex items-center font-mono font-bold uppercase tracking-[1px] transition-colors duration-100"
+              style={{
+                fontSize: 9,
+                padding: "2px 8px",
+                background: showRawMarkers ? "#A78BFA18" : "transparent",
+                color: showRawMarkers ? "#A78BFA" : "#52525B",
+                border: `1px solid ${showRawMarkers ? "#A78BFA30" : "#27272A"}`,
+                cursor: "pointer",
+                marginLeft: 4,
+              }}
+              onClick={() => setShowRawMarkers(!showRawMarkers)}
+            >
+              <Code size={10} weight="bold" style={{ marginRight: 4 }} />
+              RAW
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Ours / Theirs side-by-side excerpts */}
@@ -72,7 +139,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
                   marginBottom: 6,
                 }}
               >
-                OURS
+                OURS (current branch)
               </div>
               <pre
                 className="font-mono"
@@ -103,7 +170,7 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
                   marginBottom: 6,
                 }}
               >
-                THEIRS
+                THEIRS (incoming branch)
               </div>
               <pre
                 className="font-mono"
@@ -207,17 +274,33 @@ export function ConflictFilePreview({ file }: { file: ConflictFile }) {
         </div>
       )}
 
-      {/* Fallback: no excerpts, no markers, no hunk */}
-      {!file.oursExcerpt && !file.theirsExcerpt && !file.diffHunk && !file.conflictMarkers && (
+      {/* Fallback: path is known but no detail content available */}
+      {!hasDetailContent && file.path && (
         <div
-          className="font-mono"
           style={{
-            fontSize: 11,
-            color: "#52525B",
-            padding: "10px 12px",
+            padding: "12px",
           }}
         >
-          No conflict detail available for this file.
+          <div className="flex items-center" style={{ gap: 8, marginBottom: 8 }}>
+            <span
+              className="font-mono font-bold uppercase tracking-[1px]"
+              style={{ fontSize: 9, color: "#F59E0B" }}
+            >
+              BOTH LANES MODIFIED THIS FILE
+            </span>
+          </div>
+          <div
+            className="font-mono"
+            style={{
+              fontSize: 11,
+              color: "#71717A",
+              padding: "8px 10px",
+              background: "#F59E0B06",
+              borderLeft: "2px solid #F59E0B30",
+            }}
+          >
+            File modified in both lanes — detailed conflict markers will be available after full simulation with merge replay.
+          </div>
         </div>
       )}
     </div>

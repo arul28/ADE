@@ -487,7 +487,7 @@ computeBackends:
     enabled: false
     relayAddress: ""
     sshKeyPath: "~/.ssh/ade_vps"
-    nightShiftDefault: false
+    nightShiftAgentDefault: false
 
   daytona:
     enabled: false  # Always opt-in

@@ -24,14 +24,14 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
    - 7.7 [Graph](#77-graph)
    - 7.8 [PRs](#78-prs)
    - 7.9 [History](#79-history)
-   - 7.10 [Automations](#710-automations)
+   - 7.10 [Agents](#710-agents)
    - 7.11 [Missions](#711-missions)
    - 7.12 [Settings](#712-settings)
 8. [Feature Documentation](#8-feature-documentation)
 9. [Architecture Documentation](#9-architecture-documentation)
 10. [Cross-Cutting Concerns](#10-cross-cutting-concerns)
     - 10.1 [Packs (Context and History System)](#101-packs-context-and-history-system)
-    - 10.2 [Automations](#102-automations)
+    - 10.2 [Agents](#102-agents)
     - 10.3 [Workspace Graph](#103-workspace-graph)
     - 10.4 [Job Engine](#104-job-engine)
     - 10.5 [AI Integration](#105-ai-integration)
@@ -244,7 +244,7 @@ Current tab routes:
 - `/graph`
 - `/prs`
 - `/history`
-- `/automations`
+- `/agents`
 - `/missions`
 - `/settings`
 
@@ -304,11 +304,11 @@ The History tab provides an ADE-native operations timeline (distinct from `git l
 
 See: [features/HISTORY.md](features/HISTORY.md)
 
-### 7.10 Automations
+### 7.10 Agents
 
-The Automations tab manages trigger-action workflows, manual runs, execution history, and natural-language drafting of automation rules. It is the foundation for recurring/background workflows (including planned Night Shift behavior in `docs/final-plan.md`).
+The Agents tab is the control center for all autonomous ADE behavior. Users create, configure, and monitor agents that perform work on their behalf. Agent types include: **Automation Agents** (trigger-action workflows migrated from the previous Automations tab), **Night Shift Agents** (scheduled unattended tasks with strict guardrails and morning digest), **Watcher Agents** (monitors for upstream repos, APIs, and dependency feeds), and **Review Agents** (pre-review assigned PRs overnight). Each agent combines an identity (persona + policy profile), a trigger (when to activate), a behavior (what to do), and guardrails (budget caps + stop conditions). The tab features a card-based UI for agent management, a guided Custom Agent Builder wizard with natural language support, and a Morning Briefing — a swipeable card interface (inspired by Tinder/TikTok) for rapidly reviewing overnight results with approve/dismiss/investigate actions.
 
-See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
+See: [features/AGENTS.md](features/AGENTS.md)
 
 ### 7.11 Missions
 
@@ -343,7 +343,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
 | 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, and theme/keybinding settings. |
-| 12 | Automations | [features/AUTOMATIONS.md](features/AUTOMATIONS.md) | Trigger-action workflows. Covers session-end and commit triggers, scheduled actions, pack updates, conflict prediction, test execution, and configuration via `.ade/actions.yaml`. |
+| 12 | Agents | [features/AGENTS.md](features/AGENTS.md) | Unified autonomous agent system. Covers automation agents (trigger-action workflows), Night Shift agents (unattended scheduled execution with morning digest), watcher agents (repo/API monitoring), review agents (PR pre-review), agent identities (persona/policy profiles), the Custom Agent Builder wizard, and Morning Briefing UI. |
 
 ---
 
@@ -391,11 +391,11 @@ Packs are ADE's core differentiator for agentic workflows. They provide a durabl
 
 See: [features/PACKS.md](features/PACKS.md)
 
-### 10.2 Automations
+### 10.2 Agents
 
-Automations allow users to wire triggers to actions so that ADE stays synchronized without manual intervention. MVP triggers include terminal session end, commit created, and scheduled intervals. MVP actions include pack updates, conflict prediction, test runs, AI augmentation requests, and custom commands. Automations are configured in `.ade/actions.yaml` and can be enabled/disabled from the Settings tab.
+Agents are ADE's unified system for autonomous behavior. The Agents tab (renamed from Automations in Phase 4) is the hub where users create, configure, and monitor agents that perform work on their behalf. Agent types include automation agents (wrapping the existing trigger-action engine), Night Shift agents (scheduled unattended execution), watcher agents (resource monitors), and review agents (PR pre-reviewers). Each agent combines an identity, trigger, behavior, and guardrails. The Morning Briefing provides a swipeable card interface for reviewing overnight results. Agents are configured in `.ade/ade.yaml` or `.ade/local.yaml` under the `agents:` key and can be managed from the Agents tab or Settings.
 
-See: [features/AUTOMATIONS.md](features/AUTOMATIONS.md)
+See: [features/AGENTS.md](features/AGENTS.md)
 
 ### 10.3 Workspace Graph
 

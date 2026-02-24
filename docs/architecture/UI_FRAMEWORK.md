@@ -24,7 +24,7 @@ This document describes the renderer architecture in `apps/desktop/src/renderer`
 
 ## Overview
 
-The ADE renderer is a React SPA running inside Electron's renderer process. It provides high-density operational UI for lanes, files, terminals, conflicts, context packs, PRs, history, automations, missions, and settings.
+The ADE renderer is a React SPA running inside Electron's renderer process. It provides high-density operational UI for lanes, files, terminals, conflicts, context packs, PRs, history, agents, missions, and settings.
 
 The renderer has no direct filesystem/process/git access. All privileged operations flow through `window.ade` (preload bridge), with the Electron main process as the only trusted executor.
 
@@ -84,7 +84,7 @@ Routes are defined in `apps/desktop/src/renderer/components/app/App.tsx`. Curren
 - `/graph`
 - `/prs`
 - `/history`
-- `/automations`
+- `/agents`
 - `/missions`
 - `/settings`
 
@@ -99,7 +99,7 @@ Primary left-rail nav (`TabNav`) exposes 12 tabs:
 7. Graph
 8. PRs
 9. History
-10. Automations
+10. Agents
 11. Missions
 12. Settings
 
@@ -159,10 +159,10 @@ Renderer components are feature-grouped under `apps/desktop/src/renderer/compone
 - `graph/`: topology canvas
 - `prs/`: PR operations and status surfaces
 - `history/`: operations timeline surfaces
-- `automations/`: rules, history, NL planner interactions
+- `agents/`: agent cards, builder wizard, findings, morning briefing, run history
 - `missions/`: mission intake, status board, interventions, artifacts, and outcomes
 - `onboarding/`: first-run setup flows
-- `settings/`: settings subsections (keybindings, terminal profiles, automations, data management)
+- `settings/`: settings subsections (keybindings, terminal profiles, agents, data management)
 - `ui/`: shared presentation primitives
 
 ---
@@ -177,7 +177,7 @@ High-level IPC domains consumed by the renderer:
 - Lanes/sessions/pty/files/git
 - Conflicts/context/packs
 - PRs/github/hosted
-- Automations/missions/layout/graph/processes/tests
+- Agents/missions/layout/graph/processes/tests
 - Project config/keybindings/terminal profiles/agent tools
 
 High-frequency event streams include:
@@ -190,7 +190,7 @@ High-frequency event streams include:
 - `ade.conflicts.event`
 - `ade.packs.event`
 - `ade.prs.event`
-- `ade.automations.event`
+- `ade.agents.event`
 - `ade.missions.event`
 - `ade.lanes.restackSuggestions.event`
 - `ade.lanes.autoRebase.event`
@@ -207,7 +207,7 @@ Renderer architecture is fully operational for the current desktop scope:
 - 12-tab shell + startup/onboarding routes are implemented.
 - Six-theme token system is implemented and wired through settings.
 - High-density pane layouts are implemented across lanes/terminals/conflicts/graph.
-- Key feature pages (Play, Lanes, Files, Terminals, Conflicts, Context, Graph, PRs, History, Automations, Missions, Settings) are implemented.
+- Key feature pages (Play, Lanes, Files, Terminals, Conflicts, Context, Graph, PRs, History, Agents, Missions, Settings) are implemented.
 - IPC integration is broad and type-aligned with the preload contract.
 
 Future UI surfaces for Machines are planned in `docs/final-plan.md`.

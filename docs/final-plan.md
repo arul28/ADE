@@ -31,7 +31,7 @@ Baseline derived from code in `apps/desktop`.
 - Graph (`/graph`)
 - PRs (`/prs`)
 - History (`/history`)
-- Automations (`/automations`)
+- Agents (`/agents`) (renamed from Automations in Phase 4)
 - Missions (`/missions`)
 - Settings (`/settings`)
 
@@ -44,7 +44,7 @@ Baseline derived from code in `apps/desktop`.
 - Conflict prediction, risk matrix, merge simulation, proposal apply/undo, external resolver runs
 - PR workflows (including stacked and integration PR paths)
 - Packs/checkpoints/version/event pipeline with bounded exports
-- Automations engine + natural-language planner
+- Automations engine + natural-language planner (rebranded as Agents in Phase 4)
 - Mission intake/tracking lifecycle (status lanes, steps, interventions, artifacts, events)
 - Deterministic orchestrator runtime: DAG scheduling, claims, context snapshots, timeline, gate evaluator
 - Executor scaffold adapters for Claude/Codex/Gemini (tracked-session scaffold, not yet AI-driven)
@@ -72,8 +72,9 @@ Baseline derived from code in `apps/desktop`.
 
 Not implemented yet:
 
+- Agents hub (unified autonomous agent system — automation, Night Shift, watcher, review agents)
 - Agent identities (persona/policy bundles)
-- Night Shift automation family
+- Morning Briefing (swipeable card review for overnight results)
 - Play runtime isolation stack (ports/routing/preview/profile isolation)
 - Compute backend abstraction (local/VPS/Daytona)
 - Integration sandbox for lane-set verification
@@ -106,8 +107,11 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Agent Chat integration (Codex App Server + Claude SDK) | Phase 1.5 | Phase 1 (partial — SDK wiring) | Complete |
 | MCP server | Phase 2 | Phase 1 | Complete |
 | AI orchestrator | Phase 3 | Phases 1 and 2 | ~70% |
+| Agents hub (Automations → Agents rebrand) | Phase 4 | Phase 3 | Planned |
 | Agent identities | Phase 4 | Phase 3 | Planned |
-| Night Shift | Phase 4 | Phase 3 | Planned |
+| Night Shift agents | Phase 4 | Phase 3 | Planned |
+| Watcher & Review agents | Phase 4 | Phase 3 | Planned |
+| Morning Briefing UI | Phase 4 | Phase 3 | Planned |
 | Play runtime isolation | Phase 5 | Phase 3 | Planned |
 | Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
 | Integration sandbox + readiness gates | Phase 6 | Phase 5 | Planned |
@@ -522,7 +526,7 @@ Goal: Build a native agent chat interface inside ADE — a rich, provider-agnost
 - Users can switch between Codex and Claude in the composer dropdown — same UI, different backend.
 - Session resume works for both providers.
 - Chat-specific settings (provider, approval policy, sandbox) are configurable in Settings.
-- All chat activity feeds into the same context pipeline as terminal sessions (deltas, packs, automations, orchestrator).
+- All chat activity feeds into the same context pipeline as terminal sessions (deltas, packs, agents, orchestrator).
 
 ---
 
@@ -723,15 +727,39 @@ Goal: Full AI-powered mission orchestration via a Claude session connected to th
 
 ---
 
-## Phase 4 -- Agent Identities + Night Shift (3-4 weeks)
+## Phase 4 -- Agents Hub (5-6 weeks)
 
-Goal: Reusable persona/policy profiles for mission execution and safe unattended scheduled mission batches.
+Goal: Rebrand Automations into a unified **Agents** tab — the control center for all autonomous ADE behavior. Users create, configure, and monitor agents that perform work on their behalf: running automations, executing Night Shift tasks, watching repos, and more. Each agent combines an identity (persona + policy), a trigger (when to run), a behavior (what to do), and guardrails (budget + stop conditions).
+
+### Core Concept: What Is an Agent?
+
+An **Agent** in ADE is a configured autonomous unit that performs work on the user's behalf. Every agent follows the same schema:
+
+```
+Agent = Identity + Trigger + Behavior + Guardrails
+```
+
+- **Identity**: Persona name, system prompt overlay, model/provider preferences, risk policies, permission constraints.
+- **Trigger**: When the agent activates — event-driven (commit, session-end), scheduled (cron/time), polling (watch a resource), or manual.
+- **Behavior**: What the agent does — run an automation pipeline, execute a mission, watch a repo/API and report findings, run code health scans.
+- **Guardrails**: Budget caps (time, tokens, steps, USD), stop conditions (first failure, intervention threshold, budget exhaustion), and approval requirements.
+
+### Agent Types
+
+| Agent Type | Description | Trigger | Example |
+|---|---|---|---|
+| **Automation Agent** | Wraps the existing trigger-action automation engine. Runs pipelines of actions (update packs, predict conflicts, run tests, run commands). | Event-driven (commit, session-end, schedule, manual) | "On commit, run lint and unit tests" |
+| **Night Shift Agent** | Queued tasks that run unattended during off-hours. Stricter guardrails, budget caps, and stop conditions. Produces a morning digest for review. | Scheduled (time-based, e.g., "run at 2am") | "Refactor auth module overnight, park on failure" |
+| **Watcher Agent** | Monitors external resources (upstream repos, APIs, logs, dependency feeds) and surfaces findings. Does not modify code — observation only. | Polling (interval-based) or webhook | "Watch react repo for deprecation notices affecting our codebase" |
+| **Review Agent** | Watches the team's PR feed and pre-reviews PRs assigned to the user. Summarizes changes, flags concerns, and provides a morning briefing card. | Polling (GitHub API interval) or webhook | "Pre-review my assigned PRs overnight, summarize in morning briefing" |
+
+All agent types share the same underlying schema, identity system, and guardrail infrastructure. The type determines default behavior templates and UI affordances.
 
 ### Reference docs
 
+- [features/AGENTS.md](features/AGENTS.md) — Agents tab feature doc (renamed from AUTOMATIONS.md)
 - [features/MISSIONS.md](features/MISSIONS.md) — mission launch flow (identity selector), executor policy, autopilot mode
-- [features/AUTOMATIONS.md](features/AUTOMATIONS.md) — automation engine (Night Shift builds on trigger-action infrastructure)
-- [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) — AI usage dashboard and budget controls (Night Shift reuses this infrastructure), identity management UI in Settings
+- [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) — AI usage dashboard and budget controls (agents reuse this infrastructure), identity management UI in Settings
 - [architecture/AI_INTEGRATION.md](architecture/AI_INTEGRATION.md) — per-task-type configuration (identities override these defaults), MCP permission/policy layer (identities constrain tool access)
 - [architecture/SECURITY_AND_PRIVACY.md](architecture/SECURITY_AND_PRIVACY.md) — trust model for unattended execution
 
@@ -741,42 +769,543 @@ Goal: Reusable persona/policy profiles for mission execution and safe unattended
 
 ### Workstreams
 
-- Agent identities -- data/contracts:
-  - Add identity schema: persona name, system prompt overlay, toolchain defaults (preferred model/provider per task type), risk policies (allowed tools, budget caps, auto-merge policy), permission constraints.
-  - Add identity version history for auditability.
-- Agent identities -- main process:
-  - Add `agentIdentityService` (CRUD + validation + default preset library).
-  - Bind identity policy enforcement into AI orchestrator and deterministic runtime execution gates.
-  - Identity policies constrain which MCP tools the orchestrator may call and under what conditions.
-- Agent identities -- renderer:
-  - Identity management UI in Settings (create, edit, clone, delete identities).
-  - Mission-level identity selector in launch form.
-  - Effective-policy preview (show what the selected identity allows/restricts before launch).
-- Night Shift -- budget infrastructure:
-  - Night Shift budget caps reuse the per-feature budget infrastructure from Phase 1 (`ai_usage_log` table, `ai.budgets` config). Night Shift runs are constrained by the same daily limits plus additional session-level caps (time limit, step count, total token budget).
-- Night Shift -- main process:
-  - Add `nightShiftService` on top of automations engine.
-  - Implement scheduled mission batches: users queue missions with time/date triggers.
-  - Implement budget caps (time limit, step count limit, token limit) and stop conditions (first failure, budget exhaustion, intervention threshold).
-  - Add morning digest artifact generator: summary of all Night Shift outcomes, pending reviews, and budget consumption.
-  - Implement unattended failure handling: failed missions are parked with structured failure context, not retried without explicit policy.
-- Night Shift -- renderer:
-  - Night Shift preset builder in Automations (schedule, identity, budget, stop conditions).
-  - Morning digest surface with intervention queue and outcome summaries.
-- Validation:
-  - Identity policy application tests (identity override precedence, denial enforcement).
-  - Backward compatibility tests for missions with no explicit identity.
-  - Budget enforcement tests (missions stop at budget boundaries).
-  - Unattended failure and stop-condition simulations.
+#### W1: Rebrand Automations → Agents
+
+- Rename route: `/automations` → `/agents`.
+- Update tab label: "AUTOMATIONS" → "AGENTS" (follows ALL-CAPS label convention from design system).
+- Update tab icon: from `zap` (automations) to `bot` (agents) — Lucide icon.
+- Update tab numbering in sidebar navigation.
+- Rename `AutomationsPage.tsx` → `AgentsPage.tsx`.
+- Update all IPC channel references: `ade.automations.*` → `ade.agents.*` (maintain backward-compatible aliases during transition).
+- Update config key: `automations:` → `agents:` in `.ade/ade.yaml` and `.ade/local.yaml` (with migration for existing configs).
+- Rename feature doc: `features/AUTOMATIONS.md` → `features/AGENTS.md`.
+
+#### W2: Agent Schema + Data Model
+
+- Extend the existing `AutomationRule` schema into a unified `Agent` schema:
+
+```typescript
+interface Agent {
+  id: string;
+  name: string;
+  type: 'automation' | 'night-shift' | 'watcher' | 'review';
+  description?: string;
+  icon?: string;                    // Lucide icon name or emoji
+  identity: AgentIdentity;          // Persona + policy profile
+  trigger: AgentTrigger;            // When to activate
+  behavior: AgentBehavior;          // What to do
+  guardrails: AgentGuardrails;      // Budget + stop conditions
+  enabled: boolean;
+  createdAt: string;                // ISO 8601
+  updatedAt: string;                // ISO 8601
+}
+
+interface AgentIdentity {
+  id: string;
+  name: string;                     // e.g., "Careful Reviewer", "Fast Implementer"
+  systemPromptOverlay?: string;     // Additional system prompt injected into AI sessions
+  modelPreferences: {
+    provider: 'claude' | 'codex';
+    model: string;                  // e.g., "sonnet", "gpt-5.3-codex"
+    reasoningEffort?: string;       // e.g., "low", "medium", "high"
+  };
+  riskPolicies: {
+    allowedTools: string[];         // MCP tools this identity may invoke (empty = all)
+    deniedTools: string[];          // MCP tools explicitly denied
+    autoMerge: boolean;             // Whether the agent can merge without approval
+    maxFileChanges: number;         // Max files the agent can modify per run
+    maxLinesChanged: number;        // Max lines changed per run
+  };
+  permissionConstraints: {
+    claudePermissionMode: 'plan' | 'acceptEdits' | 'bypassPermissions';
+    codexSandboxLevel: 'read-only' | 'workspace-write' | 'danger-full-access';
+    codexApprovalMode: 'untrusted' | 'on-request' | 'never';
+  };
+  version: number;                  // Incremented on every edit for auditability
+  versionHistory: AgentIdentityVersion[];
+}
+
+interface AgentTrigger {
+  type: 'session-end' | 'commit' | 'schedule' | 'manual' | 'poll' | 'webhook';
+  cron?: string;                    // For schedule triggers
+  branch?: string;                  // Branch filter for commit triggers
+  pollIntervalMs?: number;          // For poll triggers (default: 300000 = 5min)
+  pollTarget?: {                    // What to poll
+    type: 'github-prs' | 'github-releases' | 'npm-registry' | 'url' | 'custom';
+    url?: string;
+    repo?: string;                  // GitHub owner/repo
+    filter?: string;                // Optional filter expression
+  };
+  scheduleTime?: string;            // HH:MM for Night Shift (local timezone)
+  scheduleDays?: string[];          // ['mon','tue','wed','thu','fri'] for weekday-only
+}
+
+interface AgentBehavior {
+  // For automation agents: action pipeline
+  actions?: AgentAction[];
+
+  // For night-shift agents: mission template
+  missionPrompt?: string;           // Natural language mission description
+  missionLaneId?: string;           // Target lane (optional, agent can create one)
+  prStrategy?: 'integration' | 'per-lane' | 'queue' | 'manual';
+
+  // For watcher agents: observation config
+  watchTargets?: WatchTarget[];
+  reportFormat?: 'card' | 'summary' | 'diff';
+
+  // For review agents: review config
+  reviewScope?: 'assigned-to-me' | 'team' | 'all-open';
+  reviewDepth?: 'summary' | 'detailed' | 'security-focused';
+}
+
+interface AgentGuardrails {
+  timeLimitMs?: number;             // Max wall-clock time per run
+  tokenBudget?: number;             // Max tokens per run
+  stepLimit?: number;               // Max mission steps per run
+  budgetUsd?: number;               // Max USD spend per run
+  dailyRunLimit?: number;           // Max runs per 24h period
+  stopConditions: StopCondition[];  // When to halt
+  requireApprovalFor?: string[];    // Actions requiring user approval before execution
+  subscriptionAware?: {             // Night Shift subscription utilization settings
+    utilizationMode: 'maximize' | 'conservative' | 'fixed'; // How aggressively to use sub capacity
+    conservativePercent?: number;   // For 'conservative' mode: max % of available capacity (default: 60)
+    weeklyReservePercent?: number;  // % of weekly budget to always keep for daytime use (default: 20)
+    respectRateLimits: boolean;     // Pause/reschedule when rate-limited instead of failing (default: true)
+    allowMultipleBatches: boolean;  // Schedule work across rate limit resets (default: true)
+    priority?: number;              // Agent priority within Night Shift queue (lower = higher priority)
+  };
+}
+
+type StopCondition =
+  | { type: 'first-failure' }
+  | { type: 'budget-exhaustion' }
+  | { type: 'rate-limited' }       // Stopped because subscription rate limit hit and no reset within window
+  | { type: 'reserve-protected' }  // Stopped to protect weekly reserve threshold
+  | { type: 'intervention-threshold'; maxInterventions: number }
+  | { type: 'error-rate'; maxErrorPercent: number }
+  | { type: 'time-exceeded' };
+```
+
+- Add `agents` table to SQLite (extends existing `automation_runs` schema):
+
+```sql
+CREATE TABLE agents (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,              -- 'automation' | 'night-shift' | 'watcher' | 'review'
+    config TEXT NOT NULL,            -- JSON: full Agent schema
+    identity_id TEXT,                -- FK to agent_identities table
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE agent_identities (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    config TEXT NOT NULL,            -- JSON: AgentIdentity schema
+    version INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE agent_identity_versions (
+    id TEXT PRIMARY KEY,
+    identity_id TEXT NOT NULL REFERENCES agent_identities(id),
+    version INTEGER NOT NULL,
+    config TEXT NOT NULL,            -- JSON: snapshot of identity at this version
+    changed_by TEXT,                 -- 'user' | 'migration'
+    created_at TEXT NOT NULL
+);
+```
+
+- Existing `automation_runs` and `automation_action_results` tables are preserved and reused for agent run tracking. Add `agent_id` column to `automation_runs` to link runs to agents.
+
+#### W3: Agent Identity System
+
+- **`agentIdentityService`** (main process):
+  - CRUD operations for identities.
+  - Default preset library shipped with ADE:
+    - **Careful Reviewer**: Plan-only permission mode, read-only sandbox, low risk tolerance, security-focused review depth.
+    - **Fast Implementer**: Accept-edits permission, workspace-write sandbox, higher file/line limits.
+    - **Night Owl**: Designed for Night Shift — conservative guardrails, parks on first failure, generates morning digest.
+    - **Code Health Inspector**: Read-only, observation-focused, no code modification allowed, reports findings only.
+  - Identity version history: every edit increments version and snapshots the previous config.
+  - Identity validation: ensures permission constraints don't exceed project-level AI permission settings.
+
+- **Identity policy enforcement**:
+  - When an agent runs, its identity's permission constraints are applied to the AI orchestrator and agent executor.
+  - Identity `riskPolicies.allowedTools` filters the MCP tool set available to the orchestrator for that run.
+  - Identity `riskPolicies.deniedTools` takes precedence over allowed tools (deny wins).
+  - Budget caps from identity guardrails are enforced alongside project-level budget limits (lower of the two wins).
+
+- **Identity management UI** in Settings:
+  - Identity list with name, type badge, preset indicator, and version number.
+  - Create/edit/clone/delete operations.
+  - Effective-policy preview: before saving, show exactly what the identity allows and restricts.
+  - Diff view between identity versions for audit.
+
+#### W4: Agents Tab — Card-Based UI
+
+The Agents tab replaces the old Automations list view with a card-based agent grid following the ADE design system (`docs/design-template.md`).
+
+- **Page Layout**:
+  ```
+  +------------------------------------------------------------------+
+  | AGENTS                                          [+ NEW AGENT]     |
+  | [All] [Automation] [Night Shift] [Watcher] [Review]   [Search]   |
+  +------------------------------------------------------------------+
+  | ┌──────────────┐ ┌──────────────┐ ┌──────────────┐              |
+  | │ 🔧 Lint on   │ │ 🌙 Refactor │ │ 👁 Watch     │              |
+  | │    Commit     │ │    Auth      │ │    React     │              |
+  | │              │ │              │ │    Releases   │              |
+  | │ AUTOMATION   │ │ NIGHT SHIFT  │ │ WATCHER      │              |
+  | │ ● Active     │ │ ◐ 2:00 AM   │ │ ● Polling    │              |
+  | │ Last: 2m ago │ │ Next: tonight│ │ Last: 1h ago │              |
+  | │ ✓ 47 runs    │ │ ✓ 12 runs   │ │ 3 findings   │              |
+  | │         [ON] │ │         [ON] │ │         [ON] │              |
+  | └──────────────┘ └──────────────┘ └──────────────┘              |
+  | ┌──────────────┐ ┌──────────────┐                                |
+  | │ 📋 PR Review │ │ 🧹 Code     │                                |
+  | │    Agent      │ │    Health    │                                |
+  | │              │ │              │                                |
+  | │ REVIEW       │ │ WATCHER      │                                |
+  | │ ◐ Overnight  │ │ ● Weekly     │                                |
+  | │ 5 PRs queued │ │ Last: Mon    │                                |
+  | │ 2 flagged    │ │ 14 findings  │                                |
+  | │         [ON] │ │         [ON] │                                |
+  | └──────────────┘ └──────────────┘                                |
+  +------------------------------------------------------------------+
+  ```
+
+- **Agent Card** (standard card from design system: `bg-secondary`, `border-default`, `0px` radius):
+  - Top: Icon + name (heading-sm, JetBrains Mono 12px/600).
+  - Type badge (label-sm, ALL-CAPS, 9px): `AUTOMATION` / `NIGHT SHIFT` / `WATCHER` / `REVIEW` with type-specific accent colors.
+  - Status line: active/idle/sleeping/error with colored dot indicator.
+  - Stats: last run timestamp, total run count, findings count (for watchers/reviewers).
+  - Enable/disable toggle in bottom-right corner.
+  - Click opens the Agent Detail panel (right pane or modal).
+
+- **Agent Detail Panel** (split-pane or modal):
+  - **Overview tab**: Agent name, description, type, identity selector, trigger config, behavior config, guardrails config.
+  - **Runs tab**: Execution history with per-run expandable detail (reuses existing automation run history UI).
+  - **Findings tab** (watchers/reviewers only): List of surfaced findings with approve/dismiss/investigate actions.
+  - **Edit mode**: Inline editing of all agent fields with save/cancel.
+  - **"Run Now" button**: Manual trigger for any agent type.
+  - **Delete button** (danger styling from design system).
+
+- **Type filter tabs**: Segmented control at top to filter by agent type (All / Automation / Night Shift / Watcher / Review).
+- **Search**: Filter agents by name or description.
+
+#### W5: Custom Agent Builder
+
+A guided wizard for creating new agents, accessible via the "+ NEW AGENT" button.
+
+- **Step 1 — Choose Type**:
+  - Four type cards with icon, name, and short description.
+  - Each card shows example use cases.
+  - Selecting a type loads appropriate defaults for the remaining steps.
+
+- **Step 2 — Configure Identity**:
+  - Select an existing identity from the preset library or create a new one inline.
+  - Identity picker shows name, model preference, and risk level summary.
+  - "Create New Identity" expands an inline form with all identity fields.
+
+- **Step 3 — Set Trigger**:
+  - Trigger type selector (visual, not dropdown — each trigger type is a card).
+  - Type-specific config:
+    - **Event-driven**: Event type dropdown (commit, session-end) + optional branch filter.
+    - **Schedule**: Time picker + day selector (weekdays, daily, custom cron).
+    - **Poll**: Interval slider + target config (GitHub repo, URL, npm package).
+    - **Manual**: No config needed — runs on demand.
+
+- **Step 4 — Define Behavior**:
+  - **Automation agents**: Action pipeline builder (add/remove/reorder actions, same as existing automation rule editor).
+  - **Night Shift agents**: Mission prompt textarea + lane selector + PR strategy picker.
+  - **Watcher agents**: Watch target list + report format selector.
+  - **Review agents**: Scope selector + depth selector.
+
+- **Step 5 — Set Guardrails**:
+  - Budget controls: time limit, token budget, step limit, USD cap.
+  - Stop conditions: checkboxes for first-failure, budget-exhaustion, intervention-threshold.
+  - Daily run limit input.
+  - Approval requirements: checkboxes for which actions need user approval.
+
+- **Step 6 — Review & Create**:
+  - Full summary of the configured agent.
+  - Effective policy preview (what the agent can and cannot do).
+  - Simulation preview (human-readable description of what will happen when the agent triggers).
+  - "Create Agent" button.
+
+- **Natural Language Creation** (alternative to wizard):
+  - "Describe what you want" textarea at the top of the wizard.
+  - Reuses the existing `automationPlannerService` NL-to-rule planner, extended for new agent types.
+  - AI generates a full agent config from the description.
+  - User reviews and edits before saving.
+
+#### W6: Night Shift Mode
+
+Night Shift is not a separate system — it's an agent type with specific UX affordances for unattended overnight execution. The core value proposition is **maximizing subscription utilization during idle hours** — Claude and Codex subscriptions have 5-hour rate limit reset windows, and most developers are asleep for 6-8 hours. Night Shift ensures those tokens don't go to waste by scheduling productive AI work while the user sleeps.
+
+- **Night Shift Service** (`nightShiftService`):
+  - Built on top of the agent/automation engine.
+  - Manages the Night Shift queue: users queue agents with `schedule` triggers for after-hours execution.
+  - Enforces strict guardrails: time limits, step caps, token budgets, USD limits.
+  - Stop conditions: `first-failure` (park the mission, don't retry), `budget-exhaustion`, `intervention-threshold` (if an agent hits N intervention requests, park it — unattended means nobody is there to respond).
+  - Failed runs are parked with structured failure context (error, last step, files changed, diff snapshot) for morning review.
+  - Generates a **Morning Digest** artifact at the end of each Night Shift session.
+
+- **Subscription-Aware Scheduling** (core differentiator):
+  - Night Shift monitors the user's subscription utilization via rate limit headers and usage tracking:
+    - **Claude**: Tracks rate limit headers (`x-ratelimit-*`) from CLI responses. Detects current usage tier (Pro = lower limits, Max = higher limits). Knows the 5-hour rolling window reset.
+    - **Codex**: Tracks rate limit responses from the App Server. Detects subscription tier (Plus = lower, Pro = higher).
+  - **Utilization modes** (user-selectable):
+    - `maximize`: Use all available capacity before the next reset window. Ideal for users who want to squeeze every token out of their subscription overnight. Night Shift schedules work to fill the gap between when the user sleeps and when rate limits reset.
+    - `conservative`: Use up to a user-defined percentage of remaining capacity (e.g., 60%). Leaves headroom for the next day's manual work and respects weekly/monthly aggregate limits. This is the default.
+    - `fixed`: Ignore subscription utilization — just run the queued tasks with fixed per-agent budgets. For users who prefer explicit control.
+  - **Rate limit awareness**:
+    - Before starting each Night Shift agent, the service checks current rate limit state.
+    - If a rate limit reset is due at 3am and the user queued work at 11pm, Night Shift can schedule a second batch after the 3am reset to use the refreshed capacity.
+    - If remaining capacity is below a configurable threshold (e.g., 10%), Night Shift skips lower-priority agents and logs the skip reason.
+  - **Weekly/monthly budget protection**:
+    - Users set a weekly token/USD reserve: "always keep at least 20% of my weekly budget for daytime use."
+    - Night Shift respects this reserve — it will not consume tokens that would drop the user below their reserve threshold.
+    - The reserve is calculated from the AI usage dashboard data (`ai_usage_log` table).
+  - **Subscription status display**:
+    - Night Shift settings show current subscription tier, current rate limit state, estimated available overnight capacity, and projected utilization based on queued agents.
+    - A simple bar visualization: `[████████░░░░] 65% of tonight's capacity will be used by queued agents`.
+  - **Existing foundation**: `ai_usage_log` table, `logUsage()`, daily `checkBudget()`, aggregated usage queries, and cost estimation are already implemented. The usage dashboard component (`UsageDashboard.tsx`) exists in the Missions tab. Night Shift subscription-aware scheduling builds on this by adding rate limit header capture, tier detection, weekly aggregation, and the subscription status panel.
+
+- **Night Shift Budget Infrastructure**:
+  - Extends the existing per-feature budget infrastructure already implemented in `aiIntegrationService`: `ai_usage_log` SQLite table, `logUsage()` recording, daily `checkBudget()` enforcement, aggregated usage queries, and token cost estimation are all shipped.
+  - **New for Phase 4**: subscription-aware scheduling layer — rate limit header parsing from Claude/Codex CLI responses, subscription tier detection (Pro/Max for Claude, Plus/Pro for Codex), weekly usage aggregation for reserve calculations, and multi-batch scheduling across rate limit reset windows.
+  - Night Shift runs are constrained by: (1) per-agent guardrails, (2) global Night Shift budget cap, (3) subscription rate limits, and (4) weekly reserve protection. The most restrictive limit wins.
+  - Budget enforcement is hard — when any cap is hit, the agent stops immediately with a structured budget-exhaustion record.
+
+- **Morning Digest Generator**:
+  - Runs after all Night Shift agents complete (or at a configured morning time, e.g., 7am).
+  - Aggregates outcomes from all overnight agent runs.
+  - Includes subscription utilization summary: how much capacity was used, how much remains, whether any agents were skipped due to rate limits.
+  - Produces a structured digest artifact:
+    ```typescript
+    interface MorningDigest {
+      id: string;
+      generatedAt: string;
+      nightShiftSessionId: string;
+      agents: AgentDigestEntry[];
+      totalBudgetUsed: BudgetSummary;
+      subscriptionUtilization: SubscriptionUtilizationSummary;
+      pendingReviews: number;
+      requiresAttention: number;
+    }
+
+    interface SubscriptionUtilizationSummary {
+      claude?: {
+        tier: string;               // e.g., "Pro", "Max"
+        tokensUsedOvernight: number;
+        tokensAvailableAtStart: number;
+        rateLimitResetsHit: number; // How many 5h resets occurred during the session
+        capacityUtilized: number;   // 0.0-1.0 percentage of available overnight capacity used
+        agentsSkippedDueToLimits: number;
+      };
+      codex?: {
+        tier: string;
+        tokensUsedOvernight: number;
+        tokensAvailableAtStart: number;
+        capacityUtilized: number;
+        agentsSkippedDueToLimits: number;
+      };
+      weeklyReserveRemaining: number; // Percentage of weekly reserve still intact
+    }
+
+    interface AgentDigestEntry {
+      agentId: string;
+      agentName: string;
+      status: 'succeeded' | 'failed' | 'parked' | 'budget-exhausted' | 'rate-limited' | 'skipped';
+      summary: string;              // AI-generated summary of what happened
+      findings?: Finding[];          // For watchers/reviewers
+      changesProposed?: ChangeSet[]; // For night-shift agents
+      prCreated?: string;            // PR URL if created
+      failureContext?: FailureContext;
+      budgetUsed: BudgetSummary;
+      skipReason?: string;           // Why the agent was skipped (rate limit, reserve protection, etc.)
+    }
+    ```
+
+#### W7: Morning Briefing UI
+
+A distinctive, swipeable card interface for reviewing Night Shift results — inspired by Tinder/TikTok for rapid decision-making.
+
+- **Morning Briefing View** (accessible from Agents tab or as a modal on app launch after Night Shift runs):
+  ```
+  +------------------------------------------------------------------+
+  | MORNING BRIEFING                    ● ● ● ○ ○  (3/5 reviewed)   |
+  +------------------------------------------------------------------+
+  |                                                                    |
+  |  ┌────────────────────────────────────────────────────────────┐  |
+  |  │                                                            │  |
+  |  │  🌙 NIGHT SHIFT — Refactor Auth Module                    │  |
+  |  │                                                            │  |
+  |  │  STATUS: SUCCEEDED                                         │  |
+  |  │  Agent: Night Owl · Claude Sonnet · 12 steps               │  |
+  |  │                                                            │  |
+  |  │  WHAT HAPPENED:                                            │  |
+  |  │  Extracted auth middleware into dedicated module,           │  |
+  |  │  added refresh token rotation, updated 8 test files.       │  |
+  |  │  All 142 tests passing.                                    │  |
+  |  │                                                            │  |
+  |  │  CHANGES:                                                  │  |
+  |  │  +347 -128 across 12 files                                 │  |
+  |  │  [View Diff]  [View PR #47]                                │  |
+  |  │                                                            │  |
+  |  │  CONFIDENCE: ████████░░ 82%                                │  |
+  |  │                                                            │  |
+  |  │  ┌─────────┐  ┌──────────┐  ┌─────────────────────┐      │  |
+  |  │  │ APPROVE │  │ DISMISS  │  │ INVESTIGATE LATER   │      │  |
+  |  │  │    ✓    │  │    ✗     │  │         ◷           │      │  |
+  |  │  └─────────┘  └──────────┘  └─────────────────────┘      │  |
+  |  │                                                            │  |
+  |  └────────────────────────────────────────────────────────────┘  |
+  |                                                                    |
+  |  ← Swipe left: Dismiss    Swipe right: Approve →                 |
+  |                                                                    |
+  +------------------------------------------------------------------+
+  | [BULK APPROVE ALL (3)]                    [SKIP TO SUMMARY]       |
+  +------------------------------------------------------------------+
+  ```
+
+- **Card Types** in Morning Briefing:
+  - **Succeeded Mission**: Shows what changed, diff stats, PR link, confidence score, test results. Actions: Approve (merge PR) / Dismiss (close PR) / Investigate Later.
+  - **Failed/Parked Mission**: Shows failure reason, last step, partial changes, error context. Actions: Retry / Dismiss / Investigate Later.
+  - **Watcher Finding**: Shows what was detected (deprecation, vulnerability, upstream change), affected files, suggested action. Actions: Create Task / Dismiss / Investigate Later.
+  - **PR Review Summary**: Shows PR summary, flagged concerns, suggested comments. Actions: Approve PR / Request Changes / Investigate Later.
+
+- **Interaction Model**:
+  - **Swipe right** (or click Approve): Executes the approval action (merge PR, create task, approve review).
+  - **Swipe left** (or click Dismiss): Dismisses the finding, logs the decision.
+  - **Swipe up** (or click Investigate Later): Moves to an "investigate" queue for later review.
+  - **Keyboard shortcuts**: Right arrow = approve, Left arrow = dismiss, Up arrow = investigate, Space = expand details.
+  - **Progress indicator**: Dots at top showing total items and how many reviewed.
+  - **Bulk actions**: "Approve All" for high-confidence items, "Dismiss All Low-Confidence" quick action.
+
+- **Morning Briefing Trigger**:
+  - Automatically shown when user opens ADE after Night Shift agents have completed.
+  - Also accessible on-demand from the Agents tab header.
+  - Badge count on the Agents tab icon shows pending briefing items.
+
+#### W8: Agent Service Refactor
+
+- Rename and extend `automationService` → `agentService`:
+  - All existing automation functionality preserved.
+  - New agent types (night-shift, watcher, review) registered as additional behavior executors.
+  - Agent lifecycle: `created → idle → triggered → running → completed/failed/parked`.
+  - Watcher agents: run a polling loop, compare results against previous state, emit findings on change.
+  - Review agents: poll GitHub API for assigned PRs, run AI review on new/updated PRs, emit findings.
+  - Night Shift agents: execute missions via the orchestrator with identity constraints and guardrails.
+
+- Rename and extend `automationPlannerService` → `agentPlannerService`:
+  - Accepts natural language intent and generates full `Agent` config (not just automation rules).
+  - Supports all four agent types.
+  - Validates generated configs against identity constraints.
+
+- **IPC Channels** (all prefixed `ade.agents.*`):
+  - `ade.agents.list()` → Returns `Agent[]` with status and last run info.
+  - `ade.agents.get(id)` → Returns single agent with full config.
+  - `ade.agents.create(agent)` → Creates a new agent.
+  - `ade.agents.update(id, agent)` → Updates agent config.
+  - `ade.agents.delete(id)` → Deletes an agent.
+  - `ade.agents.toggle(id, enabled)` → Enable/disable.
+  - `ade.agents.triggerManually(id)` → Fire agent immediately.
+  - `ade.agents.getHistory(id)` → Returns run history.
+  - `ade.agents.getRunDetail(runId)` → Returns detailed run.
+  - `ade.agents.getFindings(id)` → Returns findings for watcher/review agents.
+  - `ade.agents.dismissFinding(findingId)` → Dismiss a finding.
+  - `ade.agents.parseNaturalLanguage(args)` → NL-to-agent planner.
+  - `ade.agents.validateDraft(args)` → Validate + normalize draft.
+  - `ade.agents.simulate(args)` → Human-readable preview.
+  - `ade.agents.event` → Push updates for agent state changes.
+  - `ade.agents.identities.list()` → Returns all identities.
+  - `ade.agents.identities.get(id)` → Returns single identity.
+  - `ade.agents.identities.create(identity)` → Creates identity.
+  - `ade.agents.identities.update(id, identity)` → Updates identity.
+  - `ade.agents.identities.delete(id)` → Deletes identity.
+  - `ade.agents.nightShift.getDigest()` → Returns latest morning digest.
+  - `ade.agents.nightShift.getQueue()` → Returns queued Night Shift agents.
+  - `ade.agents.briefing.getItems()` → Returns pending morning briefing items.
+  - `ade.agents.briefing.respond(itemId, action)` → Approve/dismiss/investigate.
+  - `ade.agents.briefing.bulkRespond(actions)` → Bulk approve/dismiss.
+
+#### W9: Settings Integration
+
+- **Settings → Agent Identities section**:
+  - Identity list with CRUD operations.
+  - Preset library (read-only presets shipped with ADE, user presets editable).
+  - Version history viewer per identity.
+
+- **Settings → Agents section** (replaces Automations section):
+  - Per-agent summary with enable/disable, run-now, and history links.
+  - Night Shift global settings:
+    - Default Night Shift time window (e.g., 11pm–6am).
+    - Default compute backend for Night Shift agents (local/VPS/Daytona).
+    - Morning digest delivery time.
+    - Global Night Shift budget cap (applies on top of per-agent caps).
+    - **Subscription utilization mode**: `maximize` / `conservative` / `fixed` (default: `conservative`).
+    - **Conservative mode percentage**: Slider for max % of available overnight capacity to use (default: 60%).
+    - **Weekly reserve**: Slider for % of weekly budget to always protect for daytime use (default: 20%).
+    - **Multi-batch scheduling**: Toggle to allow Night Shift to schedule work across rate limit reset windows (default: on).
+    - **Subscription status panel**: Live display of current subscription tier per provider, current rate limit state, estimated available overnight capacity, and projected utilization bar based on queued agents.
+  - Watcher agent global settings:
+    - Default poll interval.
+    - GitHub API rate limit awareness.
+
+- **Settings → Compute Backends section** update:
+  - "Night Shift default" toggle on VPS backend card: route Night Shift agents to VPS automatically.
+  - "Night Shift default" toggle on Daytona backend card: route to Daytona instead.
+
+#### W10: Migration & Backward Compatibility
+
+- Existing automation rules are automatically migrated to agents of type `automation`.
+- Migration runs on first load after upgrade:
+  1. Read existing `automations:` config key.
+  2. For each rule, create an `Agent` with `type: 'automation'`, the same trigger/actions, and a default identity.
+  3. Write migrated agents to `agents:` config key.
+  4. Preserve the old `automations:` key for one version cycle (deprecated, read-only).
+- Existing `automation_runs` records remain queryable via the new agent run history UI.
+- IPC backward compatibility: old `ade.automations.*` channels are aliased to `ade.agents.*` for one version cycle.
+
+#### W11: Validation
+
+- Agent schema validation tests (all four types, all trigger types, all behavior configs).
+- Identity policy application tests (identity override precedence, denial enforcement, tool filtering).
+- Identity version history tests (version increment, snapshot accuracy, diff correctness).
+- Backward compatibility tests for missions with no explicit identity (default identity applied).
+- Backward compatibility tests for existing automations (migration preserves behavior exactly).
+- Budget enforcement tests (agents stop at budget boundaries — time, tokens, steps, USD).
+- Night Shift stop-condition simulations (first-failure parking, intervention-threshold parking, budget-exhaustion).
+- Morning digest generation tests (aggregation accuracy, finding deduplication).
+- Morning briefing UI interaction tests (approve/dismiss/investigate actions, bulk actions, keyboard shortcuts).
+- Watcher agent polling tests (change detection, finding emission, deduplication).
+- Review agent PR detection tests (new PR detection, review generation, finding accuracy).
+- Agent builder wizard flow tests (all steps, NL creation, validation on create).
+- IPC backward compatibility tests (old `ade.automations.*` channels still work).
+- Config migration tests (existing automations → agents, round-trip correctness).
 
 ### Exit criteria
 
-- Missions can run with selected agent identities that constrain orchestrator behavior.
+- Automations tab is fully rebranded as Agents with card-based UI following the ADE design system.
+- Users can create agents of all four types via the guided wizard or natural language.
+- Agent identities provide reusable persona/policy profiles that constrain agent behavior.
 - Identity policy is consistently enforced by both AI orchestrator and deterministic runtime.
 - Identity changes are versioned and auditable.
-- Scheduled mission batches execute unattended with hard guardrails.
-- Morning digest consistently summarizes outcomes and pending reviews.
+- Night Shift agents execute unattended with hard guardrails (budget caps, stop conditions).
+- Morning Briefing UI provides a swipeable card interface for rapid review of overnight results.
+- Morning digest consistently summarizes outcomes, findings, and pending reviews.
+- Watcher and Review agents surface actionable findings via the Morning Briefing.
+- Existing automations are seamlessly migrated to automation agents with no behavior change.
 - Night Shift runs can be inspected and audited like manual missions.
+- Agent builder supports both guided wizard creation and natural language description.
 
 ---
 
@@ -1132,7 +1661,7 @@ Base build order:
 1.5. Phase 1.5 (Agent Chat Integration) — **Complete**
 2. Phase 2 (MCP Server) — **Complete**
 3. Phase 3 (AI Orchestrator) — **~70% Complete**
-4. Phase 4 (Agent Identities + Night Shift)
+4. Phase 4 (Agents Hub)
 5. Phase 5 (Play Runtime Isolation)
 5.5. Phase 5.5 (Compute Backend Abstraction)
 6. Phase 6 (Integration Sandbox + Merge Readiness)
@@ -1212,7 +1741,10 @@ Each phase must satisfy:
 - Subscription detection success rate at onboarding
 - `guest` vs `subscription` mode usage ratio
 - Mission weekly active users
-- Night Shift adoption rate
+- Night Shift agent adoption rate
+- Morning Briefing items approved vs. dismissed ratio
+- Watcher/Review agent finding actionability rate
+- Agent builder completion rate (wizard started vs. agent created)
 
 ---
 
@@ -1224,8 +1756,10 @@ The program is complete when:
 - AI orchestrator executes across lanes/processes/tests/PRs via MCP tools with robust recovery.
 - Orchestrator decisions flow through the deterministic runtime with full context provenance.
 - Play supports deterministic lane isolation and integration sandbox verification.
-- Automations includes Night Shift with guardrails and reliable morning digests.
-- Agent identities provide reusable persona/policy profiles that constrain orchestrator behavior.
+- Agents tab provides unified autonomous agent system with automation, Night Shift, watcher, and review agent types.
+- Agent identities provide reusable persona/policy profiles that constrain agent and orchestrator behavior.
+- Night Shift agents execute unattended with hard guardrails and produce reliable morning digests.
+- Morning Briefing provides a swipeable card interface for rapid review of overnight agent results.
 - Desktop and iOS can operate against local and relay machine targets.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
 - Compute backend abstraction enables lanes to execute on Local, VPS, or Daytona (opt-in) backends.

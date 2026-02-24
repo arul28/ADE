@@ -855,6 +855,8 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "integration_proposals", "status text not null default 'proposed'", "status");
   addColumnIfMissing(db, "integration_proposals", "integration_lane_id text", "integration_lane_id");
   addColumnIfMissing(db, "integration_proposals", "resolution_state_json text", "resolution_state_json");
+  addColumnIfMissing(db, "integration_proposals", "pairwise_results_json text not null default '[]'", "pairwise_results_json");
+  addColumnIfMissing(db, "integration_proposals", "lane_summaries_json text not null default '[]'", "lane_summaries_json");
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`
