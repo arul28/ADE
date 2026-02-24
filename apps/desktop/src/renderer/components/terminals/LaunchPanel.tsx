@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CaretDown as ChevronDown,
   ChatCircleDots as MessageSquarePlus,
@@ -9,8 +9,7 @@ import {
 import type { TerminalLaunchProfile, TerminalProfilesSnapshot, TerminalToolType } from "../../../shared/types";
 import { ToolLogo } from "./ToolLogos";
 import { TerminalSettingsDialog, readLaunchTracked, persistLaunchTracked } from "./TerminalSettingsDialog";
-import { cn } from "../ui/cn";
-import { Button } from "../ui/Button";
+import { COLORS, MONO_FONT, LABEL_STYLE, inlineBadge } from "../lanes/laneDesignTokens";
 
 const DEFAULT_PROFILE_IDS = ["claude", "codex", "shell"] as const;
 
@@ -39,10 +38,23 @@ export function LaunchPanel({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfilesSnapshot | null>(null);
   const [launchTracked, setLaunchTracked] = useState(readLaunchTracked());
+  const chatDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!laneId && lanes.length > 0) setLaneId(lanes[0]!.id);
   }, [lanes, laneId]);
+
+  /* Close chat dropdown on outside click */
+  useEffect(() => {
+    if (!chatOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (chatDropdownRef.current && !chatDropdownRef.current.contains(e.target as Node)) {
+        setChatOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [chatOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,13 +97,38 @@ export function LaunchPanel({
 
   return (
     <>
-      <div className="bg-[--color-surface-recessed]/40 px-3 py-2.5 space-y-2">
+      <div
+        style={{
+          background: COLORS.recessedBg,
+          borderBottom: '1px solid ' + COLORS.border,
+          borderLeft: '2px solid #A78BFA30',
+          padding: '12px 16px',
+          fontFamily: MONO_FONT,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
         {/* Lane selector */}
-        <div className="flex items-center gap-2">
-          <label className="text-[11px] uppercase tracking-wider text-muted-fg/70 shrink-0">Lane</label>
-          <div className="relative flex-1">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={LABEL_STYLE}>LANE</label>
+          <div style={{ position: 'relative', flex: 1 }}>
             <select
-              className="h-6 w-full appearance-none rounded-md border border-border/15 bg-surface-recessed pl-2 pr-6 text-xs text-fg outline-none hover:border-accent/30 transition-colors cursor-pointer"
+              style={{
+                height: 24,
+                width: '100%',
+                appearance: 'none' as const,
+                background: COLORS.recessedBg,
+                border: '1px solid ' + COLORS.outlineBorder,
+                borderRadius: 0,
+                fontFamily: MONO_FONT,
+                fontSize: 12,
+                color: COLORS.textPrimary,
+                paddingLeft: 8,
+                paddingRight: 24,
+                outline: 'none',
+                cursor: 'pointer',
+              }}
               value={laneId}
               onChange={(e) => setLaneId(e.target.value)}
             >
@@ -99,94 +136,221 @@ export function LaunchPanel({
                 <option key={l.id} value={l.id}>{l.name}</option>
               ))}
             </select>
-            <ChevronDown size={12} weight="regular" className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-fg/60" />
+            <ChevronDown
+              size={12}
+              weight="regular"
+              style={{
+                pointerEvents: 'none',
+                position: 'absolute',
+                right: 6,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: COLORS.textMuted,
+              }}
+            />
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0 shrink-0"
+          <button
+            type="button"
             title="Terminal settings"
             onClick={() => setSettingsOpen(true)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 24,
+              height: 24,
+              padding: 0,
+              background: 'transparent',
+              border: '1px solid ' + COLORS.outlineBorder,
+              borderRadius: 0,
+              color: COLORS.textMuted,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
           >
             <GearSix size={14} />
-          </Button>
+          </button>
         </div>
 
         {/* Quick-launch row */}
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <button
             type="button"
             disabled={!laneId}
             onClick={() => onLaunchPty(laneId, "claude")}
-            className="inline-flex items-center gap-1.5 rounded-md bg-orange-500/15 px-2 py-1 text-xs font-medium text-orange-400 transition-all hover:bg-orange-500/25 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+            style={{
+              ...inlineBadge('#F97316'),
+              cursor: 'pointer',
+              gap: 5,
+              opacity: !laneId ? 0.4 : 1,
+            }}
+            onMouseEnter={(e) => { if (laneId) (e.currentTarget.style.opacity = '0.8'); }}
+            onMouseLeave={(e) => { if (laneId) (e.currentTarget.style.opacity = '1'); }}
           >
             <ToolLogo toolType="claude" size={12} />
-            Claude
+            CLAUDE
           </button>
           <button
             type="button"
             disabled={!laneId}
             onClick={() => onLaunchPty(laneId, "codex")}
-            className="inline-flex items-center gap-1.5 rounded-md bg-slate-400/15 px-2 py-1 text-xs font-medium text-slate-300 transition-all hover:bg-slate-400/25 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+            style={{
+              ...inlineBadge('#3B82F6'),
+              cursor: 'pointer',
+              gap: 5,
+              opacity: !laneId ? 0.4 : 1,
+            }}
+            onMouseEnter={(e) => { if (laneId) (e.currentTarget.style.opacity = '0.8'); }}
+            onMouseLeave={(e) => { if (laneId) (e.currentTarget.style.opacity = '1'); }}
           >
             <ToolLogo toolType="codex" size={12} />
-            Codex
+            CODEX
           </button>
           <button
             type="button"
             disabled={!laneId}
             onClick={() => onLaunchPty(laneId, "shell")}
-            className="inline-flex items-center gap-1.5 rounded-md bg-zinc-500/15 px-2 py-1 text-xs font-medium text-zinc-400 transition-all hover:bg-zinc-500/25 hover:text-zinc-300 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+            style={{
+              ...inlineBadge('#22C55E'),
+              cursor: 'pointer',
+              gap: 5,
+              opacity: !laneId ? 0.4 : 1,
+            }}
+            onMouseEnter={(e) => { if (laneId) (e.currentTarget.style.opacity = '0.8'); }}
+            onMouseLeave={(e) => { if (laneId) (e.currentTarget.style.opacity = '1'); }}
           >
             <ToolLogo toolType="shell" size={12} />
-            Shell
+            SHELL
           </button>
 
           {/* Custom profile buttons */}
-          {customProfiles.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              disabled={!laneId}
-              onClick={() => launchCustomProfile(p)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1 text-xs font-medium text-muted-fg transition-all hover:bg-muted/70 hover:text-fg active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
-              style={p.color ? { backgroundColor: `${p.color}20`, color: p.color } : undefined}
-              title={p.command ? `${p.name} (${p.command})` : p.name}
-            >
-              <Terminal size={12} weight="regular" />
-              {p.name}
-            </button>
-          ))}
+          {customProfiles.map((p) => {
+            const badgeColor = p.color || COLORS.textMuted;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={!laneId}
+                onClick={() => launchCustomProfile(p)}
+                style={{
+                  ...inlineBadge(badgeColor),
+                  cursor: 'pointer',
+                  gap: 5,
+                  opacity: !laneId ? 0.4 : 1,
+                }}
+                onMouseEnter={(e) => { if (laneId) (e.currentTarget.style.opacity = '0.8'); }}
+                onMouseLeave={(e) => { if (laneId) (e.currentTarget.style.opacity = '1'); }}
+                title={p.command ? `${p.name} (${p.command})` : p.name}
+              >
+                <Terminal size={12} weight="regular" />
+                {(p.name || '').toUpperCase()}
+              </button>
+            );
+          })}
 
-          <div className="mx-0.5 h-3.5 w-px bg-border/20" />
+          {/* Divider */}
+          <div
+            style={{
+              width: 1,
+              height: 20,
+              background: COLORS.border,
+              margin: '0 2px',
+              flexShrink: 0,
+            }}
+          />
 
           {/* Chat launch */}
-          <div className="relative">
+          <div ref={chatDropdownRef} style={{ position: 'relative' }}>
             <button
               type="button"
               disabled={!laneId}
               onClick={() => setChatOpen((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-md border border-accent/20 bg-accent/8 px-2 py-1 text-xs font-medium text-accent transition-all hover:bg-accent/15 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40"
+              style={{
+                ...inlineBadge(COLORS.accent),
+                cursor: 'pointer',
+                gap: 5,
+                opacity: !laneId ? 0.4 : 1,
+              }}
+              onMouseEnter={(e) => { if (laneId) (e.currentTarget.style.opacity = '0.8'); }}
+              onMouseLeave={(e) => { if (laneId) (e.currentTarget.style.opacity = '1'); }}
             >
               <MessageSquarePlus size={12} weight="regular" />
-              Chat
-              <ChevronDown size={12} weight="regular" className={cn("opacity-60 transition-transform", chatOpen && "rotate-180")} />
+              CHAT
+              <ChevronDown
+                size={10}
+                weight="regular"
+                style={{
+                  opacity: 0.6,
+                  transition: 'transform 150ms',
+                  transform: chatOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                }}
+              />
             </button>
             {chatOpen && (
-              <div className="absolute left-0 top-full z-50 mt-1 w-40 rounded-lg border border-border/30 bg-[--color-surface-overlay] py-0.5 shadow-float backdrop-blur-md">
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: '100%',
+                  zIndex: 50,
+                  marginTop: 4,
+                  width: 160,
+                  background: COLORS.recessedBg,
+                  border: '1px solid ' + COLORS.border,
+                  borderRadius: 0,
+                  padding: '2px 0',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                }}
+              >
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+                  type="button"
+                  style={{
+                    display: 'flex',
+                    width: '100%',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '6px 12px',
+                    textAlign: 'left',
+                    fontSize: 11,
+                    fontFamily: MONO_FONT,
+                    fontWeight: 600,
+                    color: COLORS.textSecondary,
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    letterSpacing: '0.5px',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   onClick={() => { onLaunchChat(laneId, "claude"); setChatOpen(false); }}
                 >
-                  <BrainCircuit size={14} weight="regular" className="text-violet-400" />
-                  Claude chat
+                  <BrainCircuit size={14} weight="regular" style={{ color: '#F97316' }} />
+                  CLAUDE
                 </button>
                 <button
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+                  type="button"
+                  style={{
+                    display: 'flex',
+                    width: '100%',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '6px 12px',
+                    textAlign: 'left',
+                    fontSize: 11,
+                    fontFamily: MONO_FONT,
+                    fontWeight: 600,
+                    color: COLORS.textSecondary,
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    letterSpacing: '0.5px',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   onClick={() => { onLaunchChat(laneId, "codex"); setChatOpen(false); }}
                 >
-                  <BrainCircuit size={14} weight="regular" className="text-sky-400" />
-                  Codex chat
+                  <BrainCircuit size={14} weight="regular" style={{ color: '#3B82F6' }} />
+                  CODEX
                 </button>
               </div>
             )}
@@ -200,15 +364,15 @@ export function LaunchPanel({
               setLaunchTracked(next);
               persistLaunchTracked(next);
             }}
-            className={cn(
-              "inline-flex items-center rounded-md px-1.5 py-1 text-[11px] font-medium transition-all",
-              launchTracked
-                ? "bg-emerald-500/15 text-emerald-400"
-                : "bg-muted/30 text-muted-fg/60",
-            )}
+            style={{
+              ...(launchTracked
+                ? inlineBadge(COLORS.success)
+                : { ...inlineBadge(COLORS.textDim), cursor: 'pointer' }),
+              cursor: 'pointer',
+            }}
             title={launchTracked ? "Tracked: context collected" : "Untracked: no context"}
           >
-            {launchTracked ? "tracked" : "untracked"}
+            {launchTracked ? "TRACKED" : "UNTRACKED"}
           </button>
         </div>
       </div>

@@ -3,9 +3,119 @@ import { Terminal } from "@phosphor-icons/react";
 import type { TerminalSessionSummary, TerminalSessionStatus } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaunchPanel } from "./LaunchPanel";
-import type { SessionContextMenuState } from "./SessionContextMenu";
-import type { InfoPopoverState } from "./SessionInfoPopover";
-import { cn } from "../ui/cn";
+import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+
+/* ── inline style helpers ─────────────────────────────────────────── */
+
+const chipBase: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "2px 10px",
+  fontSize: 9,
+  fontWeight: 700,
+  fontFamily: MONO_FONT,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  borderRadius: 0,
+  cursor: "pointer",
+  transition: "all 150ms",
+  whiteSpace: "nowrap",
+  flexShrink: 0,
+};
+
+const chipActive: React.CSSProperties = {
+  ...chipBase,
+  color: COLORS.accent,
+  background: `${COLORS.accent}18`,
+  border: `1px solid ${COLORS.accent}30`,
+};
+
+const chipInactive: React.CSSProperties = {
+  ...chipBase,
+  color: COLORS.textMuted,
+  background: "transparent",
+  border: `1px solid ${COLORS.outlineBorder}`,
+};
+
+function statusPillStyle(
+  active: boolean,
+  variant: "all" | "running" | "ended",
+): React.CSSProperties {
+  if (!active) {
+    return {
+      ...chipBase,
+      color: COLORS.textMuted,
+      background: "transparent",
+      border: `1px solid ${COLORS.outlineBorder}`,
+    };
+  }
+  switch (variant) {
+    case "all":
+      return {
+        ...chipBase,
+        color: COLORS.accent,
+        background: `${COLORS.accent}18`,
+        border: `1px solid ${COLORS.accent}30`,
+      };
+    case "running":
+      return {
+        ...chipBase,
+        color: COLORS.success,
+        background: `${COLORS.success}18`,
+        border: `1px solid ${COLORS.success}30`,
+      };
+    case "ended":
+      return {
+        ...chipBase,
+        color: COLORS.info,
+        background: `${COLORS.info}15`,
+        border: `1px solid ${COLORS.info}30`,
+      };
+  }
+}
+
+const searchInputStyle: React.CSSProperties = {
+  height: 28,
+  width: "100%",
+  borderRadius: 0,
+  border: `1px solid ${COLORS.outlineBorder}`,
+  background: COLORS.recessedBg,
+  padding: "0 10px",
+  fontSize: 11,
+  fontFamily: MONO_FONT,
+  color: COLORS.textPrimary,
+  outline: "none",
+};
+
+const groupHeaderBg: React.CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 10,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "6px 8px",
+  marginBottom: 4,
+  background: `${COLORS.pageBg}E6`, // 90% opacity
+  backdropFilter: "blur(8px)",
+};
+
+const groupLabelBase: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  fontFamily: MONO_FONT,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  flexShrink: 0,
+};
+
+const headerLineBase: React.CSSProperties = {
+  flex: 1,
+  height: 1,
+  marginLeft: 8,
+};
+
+/* ── component ────────────────────────────────────────────────────── */
 
 export function SessionListPane({
   lanes,
@@ -49,9 +159,9 @@ export function SessionListPane({
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
 }) {
   const statusOptions = [
-    { value: "all" as const, label: "All" },
-    { value: "running" as const, label: "Running" },
-    { value: "completed" as const, label: "Ended" },
+    { value: "all" as const, label: "ALL", variant: "all" as const },
+    { value: "running" as const, label: "RUNNING", variant: "running" as const },
+    { value: "completed" as const, label: "ENDED", variant: "ended" as const },
   ];
 
   return (
@@ -64,31 +174,26 @@ export function SessionListPane({
       />
 
       {/* Filters */}
-      <div className="px-3 py-2 space-y-2">
+      <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
         {/* Lane filter chips */}
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-none pb-0.5">
           <button
             type="button"
-            className={cn(
-              "shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-all",
-              filterLaneId === "all"
-                ? "bg-accent/15 text-accent"
-                : "bg-muted/30 text-muted-fg/70 hover:bg-muted/50 hover:text-muted-fg",
-            )}
+            style={filterLaneId === "all" ? chipActive : chipInactive}
             onClick={() => setFilterLaneId("all")}
           >
-            All
+            ALL
           </button>
           {lanes.map((l) => (
             <button
               key={l.id}
               type="button"
-              className={cn(
-                "shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-all truncate max-w-[100px]",
-                filterLaneId === l.id
-                  ? "bg-accent/15 text-accent"
-                  : "bg-muted/30 text-muted-fg/70 hover:bg-muted/50 hover:text-muted-fg",
-              )}
+              style={{
+                ...(filterLaneId === l.id ? chipActive : chipInactive),
+                maxWidth: 100,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
               onClick={() => setFilterLaneId(l.id)}
               title={l.name}
             >
@@ -103,12 +208,7 @@ export function SessionListPane({
             <button
               key={opt.value}
               type="button"
-              className={cn(
-                "rounded-md px-2 py-0.5 text-[11px] font-medium transition-all",
-                filterStatus === opt.value
-                  ? "bg-accent/15 text-accent"
-                  : "bg-transparent text-muted-fg/60 hover:text-muted-fg",
-              )}
+              style={statusPillStyle(filterStatus === opt.value, opt.variant)}
               onClick={() => setFilterStatus(opt.value === "completed" ? opt.value : opt.value as TerminalSessionStatus | "all")}
             >
               {opt.label}
@@ -118,22 +218,66 @@ export function SessionListPane({
 
         {/* Search bar */}
         <input
-          className="h-7 w-full rounded-md border border-border/10 bg-surface-recessed px-2.5 text-xs text-fg outline-none placeholder:text-muted-fg/40 hover:border-accent/20 focus:border-accent/30 transition-colors"
-          placeholder="Search by name, lane, type..."
+          style={searchInputStyle}
+          placeholder="SEARCH BY NAME, LANE, TYPE..."
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onFocus={(e) => {
+            e.currentTarget.style.borderColor = COLORS.accent;
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.borderColor = COLORS.outlineBorder;
+          }}
         />
       </div>
 
       {/* Session list */}
       <div className="min-h-0 flex-1 overflow-auto">
         {filtered.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center px-4 py-12 text-center">
-            <div className="mb-3 rounded-lg bg-emerald-500/10 p-3">
-              <Terminal size={20} weight="regular" className="text-emerald-500/60" />
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              height: "100%",
+              padding: "48px 16px",
+              textAlign: "center",
+            }}
+          >
+            <div
+              style={{
+                marginBottom: 12,
+                padding: 12,
+                borderRadius: 0,
+                background: `${COLORS.accent}15`,
+                border: `1px solid ${COLORS.accent}25`,
+              }}
+            >
+              <Terminal size={20} weight="regular" style={{ color: COLORS.accent }} />
             </div>
-            <div className="text-xs font-semibold text-fg/50">No terminal sessions</div>
-            <div className="mt-1 text-xs text-muted-fg/50 leading-relaxed max-w-[220px]">
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                color: COLORS.textSecondary,
+              }}
+            >
+              NO TERMINAL SESSIONS
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 11,
+                fontFamily: MONO_FONT,
+                color: COLORS.textMuted,
+                lineHeight: 1.5,
+                maxWidth: 220,
+              }}
+            >
               Start a new session to begin working.
             </div>
           </div>
@@ -142,11 +286,26 @@ export function SessionListPane({
             {/* Running group */}
             {runningFiltered.length > 0 && (
               <div>
-                <div className="sticky top-0 z-10 flex items-center gap-2 bg-bg/80 backdrop-blur-md px-2 py-1.5 mb-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400">
-                    Running · {runningFiltered.length}
+                <div style={groupHeaderBg}>
+                  <span
+                    style={{
+                      height: 6,
+                      width: 6,
+                      borderRadius: 0,
+                      background: COLORS.success,
+                      animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ ...groupLabelBase, color: COLORS.success }}>
+                    RUNNING &middot; {runningFiltered.length}
                   </span>
+                  <span
+                    style={{
+                      ...headerLineBase,
+                      background: `linear-gradient(to right, ${COLORS.success}40, transparent)`,
+                    }}
+                  />
                 </div>
                 <div className="space-y-1.5">
                   {runningFiltered.map((s) => (
@@ -167,12 +326,26 @@ export function SessionListPane({
 
             {/* Ended group */}
             {endedFiltered.length > 0 && (
-              <div className={runningFiltered.length > 0 ? "mt-2" : ""}>
-                <div className="sticky top-0 z-10 flex items-center gap-2 bg-bg/80 backdrop-blur-md px-2 py-1.5 mb-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-border" />
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-fg/60">
-                    Ended · {endedFiltered.length}
+              <div className={runningFiltered.length > 0 ? "mt-4" : ""}>
+                <div style={groupHeaderBg}>
+                  <span
+                    style={{
+                      height: 6,
+                      width: 6,
+                      borderRadius: 0,
+                      background: COLORS.textDim,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ ...groupLabelBase, color: COLORS.textMuted }}>
+                    ENDED &middot; {endedFiltered.length}
                   </span>
+                  <span
+                    style={{
+                      ...headerLineBase,
+                      background: `linear-gradient(to right, ${COLORS.textMuted}30, transparent)`,
+                    }}
+                  />
                 </div>
                 <div className="space-y-1.5">
                   {endedFiltered.map((s) => (

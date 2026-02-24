@@ -5,13 +5,13 @@ import {
   Terminal,
 } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
-import { Button } from "../ui/Button";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { TerminalSessionSummary } from "../../../shared/types";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton } from "../lanes/laneDesignTokens";
 
 /* ---- Layout (2-pane: sessions | view) ---- */
 
@@ -127,42 +127,93 @@ export function TerminalsPage() {
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-bg">
+    <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg, fontFamily: MONO_FONT }}>
       {/* Header */}
-      <div className="px-3 py-2">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-bold tracking-tight text-fg/80">Work</span>
-            {work.runningSessions.length > 0 ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                {work.runningSessions.length} running
-              </span>
-            ) : null}
-          </div>
-          <div className="ml-auto flex items-center gap-1.5">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7"
-              disabled={work.runningSessions.length === 0}
-              onClick={() => work.closeAllRunning().catch(() => {})}
-            >
-              <Square size={14} weight="regular" />
-              Close all
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0"
-              onClick={() => work.refresh().catch(() => {})}
-              title="Refresh"
-            >
-              <RefreshCw size={14} weight="regular" />
-            </Button>
-          </div>
+      <div
+        style={{
+          height: 64,
+          display: "flex",
+          alignItems: "center",
+          padding: "0 24px",
+          background: COLORS.recessedBg,
+          borderBottom: `1px solid ${COLORS.border}`,
+          flexShrink: 0,
+        }}
+      >
+        {/* Left side */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 12,
+              fontWeight: 700,
+              color: COLORS.textDim,
+              letterSpacing: "1px",
+            }}
+          >
+            01
+          </span>
+          <span
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 20,
+              fontWeight: 700,
+              color: COLORS.textPrimary,
+              letterSpacing: "-0.02em",
+            }}
+          >
+            WORK
+          </span>
+          {work.runningSessions.length > 0 ? (
+            <span style={inlineBadge(COLORS.success)}>
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: COLORS.success,
+                  marginRight: 6,
+                  animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+                }}
+              />
+              {work.runningSessions.length} RUNNING
+            </span>
+          ) : null}
+        </div>
+
+        {/* Right side */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            style={{
+              ...outlineButton(),
+              opacity: work.runningSessions.length === 0 ? 0.4 : 1,
+              pointerEvents: work.runningSessions.length === 0 ? "none" : "auto",
+            }}
+            disabled={work.runningSessions.length === 0}
+            onClick={() => work.closeAllRunning().catch(() => {})}
+          >
+            <Square size={14} weight="regular" />
+            CLOSE ALL
+          </button>
+          <button
+            style={{
+              ...outlineButton({ padding: "0 8px" }),
+            }}
+            onClick={() => work.refresh().catch(() => {})}
+            title="Refresh"
+          >
+            <RefreshCw size={14} weight="regular" />
+          </button>
         </div>
       </div>
+      {/* Accent line */}
+      <div
+        style={{
+          height: 2,
+          background: `linear-gradient(90deg, ${COLORS.accent}, transparent)`,
+          flexShrink: 0,
+        }}
+      />
 
       <PaneTilingLayout
         layoutId="work:tiling:v3"
