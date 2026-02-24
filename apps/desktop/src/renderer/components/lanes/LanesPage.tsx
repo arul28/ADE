@@ -774,197 +774,205 @@ export function LanesPage() {
   return (
     <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div style={{ padding: "0 16px", height: 52, display: "flex", alignItems: "center", background: COLORS.pageBg, borderBottom: `1px solid ${COLORS.border}` }}>
-        <div className="flex flex-wrap items-center gap-3" style={{ width: "100%" }}>
-          <div className="flex items-center gap-2">
-            <Stack size={18} style={{ color: COLORS.accent }} />
-            <span style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>LANES</span>
-            <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{sortedLanes.length}</span>
-          </div>
-          {primaryLane && selectedLaneId === primaryLane.id ? (
-            <div className="relative" ref={branchDropdownRef}>
-              <button
-                type="button"
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  padding: "0 10px", height: 28, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                  color: COLORS.success, background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.success}30`, cursor: "pointer",
-                }}
-                onClick={() => setBranchDropdownOpen((prev) => !prev)}
-                disabled={branchCheckoutBusy}
-              >
-                <GitBranch size={14} />
-                <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
-                <CaretDown size={12} style={{ opacity: 0.6 }} />
-              </button>
-              {branchDropdownOpen ? (
-                <div className="absolute left-0 top-full z-50 mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
-                  <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
-                  {localPrimaryBranches.map((branch) => (
-                    <button
-                      key={`local:${branch.name}`}
-                      type="button"
-                      className="flex w-full items-center gap-2 text-left"
-                      style={{
-                        padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
-                        color: branch.isCurrent ? COLORS.success : COLORS.textMuted,
-                        fontWeight: branch.isCurrent ? 600 : 400,
-                        background: "transparent", border: "none", cursor: "pointer",
-                      }}
-                      disabled={branchCheckoutBusy || branch.isCurrent}
-                      onClick={async () => {
-                        if (branch.isCurrent) return;
-                        await checkoutPrimaryBranch(branch.name);
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                    >
-                      {branch.isCurrent ? <Check size={12} className="shrink-0" /> : <span className="shrink-0" style={{ width: 12 }} />}
-                      <span className="truncate">{branch.name}</span>
-                      {branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
-                    </button>
-                  ))}
-                  {remotePrimaryBranches.length > 0 ? (
-                    <>
-                      <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
-                      <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>REMOTE BRANCHES</div>
-                      {remotePrimaryBranches.map((branch) => (
-                        <button
-                          key={`remote:${branch.name}`}
-                          type="button"
-                          className="flex w-full items-center gap-2 text-left"
-                          style={{
-                            padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
-                            color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
-                          }}
-                          disabled={branchCheckoutBusy}
-                          onClick={async () => { await checkoutPrimaryBranch(branch.name); }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                        >
-                          <span className="shrink-0" style={{ width: 12 }} />
-                          <span className="truncate">{branch.name}</span>
-                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
-                        </button>
-                      ))}
-                    </>
-                  ) : null}
-                  {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
-                    <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>No branches found.</div>
-                  ) : null}
-                  {branchCheckoutError ? (
-                    <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{branchCheckoutError}</div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-          {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
-            <div className="inline-flex items-center gap-2" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
-              <span>{branchCheckoutError}</span>
-              <button
-                type="button"
-                style={{ background: "transparent", border: "none", padding: "0 4px", color: COLORS.danger, cursor: "pointer", fontSize: 14 }}
-                onClick={() => setBranchCheckoutError(null)}
-                title="Dismiss"
-              >
-                ×
-              </button>
-            </div>
-          ) : null}
-          <div className="relative flex items-center">
-            <MagnifyingGlass size={14} className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
-            <input
-              id="lanes-filter-input"
-              value={laneFilter}
-              onChange={(event) => setLaneFilter(event.target.value)}
-              placeholder="Filter lanes…"
-              title="Filter lanes (is:dirty is:pinned type:worktree)"
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.pageBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        {/* Numbered title group */}
+        <div className="flex items-center gap-2 shrink-0">
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
+          <GitBranch size={18} style={{ color: COLORS.accent }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>LANES</span>
+          <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{filteredLanes.length}</span>
+        </div>
+
+        {/* Branch selector */}
+        {primaryLane && selectedLaneId === primaryLane.id ? (
+          <div className="relative shrink-0" ref={branchDropdownRef}>
+            <button
+              type="button"
               style={{
-                height: 28, minWidth: 200, padding: "0 28px 0 28px", fontSize: 12,
-                fontFamily: MONO_FONT, background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`, color: COLORS.textSecondary,
-                outline: "none",
+                display: "inline-flex", alignItems: "center", gap: 8,
+                padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
+                color: COLORS.success, background: "#18151F",
+                border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer",
               }}
-            />
-            {laneFilter.trim().length > 0 ? (
-              <button
-                type="button"
-                className="absolute"
-                style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 20, height: 20, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
-                onClick={() => setLaneFilter("")}
-                title="Clear filter"
-              >
-                <X size={12} />
-              </button>
-            ) : null}
-          </div>
-          {/* Add Lane dropdown */}
-          <div className="relative" ref={addLaneDropdownRef}>
-            <button type="button" style={primaryButton({ height: 28, padding: "0 10px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
-              <Plus size={12} /> LANE <CaretDown size={12} style={{ opacity: 0.6 }} />
+              onClick={() => setBranchDropdownOpen((prev) => !prev)}
+              disabled={branchCheckoutBusy}
+            >
+              <GitBranch size={14} />
+              <span>{currentPrimaryBranch || primaryLane.branchRef}</span>
+              <CaretDown size={12} style={{ opacity: 0.6 }} />
             </button>
-            {addLaneDropdownOpen ? (
-              <div className="absolute left-0 top-full z-50 mt-1" style={{ width: 224, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 text-left"
-                  style={{ padding: "8px 12px", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  onClick={() => {
-                    setAddLaneDropdownOpen(false);
-                    setCreateLaneName("");
-                    setCreateParentLaneId("");
-                    setCreateAsChild(false);
-                    setCreateBaseBranch("");
-                    const primary = lanes.find((l) => l.laneType === "primary");
-                    if (primary) {
-                      window.ade.git.listBranches({ laneId: primary.id })
-                        .then((branches) => {
-                          setCreateBranches(branches);
-                          const current = branches.find((b) => b.isCurrent && !b.isRemote);
-                          if (current) setCreateBaseBranch(current.name);
-                        })
-                        .catch(() => {});
-                    }
-                    setCreateOpen(true);
-                  }}
-                >
-                  <Plus size={14} />
-                  Create new lane
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 text-left"
-                  style={{ padding: "8px 12px", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  onClick={() => {
-                    setAddLaneDropdownOpen(false);
-                    setAttachName("");
-                    setAttachPath("");
-                    setAttachOpen(true);
-                  }}
-                >
-                  <Link size={14} />
-                  Add existing worktree as lane
-                </button>
+            {branchDropdownOpen ? (
+              <div className="absolute left-0 top-full z-50 mt-1 max-h-80 overflow-auto" style={{ width: 288, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+                <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
+                {localPrimaryBranches.map((branch) => (
+                  <button
+                    key={`local:${branch.name}`}
+                    type="button"
+                    className="flex w-full items-center gap-2 text-left"
+                    style={{
+                      padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
+                      color: branch.isCurrent ? COLORS.success : COLORS.textMuted,
+                      fontWeight: branch.isCurrent ? 600 : 400,
+                      background: "transparent", border: "none", cursor: "pointer",
+                    }}
+                    disabled={branchCheckoutBusy || branch.isCurrent}
+                    onClick={async () => {
+                      if (branch.isCurrent) return;
+                      await checkoutPrimaryBranch(branch.name);
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  >
+                    {branch.isCurrent ? <Check size={12} className="shrink-0" /> : <span className="shrink-0" style={{ width: 12 }} />}
+                    <span className="truncate">{branch.name}</span>
+                    {branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
+                  </button>
+                ))}
+                {remotePrimaryBranches.length > 0 ? (
+                  <>
+                    <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
+                    <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>REMOTE BRANCHES</div>
+                    {remotePrimaryBranches.map((branch) => (
+                      <button
+                        key={`remote:${branch.name}`}
+                        type="button"
+                        className="flex w-full items-center gap-2 text-left"
+                        style={{
+                          padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
+                          color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
+                        }}
+                        disabled={branchCheckoutBusy}
+                        onClick={async () => { await checkoutPrimaryBranch(branch.name); }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <span className="shrink-0" style={{ width: 12 }} />
+                        <span className="truncate">{branch.name}</span>
+                        <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
+                      </button>
+                    ))}
+                  </>
+                ) : null}
+                {localPrimaryBranches.length === 0 && remotePrimaryBranches.length === 0 ? (
+                  <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>No branches found.</div>
+                ) : null}
+                {branchCheckoutError ? (
+                  <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{branchCheckoutError}</div>
+                ) : null}
               </div>
             ) : null}
           </div>
-
-          <div className="ml-auto" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, fontVariantNumeric: "tabular-nums" }}>
-            {filteredLanes.length}/{sortedLanes.length}
-            <span className="hidden sm:inline" style={{ marginLeft: 6 }}>· shift-click to split</span>
+        ) : null}
+        {branchCheckoutError && primaryLane && selectedLaneId === primaryLane.id ? (
+          <div className="inline-flex items-center gap-2 shrink-0" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}15`, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
+            <span>{branchCheckoutError}</span>
+            <button
+              type="button"
+              style={{ background: "transparent", border: "none", padding: "0 4px", color: COLORS.danger, cursor: "pointer", fontSize: 14 }}
+              onClick={() => setBranchCheckoutError(null)}
+              title="Dismiss"
+            >
+              ×
+            </button>
           </div>
+        ) : null}
+
+        {/* Filter input */}
+        <div className="relative flex items-center shrink-0">
+          <MagnifyingGlass size={14} className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
+          <input
+            id="lanes-filter-input"
+            value={laneFilter}
+            onChange={(event) => setLaneFilter(event.target.value)}
+            placeholder="FILTER LANES"
+            title="Filter lanes (is:dirty is:pinned type:worktree)"
+            style={{
+              height: 32, width: 200, padding: "0 28px 0 28px", fontSize: 11,
+              fontFamily: MONO_FONT, background: "#18151F",
+              border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textSecondary,
+              outline: "none", textTransform: "uppercase", letterSpacing: "1px",
+            }}
+          />
+          {laneFilter.trim().length > 0 ? (
+            <button
+              type="button"
+              className="absolute"
+              style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 20, height: 20, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
+              onClick={() => setLaneFilter("")}
+              title="Clear filter"
+            >
+              <X size={12} />
+            </button>
+          ) : null}
         </div>
+
+        {/* NEW LANE button + dropdown */}
+        <div className="relative shrink-0" ref={addLaneDropdownRef}>
+          <button type="button" style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })} disabled={!canCreateLane} onClick={() => setAddLaneDropdownOpen((prev) => !prev)}>
+            <Plus size={12} /> NEW LANE
+          </button>
+          {addLaneDropdownOpen ? (
+            <div className="absolute left-0 top-full z-50 mt-1" style={{ width: 224, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 text-left"
+                style={{ padding: "8px 12px", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                onClick={() => {
+                  setAddLaneDropdownOpen(false);
+                  setCreateLaneName("");
+                  setCreateParentLaneId("");
+                  setCreateAsChild(false);
+                  setCreateBaseBranch("");
+                  const primary = lanes.find((l) => l.laneType === "primary");
+                  if (primary) {
+                    window.ade.git.listBranches({ laneId: primary.id })
+                      .then((branches) => {
+                        setCreateBranches(branches);
+                        const current = branches.find((b) => b.isCurrent && !b.isRemote);
+                        if (current) setCreateBaseBranch(current.name);
+                      })
+                      .catch(() => {});
+                  }
+                  setCreateOpen(true);
+                }}
+              >
+                <Plus size={14} />
+                Create new lane
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 text-left"
+                style={{ padding: "8px 12px", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                onClick={() => {
+                  setAddLaneDropdownOpen(false);
+                  setAttachName("");
+                  setAttachPath("");
+                  setAttachOpen(true);
+                }}
+              >
+                <Link size={14} />
+                Add existing worktree as lane
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Spacer */}
+        <div style={{ flex: 1, height: 1 }} />
+
+        {/* Stats */}
+        <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
+          {filteredLanes.length}/{sortedLanes.length} LANES
+        </span>
       </div>
 
-      {/* Lane tabs — flat list with left border selection */}
-      <div className="overflow-x-auto" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-        {filteredLanes.map((lane) => {
+      {/* Lane tabs — horizontal numbered tab bar */}
+      <div className="flex overflow-x-auto" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+        {filteredLanes.map((lane, index) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;
           const isPrimary = lane.laneType === "primary";
@@ -975,24 +983,21 @@ export function LanesPage() {
           const laneTerminalAttention = terminalAttention.byLaneId[lane.id];
           const restackSuggestion = restackByLaneId.get(lane.id) ?? null;
           const autoRebaseStatus = autoRebaseByLaneId.get(lane.id) ?? null;
+          const tabNumber = String(index + 1).padStart(2, "0");
 
           return (
             <div
               key={lane.id}
               role="button"
               tabIndex={0}
-              className="group flex items-center gap-2 transition-all duration-150 cursor-pointer"
+              className="group flex items-center gap-2 cursor-pointer shrink-0"
               style={{
-                padding: "6px 12px",
-                fontSize: 12,
+                padding: "0 16px",
+                height: 44,
                 borderLeft: isSelected
-                  ? `3px solid ${COLORS.accent}`
-                  : isVisible
-                    ? `3px solid ${COLORS.accent}50`
-                    : "3px solid transparent",
+                  ? `2px solid ${COLORS.accent}`
+                  : "2px solid transparent",
                 background: isSelected ? COLORS.accentSubtle : "transparent",
-                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-                borderBottom: `1px solid ${COLORS.border}`,
               }}
               onClick={(event) => {
                 handleLaneSelect(lane.id, {
@@ -1010,9 +1015,17 @@ export function LanesPage() {
                 if (!isSelected) e.currentTarget.style.background = "transparent";
               }}
             >
-              {isPrimary ? <House size={12} className="shrink-0" style={{ color: COLORS.success }} /> : null}
-              {/* Conflict status dot */}
-              <span className="shrink-0" style={{ width: 8, height: 8, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
+              {/* Tab number */}
+              <span style={{
+                fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, letterSpacing: "1px",
+                color: isSelected ? COLORS.accent : COLORS.textDim,
+              }}>{tabNumber}</span>
+              {/* Primary: house icon; Non-primary: conflict status dot */}
+              {isPrimary ? (
+                <House size={12} className="shrink-0" style={{ color: COLORS.accent }} />
+              ) : (
+                <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
+              )}
               {/* Terminal attention spinner */}
               {laneTerminalAttention?.indicator && laneTerminalAttention.indicator !== "none" ? (
                 <span
@@ -1030,20 +1043,39 @@ export function LanesPage() {
                 />
               ) : null}
               {/* Lane name */}
-              <span className="truncate" style={{ maxWidth: 180, fontWeight: isSelected ? 600 : 400 }}>{lane.name}</span>
-              {/* Branch ref badge for primary */}
+              <span className="truncate" style={{
+                maxWidth: 180,
+                fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "1px", textTransform: "uppercase",
+                fontWeight: isSelected ? 600 : 500,
+                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
+              }}>{lane.name}</span>
+              {/* Branch ref pill for primary */}
               {isPrimary ? (
-                <span style={inlineBadge(COLORS.success, { fontSize: 9 })}>{lane.branchRef}</span>
+                <span style={{
+                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
+                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px",
+                  color: COLORS.accent, background: `${COLORS.accent}30`,
+                }}>{lane.branchRef}</span>
               ) : null}
-              {/* Status badges */}
-              {!isPrimary && isPinned ? (
-                <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>PINNED</span>
-              ) : null}
+              {/* Behind badge (restack suggestion) */}
               {restackSuggestion ? (
-                <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title={`Behind parent by ${restackSuggestion.behindCount} commit(s)`}>
+                <span style={{
+                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
+                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
+                  color: COLORS.warning, background: `${COLORS.warning}18`,
+                }} title={`Behind parent by ${restackSuggestion.behindCount} commit(s)`}>
                   ↑{restackSuggestion.behindCount}
                 </span>
               ) : null}
+              {/* Pinned badge */}
+              {!isPrimary && isPinned ? (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", padding: "2px 6px",
+                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
+                  color: COLORS.textMuted, background: COLORS.outlineBorder,
+                }}>PINNED</span>
+              ) : null}
+              {/* Auto-rebase status badges */}
               {autoRebaseStatus?.state === "autoRebased" ? (
                 <span style={inlineBadge(COLORS.success, { fontSize: 9 })} title={autoRebaseStatus.message ?? "Lane was rebased automatically."}>
                   REBASED
@@ -1062,9 +1094,9 @@ export function LanesPage() {
                   CONFLICT{autoRebaseStatus.conflictCount > 0 ? ` ${autoRebaseStatus.conflictCount}` : ""}
                 </span>
               ) : null}
-              {chips.slice(0, 1).map((chip, index) => (
+              {chips.slice(0, 1).map((chip, chipIndex) => (
                 <span
-                  key={`${chip.kind}:${chip.peerId ?? "base"}:${index}`}
+                  key={`${chip.kind}:${chip.peerId ?? "base"}:${chipIndex}`}
                   style={inlineBadge(chip.kind === "high-risk" ? COLORS.danger : COLORS.warning, { fontSize: 9 })}
                 >
                   {chipLabel(chip.kind)}

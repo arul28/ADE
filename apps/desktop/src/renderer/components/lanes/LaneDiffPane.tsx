@@ -89,11 +89,18 @@ export function LaneDiffPane({
     return (
       <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
         <div
-          className="flex items-center justify-between gap-2 shrink-0"
-          style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+          className="flex items-center justify-between shrink-0"
+          style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}`, gap: 6 }}
         >
-          <div className="min-w-0 flex items-center gap-2" style={{ fontSize: 12 }}>
-            <span style={LABEL_STYLE}>COMMIT</span>
+          <div className="min-w-0 flex items-center" style={{ fontSize: 12, gap: 6 }}>
+            <span style={{
+              ...inlineBadge(COLORS.accent),
+              fontSize: 9,
+              fontWeight: 700,
+              padding: "3px 8px",
+              background: COLORS.outlineBorder,
+              border: "none",
+            }}>COMMIT</span>
             <span style={{ ...inlineBadge(COLORS.accent), fontFamily: MONO_FONT }}>{selectedCommit.shortSha}</span>
             <span className="truncate" style={{ color: COLORS.textMuted }}>{selectedCommit.subject}</span>
           </div>
@@ -177,29 +184,36 @@ export function LaneDiffPane({
           className="flex items-center justify-between shrink-0"
           style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
         >
-          <div className="flex items-center gap-1" style={{ fontSize: 12 }}>
-            <span style={inlineBadge(selectedFileMode === "unstaged" ? COLORS.warning : COLORS.info, { fontSize: 9 })}>
+          <div className="flex items-center" style={{ fontSize: 12, gap: 6 }}>
+            <span style={{
+              ...inlineBadge(selectedFileMode === "unstaged" ? COLORS.warning : COLORS.info),
+              fontSize: 9,
+              fontWeight: 700,
+              padding: "3px 8px",
+              background: COLORS.outlineBorder,
+              border: "none",
+            }}>
               {selectedFileMode === "unstaged" ? "WORKING TREE" : "INDEX"}
             </span>
-            <span style={{ color: COLORS.textDim, margin: "0 4px" }}>/</span>
+            <span style={{ color: COLORS.outlineBorder }}>/</span>
             {diff.path.split("/").map((segment, idx, arr) => (
               <React.Fragment key={idx}>
                 <span style={{
                   fontFamily: MONO_FONT,
                   fontSize: 11,
                   ...(idx === arr.length - 1
-                    ? { fontWeight: 600, color: COLORS.textPrimary, background: COLORS.accentSubtle, padding: "1px 4px" }
+                    ? { fontWeight: 600, color: COLORS.textPrimary, background: `${COLORS.accent}15`, padding: "2px 4px" }
                     : { color: COLORS.textDim }),
                 }}>{segment}</span>
-                {idx < arr.length - 1 && <span style={{ color: COLORS.textDim, margin: "0 2px" }}>/</span>}
+                {idx < arr.length - 1 && <span style={{ color: COLORS.outlineBorder }}>/</span>}
               </React.Fragment>
             ))}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center" style={{ gap: 3 }}>
             {selectedFileMode === "unstaged" ? (
               <button
                 type="button"
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
                 onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
                 title="Open in Files tab"
               >
@@ -210,7 +224,7 @@ export function LaneDiffPane({
             {selectedFileMode === "unstaged" && !diff.isBinary ? (
               <button
                 type="button"
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
                 disabled={busyAction != null}
                 onClick={() => {
                   const text = diffRef.current?.getModifiedValue();

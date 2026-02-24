@@ -57,8 +57,8 @@ export function LaneWorkPane({
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
       <div
-        className="flex items-center gap-0.5 shrink-0"
-        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}
+        className="flex items-center shrink-0"
+        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg, gap: 8 }}
       >
         {WORK_TABS.map((tab) => {
           const isActive = view === tab.id;
@@ -66,16 +66,19 @@ export function LaneWorkPane({
             <button
               key={tab.id}
               type="button"
-              className="relative flex items-center gap-2 px-4 py-2 transition-colors duration-150"
+              className="relative flex items-center transition-colors duration-150"
               style={{
                 fontFamily: MONO_FONT,
-                fontSize: 10,
-                fontWeight: 700,
+                fontSize: 11,
+                fontWeight: isActive ? 600 : 500,
                 textTransform: "uppercase",
                 letterSpacing: "1px",
+                height: 40,
+                padding: "10px 16px",
+                gap: 8,
                 ...(isActive
                   ? {
-                      background: COLORS.accentSubtle,
+                      background: `${COLORS.accent}18`,
                       borderLeft: `2px solid ${COLORS.accent}`,
                       color: COLORS.textPrimary,
                     }
@@ -94,14 +97,14 @@ export function LaneWorkPane({
               }}
             >
               <span style={{ color: isActive ? COLORS.accent : COLORS.textDim }}>{tab.num}</span>
-              <tab.Icon size={14} />
+              <tab.Icon size={14} style={{ color: isActive ? COLORS.accent : COLORS.textMuted }} />
               <span>{tab.label}</span>
             </button>
           );
         })}
       </div>
       <div className="relative flex-1 min-h-0">
-        <div className="absolute inset-0 p-2">
+        <div className="absolute inset-0" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 16, gap: 3 }}>
           {view === "terminal" ? (
             <LaneTerminalsPanel overrideLaneId={laneId} />
           ) : (

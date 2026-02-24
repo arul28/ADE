@@ -10,7 +10,6 @@ import {
   Upload
 } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
-import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
@@ -500,6 +499,48 @@ export function LaneGitActionsPane({
   const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane (first push)" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
 
+  // --- Shared inline style helpers for the new design ---
+  const splitBtnLeft = (solid: boolean): React.CSSProperties => ({
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 32,
+    padding: "0 10px",
+    fontSize: 11,
+    fontWeight: 700,
+    fontFamily: MONO_FONT,
+    textTransform: "uppercase",
+    letterSpacing: "1px",
+    border: solid ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.outlineBorder}`,
+    borderRight: "none",
+    borderRadius: 0,
+    background: solid ? COLORS.accent : "transparent",
+    color: solid ? COLORS.pageBg : COLORS.textSecondary,
+    cursor: "pointer",
+  });
+
+  const splitBtnRight = (solid: boolean): React.CSSProperties => ({
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 32,
+    padding: "0 6px",
+    fontSize: 11,
+    fontFamily: MONO_FONT,
+    border: solid ? `1px solid ${COLORS.accent}` : `1px solid ${COLORS.outlineBorder}`,
+    borderLeft: solid ? `1px solid ${COLORS.pageBg}40` : `1px solid ${COLORS.outlineBorder}`,
+    borderRadius: 0,
+    background: solid ? COLORS.accent : "transparent",
+    color: solid ? COLORS.pageBg : COLORS.textSecondary,
+    cursor: "pointer",
+  });
+
+  const headerDotColor = lane?.laneType === "primary"
+    ? COLORS.accent
+    : lane?.status.dirty
+      ? COLORS.warning
+      : "#10B981";
+
   const renderFileRow = (file: FileChange, mode: "staged" | "unstaged") => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
     const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
@@ -511,7 +552,7 @@ export function LaneGitActionsPane({
         key={`${mode}:${file.path}`}
         className="group flex items-center gap-1.5 cursor-pointer transition-all duration-150"
         style={{
-          padding: "5px 8px", fontSize: 12,
+          padding: "5px 8px", fontSize: 12, fontFamily: MONO_FONT,
           borderLeft: rowSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
           background: rowSelected ? COLORS.accentSubtle : "transparent",
           color: rowSelected ? COLORS.textPrimary : COLORS.textMuted,
@@ -540,7 +581,7 @@ export function LaneGitActionsPane({
           {mode === "staged" ? <Check size={8} style={{ color: COLORS.accent }} /> : null}
         </button>
         <span className="shrink-0" style={{ width: 6, height: 6, borderRadius: "50%", background: kindColor }} />
-        <span className="truncate flex-1">{file.path}</span>
+        <span className="truncate flex-1" style={{ fontSize: 11 }}>{file.path}</span>
         {(alsoStaged || alsoUnstaged) ? (
           <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>PARTIAL</span>
         ) : null}
@@ -550,333 +591,378 @@ export function LaneGitActionsPane({
 
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
-      {/* Section A — Lane Header */}
-      <div className="shrink-0" style={{ padding: "8px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
-        <div className="flex items-center gap-2">
+      {/* Section A -- Lane Header */}
+      <div className="shrink-0" style={{ padding: "10px 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center" style={{ gap: 12 }}>
           <span className="shrink-0" style={{
-            width: 8, height: 8, borderRadius: "50%",
-            background: lane?.laneType === "primary" ? COLORS.success : lane?.status.dirty ? COLORS.warning : COLORS.info,
+            width: 10, height: 10, borderRadius: "50%",
+            background: headerDotColor,
           }} />
-          <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }} className="truncate" title={lane?.name}>{lane?.name ?? "No lane"}</span>
+          <span style={{
+            fontSize: 12, fontWeight: 700, fontFamily: MONO_FONT,
+            letterSpacing: "1px", textTransform: "uppercase",
+            color: COLORS.textPrimary,
+          }} className="truncate" title={lane?.name}>{lane?.name ?? "NO LANE"}</span>
           {lane ? (
             <>
-              <span style={inlineBadge(lane.laneType === "primary" ? COLORS.success : COLORS.accent, { fontSize: 9 })}>
-                {lane.branchRef}
-              </span>
-              <span style={inlineBadge(lane.status.dirty ? COLORS.warning : COLORS.success, { fontSize: 9 })}>
-                {lane.status.dirty ? "DIRTY" : "CLEAN"}
-              </span>
+              <span style={{
+                padding: "3px 8px", fontSize: 10, fontWeight: 600, fontFamily: MONO_FONT,
+                color: COLORS.accent, background: `${COLORS.accent}15`, letterSpacing: "0.5px",
+              }}>{lane.branchRef}</span>
+              <span style={{
+                padding: "3px 8px", fontSize: 10, fontWeight: 600, fontFamily: MONO_FONT,
+                color: lane.status.dirty ? COLORS.warning : "#10B981",
+                background: lane.status.dirty ? `${COLORS.warning}15` : "#10B98115",
+                letterSpacing: "0.5px",
+              }}>{lane.status.dirty ? "DIRTY" : "CLEAN"}</span>
             </>
           ) : null}
+          {lane ? (
+            <span style={{
+              fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim,
+              letterSpacing: "0.5px", marginLeft: "auto", whiteSpace: "nowrap",
+            }}>
+              base {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}
+              {syncStatus ? (
+                <>
+                  {" \u00B7 "}
+                  {syncStatus.hasUpstream ? (
+                    <span title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}>
+                      remote {"\u2191"}{syncStatus.ahead} {"\u2193"}{syncStatus.behind}
+                    </span>
+                  ) : (
+                    <span style={{ color: COLORS.warning }}>remote unpublished</span>
+                  )}
+                </>
+              ) : null}
+            </span>
+          ) : null}
         </div>
-        {lane ? (
-          <div style={{ marginTop: 4, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-            {lane.laneType === "primary" ? (
-              <>Primary · <span style={{ color: COLORS.success }}>{lane.branchRef}</span> · </>
-            ) : (
-              <>{originLabel} · </>
-            )}
-            <span title={`Compared to base ${lane.baseRef}`}>base {"\u2191"}{lane.status.ahead} {"\u2193"}{lane.status.behind}</span>
-            {syncStatus ? (
-              <>
-                {" · "}
-                {syncStatus.hasUpstream ? (
-                  <span title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}>
-                    remote {"\u2191"}{syncStatus.ahead} {"\u2193"}{syncStatus.behind}
-                  </span>
-                ) : (
-                  <span style={{ color: COLORS.warning }}>remote unpublished</span>
-                )}
-              </>
-            ) : null}
+        {lane && originLabel ? (
+          <div style={{ marginTop: 4, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}>
+            {originLabel}
           </div>
         ) : null}
       </div>
 
-      {/* Section B — Sync Actions Bar */}
-      <div className="shrink-0 flex flex-wrap items-center gap-1.5" style={{ padding: "6px 12px", borderBottom: `1px solid ${COLORS.border}` }}>
-        <div className="flex-1 min-w-[4px]" />
-
-          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})} title="Refresh (fetches remote)">
-            <ArrowsClockwise size={12} className={cn(loading && "animate-spin")} />
-          </Button>
-
-          {/* Pull dropdown */}
-          <div className="relative" ref={pullDropdownRef}>
-            <div className="inline-flex">
-              <Button
-                variant="outline"
-                size="sm"
-                className={cn(
-                  "h-6 rounded-r-none border-r-0 px-1.5 text-xs",
-                  pullHighlighted && "ring-2 ring-sky-500/60 bg-sky-500/10 text-sky-700"
-                )}
-                disabled={!laneId || busyAction != null}
-                onClick={() => {
-                  if (!laneId) return;
-                  runPull(syncMode);
-                }}
-                title={`Pull (${syncMode})`}
+      {/* Section B -- Sync Actions Bar */}
+      <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 8, borderBottom: `1px solid ${COLORS.border}` }}>
+        {/* Pull split button */}
+        <div className="relative" ref={pullDropdownRef}>
+          <div style={{ display: "inline-flex" }}>
+            <button
+              type="button"
+              style={{
+                ...splitBtnLeft(false),
+                opacity: (!laneId || busyAction != null) ? 0.4 : 1,
+                pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
+              }}
+              disabled={!laneId || busyAction != null}
+              onClick={() => { if (laneId) runPull(syncMode); }}
+              title={`Pull (${syncMode})`}
+            >
+              <ArrowDown size={14} weight={pullHighlighted ? "bold" : "regular"} />
+            </button>
+            <button
+              type="button"
+              style={splitBtnRight(false)}
+              onClick={() => setPullDropdownOpen((prev) => !prev)}
+            >
+              <CaretDown size={12} />
+            </button>
+          </div>
+          {pullDropdownOpen ? (
+            <div style={{ position: "absolute", left: 0, top: "100%", zIndex: 50, marginTop: 4, width: 192, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+              {(["merge", "rebase"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: syncMode === mode ? COLORS.accent : COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => { setSyncMode(mode); if (laneId) runPull(mode); }}
+                >
+                  {syncMode === mode ? <Check size={12} /> : <span style={{ width: 12 }} />}
+                  <span>PULL ({mode.toUpperCase()})</span>
+                </button>
+              ))}
+              <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
+              <button
+                type="button"
+                style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                onClick={() => { setPullDropdownOpen(false); if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }); }}
               >
-                <ArrowDown size={12} />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className={cn("h-6 rounded-l-none px-0.5", pullHighlighted && "ring-2 ring-sky-500/60 bg-sky-500/10 text-sky-700")}
-                onClick={() => setPullDropdownOpen((prev) => !prev)}
-              >
-                <CaretDown size={12} />
-              </Button>
+                <span style={{ width: 12 }} />
+                <span>FETCH ONLY</span>
+              </button>
             </div>
-            {pullDropdownOpen ? (
-              <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 50, marginTop: 4, width: 192, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
-                {(["merge", "rebase"] as const).map((mode) => (
+          ) : null}
+        </div>
+
+        {/* Push split button */}
+        <div className="relative" ref={pushDropdownRef}>
+          <div style={{ display: "inline-flex" }}>
+            <button
+              type="button"
+              style={{
+                ...splitBtnLeft(true),
+                opacity: (!laneId || busyAction != null) ? 0.4 : 1,
+                pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
+              }}
+              disabled={!laneId || busyAction != null}
+              onClick={() => runPush(false)}
+              title={pushButtonTitle}
+            >
+              <Upload size={14} weight={pushHighlighted ? "bold" : "regular"} />
+            </button>
+            <button
+              type="button"
+              style={{
+                ...splitBtnRight(true),
+                opacity: (!laneId || busyAction != null) ? 0.4 : 1,
+                pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
+              }}
+              disabled={!laneId || busyAction != null}
+              onClick={() => setPushDropdownOpen((prev) => !prev)}
+              title="Push options"
+            >
+              <CaretDown size={12} />
+            </button>
+          </div>
+          {pushDropdownOpen ? (
+            <div style={{ position: "absolute", left: 0, top: "100%", zIndex: 50, marginTop: 4, width: 208, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+              <button
+                type="button"
+                style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                onClick={() => runPush(false)}
+              >
+                <span>{syncStatus?.hasUpstream === false ? "PUBLISH LANE" : "PUSH UPDATES"}</span>
+              </button>
+              <button
+                type="button"
+                style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                onClick={() => runPush(true)}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, color: forcePushHighlighted ? COLORS.warning : COLORS.textSecondary }}>
+                    FORCE PUSH (LEASE){forcePushHighlighted ? " \u00B7 RECOMMENDED" : ""}
+                  </div>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>Use after rebase or rewritten history</div>
+                </div>
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {lane?.parentLaneId ? (
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 32, padding: "0 10px", fontSize: 10 }),
+              opacity: (!laneId || busyAction != null) ? 0.4 : 1,
+              pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
+            }}
+            title="Rebase onto parent"
+            disabled={!laneId || busyAction != null}
+            onClick={() => {
+              if (!laneId) return;
+              runAction("rebase", async () => {
+                const result = await window.ade.lanes.restack({ laneId, recursive: true });
+                if (result.error) {
+                  throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
+                }
+              });
+            }}
+          >
+            <Stack size={14} />
+          </button>
+        ) : null}
+        {lane?.parentLaneId ? (
+          <button
+            type="button"
+            style={{
+              ...(restackPublishHighlighted
+                ? primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })
+                : outlineButton({ height: 32, padding: "0 12px", fontSize: 10 })),
+              opacity: (!laneId || busyAction != null) ? 0.4 : 1,
+              pointerEvents: (!laneId || busyAction != null) ? "none" : "auto",
+            }}
+            title="Restack onto parent, then publish with confirmation"
+            disabled={!laneId || busyAction != null}
+            onClick={() => runRestackAndPublishFlow(true)}
+          >
+            SYNC
+          </button>
+        ) : null}
+
+        <div style={{ flex: 1 }} />
+
+        {/* Refresh button */}
+        <button
+          type="button"
+          style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 32, height: 32,
+            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 0,
+            background: "transparent", color: COLORS.textMuted, cursor: "pointer",
+          }}
+          onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
+          title="Refresh (fetches remote)"
+        >
+          <ArrowsClockwise size={14} className={cn(loading && "animate-spin")} />
+        </button>
+
+        {/* More dropdown */}
+        <div className="relative" ref={moreDropdownRef}>
+          <button
+            type="button"
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              width: 32, height: 32,
+              border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 0,
+              background: "transparent", color: COLORS.textMuted, cursor: "pointer",
+            }}
+            title="More actions"
+            onClick={() => setMoreDropdownOpen((prev) => !prev)}
+          >
+            <DotsThree size={16} weight="bold" />
+          </button>
+          {moreDropdownOpen ? (
+            <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 50, marginTop: 4, width: 224, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+              {[
+                { label: "STASH CHANGES", disabled: false, onClick: () => { setMoreDropdownOpen(false); if (!laneId) return; runAction("stash push", async () => { const msg = await requestTextInput({ title: "Stash message", placeholder: "optional" }); if (msg == null) throw new Error("__ade_cancelled__"); await window.ade.git.stashPush({ laneId, message: msg || undefined }); }); } },
+                { label: `POP STASH${stashes.length > 0 ? ` (${stashes[0]?.ref})` : ""}`, disabled: stashes.length === 0, onClick: () => { setMoreDropdownOpen(false); if (!laneId || stashes.length === 0) return; runAction("stash pop", async () => { await window.ade.git.stashPop({ laneId, stashRef: stashes[0]!.ref }); }); } },
+                null,
+                { label: "REVERT COMMIT...", disabled: recentCommits.length === 0, onClick: () => { setMoreDropdownOpen(false); if (!laneId || recentCommits.length === 0) return; runAction("revert commit", async () => { const sha = await requestTextInput({ title: "Commit SHA to revert", defaultValue: recentCommits[0]!.sha, validate: (value) => (value ? null : "Commit SHA is required") }); if (!sha) throw new Error("__ade_cancelled__"); await window.ade.git.revertCommit({ laneId, commitSha: sha }); }); } },
+                { label: "CHERRY-PICK...", disabled: false, onClick: () => { setMoreDropdownOpen(false); if (!laneId) return; runAction("cherry-pick", async () => { const sha = await requestTextInput({ title: "Commit SHA to cherry-pick", validate: (value) => (value ? null : "Commit SHA is required") }); if (!sha) throw new Error("__ade_cancelled__"); await window.ade.git.cherryPickCommit({ laneId, commitSha: sha }); }); } },
+              ].map((item, idx) =>
+                item === null ? (
+                  <div key={`sep-${idx}`} style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
+                ) : (
                   <button
-                    key={mode}
+                    key={item.label}
                     type="button"
-                    style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 12, color: syncMode === mode ? COLORS.accent : COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                    style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 10, fontWeight: 600, fontFamily: MONO_FONT, letterSpacing: "1px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: item.disabled ? "default" : "pointer", opacity: item.disabled ? 0.4 : 1, pointerEvents: item.disabled ? "none" : "auto" }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                    onClick={() => { setSyncMode(mode); if (laneId) runPull(mode); }}
+                    onClick={item.onClick}
                   >
-                    {syncMode === mode ? <Check size={12} /> : <span style={{ width: 12 }} />}
-                    <span style={{ fontWeight: 600 }}>Pull ({mode})</span>
+                    {item.label}
                   </button>
-                ))}
-                <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
-                <button
-                  type="button"
-                  style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  onClick={() => { setPullDropdownOpen(false); if (laneId) runAction("fetch", async () => { await window.ade.git.fetch({ laneId }); }); }}
-                >
-                  <span style={{ width: 12 }} />
-                  <span style={{ fontWeight: 600 }}>Fetch only</span>
-                </button>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="relative" ref={pushDropdownRef}>
-            <div className="inline-flex">
-              <Button
-                variant="primary"
-                size="sm"
-                className={cn(
-                  "h-6 rounded-r-none px-1.5 text-xs",
-                  pushHighlighted && "ring-2 ring-amber-500/60 bg-amber-600 text-white"
-                )}
-                disabled={!laneId || busyAction != null}
-                onClick={() => runPush(false)}
-                title={pushButtonTitle}
-              >
-                <Upload size={12} />
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                className={cn(
-                  "h-6 rounded-l-none border-l border-white/20 px-0.5",
-                  pushHighlighted && "ring-2 ring-amber-500/60 bg-amber-600 text-white"
-                )}
-                disabled={!laneId || busyAction != null}
-                onClick={() => setPushDropdownOpen((prev) => !prev)}
-                title="Push options"
-              >
-                <CaretDown size={12} />
-              </Button>
+                )
+              )}
             </div>
-            {pushDropdownOpen ? (
-              <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 50, marginTop: 4, width: 208, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
-                <button
-                  type="button"
-                  style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  onClick={() => runPush(false)}
-                >
-                  <span style={{ fontWeight: 600 }}>{syncStatus?.hasUpstream === false ? "Publish lane" : "Push updates"}</span>
-                </button>
-                <button
-                  type="button"
-                  style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 12, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  onClick={() => runPush(true)}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600, color: forcePushHighlighted ? COLORS.warning : COLORS.textSecondary }}>
-                      Force Push (lease){forcePushHighlighted ? " · Recommended" : ""}
-                    </div>
-                    <div style={{ fontSize: 11, color: COLORS.textMuted }}>Use after rebase or rewritten history</div>
-                  </div>
-                </button>
-              </div>
-            ) : null}
-          </div>
-
-          {lane?.parentLaneId ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-6 px-1.5 text-xs"
-              title="Rebase onto parent"
-              disabled={!laneId || busyAction != null}
-              onClick={() => {
-                if (!laneId) return;
-                runAction("rebase", async () => {
-                  const result = await window.ade.lanes.restack({ laneId, recursive: true });
-                  if (result.error) {
-                    throw new Error(result.failedLaneId ? `${result.error} (failed: ${result.failedLaneId})` : result.error);
-                  }
-                });
-              }}
-            >
-              <Stack size={12} />
-            </Button>
           ) : null}
-          {lane?.parentLaneId ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className={cn("h-6 px-1.5 text-xs", restackPublishHighlighted && "ring-2 ring-amber-500/60 bg-amber-500/10 text-amber-800")}
-              title="Restack onto parent, then publish with confirmation"
-              disabled={!laneId || busyAction != null}
-              onClick={() => runRestackAndPublishFlow(true)}
-            >
-              Sync
-            </Button>
-          ) : null}
-
-          {/* More dropdown */}
-          <div className="relative" ref={moreDropdownRef}>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0"
-              title="More actions"
-              onClick={() => setMoreDropdownOpen((prev) => !prev)}
-            >
-              <DotsThree size={12} />
-            </Button>
-            {moreDropdownOpen ? (
-              <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 50, marginTop: 4, width: 224, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
-                {[
-                  { label: "Stash changes", disabled: false, onClick: () => { setMoreDropdownOpen(false); if (!laneId) return; runAction("stash push", async () => { const msg = await requestTextInput({ title: "Stash message", placeholder: "optional" }); if (msg == null) throw new Error("__ade_cancelled__"); await window.ade.git.stashPush({ laneId, message: msg || undefined }); }); } },
-                  { label: `Pop stash${stashes.length > 0 ? ` (${stashes[0]?.ref})` : ""}`, disabled: stashes.length === 0, onClick: () => { setMoreDropdownOpen(false); if (!laneId || stashes.length === 0) return; runAction("stash pop", async () => { await window.ade.git.stashPop({ laneId, stashRef: stashes[0]!.ref }); }); } },
-                  null,
-                  { label: "Revert commit...", disabled: recentCommits.length === 0, onClick: () => { setMoreDropdownOpen(false); if (!laneId || recentCommits.length === 0) return; runAction("revert commit", async () => { const sha = await requestTextInput({ title: "Commit SHA to revert", defaultValue: recentCommits[0]!.sha, validate: (value) => (value ? null : "Commit SHA is required") }); if (!sha) throw new Error("__ade_cancelled__"); await window.ade.git.revertCommit({ laneId, commitSha: sha }); }); } },
-                  { label: "Cherry-pick...", disabled: false, onClick: () => { setMoreDropdownOpen(false); if (!laneId) return; runAction("cherry-pick", async () => { const sha = await requestTextInput({ title: "Commit SHA to cherry-pick", validate: (value) => (value ? null : "Commit SHA is required") }); if (!sha) throw new Error("__ade_cancelled__"); await window.ade.git.cherryPickCommit({ laneId, commitSha: sha }); }); } },
-                ].map((item, idx) =>
-                  item === null ? (
-                    <div key={`sep-${idx}`} style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
-                  ) : (
-                    <button
-                      key={item.label}
-                      type="button"
-                      style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "6px 12px", textAlign: "left", fontSize: 12, fontWeight: 500, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: item.disabled ? "default" : "pointer", opacity: item.disabled ? 0.4 : 1, pointerEvents: item.disabled ? "none" : "auto" }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                      onClick={item.onClick}
-                    >
-                      {item.label}
-                    </button>
-                  )
-                )}
-              </div>
-            ) : null}
-          </div>
-
+        </div>
       </div>
 
-      {/* Section C — Commit Area */}
-      <div className="shrink-0 flex flex-wrap items-center gap-1.5" style={{ padding: "6px 12px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <span style={LABEL_STYLE}>COMMIT</span>
-          <input
-            style={{
-              height: 28, minWidth: 80, flex: 1, maxWidth: 220,
-              padding: "0 8px", fontSize: 12, fontFamily: MONO_FONT,
-              background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`,
-              color: COLORS.textSecondary, outline: "none",
-            }}
-            placeholder="Commit message..."
-            value={commitMessage}
-            onChange={(e) => setCommitMessage(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                if (laneId && commitMessage.trim() && (hasStaged || amendCommit)) {
-                  runAction(amendCommit ? "amend commit" : "commit", async () => {
-                    await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
-                    setCommitMessage("");
-                    setAmendCommit(false);
-                  });
-                }
-              }
-            }}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn("h-6 px-1.5 text-xs", amendCommit && "bg-amber-500/10 border-amber-500/40 text-amber-800")}
-            title="Amend the latest commit using this message"
-            disabled={busyAction != null}
-            onClick={() => setAmendCommit((prev) => !prev)}
-          >
-            Amend
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            className="h-6 px-1.5 text-xs"
-            disabled={!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null}
-            onClick={() => {
-              if (laneId)
+      {/* Section C -- Commit Area */}
+      <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 8, borderBottom: `1px solid ${COLORS.border}` }}>
+        <span style={{ ...LABEL_STYLE, color: COLORS.textDim, fontSize: 10, fontWeight: 600 }}>COMMIT</span>
+        <input
+          style={{
+            height: 32, flex: 1,
+            padding: "0 12px", fontSize: 10, fontFamily: MONO_FONT,
+            letterSpacing: "0.5px",
+            background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
+            color: COLORS.textSecondary, outline: "none",
+          }}
+          placeholder="COMMIT MESSAGE..."
+          value={commitMessage}
+          onChange={(e) => setCommitMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (laneId && commitMessage.trim() && (hasStaged || amendCommit)) {
                 runAction(amendCommit ? "amend commit" : "commit", async () => {
                   await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
                   setCommitMessage("");
                   setAmendCommit(false);
                 });
-            }}
-          >
-            {amendCommit ? "Amend" : "Commit"}
-          </Button>
+              }
+            }
+          }}
+        />
+        <button
+          type="button"
+          style={{
+            ...outlineButton({ height: 32, padding: "0 12px", fontSize: 10 }),
+            color: amendCommit ? COLORS.warning : COLORS.textSecondary,
+            borderColor: amendCommit ? `${COLORS.warning}40` : COLORS.outlineBorder,
+            background: amendCommit ? `${COLORS.warning}10` : "transparent",
+          }}
+          title="Amend the latest commit using this message"
+          disabled={busyAction != null}
+          onClick={() => setAmendCommit((prev) => !prev)}
+        >
+          AMEND
+        </button>
+        <button
+          type="button"
+          style={{
+            ...primaryButton({ height: 32, padding: "0 18px", fontSize: 11 }),
+            opacity: (!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null) ? 0.4 : 1,
+            pointerEvents: (!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null) ? "none" : "auto",
+          }}
+          disabled={!commitMessage.trim() || (!hasStaged && !amendCommit) || busyAction != null}
+          onClick={() => {
+            if (laneId)
+              runAction(amendCommit ? "amend commit" : "commit", async () => {
+                await window.ade.git.commit({ laneId, message: commitMessage.trim(), amend: amendCommit });
+                setCommitMessage("");
+                setAmendCommit(false);
+              });
+          }}
+        >
+          COMMIT
+        </button>
       </div>
 
+      {/* Section D -- Next Action Hint */}
       {nextActionHint ? (
-        <div className="shrink-0 flex items-center gap-2" style={{
-          padding: "6px 12px", fontSize: 11, borderBottom: `1px solid ${COLORS.border}`,
+        <div className="shrink-0 flex items-center" style={{
+          padding: "8px 16px", gap: 12, borderBottom: `1px solid ${COLORS.border}`,
           background: COLORS.recessedBg,
-          color: nextActionHint.action === "restack_publish" || nextActionHint.action === "force_push_lease" || divergedSync
-            ? COLORS.warning
-            : nextActionHint.action === "pull" ? COLORS.info : COLORS.success,
         }}>
-          <span style={{ ...LABEL_STYLE, color: "inherit" }}>NEXT: {nextActionHint.label}</span>
-          <span className="truncate" style={{ color: COLORS.textMuted }}>{nextActionHint.detail}</span>
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT,
+            textTransform: "uppercase", letterSpacing: "1px",
+            color: COLORS.accent,
+          }}>
+            NEXT: {nextActionHint.label.toUpperCase()}
+          </span>
+          <span className="truncate" style={{
+            fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted,
+            letterSpacing: "0.5px",
+          }}>{nextActionHint.detail}</span>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
             {nextActionHint.action === "pull" ? (
-              <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runPull(syncMode); }}>
+              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runPull(syncMode); }}>
                 PULL ({syncMode.toUpperCase()})
               </button>
             ) : null}
             {nextActionHint.action === "restack_publish" ? (
-              <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => runRestackAndPublishFlow(true)}>
+              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRestackAndPublishFlow(true)}>
                 RESTACK + PUBLISH
               </button>
             ) : null}
             {nextActionHint.action === "pull" && divergedSync ? (
-              <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
+              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
                 FORCE PUSH (LEASE)
               </button>
             ) : null}
             {nextActionHint.action === "push" ? (
-              <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => runPush(false)}>
+              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(false)}>
                 {syncStatus?.hasUpstream === false ? "PUBLISH NOW" : "PUSH NOW"}
               </button>
             ) : null}
             {nextActionHint.action === "force_push_lease" ? (
-              <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
+              <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runPush(true)}>
                 FORCE PUSH NOW
               </button>
             ) : null}
@@ -885,10 +971,10 @@ export function LaneGitActionsPane({
       ) : null}
 
       {nextActionHint?.action === "restack_publish" && !autoRebaseEnabled ? (
-        <div className="shrink-0" style={{ padding: "6px 12px", fontSize: 11, borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.info}08`, color: COLORS.info }}>
+        <div className="shrink-0" style={{ padding: "8px 16px", fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.5px", borderBottom: `1px solid ${COLORS.border}`, background: `${COLORS.info}08`, color: COLORS.info }}>
           <div className="flex items-center gap-2">
             <span className="truncate">Auto-rebase is off. Enable it in Settings to auto-sync child lanes when parent/main advances.</span>
-            <button type="button" style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 10 }), marginLeft: "auto" }} onClick={onOpenSettings}>
+            <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), marginLeft: "auto", flexShrink: 0 }} onClick={onOpenSettings}>
               SETTINGS
             </button>
           </div>
@@ -898,11 +984,11 @@ export function LaneGitActionsPane({
       {autoRebaseStatus ? (() => {
         const arColor = autoRebaseStatus.state === "autoRebased" ? COLORS.success : autoRebaseStatus.state === "rebaseConflict" ? COLORS.danger : COLORS.warning;
         return (
-          <div className="shrink-0 flex items-center gap-2" style={{ padding: "6px 12px", fontSize: 11, borderBottom: `1px solid ${COLORS.border}`, background: `${arColor}08`, color: arColor }}>
+          <div className="shrink-0 flex items-center" style={{ padding: "8px 16px", gap: 12, fontSize: 10, fontFamily: MONO_FONT, borderBottom: `1px solid ${COLORS.border}`, background: `${arColor}08`, color: arColor }}>
             <span style={{ ...LABEL_STYLE, color: "inherit" }}>
               {autoRebaseStatus.state === "autoRebased" ? "AUTO REBASED" : autoRebaseStatus.state === "rebaseConflict" ? "AUTO REBASE BLOCKED" : "AUTO REBASE PENDING"}
             </span>
-            <span className="truncate" style={{ color: COLORS.textMuted }}>
+            <span className="truncate" style={{ color: COLORS.textMuted, letterSpacing: "0.5px" }}>
               {autoRebaseStatus.message ??
                 (autoRebaseStatus.state === "autoRebased"
                   ? "Lane was rebased automatically."
@@ -911,13 +997,13 @@ export function LaneGitActionsPane({
                     : "Waiting for manual sync.")}
             </span>
             {autoRebaseStatus.state !== "autoRebased" ? (
-              <div style={{ marginLeft: "auto" }}>
+              <div style={{ marginLeft: "auto", flexShrink: 0 }}>
                 {autoRebaseStatus.state === "rebaseConflict" ? (
-                  <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId); }}>
+                  <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) onResolveRebaseConflict?.(laneId, rebaseConflictParentLaneId); }}>
                     RESOLVE IN CONFLICTS
                   </button>
                 ) : (
-                  <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 10 })} disabled={!laneId || busyAction != null} onClick={() => runRestackAndPublishFlow(true)}>
+                  <button type="button" style={{ ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }), borderColor: `${COLORS.accent}50` }} disabled={!laneId || busyAction != null} onClick={() => runRestackAndPublishFlow(true)}>
                     RESTACK + PUBLISH
                   </button>
                 )}
@@ -927,40 +1013,43 @@ export function LaneGitActionsPane({
         );
       })() : null}
 
-      {/* File list + commit timeline */}
+      {/* Section E -- Git Body (files + commits) */}
       <div className="flex-1 min-h-0">
         <Group id={`lane-git-sections:${laneId ?? "none"}`} orientation="horizontal" className="h-full w-full min-h-0">
+          {/* Left: File Panel */}
           <Panel id={`lane-git-files:${laneId ?? "none"}`} defaultSize="58%" minSize="22%" className="min-h-0 min-w-0">
             <div className="flex h-full min-h-0 flex-col">
-              <div className="shrink-0 flex items-center justify-between" style={{ padding: "4px 8px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}`, borderRight: `1px solid ${COLORS.border}` }}>
-                <div className="flex items-center gap-1.5">
+              {/* File header */}
+              <div className="shrink-0 flex items-center justify-between" style={{ padding: "8px 16px", background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}`, borderRight: `1px solid ${COLORS.border}` }}>
+                <div className="flex items-center" style={{ gap: 8 }}>
                   <span style={LABEL_STYLE}>FILES</span>
                   <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{changedFileCount}</span>
                   {stagedCount > 0 ? (
-                    <span style={{ fontSize: 11, color: COLORS.textMuted }}>({stagedCount} staged)</span>
+                    <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}>({stagedCount} STAGED)</span>
                   ) : null}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center" style={{ gap: 8 }}>
                   <button
                     type="button"
-                    style={{ fontSize: 11, padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }}
+                    style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }}
                     onClick={() => setShowStashes((prev) => !prev)}
                   >
-                    {showStashes ? "Hide stashes" : `Show stashes (${stashes.length})`}
+                    {showStashes ? "HIDE STASHES" : `STASHES (${stashes.length})`}
                   </button>
                   {changes.unstaged.length > 0 ? (
-                    <button type="button" style={{ fontSize: 11, padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }} onClick={stageAll}>
-                      Stage All
+                    <button type="button" style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "1px", padding: "0 4px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={stageAll}>
+                      STAGE ALL
                     </button>
                   ) : null}
                   {changes.staged.length > 0 ? (
-                    <button type="button" style={{ fontSize: 11, padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }} onClick={unstageAll}>
-                      Unstage All
+                    <button type="button" style={{ fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "1px", padding: "0 4px", color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer" }} onClick={unstageAll}>
+                      UNSTAGE ALL
                     </button>
                   ) : null}
                 </div>
               </div>
 
+              {/* File list area */}
               <div className="flex-1 min-h-0" style={{ borderRight: `1px solid ${COLORS.border}` }}>
                 {showStashes ? (
                   <Group id={`lane-git-left:${laneId ?? "none"}`} orientation="vertical" className="h-full w-full min-h-0">
@@ -973,7 +1062,7 @@ export function LaneGitActionsPane({
                           </div>
                           <button
                             type="button"
-                            style={outlineButton({ height: 20, padding: "0 8px", fontSize: 10 })}
+                            style={outlineButton({ height: 24, padding: "0 10px", fontSize: 10 })}
                             disabled={!laneId || busyAction != null}
                             onClick={() => {
                               if (!laneId) return;
@@ -988,28 +1077,28 @@ export function LaneGitActionsPane({
                           </button>
                         </div>
                         {stashes.length === 0 ? (
-                          <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "4px 8px", fontSize: 11, color: COLORS.textMuted }}>No stashes in this lane.</div>
+                          <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "4px 8px", fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, letterSpacing: "0.5px" }}>No stashes in this lane.</div>
                         ) : (
                           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                             {stashes.slice(0, 4).map((stash) => (
                               <div key={stash.ref} className="flex items-center gap-2" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, padding: "4px 8px" }}>
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate" style={{ fontSize: 12, color: COLORS.textPrimary }}>{stash.subject || stash.ref}</div>
-                                  <div className="truncate" style={{ fontSize: 11, color: COLORS.textMuted }}>{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
+                                  <div className="truncate" style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>{stash.subject || stash.ref}</div>
+                                  <div className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{stash.ref} · {formatRelativeTime(stash.createdAt)}</div>
                                 </div>
-                                <button type="button" style={{ padding: "2px 4px", fontSize: 11, color: COLORS.info, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash apply", async () => { await window.ade.git.stashApply({ laneId, stashRef: stash.ref }); }); }}>
-                                  apply
+                                <button type="button" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.info, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash apply", async () => { await window.ade.git.stashApply({ laneId, stashRef: stash.ref }); }); }}>
+                                  APPLY
                                 </button>
-                                <button type="button" style={{ padding: "2px 4px", fontSize: 11, color: COLORS.warning, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash pop", async () => { await window.ade.git.stashPop({ laneId, stashRef: stash.ref }); }); }}>
-                                  pop
+                                <button type="button" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.warning, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash pop", async () => { await window.ade.git.stashPop({ laneId, stashRef: stash.ref }); }); }}>
+                                  POP
                                 </button>
-                                <button type="button" style={{ padding: "2px 4px", fontSize: 11, color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash drop", async () => { await window.ade.git.stashDrop({ laneId, stashRef: stash.ref }); }); }}>
-                                  drop
+                                <button type="button" style={{ padding: "2px 6px", fontSize: 10, fontFamily: MONO_FONT, fontWeight: 600, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} disabled={!laneId || busyAction != null} onClick={() => { if (laneId) runAction("stash drop", async () => { await window.ade.git.stashDrop({ laneId, stashRef: stash.ref }); }); }}>
+                                  DROP
                                 </button>
                               </div>
                             ))}
                             {stashes.length > 4 ? (
-                              <div style={{ fontSize: 11, color: COLORS.textDim }}>+{stashes.length - 4} more stash entries.</div>
+                              <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim, letterSpacing: "0.5px" }}>+{stashes.length - 4} more stash entries.</div>
                             ) : null}
                           </div>
                         )}
@@ -1031,27 +1120,27 @@ export function LaneGitActionsPane({
                           </div>
                         ) : null}
                         {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                          <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textDim, fontStyle: "italic" }}>No changes</div>
+                          <div style={{ padding: 12, textAlign: "center", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic", letterSpacing: "0.5px" }}>No changes</div>
                         ) : null}
                       </div>
                     </Panel>
                   </Group>
                 ) : (
-                  <div className="h-full overflow-auto p-1 space-y-2">
+                  <div className="h-full overflow-auto" style={{ padding: 4, display: "flex", flexDirection: "column", gap: 8 }}>
                     {changes.staged.length > 0 ? (
-                      <div className="space-y-0.5">
-                        <div className="px-2 pb-0.5 text-[11px] uppercase tracking-wide text-muted-fg">Staged ({changes.staged.length})</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <div style={{ padding: "0 8px 2px", ...LABEL_STYLE }}>STAGED ({changes.staged.length})</div>
                         {changes.staged.map((file) => renderFileRow(file, "staged"))}
                       </div>
                     ) : null}
                     {changes.unstaged.length > 0 ? (
-                      <div className="space-y-0.5">
-                        <div className="px-2 pb-0.5 text-[11px] uppercase tracking-wide text-muted-fg">Unstaged ({changes.unstaged.length})</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <div style={{ padding: "0 8px 2px", ...LABEL_STYLE }}>UNSTAGED ({changes.unstaged.length})</div>
                         {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
                       </div>
                     ) : null}
                     {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                      <div className="p-3 text-center text-xs text-muted-fg opacity-50 italic">No changes</div>
+                      <div style={{ padding: 12, textAlign: "center", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, fontStyle: "italic", letterSpacing: "0.5px" }}>No changes</div>
                     ) : null}
                   </div>
                 )}
@@ -1059,6 +1148,7 @@ export function LaneGitActionsPane({
             </div>
           </Panel>
           <ResizeGutter orientation="vertical" thin />
+          {/* Right: Commit Timeline */}
           <Panel id={`lane-git-commits:${laneId ?? "none"}`} defaultSize="42%" minSize="18%" className="min-h-0 min-w-0">
             <CommitTimeline
               laneId={laneId ?? null}
@@ -1076,20 +1166,21 @@ export function LaneGitActionsPane({
       {/* Status bar */}
       {(notice || error || busyAction) && (
         <div className="shrink-0 flex items-center justify-between" style={{
-          padding: "3px 12px", fontSize: 12, borderTop: `1px solid ${COLORS.border}`,
+          padding: "4px 16px", fontSize: 10, fontFamily: MONO_FONT,
+          letterSpacing: "0.5px", borderTop: `1px solid ${COLORS.border}`,
           background: error ? `${COLORS.danger}15` : `${COLORS.accent}12`,
           color: error ? COLORS.danger : COLORS.accent,
         }}>
-          <span>{error ? `Error: ${error}` : notice ? notice : busyAction ? `Running ${busyAction}...` : ""}</span>
+          <span>{error ? `ERROR: ${error}` : notice ? notice.toUpperCase() : busyAction ? `RUNNING ${busyAction.toUpperCase()}...` : ""}</span>
         </div>
       )}
 
       {/* Text prompt modal */}
       {textPrompt ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }}>
-          <div style={{ width: "min(460px, 100%)", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary }}>{textPrompt.title}</div>
-            {textPrompt.message ? <div style={{ marginTop: 4, fontSize: 12, color: COLORS.textMuted }}>{textPrompt.message}</div> : null}
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div style={{ width: "min(460px, 100%)", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 20 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, fontFamily: MONO_FONT, letterSpacing: "1px", textTransform: "uppercase", color: COLORS.textPrimary }}>{textPrompt.title}</div>
+            {textPrompt.message ? <div style={{ marginTop: 6, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>{textPrompt.message}</div> : null}
             <input
               autoFocus
               value={textPrompt.value}
@@ -1110,17 +1201,18 @@ export function LaneGitActionsPane({
               placeholder={textPrompt.placeholder}
               style={{
                 marginTop: 12, height: 36, width: "100%",
-                padding: "0 8px", fontSize: 13, fontFamily: MONO_FONT,
-                background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`,
+                padding: "0 12px", fontSize: 11, fontFamily: MONO_FONT,
+                letterSpacing: "0.5px",
+                background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
                 color: COLORS.textSecondary, outline: "none",
               }}
             />
-            {textPromptError ? <div style={{ marginTop: 8, fontSize: 12, color: COLORS.danger }}>{textPromptError}</div> : null}
+            {textPromptError ? <div style={{ marginTop: 8, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.danger }}>{textPromptError}</div> : null}
             <div className="flex justify-end gap-2" style={{ marginTop: 16 }}>
-              <button type="button" style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })} onClick={cancelTextPrompt}>
+              <button type="button" style={outlineButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={cancelTextPrompt}>
                 CANCEL
               </button>
-              <button type="button" style={primaryButton({ height: 28, padding: "0 12px", fontSize: 10 })} onClick={submitTextPrompt}>
+              <button type="button" style={primaryButton({ height: 32, padding: "0 14px", fontSize: 10 })} onClick={submitTextPrompt}>
                 {textPrompt.confirmLabel.toUpperCase()}
               </button>
             </div>

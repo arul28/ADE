@@ -24,8 +24,8 @@ export function LaneInspectorPane({
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
       <div
-        className="flex items-center gap-0.5 shrink-0"
-        style={{ borderBottom: `1px solid ${COLORS.border}` }}
+        className="flex items-center shrink-0"
+        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg, gap: 8 }}
         role="tablist"
         aria-label="Inspector tabs"
       >
@@ -37,16 +37,18 @@ export function LaneInspectorPane({
               type="button"
               role="tab"
               aria-selected={isActive}
-              className="relative flex items-center gap-2 px-4 py-2.5 transition-colors duration-150"
+              className="relative flex items-center transition-colors duration-150"
               style={{
                 fontFamily: MONO_FONT,
-                fontSize: 10,
-                fontWeight: 700,
+                fontSize: 11,
+                fontWeight: isActive ? 600 : 500,
                 textTransform: "uppercase",
                 letterSpacing: "1px",
+                padding: "10px 16px",
+                gap: 8,
                 ...(isActive
                   ? {
-                      background: COLORS.accentSubtle,
+                      background: `${COLORS.accent}18`,
                       borderLeft: `2px solid ${COLORS.accent}`,
                       color: COLORS.textPrimary,
                     }
@@ -70,7 +72,7 @@ export function LaneInspectorPane({
           );
         })}
       </div>
-      <div className="flex-1 min-h-0" style={{ padding: 12 }}>
+      <div className="flex-1 min-h-0" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
         {tab === "context" && (
           <div className="h-full overflow-auto">
             <PackViewer laneId={laneId} />

@@ -2,7 +2,7 @@ import React from "react";
 import { ArrowSquareOut } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary } from "../../../shared/types";
-import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton } from "./laneDesignTokens";
 
 const TREE_ROW_H = 28;
 const TREE_INDENT = 22;
@@ -150,7 +150,7 @@ function StackGraph({
               r={TREE_DOT_R}
               fill={
                 node.lane.laneType === "primary"
-                  ? COLORS.success
+                  ? COLORS.accent
                   : node.lane.status.dirty
                     ? COLORS.warning
                     : COLORS.info
@@ -166,13 +166,12 @@ function StackGraph({
             <button
               key={`label:${lane.id}`}
               type="button"
-              className="absolute flex items-center gap-1.5 text-xs transition-all duration-150 whitespace-nowrap"
+              className="absolute flex items-center gap-1.5 transition-all duration-150 whitespace-nowrap"
               style={{
                 left: node.dotX + TREE_DOT_R + 5,
                 top: node.dotY - (TREE_ROW_H - 6) / 2,
                 height: TREE_ROW_H - 6,
                 padding: "0 6px",
-                borderLeft: isSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
                 background: isSelected ? COLORS.accentSubtle : "transparent",
                 color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
                 border: "none",
@@ -199,13 +198,15 @@ function StackGraph({
                 }
               }}
             >
-              <span className="truncate" style={{ maxWidth: 160 }}>{lane.name}</span>
-              {(lane.status.ahead > 0 || lane.status.behind > 0) && (
-                <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }} className="shrink-0">
-                  {lane.status.ahead > 0 ? `${lane.status.ahead}\u2191` : ""}
-                  {lane.status.behind > 0 ? `${lane.status.behind}\u2193` : ""}
-                </span>
-              )}
+              <span className="truncate" style={{
+                maxWidth: 160,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                fontWeight: isSelected ? 600 : 500,
+              }}>{lane.name}</span>
+              <span style={{ fontFamily: MONO_FONT, fontSize: 9, color: COLORS.textDim }} className="shrink-0">
+                {lane.status.ahead}\u2191 {lane.status.behind}\u2193
+              </span>
             </button>
           );
         })}
@@ -229,15 +230,12 @@ export function LaneStackPane({
     <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
       <div
         className="shrink-0 flex items-center justify-between"
-        style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+        style={{ height: 36, padding: "0 16px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
       >
-        <div className="flex items-center gap-2">
-          <span style={LABEL_STYLE}>STACK GRAPH</span>
-          <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{lanes.length}</span>
-        </div>
+        <span style={{ ...LABEL_STYLE, color: COLORS.textDim }}>STACK GRAPH</span>
         <button
           type="button"
-          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+          style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 500, color: COLORS.textMuted })}
           onClick={() => navigate("/graph")}
           title="Open workspace canvas"
         >
