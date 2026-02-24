@@ -171,6 +171,7 @@ export function createClaudeExecutor(): AgentExecutor {
 
             finalText = typeof message.result === "string" ? message.result : "";
             structuredOutput = message.structured_output ?? null;
+            break; // Got successful result — stop processing to avoid late tool errors discarding it
           }
 
           if (finalText.trim().length > 0) {

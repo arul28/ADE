@@ -1601,7 +1601,7 @@ function GraphInner() {
         stackDepth: 0,
         parentStatus: null,
         isEditProtected: true,
-        status: { dirty: false, ahead: 0, behind: 0 },
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 },
         color: null,
         icon: null,
         tags: ["proposal"],

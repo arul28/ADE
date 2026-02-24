@@ -32,7 +32,7 @@ type MissionPlanningLogger = {
 export type MissionPlanningContextBundle = {
   missionProfile?: Record<string, unknown>;
   operationSummary?: Record<string, unknown>;
-  docsDigest?: Array<{ path: string; sha256: string; bytes: number }>;
+  docsDigest?: Array<{ path: string; sha256: string; bytes: number; content?: string }>;
   packDigest?: Record<string, unknown>;
   constraints?: string[];
 };
@@ -326,10 +326,28 @@ function buildPlannerPrompt(args: {
   contextBundle?: MissionPlanningContextBundle;
   policy?: MissionExecutionPolicy;
 }): string {
-  const docs = (args.contextBundle?.docsDigest ?? [])
-    .slice(0, 20)
-    .map((entry) => `- ${entry.path} (${entry.bytes} bytes, sha256:${entry.sha256.slice(0, 12)})`)
-    .join("\n");
+  const MAX_DOC_CONTENT_CHARS = 12_000;
+  const MAX_TOTAL_DOCS_CHARS = 200_000;
+  const docsEntries = (args.contextBundle?.docsDigest ?? []).slice(0, 20);
+  let totalDocsChars = 0;
+  const docsBlocks: string[] = [];
+  for (const entry of docsEntries) {
+    if (entry.content && entry.content.length > 0) {
+      const budget = Math.min(MAX_DOC_CONTENT_CHARS, MAX_TOTAL_DOCS_CHARS - totalDocsChars);
+      if (budget <= 0) {
+        docsBlocks.push(`### ${entry.path} (${entry.bytes} bytes — skipped, context budget exhausted)`);
+        continue;
+      }
+      const truncated = entry.content.length > budget;
+      const slice = truncated ? entry.content.slice(0, budget) : entry.content;
+      totalDocsChars += slice.length;
+      const suffix = truncated ? `\n... [truncated from ${entry.bytes} bytes]` : "";
+      docsBlocks.push(`### ${entry.path}\n${slice}${suffix}`);
+    } else {
+      docsBlocks.push(`### ${entry.path} (${entry.bytes} bytes — content not available)`);
+    }
+  }
+  const docsSection = docsBlocks.length > 0 ? docsBlocks.join("\n\n") : "- none";
   const constraints = [
     "AI is only for initial planning. Runtime transitions are deterministic.",
     "Return valid JSON only. No markdown. No explanations outside JSON.",
@@ -364,8 +382,10 @@ function buildPlannerPrompt(args: {
     "- VERIFY EARLY: Place validation close to implementation, not batched at the end.",
     "- RIGHT-SIZE STEPS: One step = one agent, one session. If a step says 'implement X, Y, and Z' and they're independent, split them.",
     "",
-    "Context digests:",
-    docs || "- none",
+    "IMPORTANT: All relevant project documentation is provided inline below. Do NOT attempt to read or open any files yourself — all context you need for planning is already included in this prompt.",
+    "",
+    "Project documentation (inline):",
+    docsSection,
     "",
     "Additional context bundle (JSON):",
     stableStringify(args.contextBundle ?? {}),

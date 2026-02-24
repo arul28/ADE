@@ -271,6 +271,8 @@ export type OrchestratorExecutorStartArgs = {
   run: OrchestratorRun;
   step: OrchestratorStep;
   attempt: OrchestratorAttempt;
+  /** All steps in the run, for building a compact plan view in the worker prompt. */
+  allSteps: OrchestratorStep[];
   contextProfile: OrchestratorContextPolicyProfile;
   laneExport: PackExport | null;
   projectExport: PackExport;
@@ -293,6 +295,10 @@ export type OrchestratorExecutorStartArgs = {
       configPath?: string;
     };
   };
+  /** Checkpoint content from a previous interrupted attempt's `.ade-checkpoint.md` file. */
+  previousCheckpoint?: string;
+  /** Summary/error from the previous attempt on the same step (for retry context). */
+  previousAttemptSummary?: string;
 };
 
 export type OrchestratorExecutorAdapter = {
@@ -3754,6 +3760,20 @@ export function createOrchestratorService({
             `Load full context from: ${contextFilePath}`,
             "Keep output concise and structured for orchestrator ingestion."
           ];
+
+          // Inject recovery context for retry attempts in default adapter
+          if (args.previousCheckpoint || args.previousAttemptSummary) {
+            const recoveryLines: string[] = ["RECOVERY CONTEXT — PREVIOUS PROGRESS:", "Your previous attempt on this step was interrupted."];
+            if (args.previousCheckpoint) {
+              recoveryLines.push("Checkpoint from before interruption:", "---", args.previousCheckpoint, "---");
+            }
+            if (args.previousAttemptSummary) {
+              recoveryLines.push("Previous attempt outcome:", args.previousAttemptSummary);
+            }
+            recoveryLines.push("Resume from where you left off. Do not redo completed work. Verify file state before continuing.");
+            promptParts.push(recoveryLines.join("\n"));
+          }
+
           const prompt = promptParts.join("\n");
 
           const commandParts: string[] = [kind];
@@ -4514,9 +4534,12 @@ export function createOrchestratorService({
             .sort(stableStepOrderComparator({ depthById, hashByStepId }));
           if (!readySteps.length) break;
 
-          let startedInLoop = 0;
+          // Phase 1 (sequential): pre-validate steps and collect spawn descriptors
+          // up to the effective cap. This keeps freshness checks and manual-step
+          // filtering sequential so we don't over-commit slots.
+          const spawnDescriptors: Array<{ step: typeof readySteps[number]; executor: OrchestratorExecutorKind }> = [];
           for (const step of readySteps) {
-            if (runningAttemptCount >= effectiveCap) break;
+            if (runningAttemptCount + spawnDescriptors.length >= effectiveCap) break;
             const fresh = getStepRow(step.id);
             if (!fresh) continue;
             if (toStep(fresh).status !== "ready") continue;
@@ -4537,27 +4560,50 @@ export function createOrchestratorService({
               });
               continue;
             }
-            try {
-              await this.startAttempt({
-                runId,
-                stepId: step.id,
-                ownerId: autopilot.ownerId,
-                executorKind: stepExecutor
-              });
-              startedAttempts += 1;
-              startedInLoop += 1;
-              runningAttemptCount += 1;
-              startedByExecutor[stepExecutor] = (startedByExecutor[stepExecutor] ?? 0) + 1;
-            } catch (error) {
-              appendTimelineEvent({
-                runId,
-                stepId: step.id,
-                eventType: "autopilot_attempt_start_failed",
-                reason: "autopilot_start_failed",
-                detail: {
-                  message: error instanceof Error ? error.message : String(error)
-                }
-              });
+            spawnDescriptors.push({ step, executor: stepExecutor });
+          }
+
+          // Phase 2 (parallel): spawn all validated steps concurrently.
+          // Claims inside startAttempt are synchronous SQLite operations and
+          // serialize naturally. Context snapshots and PTY sessions are the
+          // expensive async work that benefits from parallelism.
+          // Promise.allSettled ensures one failure does not cancel others.
+          let startedInLoop = 0;
+          if (spawnDescriptors.length > 0) {
+            const results = await Promise.allSettled(
+              spawnDescriptors.map(({ step, executor }) =>
+                this.startAttempt({
+                  runId,
+                  stepId: step.id,
+                  ownerId: autopilot.ownerId,
+                  executorKind: executor
+                }).then(
+                  () => ({ ok: true as const, step, executor }),
+                  (error: unknown) => {
+                    appendTimelineEvent({
+                      runId,
+                      stepId: step.id,
+                      eventType: "autopilot_attempt_start_failed",
+                      reason: "autopilot_start_failed",
+                      detail: {
+                        message: error instanceof Error ? error.message : String(error)
+                      }
+                    });
+                    return { ok: false as const, step, executor };
+                  }
+                )
+              )
+            );
+            for (const result of results) {
+              // allSettled with the inner .then() catch means all results are
+              // "fulfilled" — the inner catch converts rejections to { ok: false }.
+              if (result.status === "fulfilled" && result.value.ok) {
+                startedAttempts += 1;
+                startedInLoop += 1;
+                runningAttemptCount += 1;
+                startedByExecutor[result.value.executor] =
+                  (startedByExecutor[result.value.executor] ?? 0) + 1;
+              }
             }
           }
           if (startedInLoop === 0) break;
@@ -5764,10 +5810,87 @@ export function createOrchestratorService({
           return config;
         })();
 
+        // Recovery-aware retry: read checkpoint and previous attempt data when retrying
+        const recoveryContext = await (async (): Promise<{ previousCheckpoint?: string; previousAttemptSummary?: string }> => {
+          if (attemptNumber <= 1) return {};
+          const result: { previousCheckpoint?: string; previousAttemptSummary?: string } = {};
+
+          // 1. Read .ade-checkpoint.md from the lane worktree if available
+          if (step.laneId) {
+            const laneRow = db.get<{ worktree_path: string | null }>(
+              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+              [step.laneId, projectId]
+            );
+            const worktreePath = typeof laneRow?.worktree_path === "string" && laneRow.worktree_path.trim().length
+              ? laneRow.worktree_path.trim()
+              : null;
+            if (worktreePath) {
+              const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+              const checkpointPath = path.join(worktreePath, `.ade-checkpoint-${sanitizedStepKey}.md`);
+              try {
+                const content = fs.readFileSync(checkpointPath, "utf8");
+                if (content.trim().length > 0) {
+                  // Cap checkpoint content to avoid oversized prompts
+                  result.previousCheckpoint = content.length > 12_000
+                    ? content.slice(0, 12_000) + "\n\n[checkpoint truncated]"
+                    : content;
+                }
+              } catch {
+                // File does not exist or is unreadable — expected for first attempts or after cleanup
+              }
+            }
+          }
+
+          // 2. Gather summary from the most recent previous attempt on this step
+          const prevAttemptRow = db.get<{ result_envelope_json: string | null; error_message: string | null; status: string | null }>(
+            `
+              select result_envelope_json, error_message, status
+              from orchestrator_attempts
+              where project_id = ?
+                and step_id = ?
+                and attempt_number = ?
+              limit 1
+            `,
+            [projectId, step.id, attemptNumber - 1]
+          );
+          if (prevAttemptRow) {
+            const parts: string[] = [];
+            const prevStatus = prevAttemptRow.status ?? "unknown";
+            parts.push(`Previous attempt status: ${prevStatus}`);
+            if (prevAttemptRow.error_message) {
+              parts.push(`Error: ${prevAttemptRow.error_message}`);
+            }
+            if (prevAttemptRow.result_envelope_json) {
+              try {
+                const envelope = JSON.parse(prevAttemptRow.result_envelope_json) as Record<string, unknown>;
+                const summary = typeof envelope.summary === "string" ? envelope.summary.trim() : "";
+                if (summary.length > 0) {
+                  parts.push(`Summary: ${summary}`);
+                }
+                const warnings = Array.isArray(envelope.warnings)
+                  ? (envelope.warnings as unknown[]).map((w) => String(w ?? "").trim()).filter(Boolean)
+                  : [];
+                if (warnings.length > 0) {
+                  parts.push(`Warnings: ${warnings.join("; ")}`);
+                }
+              } catch {
+                // malformed envelope — skip
+              }
+            }
+            if (parts.length > 0) {
+              result.previousAttemptSummary = parts.join("\n");
+            }
+          }
+
+          return result;
+        })();
+
+        const allSteps = listStepRows(run.id).map(toStep);
         const result = await adapter.start({
           run,
           step,
           attempt,
+          allSteps,
           contextProfile: contextPolicy,
           laneExport: snapshot.laneExport,
           projectExport: snapshot.projectExport,
@@ -5778,7 +5901,8 @@ export function createOrchestratorService({
               ...sessionArgs,
               tracked: true
             }),
-          permissionConfig
+          permissionConfig,
+          ...recoveryContext
         });
         if (result.status === "accepted") {
           const sessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
@@ -6008,6 +6132,26 @@ export function createOrchestratorService({
           `,
           [completedAt, completedAt, args.attemptId, step.id, run.id, projectId]
         );
+
+        // Clean up checkpoint file on success to avoid stale data in future runs
+        if (step.laneId) {
+          const laneRow = db.get<{ worktree_path: string | null }>(
+            `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+            [step.laneId, projectId]
+          );
+          const worktreePath = typeof laneRow?.worktree_path === "string" && laneRow.worktree_path.trim().length
+            ? laneRow.worktree_path.trim()
+            : null;
+          if (worktreePath) {
+            const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+            const checkpointPath = path.join(worktreePath, `.ade-checkpoint-${sanitizedStepKey}.md`);
+            try {
+              fs.unlinkSync(checkpointPath);
+            } catch {
+              // File may not exist — expected when no checkpoint was written
+            }
+          }
+        }
       } else if (status === "canceled") {
         db.run(
           `

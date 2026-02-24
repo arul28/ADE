@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Warning, Archive, ArrowSquareOut, GitBranch, GitMerge, Stack, PencilSimple, Terminal, Trash } from "@phosphor-icons/react";
+import { Warning, Archive, ArrowSquareOut, ArrowDown, GitBranch, GitMerge, Stack, PencilSimple, Terminal, Trash } from "@phosphor-icons/react";
 import type { ConflictChip, ConflictStatus, LaneSummary } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -26,6 +26,57 @@ function conflictSeverity(status: ConflictStatus["status"] | null | undefined): 
 
 function chipText(kind: ConflictChip["kind"]): string {
   return kind === "new-overlap" ? "new overlap" : "high risk";
+}
+
+function RemotePullBanner({ laneId, behindCount }: { laneId: string; behindCount: number }) {
+  const [pulling, setPulling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
+
+  const handlePull = async () => {
+    setPulling(true);
+    setError(null);
+    try {
+      await window.ade.git.pull({ laneId });
+      refreshLanes?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPulling(false);
+    }
+  };
+
+  return (
+    <div
+      className="mt-2 flex items-center gap-2 px-3 py-2 text-[11px] font-mono"
+      style={{
+        background: "rgba(59,130,246,0.06)",
+        border: "1px solid rgba(59,130,246,0.20)",
+        borderRadius: 4,
+      }}
+    >
+      <ArrowDown size={13} weight="bold" className="text-blue-400 shrink-0" />
+      <span className="text-blue-300">
+        {behindCount} commit{behindCount > 1 ? "s" : ""} behind remote
+      </span>
+      <button
+        type="button"
+        disabled={pulling}
+        onClick={(e) => { e.stopPropagation(); void handlePull(); }}
+        className="ml-auto font-bold uppercase tracking-[1px] text-[10px] px-2.5 py-1 transition-colors"
+        style={{
+          background: "rgba(59,130,246,0.15)",
+          border: "1px solid rgba(59,130,246,0.30)",
+          color: "#60A5FA",
+          cursor: pulling ? "not-allowed" : "pointer",
+          opacity: pulling ? 0.5 : 1,
+        }}
+      >
+        {pulling ? "PULLING..." : "PULL"}
+      </button>
+      {error && <span className="text-red-400 text-[10px] truncate max-w-[200px]" title={error}>{error}</span>}
+    </div>
+  );
 }
 
 export function LaneRow({
@@ -453,6 +504,11 @@ export function LaneRow({
           ) : null}
         </div>
       </div>
+
+      {/* Pull from remote suggestion */}
+      {lane.status.remoteBehind > 0 && (
+        <RemotePullBanner laneId={lane.id} behindCount={lane.status.remoteBehind} />
+      )}
 
       <div className="mt-2 grid grid-cols-3 gap-2 pt-2 border-t border-border/5 text-[11px] font-mono uppercase tracking-wider text-muted-fg">
         <div className="flex flex-col rounded-md bg-card/30 p-1.5">

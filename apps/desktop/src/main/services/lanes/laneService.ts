@@ -144,7 +144,24 @@ async function computeLaneStatus(worktreePath: string, baseRef: string, branchRe
     ahead = Number.isFinite(right) ? right : 0;
   }
 
-  return { dirty, ahead, behind };
+  // Check how far behind the remote tracking branch we are
+  let remoteBehind = -1; // -1 = no upstream configured
+  const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+    const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
+      cwd: worktreePath,
+      timeoutMs: 5_000
+    });
+    if (behindRes.exitCode === 0) {
+      const count = parseInt(behindRes.stdout.trim(), 10);
+      remoteBehind = Number.isFinite(count) ? count : 0;
+    }
+  }
+
+  return { dirty, ahead, behind, remoteBehind };
 }
 
 function computeStackDepth(args: {
@@ -321,7 +338,7 @@ export function createLaneService({
       const cached = statusCache.get(laneId);
       if (cached) return cached;
       const row = rowsById.get(laneId);
-      if (!row) return { dirty: false, ahead: 0, behind: 0 };
+      if (!row) return { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
       let baseRef = parent?.branch_ref ?? row.base_ref;
 
@@ -352,7 +369,7 @@ export function createLaneService({
       return status;
     };
 
-    const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0 };
+    const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
     const out: LaneSummary[] = [];
     for (const row of rows) {
       try {
@@ -674,11 +691,11 @@ export function createLaneService({
             parentRow.branch_ref
           );
         } catch {
-          parentStatus = { dirty: false, ahead: 0, behind: 0 };
+          parentStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
         }
       }
 
-      const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0 };
+      const defaultStatus: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1 };
       const out: LaneSummary[] = [];
       for (const row of childRows) {
         let status: LaneStatus;

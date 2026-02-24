@@ -3,7 +3,7 @@ import type {
   OrchestratorExecutorStartArgs,
   OrchestratorExecutorStartResult
 } from "./orchestratorService";
-import type { OrchestratorWorkerRole, OrchestratorContextView } from "../../../shared/types";
+import type { OrchestratorWorkerRole, OrchestratorContextView, OrchestratorStep } from "../../../shared/types";
 import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "../../../shared/types";
 
 function shellEscapeArg(value: string): string {
@@ -14,6 +14,52 @@ function compactText(value: string, maxChars = 220): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function buildCompactPlanView(currentStep: OrchestratorStep, allSteps: OrchestratorStep[]): string {
+  if (!allSteps.length) return "";
+  const stepIdToKey = new Map(allSteps.map((s) => [s.id, s.stepKey]));
+  const sorted = [...allSteps].sort((a, b) => a.stepIndex - b.stepIndex);
+  const lines: string[] = ["Mission Plan:"];
+  for (const s of sorted) {
+    const isCurrentStep = s.id === currentStep.id;
+    let prefix: string;
+    switch (s.status) {
+      case "succeeded":
+        prefix = "  [done]";
+        break;
+      case "failed":
+        prefix = "  [FAILED]";
+        break;
+      case "skipped":
+        prefix = "  [skipped]";
+        break;
+      case "canceled":
+        prefix = "  [canceled]";
+        break;
+      case "running":
+        prefix = isCurrentStep ? "  >>> [running/YOU]" : "  + [running]";
+        break;
+      case "blocked":
+        prefix = "  ! [blocked]";
+        break;
+      default:
+        prefix = "  -> [pending]";
+        break;
+    }
+    let line = `${prefix} ${s.stepKey}`;
+    if (s.status === "running" && !isCurrentStep) {
+      line += "  (parallel)";
+    }
+    if (s.dependencyStepIds.length > 0) {
+      const depKeys = s.dependencyStepIds
+        .map((depId) => stepIdToKey.get(depId) ?? depId.slice(0, 8))
+        .join(", ");
+      line += ` (depends on: ${depKeys})`;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
 }
 
 export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
@@ -75,6 +121,33 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
         }
 
         systemParts.push(`You are an ADE orchestrator worker executing step "${step.title}".`);
+
+        // A. Identity block
+        {
+          const role = typeof step.metadata?.role === "string" ? step.metadata.role : step.stepKey;
+          const laneLabel = step.laneId ?? "unassigned";
+          systemParts.push(
+            [
+              `Role: ${role}`,
+              `Step: "${step.title}" (key: ${step.stepKey})`,
+              `Mission: ${missionGoal || "(no goal)"} (mission: ${run.missionId}, run: ${run.id})`,
+              `Lane: ${laneLabel}`
+            ].join("\n")
+          );
+        }
+
+        // B. Propulsion principle
+        systemParts.push(
+          "EXECUTION PROTOCOL: Execute immediately. Do not ask for confirmation or propose a plan and wait for approval. Do not summarize your instructions back. If you encounter a blocker you cannot work around, fail with a clear error message describing the blocker. Never wait for human input — make the best decision you can and document your reasoning."
+        );
+
+        // C. Compact plan view
+        {
+          const planView = buildCompactPlanView(step, args.allSteps);
+          if (planView) {
+            systemParts.push(planView);
+          }
+        }
 
         systemParts.push(
           [
@@ -166,6 +239,33 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
           systemParts.push(`Context from upstream steps:\n${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
         }
 
+        // Recovery context for retry attempts
+        if (args.previousCheckpoint || args.previousAttemptSummary) {
+          const recoveryParts: string[] = ["RECOVERY CONTEXT — PREVIOUS PROGRESS:"];
+          recoveryParts.push("Your previous attempt on this step was interrupted.");
+          if (args.previousCheckpoint) {
+            recoveryParts.push(
+              "Here is your checkpoint from before the interruption:",
+              "",
+              "---",
+              args.previousCheckpoint,
+              "---",
+              ""
+            );
+          }
+          if (args.previousAttemptSummary) {
+            recoveryParts.push(
+              "Previous attempt outcome:",
+              args.previousAttemptSummary,
+              ""
+            );
+          }
+          recoveryParts.push(
+            "Resume from where you left off. Do not redo work that was already completed. Check the state of files mentioned in the checkpoint to verify what was actually saved."
+          );
+          systemParts.push(recoveryParts.join("\n"));
+        }
+
         // Inject translated slash command prompt as instructions
         if (slashTranslation) {
           systemParts.push(`Slash command instructions:\n${slashTranslation.prompt}`);
@@ -185,6 +285,23 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
 
         // ADE self-awareness
         systemParts.push("You are working within ADE (Autonomous Development Environment), an Electron-based multi-agent development tool. ADE manages lanes (git worktrees), missions (task orchestration), PRs, and agent sessions. You have access to the project's full context including PRD and architecture docs when provided.");
+
+        // D. Checkpoint instructions
+        {
+          const sanitizedStepKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+          systemParts.push(
+            [
+              `PROGRESS CHECKPOINTING: After completing each significant unit of work (e.g., finishing a function, completing a file, passing a test), write a checkpoint file at \`.ade-checkpoint-${sanitizedStepKey}.md\` in your working directory with:`,
+              "- What you have accomplished so far",
+              "- Files you have modified and why",
+              "- Key decisions you made and your reasoning",
+              "- What you plan to do next",
+              "- Any risks or concerns",
+              "",
+              "Update this file as you progress. This checkpoint will be used for recovery if your session is interrupted."
+            ].join("\n")
+          );
+        }
 
         // Handoff summary guidance
         systemParts.push(

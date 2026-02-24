@@ -655,6 +655,19 @@ export function createGitOperationsService({
       return action;
     },
 
+    async pull(args: { laneId: string }): Promise<GitActionResult> {
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_pull",
+        reason: "pull_from_remote",
+        metadata: {},
+        fn: async (lane) => {
+          await runGitOrThrow(["pull", "--ff-only"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        }
+      });
+      return action;
+    },
+
     async push(args: GitPushArgs): Promise<GitActionResult> {
       const forceWithLease = Boolean(args.forceWithLease);
       const { action } = await runLaneOperation({

@@ -2259,6 +2259,11 @@ export function registerIpc({
     return ctx.gitService.fetch(arg);
   });
 
+  ipcMain.handle(IPC.gitPull, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.pull(arg);
+  });
+
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
     const ctx = getCtx();
     return await ctx.gitService.getSyncStatus(arg);

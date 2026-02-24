@@ -5055,15 +5055,305 @@ export function createAiOrchestratorService(args: {
                 url: prResult.pr.githubUrl
               });
             } catch (prError) {
-              logger.warn("ai_orchestrator.integration_pr_creation_failed", {
-                missionId: mission.id,
-                runId,
-                error: prError instanceof Error ? prError.message : String(prError)
-              });
-              emitOrchestratorMessage(
-                mission.id,
-                `Integration PR creation failed: ${prError instanceof Error ? prError.message : String(prError)}`
-              );
+              // ── Auto-resolve conflict pipeline ─────────────────────────────
+              // When the direct integration PR creation fails (typically due to
+              // merge conflicts), attempt an AI-assisted resolution flow using
+              // the building blocks already in prService:
+              //   1. simulate  ->  2. create lane  ->  3. resolve each conflict
+              //   4. poll for completion  ->  5. verify  ->  6. commit PR
+              // The entire pipeline is wrapped in a safety net — if auto-resolve
+              // itself fails we fall back to the original "log + message" path.
+
+              const autoResolveEnabled = integrationPrPolicy.autoResolveConflicts !== false;
+
+              if (!autoResolveEnabled) {
+                logger.info("ai_orchestrator.auto_resolve_disabled", { missionId: mission.id, runId });
+                emitOrchestratorMessage(
+                  mission.id,
+                  `Integration PR creation failed due to merge conflicts. Auto-resolve is disabled — manual resolution is needed.\n` +
+                  `Error: ${prError instanceof Error ? prError.message : String(prError)}`
+                );
+              } else {
+                // Attempt the auto-resolve pipeline
+                try {
+                  emitOrchestratorMessage(
+                    mission.id,
+                    `Integration PR creation hit merge conflicts. Starting automatic conflict resolution...`
+                  );
+                  logger.info("ai_orchestrator.auto_resolve_starting", {
+                    missionId: mission.id,
+                    runId,
+                    originalError: prError instanceof Error ? prError.message : String(prError)
+                  });
+
+                  // Step 1: Simulate integration to get a conflict map / proposal
+                  const laneIdArray = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+                  const baseBranch = prStrategy.targetBranch ?? mission.laneId ?? "main";
+                  const isDraft = prStrategy.draft ?? integrationPrPolicy.draft ?? true;
+
+                  emitOrchestratorMessage(mission.id, `Simulating integration for ${laneIdArray.length} lanes against ${baseBranch}...`);
+
+                  const proposal = await prService.simulateIntegration({
+                    sourceLaneIds: laneIdArray,
+                    baseBranch
+                  });
+
+                  const conflictingSteps = proposal.steps.filter((s) => s.outcome === "conflict");
+                  if (conflictingSteps.length === 0) {
+                    // Simulation says no conflicts — the original error was likely transient
+                    emitOrchestratorMessage(
+                      mission.id,
+                      `Simulation found no conflicts (original failure may have been transient). Retrying PR creation...`
+                    );
+                    const retryResult = await prService.createIntegrationPr({
+                      sourceLaneIds: laneIdArray,
+                      integrationLaneName: `integration/${mission.id.slice(0, 8)}`,
+                      baseBranch,
+                      title: `[ADE] Integration: ${mission.title}`,
+                      body: `Automated integration PR for mission "${mission.title}".\n\nLanes: ${laneIdArray.join(", ")}`,
+                      draft: isDraft
+                    });
+                    emitOrchestratorMessage(
+                      mission.id,
+                      `Integration PR #${retryResult.pr.githubPrNumber} created (retry): ${retryResult.pr.githubUrl}`
+                    );
+                    logger.info("ai_orchestrator.integration_pr_created_retry", {
+                      missionId: mission.id,
+                      runId,
+                      prNumber: retryResult.pr.githubPrNumber,
+                      url: retryResult.pr.githubUrl
+                    });
+                  } else {
+                    // There are real conflicts — proceed with AI resolution
+                    emitOrchestratorMessage(
+                      mission.id,
+                      `Found ${conflictingSteps.length} lane(s) with conflicts: ${conflictingSteps.map((s) => s.laneName).join(", ")}. ` +
+                      `Setting up integration lane...`
+                    );
+
+                    // Step 2: Create integration lane (merges clean steps, marks conflicts)
+                    const laneResult = await prService.createIntegrationLaneForProposal({
+                      proposalId: proposal.proposalId
+                    });
+
+                    logger.info("ai_orchestrator.auto_resolve_lane_created", {
+                      missionId: mission.id,
+                      runId,
+                      integrationLaneId: laneResult.integrationLaneId,
+                      mergedClean: laneResult.mergedCleanLanes.length,
+                      conflicting: laneResult.conflictingLanes.length
+                    });
+
+                    if (laneResult.mergedCleanLanes.length > 0) {
+                      emitOrchestratorMessage(
+                        mission.id,
+                        `Merged ${laneResult.mergedCleanLanes.length} clean lane(s). ` +
+                        `${laneResult.conflictingLanes.length} lane(s) need AI resolution.`
+                      );
+                    }
+
+                    // Resolve model configuration for the integration phase
+                    // (reuse `runPolicy` from outer scope — no need to re-resolve)
+                    const integrationPhase = runPolicy.integration;
+                    const resolveProvider = (integrationPhase?.model ?? "claude") as "claude" | "codex";
+                    const resolveModel = resolveProvider === "codex" ? "codex" : "claude-sonnet-4-20250514";
+                    const resolveReasoningEffort = integrationPhase?.reasoningEffort;
+
+                    // Step 3 & 4: Resolve each conflicting lane sequentially
+                    const RESOLUTION_TIMEOUT_MS = 300_000; // 5 minutes per lane
+                    const POLL_INTERVAL_MS = 10_000;       // Check every 10 seconds
+                    const resolutionResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
+
+                    for (const conflictLaneId of laneResult.conflictingLanes) {
+                      const conflictStep = conflictingSteps.find((s) => s.laneId === conflictLaneId);
+                      const laneName = conflictStep?.laneName ?? conflictLaneId;
+
+                      emitOrchestratorMessage(
+                        mission.id,
+                        `Resolving conflicts for lane "${laneName}"...`
+                      );
+
+                      try {
+                        // Start AI-assisted resolution with autoApprove
+                        const resolutionStart = await prService.startIntegrationResolution({
+                          proposalId: proposal.proposalId,
+                          laneId: conflictLaneId,
+                          provider: resolveProvider,
+                          model: resolveModel,
+                          reasoningEffort: resolveReasoningEffort,
+                          autoApprove: true
+                        });
+
+                        // If chatSessionId is null-ish, the merge succeeded without conflicts
+                        // (startIntegrationResolution returns null chatSessionId for clean merges)
+                        if (!resolutionStart.chatSessionId) {
+                          resolutionResults.push({ laneId: conflictLaneId, success: true });
+                          emitOrchestratorMessage(
+                            mission.id,
+                            `Lane "${laneName}" merged cleanly (no AI resolution needed).`
+                          );
+                          continue;
+                        }
+
+                        // Step 4: Poll for resolution completion
+                        const startTime = Date.now();
+                        let resolved = false;
+
+                        while (Date.now() - startTime < RESOLUTION_TIMEOUT_MS) {
+                          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+                          const recheckResult = await prService.recheckIntegrationStep({
+                            proposalId: proposal.proposalId,
+                            laneId: conflictLaneId
+                          });
+
+                          if (recheckResult.resolution === "resolved") {
+                            resolved = true;
+                            break;
+                          }
+
+                          // If the resolution status is no longer "resolving" (e.g. "pending" or "failed"),
+                          // the agent did not resolve it — break immediately.
+                          if (recheckResult.resolution !== "resolving") {
+                            break;
+                          }
+
+                          // Check if the chat session that was resolving has ended.
+                          // If the agent crashed or completed without resolving all conflicts,
+                          // recheckIntegrationStep may still return "resolving" (conflict markers remain).
+                          // Without this check the loop would spin for the full 5-minute timeout.
+                          if (agentChatService && resolutionStart.chatSessionId) {
+                            const sessions = await agentChatService.listSessions(conflictLaneId);
+                            const resolverSession = sessions.find(
+                              (s) => s.sessionId === resolutionStart.chatSessionId
+                            );
+                            if (resolverSession && resolverSession.status === "ended") {
+                              logger.warn("ai_orchestrator.auto_resolve_session_ended_early", {
+                                missionId: mission.id,
+                                laneId: conflictLaneId,
+                                chatSessionId: resolutionStart.chatSessionId,
+                                elapsedMs: Date.now() - startTime
+                              });
+                              break;
+                            }
+                          }
+                        }
+
+                        if (resolved) {
+                          resolutionResults.push({ laneId: conflictLaneId, success: true });
+                          emitOrchestratorMessage(
+                            mission.id,
+                            `Lane "${laneName}" conflicts resolved successfully.`
+                          );
+                          logger.info("ai_orchestrator.auto_resolve_lane_resolved", {
+                            missionId: mission.id,
+                            laneId: conflictLaneId,
+                            durationMs: Date.now() - startTime
+                          });
+                        } else {
+                          const elapsed = Math.round((Date.now() - startTime) / 1000);
+                          resolutionResults.push({
+                            laneId: conflictLaneId,
+                            success: false,
+                            error: `Resolution did not complete within ${elapsed}s`
+                          });
+                          emitOrchestratorMessage(
+                            mission.id,
+                            `Lane "${laneName}" auto-resolution did not complete (${elapsed}s elapsed). Manual intervention may be needed.`
+                          );
+                          logger.warn("ai_orchestrator.auto_resolve_lane_timeout", {
+                            missionId: mission.id,
+                            laneId: conflictLaneId,
+                            elapsedMs: Date.now() - startTime
+                          });
+                        }
+                      } catch (laneResolveError) {
+                        resolutionResults.push({
+                          laneId: conflictLaneId,
+                          success: false,
+                          error: laneResolveError instanceof Error ? laneResolveError.message : String(laneResolveError)
+                        });
+                        emitOrchestratorMessage(
+                          mission.id,
+                          `Lane "${laneName}" auto-resolution failed: ${laneResolveError instanceof Error ? laneResolveError.message : String(laneResolveError)}`
+                        );
+                        logger.warn("ai_orchestrator.auto_resolve_lane_failed", {
+                          missionId: mission.id,
+                          laneId: conflictLaneId,
+                          error: laneResolveError instanceof Error ? laneResolveError.message : String(laneResolveError)
+                        });
+                      }
+                    }
+
+                    // Step 5: Verify — check if all lanes resolved
+                    const allSucceeded = resolutionResults.every((r) => r.success);
+                    const failedLanes = resolutionResults.filter((r) => !r.success);
+
+                    if (!allSucceeded) {
+                      const failedNames = failedLanes.map((r) => {
+                        const step = conflictingSteps.find((s) => s.laneId === r.laneId);
+                        return step?.laneName ?? r.laneId;
+                      });
+                      emitOrchestratorMessage(
+                        mission.id,
+                        `Auto-resolution partially failed. ${failedLanes.length} lane(s) still need manual resolution: ${failedNames.join(", ")}. ` +
+                        `The integration lane has been created — you can continue resolution manually in the PRs tab.`
+                      );
+                      logger.warn("ai_orchestrator.auto_resolve_partial_failure", {
+                        missionId: mission.id,
+                        runId,
+                        totalConflicting: laneResult.conflictingLanes.length,
+                        resolved: resolutionResults.filter((r) => r.success).length,
+                        failed: failedLanes.length
+                      });
+                    } else {
+                      // Step 6: All resolved — create the integration PR
+                      emitOrchestratorMessage(
+                        mission.id,
+                        `All conflicts resolved. Creating integration PR...`
+                      );
+
+                      const integrationLaneName = `integration/${mission.id.slice(0, 8)}`;
+                      const commitResult = await prService.commitIntegration({
+                        proposalId: proposal.proposalId,
+                        integrationLaneName,
+                        title: `[ADE] Integration: ${mission.title}`,
+                        body: `Automated integration PR for mission "${mission.title}".\n\n` +
+                              `Lanes: ${laneIdArray.join(", ")}\n` +
+                              `Conflicts auto-resolved by AI for: ${laneResult.conflictingLanes.length} lane(s).`,
+                        draft: isDraft
+                      });
+
+                      emitOrchestratorMessage(
+                        mission.id,
+                        `Integration PR #${commitResult.pr.githubPrNumber} created (after auto-resolving conflicts): ${commitResult.pr.githubUrl}`
+                      );
+                      logger.info("ai_orchestrator.integration_pr_created_after_resolve", {
+                        missionId: mission.id,
+                        runId,
+                        prNumber: commitResult.pr.githubPrNumber,
+                        url: commitResult.pr.githubUrl,
+                        autoResolvedLanes: laneResult.conflictingLanes.length
+                      });
+                    }
+                  }
+                } catch (autoResolveError) {
+                  // Safety net: if the auto-resolve pipeline itself fails, fall back
+                  // to the original behavior of logging + messaging
+                  logger.warn("ai_orchestrator.auto_resolve_pipeline_failed", {
+                    missionId: mission.id,
+                    runId,
+                    originalError: prError instanceof Error ? prError.message : String(prError),
+                    autoResolveError: autoResolveError instanceof Error ? autoResolveError.message : String(autoResolveError)
+                  });
+                  emitOrchestratorMessage(
+                    mission.id,
+                    `Integration PR creation failed and auto-resolve also failed.\n` +
+                    `Original error: ${prError instanceof Error ? prError.message : String(prError)}\n` +
+                    `Auto-resolve error: ${autoResolveError instanceof Error ? autoResolveError.message : String(autoResolveError)}`
+                  );
+                }
+              }
             }
           } else if (prStrategy.kind === "per-lane" && prService && usedMultipleLanes) {
             try {

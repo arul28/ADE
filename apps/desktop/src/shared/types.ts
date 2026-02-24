@@ -74,6 +74,8 @@ export type LaneStatus = {
   dirty: boolean;
   ahead: number;
   behind: number;
+  /** Commits the remote tracking branch is ahead of local (0 = in sync, -1 = no upstream) */
+  remoteBehind: number;
 };
 
 export type LaneSummary = {

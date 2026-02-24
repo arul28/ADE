@@ -630,6 +630,7 @@ contextBridge.exposeInMainWorld("ade", {
     stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashPop, args),
     stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitStashDrop, args),
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitFetch, args),
+    pull: async (args: { laneId: string }): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitPull, args),
     getSyncStatus: async (args: { laneId: string }): Promise<GitUpstreamSyncStatus> =>
       ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => ipcRenderer.invoke(IPC.gitSync, args),

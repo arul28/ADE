@@ -3,6 +3,33 @@ import { createClaudeOrchestratorAdapter } from "./claudeOrchestratorAdapter";
 import type { OrchestratorExecutorStartArgs } from "./orchestratorService";
 
 function buildMockArgs(overrides: Partial<OrchestratorExecutorStartArgs> = {}): OrchestratorExecutorStartArgs {
+  const defaultStep = {
+    id: "step-1",
+    runId: "run-1",
+    missionStepId: null,
+    stepKey: "implement",
+    stepIndex: 0,
+    title: "Implement feature",
+    laneId: "lane-1",
+    status: "running" as const,
+    joinPolicy: "all_success" as const,
+    quorumCount: null,
+    dependencyStepIds: [] as string[],
+    retryLimit: 2,
+    retryCount: 0,
+    lastAttemptId: null,
+    createdAt: "2026-02-20T00:00:00.000Z",
+    updatedAt: "2026-02-20T00:00:00.000Z",
+    startedAt: "2026-02-20T00:00:00.000Z",
+    completedAt: null,
+    metadata: {
+      instructions: "Build the login page",
+      filePatterns: ["src/login/**", "src/auth/**"],
+      model: "opus",
+      permissionMode: "dontAsk"
+    }
+  };
+  const step = overrides.step ?? defaultStep;
   return {
     run: {
       id: "run-1",
@@ -18,32 +45,8 @@ function buildMockArgs(overrides: Partial<OrchestratorExecutorStartArgs> = {}): 
       lastError: null,
       metadata: { missionGoal: "Build a feature" }
     },
-    step: {
-      id: "step-1",
-      runId: "run-1",
-      missionStepId: null,
-      stepKey: "implement",
-      stepIndex: 0,
-      title: "Implement feature",
-      laneId: "lane-1",
-      status: "running",
-      joinPolicy: "all_success",
-      quorumCount: null,
-      dependencyStepIds: [],
-      retryLimit: 2,
-      retryCount: 0,
-      lastAttemptId: null,
-      createdAt: "2026-02-20T00:00:00.000Z",
-      updatedAt: "2026-02-20T00:00:00.000Z",
-      startedAt: "2026-02-20T00:00:00.000Z",
-      completedAt: null,
-      metadata: {
-        instructions: "Build the login page",
-        filePatterns: ["src/login/**", "src/auth/**"],
-        model: "opus",
-        permissionMode: "dontAsk"
-      }
-    },
+    step,
+    allSteps: overrides.allSteps ?? [step],
     attempt: {
       id: "attempt-1",
       runId: "run-1",
