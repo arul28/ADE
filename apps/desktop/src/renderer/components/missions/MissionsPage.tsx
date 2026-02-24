@@ -25,7 +25,8 @@ import {
   Hash,
   CaretDown,
   List,
-  Kanban
+  Kanban,
+  Trash
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
@@ -55,7 +56,6 @@ import type {
   PrStrategy
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
 import { OrchestratorDAG } from "./OrchestratorDAG";
@@ -66,29 +66,30 @@ import { MissionPolicyBadge } from "./MissionPolicyBadge";
 import { ExecutionPlanPreview } from "./ExecutionPlanPreview";
 import { UsageDashboard } from "./UsageDashboard";
 import { AgentChannels } from "./AgentChannels";
+import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
 
-const STATUS_BADGE_CLASSES: Record<MissionStatus, string> = {
-  queued: "bg-gray-500/20 text-gray-300 border-gray-500/30",
-  planning: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  plan_review: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
-  in_progress: "bg-green-500/20 text-green-300 border-green-500/30",
-  intervention_required: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  completed: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-  failed: "bg-red-500/20 text-red-300 border-red-500/30",
-  canceled: "bg-gray-500/20 text-gray-400 border-gray-500/30"
+const STATUS_BADGE_STYLES: Record<MissionStatus, { background: string; color: string; border: string }> = {
+  queued: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
+  planning: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
+  plan_review: { background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430" },
+  in_progress: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
+  intervention_required: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
+  completed: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
+  failed: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
+  canceled: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
 };
 
-const STATUS_DOT_COLORS: Record<MissionStatus, string> = {
-  queued: "bg-gray-400",
-  planning: "bg-blue-400",
-  plan_review: "bg-cyan-400",
-  in_progress: "bg-green-400",
-  intervention_required: "bg-amber-400",
-  completed: "bg-emerald-400",
-  failed: "bg-red-400",
-  canceled: "bg-gray-500"
+const STATUS_DOT_HEX: Record<MissionStatus, string> = {
+  queued: "#71717A",
+  planning: "#3B82F6",
+  plan_review: "#06B6D4",
+  in_progress: "#22C55E",
+  intervention_required: "#F59E0B",
+  completed: "#22C55E",
+  failed: "#EF4444",
+  canceled: "#71717A",
 };
 
 const STATUS_LABELS: Record<MissionStatus, string> = {
@@ -102,48 +103,48 @@ const STATUS_LABELS: Record<MissionStatus, string> = {
   canceled: "Canceled"
 };
 
-const PRIORITY_CLASSES: Record<MissionPriority, string> = {
-  urgent: "bg-red-500/20 text-red-300 border-red-500/30",
-  high: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  normal: "bg-sky-500/20 text-sky-300 border-sky-500/30",
-  low: "bg-gray-500/20 text-gray-400 border-gray-500/30"
+const PRIORITY_STYLES: Record<MissionPriority, { background: string; color: string; border: string }> = {
+  urgent: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
+  high: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
+  normal: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
+  low: { background: "#71717A18", color: "#71717A", border: "1px solid #71717A30" },
 };
 
 const STEP_STATUS_COLUMNS: Array<{ status: MissionStepStatus; label: string }> = [
-  { status: "pending", label: "Pending" },
-  { status: "running", label: "Running" },
-  { status: "succeeded", label: "Succeeded" },
-  { status: "failed", label: "Failed" },
-  { status: "skipped", label: "Skipped" }
+  { status: "pending", label: "PENDING" },
+  { status: "running", label: "RUNNING" },
+  { status: "succeeded", label: "SUCCEEDED" },
+  { status: "failed", label: "FAILED" },
+  { status: "skipped", label: "SKIPPED" }
 ];
 
-const STEP_STATUS_COLORS: Record<string, string> = {
-  pending: "bg-sky-500/20 text-sky-300 border-sky-500/30",
-  running: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-  succeeded: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-  failed: "bg-red-500/20 text-red-300 border-red-500/30",
-  skipped: "bg-gray-500/20 text-gray-400 border-gray-500/30",
-  blocked: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  canceled: "bg-gray-500/20 text-gray-400 border-gray-500/30"
+const STEP_STATUS_HEX: Record<string, string> = {
+  pending: "#3B82F6",
+  running: "#A78BFA",
+  succeeded: "#22C55E",
+  failed: "#EF4444",
+  skipped: "#71717A",
+  blocked: "#F59E0B",
+  canceled: "#71717A",
 };
 
-const EXECUTOR_BADGE_CLASSES: Record<string, string> = {
-  claude: "bg-violet-500/20 text-violet-300",
-  codex: "bg-emerald-500/20 text-emerald-300",
-  shell: "bg-amber-500/20 text-amber-300",
-  manual: "bg-blue-500/20 text-blue-300"
+const EXECUTOR_BADGE_HEX: Record<string, string> = {
+  claude: "#A78BFA",
+  codex: "#22C55E",
+  shell: "#F59E0B",
+  manual: "#3B82F6",
 };
 
 type WorkspaceTab = "board" | "dag" | "channels" | "activity" | "usage";
 type MissionListViewMode = "list" | "board";
 
-const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; color: string }> = [
-  { key: "queued", label: "Queued", color: "text-neutral-400" },
-  { key: "planning", label: "Planning", color: "text-blue-400" },
-  { key: "plan_review", label: "Review", color: "text-cyan-400" },
-  { key: "in_progress", label: "Running", color: "text-green-400" },
-  { key: "completed", label: "Done", color: "text-emerald-400" },
-  { key: "failed", label: "Failed", color: "text-red-400" },
+const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: string }> = [
+  { key: "queued", label: "QUEUED", hex: "#71717A" },
+  { key: "planning", label: "PLANNING", hex: "#3B82F6" },
+  { key: "plan_review", label: "REVIEW", hex: "#06B6D4" },
+  { key: "in_progress", label: "RUNNING", hex: "#22C55E" },
+  { key: "completed", label: "DONE", hex: "#22C55E" },
+  { key: "failed", label: "FAILED", hex: "#EF4444" },
 ];
 type PlannerProvider = "auto" | "claude" | "codex";
 
@@ -227,9 +228,10 @@ function toCodexApprovalMode(value: string): "suggest" | "auto-edit" | "full-aut
   return "full-auto";
 }
 
-function formatElapsed(startedAt: string | null): string {
+function formatElapsed(startedAt: string | null, endedAt?: string | null): string {
   if (!startedAt) return "--";
-  const delta = Math.max(0, Date.now() - Date.parse(startedAt));
+  const end = endedAt ? Date.parse(endedAt) : Date.now();
+  const delta = Math.max(0, end - Date.parse(startedAt));
   const secs = Math.floor(delta / 1000);
   if (secs < 60) return `${secs}s`;
   const mins = Math.floor(secs / 60);
@@ -237,6 +239,16 @@ function formatElapsed(startedAt: string | null): string {
   const hours = Math.floor(mins / 60);
   return `${hours}h ${mins % 60}m`;
 }
+
+const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>(["completed", "failed", "canceled"]);
+
+const NOISY_EVENT_TYPES = new Set([
+  "claim_heartbeat",
+  "context_pack_bootstrap",
+  "autopilot_parallelism_cap_adjusted",
+  "tick",
+  "dynamic_cap",
+]);
 
 function relativeWhen(iso: string): string {
   const ts = Date.parse(iso);
@@ -365,6 +377,12 @@ function narrativeForEvent(ev: { eventType: string; reason: string; stepId?: str
   if (ev.eventType === "autopilot_advance") return `Autopilot advanced: ${ev.reason}`;
   if (ev.eventType === "autopilot_attempt_start_failed") return `Autopilot failed to start attempt: ${ev.reason}`;
 
+  // ── Gate / review events ──
+  if (ev.eventType === "merge_conflict_detected") return `Merge conflict detected for step ${stepLabel}`;
+  if (ev.eventType === "code_review_passed") return `Code review passed for step ${stepLabel}`;
+  if (ev.eventType === "tests_passed") return `Tests passed for step ${stepLabel}`;
+  if (ev.eventType === "integration_started") return `Integration started for step ${stepLabel}`;
+
   // ── Context events ──
   if (ev.eventType === "context_snapshot_created") return "Context snapshot saved for future reference";
   if (ev.eventType === "context_pressure_warning") return "Context window pressure detected \u2014 may need to compact";
@@ -387,19 +405,19 @@ function iconForEventType(eventType: string): React.ElementType {
   return Pulse;
 }
 
-/** CSS color class for a timeline event type icon. */
-function iconColorForEventType(eventType: string, reason: string): string {
+/** Hex color for a timeline event type icon. */
+function iconHexForEventType(eventType: string, reason: string): string {
   const r = reason.toLowerCase();
-  if (r.includes("failed") || r.includes("error")) return "text-red-400";
-  if (r.includes("succeeded") || r.includes("completed") || r.includes("success")) return "text-emerald-400";
-  if (r.includes("paused") || r.includes("blocked")) return "text-amber-400";
-  if (eventType.startsWith("run_")) return "text-green-400";
-  if (eventType.startsWith("step_")) return "text-blue-400";
-  if (eventType.startsWith("attempt_")) return "text-violet-400";
-  if (eventType.startsWith("claim_")) return "text-amber-400";
-  if (eventType.startsWith("autopilot")) return "text-violet-400";
-  if (eventType === "user_directive") return "text-cyan-400";
-  return "text-muted-fg";
+  if (r.includes("failed") || r.includes("error")) return "#EF4444";
+  if (r.includes("succeeded") || r.includes("completed") || r.includes("success")) return "#22C55E";
+  if (r.includes("paused") || r.includes("blocked")) return "#F59E0B";
+  if (eventType.startsWith("run_")) return "#22C55E";
+  if (eventType.startsWith("step_")) return "#3B82F6";
+  if (eventType.startsWith("attempt_")) return "#A78BFA";
+  if (eventType.startsWith("claim_")) return "#F59E0B";
+  if (eventType.startsWith("autopilot")) return "#A78BFA";
+  if (eventType === "user_directive") return "#06B6D4";
+  return COLORS.textMuted;
 }
 
 type SteeringEntry = { directive: string; appliedAt: string };
@@ -480,15 +498,15 @@ const METRIC_PRESET_GROUPS: MetricPresetGroup[] = [
   }
 ];
 
-const WORKER_STATUS_CLASSES: Record<string, string> = {
-  spawned: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  initializing: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
-  working: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-  waiting_input: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  idle: "bg-sky-500/20 text-sky-300 border-sky-500/30",
-  completed: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-  failed: "bg-red-500/20 text-red-300 border-red-500/30",
-  disposed: "bg-muted/30 text-muted-fg border-border/30"
+const WORKER_STATUS_HEX: Record<string, string> = {
+  spawned: "#3B82F6",
+  initializing: "#6366F1",
+  working: "#A78BFA",
+  waiting_input: "#F59E0B",
+  idle: "#3B82F6",
+  completed: "#22C55E",
+  failed: "#EF4444",
+  disposed: "#71717A",
 };
 
 function asNonEmptyString(value: string | null | undefined): string | null {
@@ -946,16 +964,20 @@ function MissionChat({
     }
   }, [broadcastToWorkers, input, missionId, runId, selectedThread, sending]);
 
+  const threadTypeBadgeHex = (type: string) => type === "mission" ? "#3B82F6" : "#A78BFA";
+  const deliveryHex = (state: string | undefined) =>
+    state === "delivered" ? "#22C55E" : state === "failed" ? "#EF4444" : "#F59E0B";
+
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      <aside className="w-full shrink-0 border-b border-border/10 bg-card/40 lg:w-[230px] lg:border-b-0 lg:border-r">
-        <div className="flex items-center justify-between border-b border-border/10 px-3 py-2">
-          <div className="text-[11px] font-semibold text-fg">Threads</div>
-          <div className="text-[10px] text-muted-fg">{threads.length}</div>
+      <aside className="w-full shrink-0 lg:w-[230px] lg:border-b-0" style={{ background: COLORS.cardBg, borderRight: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>THREADS</div>
+          <div className="text-[10px]" style={{ color: COLORS.textMuted }}>{threads.length}</div>
         </div>
         <div className="max-h-[180px] overflow-y-auto p-2 lg:max-h-none lg:h-full">
           {threads.length === 0 && (
-            <div className="rounded border border-border/15 bg-card/60 px-2 py-3 text-center text-[10px] text-muted-fg">
+            <div className="px-2 py-3 text-center text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
               No threads yet
             </div>
           )}
@@ -964,29 +986,23 @@ function MissionChat({
               <button
                 key={thread.id}
                 onClick={() => setSelectedThreadId(thread.id)}
-                className={cn(
-                  "w-full rounded border px-2 py-2 text-left transition-colors",
-                  selectedThreadId === thread.id
-                    ? "border-accent/45 bg-accent/10"
-                    : "border-border/15 bg-card/60 hover:bg-card/80"
-                )}
+                className="w-full px-2 py-2 text-left transition-colors"
+                style={selectedThreadId === thread.id
+                  ? { background: "#A78BFA12", borderLeft: `3px solid ${COLORS.accent}`, border: `1px solid ${COLORS.accent}30` }
+                  : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
+                }
               >
                 <div className="flex items-center justify-between gap-1">
-                  <div className="truncate text-[11px] font-medium text-fg">{thread.title}</div>
+                  <div className="truncate text-[11px] font-medium" style={{ color: COLORS.textPrimary }}>{thread.title}</div>
                   {thread.unreadCount > 0 && (
-                    <span className="rounded bg-accent px-1.5 py-0.5 text-[9px] font-semibold text-accent-fg">
+                    <span className="px-1.5 py-0.5 text-[9px] font-bold" style={inlineBadge(COLORS.accent)}>
                       {thread.unreadCount}
                     </span>
                   )}
                 </div>
-                <div className="mt-1 flex items-center gap-1.5 text-[9px] text-muted-fg">
-                  <span className={cn(
-                    "rounded px-1 py-0.5 border",
-                    thread.threadType === "mission"
-                      ? "bg-sky-500/15 text-sky-300 border-sky-500/30"
-                      : "bg-violet-500/15 text-violet-300 border-violet-500/30"
-                  )}>
-                    {thread.threadType === "mission" ? "Mission" : "Worker"}
+                <div className="mt-1 flex items-center gap-1.5 text-[9px]" style={{ color: COLORS.textMuted }}>
+                  <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(threadTypeBadgeHex(thread.threadType))}>
+                    {thread.threadType === "mission" ? "MISSION" : "WORKER"}
                   </span>
                   <span>{relativeWhen(thread.updatedAt)}</span>
                 </div>
@@ -996,15 +1012,15 @@ function MissionChat({
         </div>
       </aside>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-border/10 lg:border-b-0 lg:border-r lg:border-border/20">
-        <div className="border-b border-border/10 px-3 py-2">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:border-b-0" style={{ borderRight: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}>
+        <div className="px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center gap-2">
-            <ChatCircle size={14} weight="regular" className="text-accent" />
-            <div className="text-[11px] font-semibold text-fg">
+            <ChatCircle size={14} weight="regular" style={{ color: COLORS.accent }} />
+            <div className="text-[11px] font-bold" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>
               {selectedThread?.title ?? "Select a thread"}
             </div>
             {selectedThread && (
-              <span className="rounded border border-border/20 bg-card/80 px-1.5 py-0.5 text-[9px] text-muted-fg">
+              <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(COLORS.textMuted)}>
                 {selectedThread.threadType}
               </span>
             )}
@@ -1013,44 +1029,41 @@ function MissionChat({
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
           {!selectedThread && (
-            <div className="rounded border border-border/15 bg-card/60 px-3 py-6 text-center text-[11px] text-muted-fg">
+            <div className="px-3 py-6 text-center text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
               Pick a mission or worker thread to inspect and send guidance.
             </div>
           )}
           {selectedThread && messages.length === 0 && (
-            <div className="rounded border border-border/15 bg-card/60 px-3 py-6 text-center text-[11px] text-muted-fg">
+            <div className="px-3 py-6 text-center text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
               No messages yet in this thread.
             </div>
           )}
           {messages.map((msg) => (
             <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
-              <div className={cn(
-                "max-w-[85%] rounded-lg border px-2.5 py-2 text-[11px]",
-                msg.role === "user"
-                  ? "border-accent/40 bg-accent/15 text-fg"
+              <div
+                className="max-w-[85%] px-2.5 py-2 text-[11px]"
+                style={msg.role === "user"
+                  ? { border: `1px solid ${COLORS.accent}30`, background: `${COLORS.accent}12`, color: COLORS.textPrimary }
                   : msg.role === "worker"
-                    ? "border-violet-500/35 bg-violet-500/10 text-violet-100"
-                    : "border-border/20 bg-card/80 text-fg"
-              )}>
+                    ? { border: "1px solid #A78BFA30", background: "#A78BFA10", color: COLORS.textPrimary }
+                    : { border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, color: COLORS.textPrimary }
+                }
+              >
                 {msg.role !== "user" && (
-                  <div className="mb-1 flex items-center gap-1 text-[9px] text-muted-fg">
+                  <div className="mb-1 flex items-center gap-1 text-[9px]" style={{ color: COLORS.textMuted }}>
                     {msg.role === "orchestrator" ? <Robot className="h-3 w-3" /> : <TerminalWindow className="h-3 w-3" />}
                     <span>{msg.role === "orchestrator" ? "Orchestrator" : "Worker"}</span>
                     {msg.stepKey ? <span>{"\u2022"} {msg.stepKey}</span> : null}
                   </div>
                 )}
                 <div className="whitespace-pre-wrap">{msg.content}</div>
-                <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-muted-fg">
+                <div className="mt-1 flex items-center justify-between gap-2 text-[9px]" style={{ color: COLORS.textMuted }}>
                   <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
                   {msg.role === "user" && selectedThread?.threadType === "worker" ? (
-                    <span className={cn(
-                      "rounded border px-1 py-0.5",
-                      msg.deliveryState === "delivered"
-                        ? "border-emerald-500/35 text-emerald-300"
-                        : msg.deliveryState === "failed"
-                          ? "border-red-500/35 text-red-300"
-                          : "border-amber-500/35 text-amber-300"
-                    )}>
+                    <span
+                      className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
+                      style={inlineBadge(deliveryHex(msg.deliveryState))}
+                    >
                       {msg.deliveryState}
                     </span>
                   ) : null}
@@ -1060,7 +1073,7 @@ function MissionChat({
           ))}
         </div>
 
-        <div className="border-t border-border/10 px-3 py-2">
+        <div className="px-3 py-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center gap-2">
             <input
               value={input}
@@ -1079,75 +1092,74 @@ function MissionChat({
                     ? "Broadcast guidance to all worker threads in this run..."
                   : "Message the mission coordinator..."
               }
-              className="h-8 flex-1 rounded border border-border/15 bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 disabled:opacity-50"
+              className="h-8 flex-1 px-3 text-xs outline-none disabled:opacity-50"
+              style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }}
             />
             {selectedThread?.threadType === "mission" && (
-              <label className="flex items-center gap-1 rounded border border-border/15 bg-card/60 px-2 py-1 text-[10px] text-muted-fg">
+              <label className="flex items-center gap-1 px-2 py-1 text-[10px]" style={{ color: COLORS.textMuted, border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.recessedBg, fontFamily: MONO_FONT }}>
                 <input
                   type="checkbox"
                   checked={broadcastToWorkers}
                   onChange={(event) => setBroadcastToWorkers(event.target.checked)}
                 />
-                Broadcast
+                BROADCAST
               </label>
             )}
-            <Button
-              variant="primary"
-              size="sm"
+            <button
+              style={primaryButton()}
               onClick={() => void handleSend()}
               disabled={!selectedThread || !input.trim() || sending}
             >
               {sending ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <PaperPlaneTilt className="h-3 w-3" />}
-              Send
-            </Button>
+              SEND
+            </button>
           </div>
         </div>
       </div>
 
-      <aside className="hidden w-[300px] shrink-0 xl:flex xl:flex-col">
-        <div className="border-b border-border/10 px-3 py-2">
-          <div className="text-[11px] font-semibold text-fg">Worker Status</div>
+      <aside className="hidden w-[300px] shrink-0 xl:flex xl:flex-col" style={{ background: COLORS.cardBg }}>
+        <div className="px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>WORKER STATUS</div>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
           {workerThreadCards.length === 0 && (
-            <div className="rounded border border-border/15 bg-card/60 px-2 py-3 text-center text-[10px] text-muted-fg">
+            <div className="px-2 py-3 text-center text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
               No worker threads yet.
             </div>
           )}
-          {workerThreadCards.map(({ thread, state, digest }) => (
-            <button
-              key={thread.id}
-              onClick={() => setSelectedThreadId(thread.id)}
-              className={cn(
-                "w-full rounded border px-2 py-2 text-left transition-colors",
-                selectedThreadId === thread.id
-                  ? "border-accent/45 bg-accent/10"
-                  : "border-border/15 bg-card/60 hover:bg-card/80"
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="truncate text-[11px] font-medium text-fg">{thread.title}</div>
-                <span className={cn(
-                  "rounded border px-1 py-0.5 text-[9px] capitalize",
-                  WORKER_STATUS_CLASSES[state?.state ?? digest?.status ?? "idle"] ?? "border-border/30 text-muted-fg"
-                )}>
-                  {(state?.state ?? digest?.status ?? "idle").replace("_", " ")}
-                </span>
-              </div>
-              <div className="mt-1 text-[9px] text-muted-fg">
-                heartbeat {relativeWhen(state?.lastHeartbeatAt ?? thread.updatedAt)}
-              </div>
-              <div className="mt-1 text-[10px] text-fg/80 leading-snug">
-                {compactText(digest?.summary ?? "No worker digest yet.", 140)}
-              </div>
-            </button>
-          ))}
+          {workerThreadCards.map(({ thread, state, digest }) => {
+            const wHex = WORKER_STATUS_HEX[state?.state ?? digest?.status ?? "idle"] ?? COLORS.textMuted;
+            return (
+              <button
+                key={thread.id}
+                onClick={() => setSelectedThreadId(thread.id)}
+                className="w-full px-2 py-2 text-left transition-colors"
+                style={selectedThreadId === thread.id
+                  ? { background: "#A78BFA12", borderLeft: `3px solid ${COLORS.accent}`, border: `1px solid ${COLORS.accent}30` }
+                  : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
+                }
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="truncate text-[11px] font-medium" style={{ color: COLORS.textPrimary }}>{thread.title}</div>
+                  <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(wHex)}>
+                    {(state?.state ?? digest?.status ?? "idle").replace("_", " ")}
+                  </span>
+                </div>
+                <div className="mt-1 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                  heartbeat {relativeWhen(state?.lastHeartbeatAt ?? thread.updatedAt)}
+                </div>
+                <div className="mt-1 text-[10px] leading-snug" style={{ color: COLORS.textSecondary }}>
+                  {compactText(digest?.summary ?? "No worker digest yet.", 140)}
+                </div>
+              </button>
+            );
+          })}
         </div>
 
-        <div className="border-t border-border/10 px-3 py-2">
+        <div className="px-3 py-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center justify-between">
-            <div className="text-[11px] font-semibold text-fg">Mission Metrics</div>
-            {savingMetrics ? <SpinnerGap className="h-3.5 w-3.5 animate-spin text-muted-fg" /> : null}
+            <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>MISSION METRICS</div>
+            {savingMetrics ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" style={{ color: COLORS.textMuted }} /> : null}
           </div>
         </div>
         <div className="max-h-[44%] overflow-y-auto p-2">
@@ -1174,32 +1186,31 @@ function MissionChat({
                       setSavingMetrics(false);
                     }
                   }}
-                  className={cn(
-                    "rounded px-2 py-1 text-[10px] font-medium transition-colors border",
-                    allEnabled
-                      ? "bg-accent/20 text-accent border-accent/40"
-                      : "bg-card/60 text-muted-fg border-border/15 hover:bg-card/80"
-                  )}
+                  className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+                  style={allEnabled
+                    ? { background: `${COLORS.accent}18`, color: COLORS.accent, border: `1px solid ${COLORS.accent}30`, fontFamily: MONO_FONT }
+                    : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
+                  }
                 >
                   {group.label}
                 </button>
               );
             })}
           </div>
-          <div className="mt-2 rounded border border-border/15 bg-card/60 p-2">
-            <div className="text-[10px] font-medium text-muted-fg">Latest Samples</div>
+          <div className="mt-2 p-2" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>LATEST SAMPLES</div>
             <div className="mt-1 space-y-1">
               {METRIC_TOGGLE_ORDER.filter((toggle) => latestMetricByKey.has(toggle)).slice(0, 8).map((toggle) => {
                 const sample = latestMetricByKey.get(toggle)!;
                 return (
                   <div key={`${toggle}-${sample.id}`} className="flex items-center justify-between text-[10px]">
-                    <span className="text-muted-fg">{METRIC_TOGGLE_LABELS[toggle]}</span>
-                    <span className="text-fg">{formatMetricSample(sample)}</span>
+                    <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{METRIC_TOGGLE_LABELS[toggle]}</span>
+                    <span style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>{formatMetricSample(sample)}</span>
                   </div>
                 );
               })}
               {latestMetricByKey.size === 0 && (
-                <div className="text-[10px] text-muted-fg">No samples captured yet.</div>
+                <div className="text-[10px]" style={{ color: COLORS.textMuted }}>No samples captured yet.</div>
               )}
             </div>
           </div>
@@ -1282,20 +1293,24 @@ function CreateMissionDialog({
 
   if (!open) return null;
 
+  const dlgInputStyle: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
+  const dlgLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-2xl rounded-lg border border-border/30 bg-card shadow-2xl max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto"
+        style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
       >
-        <div className="flex items-center justify-between border-b border-border/10 px-5 py-3">
+        <div className="flex items-center justify-between px-5 h-14" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center gap-2">
-            <Rocket className="h-4 w-4 text-accent" />
-            <h2 className="text-sm font-semibold text-fg">New Mission</h2>
+            <Rocket className="h-4 w-4" style={{ color: COLORS.accent }} />
+            <h2 className="text-sm font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>NEW MISSION</h2>
           </div>
-          <button onClick={onClose} className="text-muted-fg hover:text-fg transition-colors">
+          <button onClick={onClose} className="transition-colors" style={{ color: COLORS.textMuted }}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -1303,67 +1318,43 @@ function CreateMissionDialog({
         <div className="space-y-4 px-5 py-4">
           {/* Prompt */}
           <label className="block space-y-1">
-            <span className="text-[11px] font-medium text-muted-fg">Mission Prompt *</span>
+            <span style={dlgLabelStyle}>MISSION PROMPT *</span>
             <textarea
               value={draft.prompt}
               onChange={(e) => setDraft((p) => ({ ...p, prompt: e.target.value }))}
               placeholder="Describe what you want to accomplish..."
               rows={4}
-              className="w-full rounded-lg border border-border/15 bg-surface-recessed px-3 py-2 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20 resize-none"
+              className="w-full px-3 py-2 text-xs outline-none resize-none"
+              style={dlgInputStyle}
             />
           </label>
 
           {/* Title */}
           <label className="block space-y-1">
-            <span className="text-[11px] font-medium text-muted-fg">Title (optional, auto-generated)</span>
+            <span style={dlgLabelStyle}>TITLE (OPTIONAL)</span>
             <input
               value={draft.title}
               onChange={(e) => setDraft((p) => ({ ...p, title: e.target.value }))}
               placeholder="e.g. Refactor auth middleware"
-              className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+              className="h-8 w-full px-3 text-xs outline-none"
+              style={dlgInputStyle}
             />
           </label>
 
-          <div className="grid grid-cols-3 gap-3">
-            {/* Lane */}
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-fg">Lane</span>
-              <select
-                value={draft.laneId}
-                onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
-                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
-              >
-                <option value="">Auto</option>
-                {lanes.map((l) => (
-                  <option key={l.id} value={l.id}>{l.name}</option>
-                ))}
-              </select>
-            </label>
-
-            {/* Priority */}
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-fg">Priority</span>
-              <select
-                value={draft.priority}
-                onChange={(e) => setDraft((p) => ({ ...p, priority: e.target.value as MissionPriority }))}
-                className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
-              >
-                <option value="low">Low</option>
-                <option value="normal">Normal</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
-            </label>
-
+          {/* Lane info */}
+          <div className="px-3 py-2 text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
+            <GitBranch className="inline h-3 w-3 mr-1 -mt-0.5" />
+            Missions automatically create dedicated lanes for each step.
           </div>
 
           {/* Orchestrator Model */}
           <label className="block space-y-1">
-            <span className="text-[11px] font-medium text-muted-fg">Orchestrator Model</span>
+            <span style={dlgLabelStyle}>ORCHESTRATOR MODEL</span>
             <select
               value={draft.orchestratorModel}
               onChange={(e) => setDraft((p) => ({ ...p, orchestratorModel: e.target.value }))}
-              className="h-8 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
+              className="h-8 w-full px-2 text-xs outline-none"
+              style={dlgInputStyle}
             >
               <option value="sonnet">Claude Sonnet (default)</option>
               <option value="opus">Claude Opus</option>
@@ -1373,11 +1364,11 @@ function CreateMissionDialog({
 
           {/* Thinking Budgets */}
           <div className="space-y-1">
-            <span className="text-[11px] font-medium text-muted-fg">Thinking Budgets</span>
+            <span style={dlgLabelStyle}>THINKING BUDGETS</span>
             <div className="grid grid-cols-2 gap-2">
               {Object.entries(draft.thinkingBudgets).map(([model, budget]) => (
                 <label key={model} className="flex items-center gap-2 text-[10px]">
-                  <span className="text-muted-fg w-[90px] shrink-0">{model.replace("claude-", "Claude ").replace("codex", "Codex")}</span>
+                  <span className="w-[90px] shrink-0" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{model.replace("claude-", "Claude ").replace("codex", "Codex")}</span>
                   <input
                     type="number"
                     step={1024}
@@ -1386,9 +1377,10 @@ function CreateMissionDialog({
                       ...p,
                       thinkingBudgets: { ...p.thinkingBudgets, [model]: Number(e.target.value) || 0 }
                     }))}
-                    className="h-7 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
+                    className="h-7 w-full px-2 text-xs outline-none"
+                    style={dlgInputStyle}
                   />
-                  <span className="text-muted-fg/60 text-[9px] shrink-0">tokens</span>
+                  <span className="text-[9px] shrink-0" style={{ color: COLORS.textDim }}>tokens</span>
                 </label>
               ))}
             </div>
@@ -1396,7 +1388,7 @@ function CreateMissionDialog({
 
           {/* PR Strategy */}
           <div className="space-y-1">
-            <span className="text-[11px] font-medium text-muted-fg">PR Strategy</span>
+            <span style={dlgLabelStyle}>PR STRATEGY</span>
             <div className="flex gap-1">
               {(["integration", "per-lane", "manual"] as const).map((kind) => (
                 <button
@@ -1408,21 +1400,20 @@ function CreateMissionDialog({
                       : { kind, targetBranch: draft.prTargetBranch, draft: draft.prDraft };
                     setDraft((p) => ({ ...p, prStrategy: base }));
                   }}
-                  className={cn(
-                    "rounded px-2.5 py-1 text-[10px] font-medium border transition-colors",
-                    draft.prStrategy.kind === kind
-                      ? "bg-accent/20 text-accent border-accent/40"
-                      : "bg-card/60 text-muted-fg border-border/15 hover:bg-card/80"
-                  )}
+                  className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+                  style={draft.prStrategy.kind === kind
+                    ? { background: `${COLORS.accent}18`, color: COLORS.accent, border: `1px solid ${COLORS.accent}30`, fontFamily: MONO_FONT }
+                    : { background: COLORS.recessedBg, color: COLORS.textMuted, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }
+                  }
                 >
-                  {kind === "integration" ? "Integration PR" : kind === "per-lane" ? "Per-Lane PRs" : "Manual"}
+                  {kind === "integration" ? "INTEGRATION PR" : kind === "per-lane" ? "PER-LANE PRS" : "MANUAL"}
                 </button>
               ))}
             </div>
             {draft.prStrategy.kind !== "manual" && (
               <div className="flex items-center gap-3 mt-1">
                 <label className="flex items-center gap-1.5 text-[10px]">
-                  <span className="text-muted-fg">Target branch</span>
+                  <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>Target branch</span>
                   <input
                     value={draft.prTargetBranch}
                     onChange={(e) => {
@@ -1433,10 +1424,11 @@ function CreateMissionDialog({
                         prStrategy: { ...p.prStrategy, targetBranch: branch } as PrStrategy
                       }));
                     }}
-                    className="h-6 w-24 rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40"
+                    className="h-6 w-24 px-2 text-xs outline-none"
+                    style={dlgInputStyle}
                   />
                 </label>
-                <label className="flex items-center gap-1 text-[10px] text-muted-fg">
+                <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
                     checked={draft.prDraft}
@@ -1457,7 +1449,7 @@ function CreateMissionDialog({
 
           {/* Execution Policy */}
           <div className="space-y-1">
-            <span className="text-[11px] font-medium text-muted-fg">Execution Policy</span>
+            <span style={dlgLabelStyle}>EXECUTION POLICY</span>
             <PolicyEditor
               value={draft.executionPolicy}
               onChange={(p) => setDraft((prev) => ({ ...prev, executionPolicy: p }))}
@@ -1465,17 +1457,16 @@ function CreateMissionDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border/10 px-5 py-3">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button
-            variant="primary"
-            size="sm"
+        <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <button style={outlineButton()} onClick={onClose} disabled={busy}>CANCEL</button>
+          <button
+            style={primaryButton()}
             onClick={handleLaunch}
             disabled={busy || !draft.prompt.trim()}
           >
             {busy ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-            Launch
-          </Button>
+            LAUNCH
+          </button>
         </div>
       </motion.div>
     </div>
@@ -1503,7 +1494,8 @@ function MissionSettingsDialog({
 }) {
   if (!open) return null;
 
-  const inputClass = "h-8 w-full rounded border border-border/15 bg-surface-recessed px-2 text-xs text-fg outline-none focus:border-accent/40";
+  const settingsInputStyle: React.CSSProperties = { height: 32, width: "100%", background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, padding: "0 8px", fontSize: 12, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0, outline: "none" };
+  const settingsLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1511,27 +1503,28 @@ function MissionSettingsDialog({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1, transition: { duration: 0.15 } }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-2xl rounded-lg border border-border/30 bg-card shadow-2xl"
+        className="w-full max-w-2xl shadow-2xl"
+        style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
       >
-        <div className="flex items-center justify-between border-b border-border/10 px-5 py-3">
+        <div className="flex items-center justify-between px-5 h-14" style={{ background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
           <div className="flex items-center gap-2">
-            <GearSix className="h-4 w-4 text-accent" />
-            <h2 className="text-sm font-semibold text-fg">Mission Settings</h2>
+            <GearSix className="h-4 w-4" style={{ color: COLORS.accent }} />
+            <h2 className="text-sm font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>MISSION SETTINGS</h2>
           </div>
-          <button onClick={onClose} className="text-muted-fg hover:text-fg transition-colors">
+          <button onClick={onClose} className="transition-colors" style={{ color: COLORS.textMuted }}>
             <X className="h-4 w-4" />
           </button>
         </div>
 
         <div className="space-y-4 px-5 py-4">
-          {notice ? <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">{notice}</div> : null}
-          {error ? <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div> : null}
+          {notice ? <div className="px-3 py-2 text-xs" style={{ border: `1px solid ${COLORS.success}30`, background: `${COLORS.success}18`, color: COLORS.success }}>{notice}</div> : null}
+          {error ? <div className="px-3 py-2 text-xs" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>{error}</div> : null}
 
-          <div className="rounded-lg border border-border/15 bg-card/60 p-3">
-            <div className="text-xs font-semibold text-fg">Mission Defaults</div>
+          <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>MISSION DEFAULTS</div>
             <div className="mt-3 space-y-3">
               <div>
-                <div className="text-[11px] text-muted-fg mb-1">Default Execution Policy</div>
+                <div className="mb-1" style={settingsLabelStyle}>DEFAULT EXECUTION POLICY</div>
                 <PolicyEditor
                   value={draft.defaultExecutionPolicy}
                   onChange={(p) => onDraftChange({ defaultExecutionPolicy: p })}
@@ -1541,9 +1534,9 @@ function MissionSettingsDialog({
             </div>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="text-xs">
-                <div className="text-muted-fg">Default planner provider</div>
+                <div style={settingsLabelStyle}>DEFAULT PLANNER PROVIDER</div>
                 <select
-                  className={inputClass}
+                  style={settingsInputStyle}
                   value={draft.defaultPlannerProvider}
                   onChange={(e) => onDraftChange({ defaultPlannerProvider: e.target.value as PlannerProvider })}
                 >
@@ -1552,7 +1545,7 @@ function MissionSettingsDialog({
                   <option value="codex">Codex</option>
                 </select>
               </label>
-              <label className="flex items-center gap-2 text-xs pt-5">
+              <label className="flex items-center gap-2 text-xs pt-5" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
                 <input
                   type="checkbox"
                   checked={draft.requirePlanReview}
@@ -1563,15 +1556,15 @@ function MissionSettingsDialog({
             </div>
           </div>
 
-          <div className="rounded-lg border border-border/15 bg-card/60 p-3">
-            <div className="text-xs font-semibold text-fg">Worker Permissions</div>
+          <div className="p-3" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>WORKER PERMISSIONS</div>
             <div className="mt-2 grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <div className="text-xs font-medium text-fg">Claude Worker</div>
+                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CLAUDE WORKER</div>
                 <label className="text-xs block">
-                  <div className="text-muted-fg">Permission mode</div>
+                  <div style={settingsLabelStyle}>PERMISSION MODE</div>
                   <select
-                    className={inputClass}
+                    style={settingsInputStyle}
                     value={draft.claudePermissionMode}
                     disabled={draft.claudeDangerouslySkip}
                     onChange={(e) => onDraftChange({ claudePermissionMode: e.target.value })}
@@ -1581,7 +1574,7 @@ function MissionSettingsDialog({
                     <option value="bypassPermissions">Bypass permissions</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-2 text-xs">
+                <label className="flex items-center gap-2 text-xs" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
                   <input
                     type="checkbox"
                     checked={draft.claudeDangerouslySkip}
@@ -1589,17 +1582,17 @@ function MissionSettingsDialog({
                   />
                   Dangerously skip permissions
                 </label>
-                <div className="text-[11px] text-muted-fg">
+                <div className="text-[11px]" style={{ color: COLORS.textMuted }}>
                   Claude workers read `CLAUDE.md` and `.claude/settings.json` from the lane repository root.
                 </div>
               </div>
 
               <div className="space-y-2">
-                <div className="text-xs font-medium text-fg">Codex Worker</div>
+                <div className="text-xs font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>CODEX WORKER</div>
                 <label className="text-xs block">
-                  <div className="text-muted-fg">Sandbox mode</div>
+                  <div style={settingsLabelStyle}>SANDBOX MODE</div>
                   <select
-                    className={inputClass}
+                    style={settingsInputStyle}
                     value={draft.codexSandboxPermissions}
                     onChange={(e) => onDraftChange({ codexSandboxPermissions: e.target.value })}
                   >
@@ -1609,9 +1602,9 @@ function MissionSettingsDialog({
                   </select>
                 </label>
                 <label className="text-xs block">
-                  <div className="text-muted-fg">Approval mode</div>
+                  <div style={settingsLabelStyle}>APPROVAL MODE</div>
                   <select
-                    className={inputClass}
+                    style={settingsInputStyle}
                     value={draft.codexApprovalMode}
                     onChange={(e) => onDraftChange({ codexApprovalMode: e.target.value })}
                   >
@@ -1621,10 +1614,10 @@ function MissionSettingsDialog({
                   </select>
                 </label>
                 <label className="text-xs block">
-                  <div className="text-muted-fg">Config TOML path</div>
+                  <div style={settingsLabelStyle}>CONFIG TOML PATH</div>
                   <input
                     type="text"
-                    className={inputClass}
+                    style={settingsInputStyle}
                     value={draft.codexConfigPath}
                     onChange={(e) => onDraftChange({ codexConfigPath: e.target.value })}
                     placeholder="e.g. /Users/you/.config/codex/config.toml"
@@ -1635,11 +1628,11 @@ function MissionSettingsDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border/10 px-5 py-3">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>Close</Button>
-          <Button variant="primary" size="sm" onClick={onSave} disabled={busy}>
-            {busy ? "Saving..." : "Save settings"}
-          </Button>
+        <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <button style={outlineButton()} onClick={onClose} disabled={busy}>CLOSE</button>
+          <button style={primaryButton()} onClick={onSave} disabled={busy}>
+            {busy ? "SAVING..." : "SAVE SETTINGS"}
+          </button>
         </div>
       </motion.div>
     </div>
@@ -1688,12 +1681,17 @@ export default function MissionsPage() {
   /* ── Execution plan preview state ── */
   const [executionPlanPreview, setExecutionPlanPreview] = useState<ExecutionPlanPreviewType | null>(null);
 
-  /* ── Elapsed time ticker ── */
+  /* ── Track original step count for dynamic step indicator ── */
+  const [originalStepCount, setOriginalStepCount] = useState<number | null>(null);
+
+  /* ── Elapsed time ticker (only runs when a non-terminal mission is selected) ── */
   const [, setTick] = useState(0);
+  const hasActiveMission = selectedMission && !TERMINAL_MISSION_STATUSES.has(selectedMission.status);
   useEffect(() => {
+    if (!hasActiveMission) return;
     const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [hasActiveMission]);
 
   /* ── Derived data ── */
   const filteredMissions = useMemo(() => {
@@ -1903,11 +1901,14 @@ export default function MissionsPage() {
       if (!latestRun) { setRunGraph(null); return; }
       const graph = await window.ade.orchestrator.getRunGraph({ runId: latestRun.id, timelineLimit: 120 });
       setRunGraph(graph);
+      if (originalStepCount === null && graph.steps.length > 0) {
+        setOriginalStepCount(graph.steps.length);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setRunGraph(null);
     }
-  }, []);
+  }, [originalStepCount]);
 
   const scheduleOrchestratorGraphRefresh = useCallback((missionId: string, delayMs = 180) => {
     if (graphRefreshTimerRef.current !== null) {
@@ -1947,6 +1948,7 @@ export default function MissionsPage() {
       setExecutionPlanPreview(null);
       setSteeringLog([]);
       setChatJumpTarget(null);
+      setOriginalStepCount(null);
       return;
     }
     setSteeringLog([]);
@@ -2109,6 +2111,24 @@ export default function MissionsPage() {
     }
   }, [runGraph, selectedMission, loadOrchestratorGraph]);
 
+  /* ── Lane cleanup for failed/canceled missions ── */
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const handleCleanupLanes = useCallback(async () => {
+    if (!runGraph?.steps) return;
+    const laneIds = [...new Set(runGraph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
+    if (!laneIds.length) return;
+    if (!window.confirm(`Archive ${laneIds.length} lane(s) created by this mission?`)) return;
+    setCleanupBusy(true);
+    try {
+      for (const laneId of laneIds) {
+        try { await window.ade.lanes.archive({ laneId }); } catch { /* lane may already be archived */ }
+      }
+      await refreshLanes();
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [runGraph, refreshLanes]);
+
   const handleSteer = useCallback(async () => {
     if (!selectedMission || !steerInput.trim()) return;
     const directiveText = steerInput.trim();
@@ -2187,8 +2207,14 @@ export default function MissionsPage() {
   /* ── Loading screen ── */
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <SpinnerGap className="h-6 w-6 animate-spin text-accent" />
+      <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
+        <div className="flex flex-col items-center justify-center flex-1 gap-3">
+          <div className="animate-pulse flex flex-col items-center gap-2">
+            <div className="h-4 w-48" style={{ background: COLORS.border }} />
+            <div className="h-3 w-32" style={{ background: `${COLORS.border}60` }} />
+          </div>
+          <div className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>LOADING MISSIONS...</div>
+        </div>
       </div>
     );
   }
@@ -2196,19 +2222,25 @@ export default function MissionsPage() {
   /* ════════════════════ RENDER ════════════════════ */
   return (
     <LazyMotion features={domAnimation}>
-      <div className="flex h-full min-h-0">
+      <div className="flex h-full min-h-0" style={{ background: COLORS.pageBg }}>
         {/* ════════════ LEFT SIDEBAR ════════════ */}
-        <div className="flex w-[260px] shrink-0 flex-col border-r border-border/20 bg-card/40">
-          {/* Sidebar Header */}
-          <div className="flex items-center justify-between border-b border-border/10 px-3 py-2.5">
+        <div className="flex w-[280px] shrink-0 flex-col" style={{ background: COLORS.cardBg, borderRight: `1px solid ${COLORS.border}` }}>
+          {/* Sidebar Header - 64px */}
+          <div className="flex items-center justify-between shrink-0 h-16 px-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
             <div className="flex items-center gap-2">
-              <Rocket className="h-4 w-4 text-accent" />
-              <span className="text-xs font-semibold text-fg">Missions</span>
+              <Rocket size={18} weight="bold" style={{ color: COLORS.accent }} />
+              <span className="text-[16px] font-bold tracking-[-0.3px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                MISSIONS
+              </span>
+              <span className="px-2.5 py-1 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}>
+                {missions.length} TOTAL
+              </span>
             </div>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => void refreshMissionList({ preserveSelection: true })}
-                className="rounded p-1 text-muted-fg hover:text-fg hover:bg-muted/20 transition-colors"
+                className="p-1 transition-colors"
+                style={{ color: COLORS.textMuted }}
                 title="Refresh"
               >
                 {refreshing ? <SpinnerGap className="h-3.5 w-3.5 animate-spin" /> : <ArrowsClockwise className="h-3.5 w-3.5" />}
@@ -2220,14 +2252,16 @@ export default function MissionsPage() {
                   setMissionSettingsError(null);
                   void loadMissionSettings();
                 }}
-                className="rounded p-1 text-muted-fg hover:text-fg hover:bg-muted/20 transition-colors"
+                className="p-1 transition-colors"
+                style={{ color: COLORS.textMuted }}
                 title="Mission Settings"
               >
                 <GearSix className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setCreateOpen(true)}
-                className="rounded p-1 text-accent hover:bg-accent/10 transition-colors"
+                className="p-1 transition-colors"
+                style={{ color: COLORS.accent }}
                 title="New Mission"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -2239,24 +2273,27 @@ export default function MissionsPage() {
           <div className="px-3 py-2 space-y-2">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
-                <MagnifyingGlass className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-fg/60" />
+                <MagnifyingGlass className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2" style={{ color: COLORS.textDim }} />
                 <input
                   value={searchFilter}
                   onChange={(e) => setSearchFilter(e.target.value)}
                   placeholder="Search missions..."
-                  className="h-7 w-full rounded border border-border/15 bg-surface-recessed pl-7 pr-2 text-xs text-fg outline-none focus:border-accent/30"
+                  className="h-7 w-full pl-7 pr-2 text-xs outline-none"
+                  style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }}
                 />
               </div>
-              <div className="flex gap-0.5 rounded-lg bg-card/60 border border-border/10 p-0.5">
+              <div className="flex gap-0.5 p-0.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
                 <button
-                  className={cn("rounded px-1.5 py-1 text-xs", missionListView === "list" ? "bg-accent/20 text-fg" : "text-muted-fg hover:text-fg")}
+                  className="px-1.5 py-1 text-xs"
+                  style={missionListView === "list" ? { background: `${COLORS.accent}18`, color: COLORS.textPrimary } : { color: COLORS.textMuted }}
                   onClick={() => setMissionListView("list")}
                   title="List view"
                 >
                   <List size={14} weight="regular" />
                 </button>
                 <button
-                  className={cn("rounded px-1.5 py-1 text-xs", missionListView === "board" ? "bg-accent/20 text-fg" : "text-muted-fg hover:text-fg")}
+                  className="px-1.5 py-1 text-xs"
+                  style={missionListView === "board" ? { background: `${COLORS.accent}18`, color: COLORS.textPrimary } : { color: COLORS.textMuted }}
                   onClick={() => setMissionListView("board")}
                   title="Board view"
                 >
@@ -2269,16 +2306,16 @@ export default function MissionsPage() {
           {/* Mission list / board */}
           <div className="flex-1 overflow-y-auto px-2 pb-2">
             {filteredMissions.length === 0 ? (
-              <div className="px-2 py-8 text-center text-xs text-muted-fg/60">
+              <div className="px-2 py-8 text-center text-xs" style={{ color: COLORS.textDim }}>
                 {missions.length === 0 ? (
                   <div className="flex flex-col items-center gap-2">
-                    <Rocket size={28} weight="regular" className="text-blue-400/40" />
+                    <Rocket size={28} weight="regular" style={{ color: `${COLORS.accent}40` }} />
                     <p>No missions yet. Missions coordinate your AI agents to accomplish complex tasks.</p>
                     <button
                       onClick={() => setCreateOpen(true)}
-                      className="mt-1 rounded-lg bg-blue-500/15 border border-blue-500/30 px-3 py-1.5 text-xs font-medium text-blue-300 hover:bg-blue-500/25 transition-colors"
+                      style={primaryButton()}
                     >
-                      Start Mission
+                      START MISSION
                     </button>
                   </div>
                 ) : "No matches"}
@@ -2292,27 +2329,26 @@ export default function MissionsPage() {
                   return (
                     <div key={col.key}>
                       <div className="flex items-center gap-2 mb-1.5 px-1">
-                        <span className={cn("text-[10px] font-medium uppercase tracking-wider", col.color)}>{col.label}</span>
-                        <span className="text-[10px] text-muted-fg/50">{colMissions.length}</span>
+                        <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: col.hex, fontFamily: MONO_FONT }}>{col.label}</span>
+                        <span className="text-[10px]" style={{ color: COLORS.textDim }}>{colMissions.length}</span>
                       </div>
                       <div className="space-y-1">
                         {colMissions.map((m) => (
                           <button
                             key={m.id}
                             onClick={() => setSelectedMissionId(m.id)}
-                            className={cn(
-                              "w-full text-left rounded-lg p-2.5 transition-colors border",
-                              m.id === selectedMissionId
-                                ? "border-accent/30 bg-accent/10"
-                                : "border-border/10 bg-card/70 hover:bg-card/90"
-                            )}
+                            className="w-full text-left p-2.5 transition-colors"
+                            style={m.id === selectedMissionId
+                              ? { background: "#A78BFA12", borderLeft: `3px solid ${COLORS.accent}`, border: `1px solid ${COLORS.accent}30` }
+                              : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
+                            }
                           >
-                            <div className="text-xs font-medium text-fg truncate">{m.title}</div>
-                            <div className="mt-1 text-[11px] text-muted-fg truncate">{m.prompt}</div>
+                            <div className="text-xs font-medium truncate" style={{ color: COLORS.textPrimary }}>{m.title}</div>
+                            <div className="mt-1 text-[11px] truncate" style={{ color: COLORS.textMuted }}>{m.prompt}</div>
                             <div className="mt-1.5 flex items-center gap-2">
-                              <span className="text-[10px] font-mono text-muted-fg">{relativeWhen(m.createdAt)}</span>
+                              <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{relativeWhen(m.createdAt)}</span>
                               {m.totalSteps > 0 && (
-                                <span className="text-[10px] text-muted-fg ml-auto">{m.completedSteps}/{m.totalSteps}</span>
+                                <span className="text-[10px] ml-auto" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{m.completedSteps}/{m.totalSteps}</span>
                               )}
                             </div>
                           </button>
@@ -2329,36 +2365,38 @@ export default function MissionsPage() {
                   const isSelected = m.id === selectedMissionId;
                   const progress = m.totalSteps > 0 ? Math.round((m.completedSteps / m.totalSteps) * 100) : 0;
                   const isActive = m.status === "in_progress" || m.status === "planning";
+                  const badgeStyle = STATUS_BADGE_STYLES[m.status];
                   return (
                     <button
                       key={m.id}
                       onClick={() => setSelectedMissionId(m.id)}
                       className={cn(
-                        "w-full text-left rounded-lg px-2.5 py-2 transition-colors",
-                        isSelected
-                          ? "bg-accent/15 border border-accent/30"
-                          : "hover:bg-card/60 border border-transparent",
+                        "w-full text-left px-2.5 py-2 transition-colors",
                         isActive && !isSelected && "ade-glow-pulse-blue"
                       )}
+                      style={isSelected
+                        ? { background: "#A78BFA12", borderLeft: `3px solid ${COLORS.accent}`, border: `1px solid ${COLORS.accent}30` }
+                        : { border: "1px solid transparent" }
+                      }
                     >
                       <div className="flex items-start gap-2">
-                        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", STATUS_DOT_COLORS[m.status])} />
+                        <span className="mt-1 h-2 w-2 shrink-0" style={{ background: STATUS_DOT_HEX[m.status], borderRadius: 0 }} />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-medium text-fg">{m.title}</div>
+                          <div className="truncate text-xs font-medium" style={{ color: COLORS.textPrimary }}>{m.title}</div>
                           <div className="mt-0.5 flex items-center gap-1.5">
-                            <span className={cn("rounded px-1 py-0.5 text-[9px] font-medium border", STATUS_BADGE_CLASSES[m.status])}>
+                            <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: badgeStyle.background, color: badgeStyle.color, border: badgeStyle.border, fontFamily: MONO_FONT }}>
                               {STATUS_LABELS[m.status]}
                             </span>
                           </div>
                           {m.totalSteps > 0 && (
                             <div className="mt-1.5 flex items-center gap-2">
-                              <div className="h-1 flex-1 rounded-full bg-card">
+                              <div className="h-1 flex-1" style={{ background: COLORS.recessedBg }}>
                                 <div
-                                  className="h-1 rounded-full bg-accent transition-all"
-                                  style={{ width: `${progress}%` }}
+                                  className="h-1 transition-all"
+                                  style={{ width: `${progress}%`, background: COLORS.accent }}
                                 />
                               </div>
-                              <span className="shrink-0 text-[9px] text-muted-fg">
+                              <span className="shrink-0 text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                                 {m.completedSteps}/{m.totalSteps}
                               </span>
                             </div>
@@ -2374,44 +2412,50 @@ export default function MissionsPage() {
         </div>
 
         {/* ════════════ MAIN WORKSPACE ════════════ */}
-        <div className="flex flex-1 flex-col min-w-0">
+        <div className="flex flex-1 flex-col min-w-0" style={{ background: COLORS.pageBg }}>
           {!selectedMissionId ? (
             /* No selection empty state */
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-fg">
-              <Rocket size={40} weight="regular" className="opacity-20" />
-              <p className="text-sm">Select a mission or create a new one</p>
-              <Button variant="primary" size="sm" onClick={() => setCreateOpen(true)}>
+            <div className="flex h-full flex-col items-center justify-center gap-3" style={{ color: COLORS.textMuted }}>
+              <Rocket size={40} weight="regular" style={{ opacity: 0.2 }} />
+              <p className="text-sm" style={{ fontFamily: MONO_FONT }}>Select a mission or create a new one</p>
+              <button style={primaryButton()} onClick={() => setCreateOpen(true)}>
                 <Plus size={14} weight="regular" />
-                New Mission
-              </Button>
+                NEW MISSION
+              </button>
             </div>
           ) : (
             <>
               {/* ── Header Bar ── */}
-              <div className="flex items-center gap-3 border-b border-border/10 bg-card/40 px-4 py-2.5">
+              <div className="flex items-center gap-3 shrink-0 h-16 px-6" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <h2 className="truncate text-sm font-semibold text-fg">
+                    <h2 className="truncate text-sm font-bold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                       {selectedMission?.title ?? "Loading..."}
                     </h2>
-                    {selectedMission && (
-                      <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium border", STATUS_BADGE_CLASSES[selectedMission.status])}>
-                        {STATUS_LABELS[selectedMission.status]}
-                      </span>
-                    )}
-                    {selectedMission && (
-                      <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium border", PRIORITY_CLASSES[selectedMission.priority])}>
-                        {selectedMission.priority}
-                      </span>
-                    )}
+                    {selectedMission && (() => {
+                      const s = STATUS_BADGE_STYLES[selectedMission.status];
+                      return (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: s.background, color: s.color, border: s.border, fontFamily: MONO_FONT }}>
+                          {STATUS_LABELS[selectedMission.status]}
+                        </span>
+                      );
+                    })()}
+                    {selectedMission && (() => {
+                      const p = PRIORITY_STYLES[selectedMission.priority];
+                      return (
+                        <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={{ background: p.background, color: p.color, border: p.border, fontFamily: MONO_FONT }}>
+                          {selectedMission.priority}
+                        </span>
+                      );
+                    })()}
                     {runGraph?.run?.metadata && (
                       <MissionPolicyBadge
                         policy={(runGraph.run.metadata as Record<string, unknown>).executionPolicy as MissionExecutionPolicy | undefined}
                       />
                     )}
                   </div>
-                  <div className="mt-0.5 flex items-center gap-3 text-[10px] text-muted-fg">
-                    <span><Clock className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null)}</span>
+                  <div className="mt-0.5 flex items-center gap-3 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                    <span><Clock className="inline h-3 w-3 mr-0.5" />{formatElapsed(selectedMission?.startedAt ?? null, selectedMission && TERMINAL_MISSION_STATUSES.has(selectedMission.status) ? selectedMission.completedAt : null)}</span>
                     {selectedMission?.laneName && (
                       <span><GitBranch className="inline h-3 w-3 mr-0.5" />{selectedMission.laneName}</span>
                     )}
@@ -2424,22 +2468,28 @@ export default function MissionsPage() {
                 {/* Quick actions */}
                 <div className="flex items-center gap-1.5">
                   {canStartOrRerun && (
-                    <Button variant="primary" size="sm" onClick={handleStartRun} disabled={runBusy}>
+                    <button style={primaryButton()} onClick={handleStartRun} disabled={runBusy}>
                       {runBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-                      {runGraph ? "Rerun" : "Start"}
-                    </Button>
+                      {runGraph ? "RERUN" : "START"}
+                    </button>
                   )}
                   {canResumeRun && (
-                    <Button variant="outline" size="sm" onClick={handleResumeRun} disabled={runBusy}>
+                    <button style={outlineButton()} onClick={handleResumeRun} disabled={runBusy}>
                       <Play className="h-3 w-3" />
-                      Resume
-                    </Button>
+                      RESUME
+                    </button>
                   )}
                   {canCancelRun && (
-                    <Button variant="outline" size="sm" onClick={handleCancelRun} disabled={runBusy}>
+                    <button style={dangerButton()} onClick={handleCancelRun} disabled={runBusy}>
                       <Stop className="h-3 w-3" />
-                      Cancel
-                    </Button>
+                      CANCEL
+                    </button>
+                  )}
+                  {selectedMission && (selectedMission.status === "failed" || selectedMission.status === "canceled") && runGraph?.steps && runGraph.steps.some(s => s.laneId) && (
+                    <button style={outlineButton()} onClick={handleCleanupLanes} disabled={cleanupBusy}>
+                      {cleanupBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <Trash className="h-3 w-3" />}
+                      CLEAN UP LANES
+                    </button>
                   )}
                 </div>
               </div>
@@ -2451,10 +2501,11 @@ export default function MissionsPage() {
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
                     exit={{ opacity: 0, height: 0 }}
-                    className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-[11px] text-red-300 flex items-center justify-between"
+                    className="px-4 py-2 text-[11px] flex items-center justify-between"
+                    style={{ borderBottom: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}
                   >
                     <span>{error}</span>
-                    <button onClick={() => setError(null)} className="text-red-300 hover:text-red-100">
+                    <button onClick={() => setError(null)} style={{ color: COLORS.danger }}>
                       <X className="h-3 w-3" />
                     </button>
                   </motion.div>
@@ -2462,28 +2513,31 @@ export default function MissionsPage() {
               </AnimatePresence>
 
               {/* ── Tab Navigation ── */}
-              <div className="flex items-center gap-0.5 border-b border-border/10 bg-card/30 px-4">
+              <div className="flex items-center gap-0 px-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                 {([
-                  { key: "board" as WorkspaceTab, label: "Board", icon: SquaresFour },
-                  { key: "dag" as WorkspaceTab, label: "DAG", icon: Graph },
-                  { key: "channels" as WorkspaceTab, label: "Channels", icon: Hash },
-                  { key: "activity" as WorkspaceTab, label: "Activity", icon: Pulse },
-                  { key: "usage" as WorkspaceTab, label: "Usage", icon: Lightning }
-                ]).map((tab) => (
-                  <button
-                    key={tab.key}
-                    onClick={() => setActiveTab(tab.key)}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors border-b-2",
-                      activeTab === tab.key
-                        ? "border-accent text-fg"
-                        : "border-transparent text-muted-fg hover:text-fg"
-                    )}
-                  >
-                    <tab.icon className="h-3.5 w-3.5" />
-                    {tab.label}
-                  </button>
-                ))}
+                  { key: "board" as WorkspaceTab, num: "01", label: "BOARD", icon: SquaresFour },
+                  { key: "dag" as WorkspaceTab, num: "02", label: "DAG", icon: Graph },
+                  { key: "channels" as WorkspaceTab, num: "03", label: "CHANNELS", icon: Hash },
+                  { key: "activity" as WorkspaceTab, num: "04", label: "ACTIVITY", icon: Pulse },
+                  { key: "usage" as WorkspaceTab, num: "05", label: "USAGE", icon: Lightning }
+                ]).map((tab) => {
+                  const isActive = activeTab === tab.key;
+                  return (
+                    <button
+                      key={tab.key}
+                      onClick={() => setActiveTab(tab.key)}
+                      className="flex items-center gap-2 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[1px] transition-colors"
+                      style={isActive
+                        ? { background: `${COLORS.accent}18`, borderLeft: `2px solid ${COLORS.accent}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }
+                        : { background: "transparent", borderLeft: "2px solid transparent", color: COLORS.textMuted, fontFamily: MONO_FONT }
+                      }
+                    >
+                      <span style={{ color: isActive ? COLORS.accent : COLORS.textDim }}>{tab.num}</span>
+                      <tab.icon className="h-3.5 w-3.5" />
+                      <span>{tab.label}</span>
+                    </button>
+                  );
+                })}
               </div>
 
               {/* ── Completion Banner + Phase Progress + Execution Plan Preview ── */}
@@ -2494,6 +2548,19 @@ export default function MissionsPage() {
                     evaluation={runGraph.completionEvaluation}
                   />
                   <PhaseProgressBar steps={runGraph.steps} />
+                  {runGraph.steps.length > 0 && (() => {
+                    const completed = runGraph.steps.filter(s => s.status === "succeeded").length;
+                    const total = runGraph.steps.length;
+                    const pct = Math.round((completed / total) * 100);
+                    return (
+                      <div className="text-[10px] flex items-center gap-2" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        <span>{completed} of {total} steps complete ({pct}%)</span>
+                        {originalStepCount !== null && originalStepCount !== total && (
+                          <span style={{ color: `${COLORS.warning}70` }}>(plan adjusted from {originalStepCount} steps)</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {isActiveMission && (
                     <ExecutionPlanPreview preview={executionPlanPreview} />
                   )}
@@ -2576,11 +2643,11 @@ export default function MissionsPage() {
 
               {/* ── Bottom Steering Bar (hidden on Channels tab since channels subsume steering) ── */}
               {isActiveMission && activeTab !== "channels" && (
-                <div className="border-t border-border/10 bg-card/40 px-4 py-2.5">
+                <div className="px-4 py-2.5" style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                   {steerAck && (
-                    <div className="mb-2 rounded border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[10px] text-emerald-300 flex items-center justify-between">
+                    <div className="mb-2 px-3 py-1.5 text-[10px] flex items-center justify-between" style={{ background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>
                       <span>{steerAck}</span>
-                      <button onClick={() => setSteerAck(null)} className="text-emerald-300 hover:text-emerald-100">
+                      <button onClick={() => setSteerAck(null)} style={{ color: COLORS.success }}>
                         <X className="h-3 w-3" />
                       </button>
                     </div>
@@ -2591,17 +2658,17 @@ export default function MissionsPage() {
                       onChange={(e) => setSteerInput(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handleSteer(); } }}
                       placeholder="Type a directive to steer this mission..."
-                      className="h-8 flex-1 rounded-lg border border-border/15 bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+                      className="h-8 flex-1 px-3 text-xs outline-none"
+                      style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT }}
                     />
-                    <Button
-                      variant="primary"
-                      size="sm"
+                    <button
+                      style={primaryButton()}
                       onClick={() => void handleSteer()}
                       disabled={steerBusy || !steerInput.trim()}
                     >
                       {steerBusy ? <SpinnerGap className="h-3 w-3 animate-spin" /> : <PaperPlaneTilt className="h-3 w-3" />}
-                      Send
-                    </Button>
+                      SEND
+                    </button>
                   </div>
                 </div>
               )}
@@ -2657,8 +2724,8 @@ function ActivityNarrativeHeader({
 }) {
   if (!runGraph) {
     return (
-      <div className="rounded-lg border border-border/15 bg-card/60 px-3 py-3 text-center">
-        <div className="text-xs text-muted-fg">No orchestrator run yet. Start a run to see activity.</div>
+      <div className="px-3 py-3 text-center" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <div className="text-xs" style={{ color: COLORS.textMuted }}>No orchestrator run yet. Start a run to see activity.</div>
       </div>
     );
   }
@@ -2693,7 +2760,7 @@ function ActivityNarrativeHeader({
   // Last meaningful action from timeline
   const timeline = runGraph.timeline;
   const latestMeaningful = timeline.find(
-    (ev) => ev.eventType !== "claim_heartbeat" && ev.eventType !== "context_pack_bootstrap"
+    (ev) => !NOISY_EVENT_TYPES.has(ev.eventType)
   );
   const lastActionLine = latestMeaningful
     ? `Last: ${narrativeForEvent(latestMeaningful)}`
@@ -2701,36 +2768,36 @@ function ActivityNarrativeHeader({
 
   // Recent narrative lines from the timeline (top 5 most recent non-heartbeat events)
   const recentEvents = timeline
-    .filter((ev) => ev.eventType !== "claim_heartbeat")
+    .filter((ev) => !NOISY_EVENT_TYPES.has(ev.eventType))
     .slice(0, 5);
   const narrativeLines = narrativeSummary(recentEvents, steeringLog);
 
   return (
     <div className="space-y-2">
       {/* Progress summary card */}
-      <div className="rounded-lg border border-border/15 bg-card/60 px-3 py-2.5">
-        <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wider mb-2">Mission Progress</div>
+      <div className="px-3 py-2.5" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <div className="text-[10px] font-bold uppercase tracking-[1px] mb-2" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>MISSION PROGRESS</div>
 
         {/* Progress bar */}
         {totalSteps > 0 && (
           <div className="mb-2">
-            <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-card">
+            <div className="flex h-1.5 w-full overflow-hidden" style={{ background: COLORS.recessedBg }}>
               {succeededCount > 0 && (
                 <div
-                  className="bg-emerald-500 transition-all"
-                  style={{ width: `${(succeededCount / totalSteps) * 100}%` }}
+                  className="transition-all"
+                  style={{ width: `${(succeededCount / totalSteps) * 100}%`, background: COLORS.success }}
                 />
               )}
               {runningCount > 0 && (
                 <div
-                  className="bg-violet-500 transition-all"
-                  style={{ width: `${(runningCount / totalSteps) * 100}%` }}
+                  className="transition-all"
+                  style={{ width: `${(runningCount / totalSteps) * 100}%`, background: COLORS.accent }}
                 />
               )}
               {failedCount > 0 && (
                 <div
-                  className="bg-red-500 transition-all"
-                  style={{ width: `${(failedCount / totalSteps) * 100}%` }}
+                  className="transition-all"
+                  style={{ width: `${(failedCount / totalSteps) * 100}%`, background: COLORS.danger }}
                 />
               )}
             </div>
@@ -2738,17 +2805,17 @@ function ActivityNarrativeHeader({
         )}
 
         <div className="space-y-1">
-          <div className="flex items-center gap-1.5 text-xs text-fg/90">
-            <CheckCircle size={12} weight="regular" className="text-emerald-400 shrink-0" />
+          <div className="flex items-center gap-1.5 text-xs" style={{ color: COLORS.textSecondary }}>
+            <CheckCircle size={12} weight="regular" className="shrink-0" style={{ color: COLORS.success }} />
             <span>{progressLine}</span>
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-fg/80">
-            <Robot size={12} weight="regular" className="text-violet-400 shrink-0" />
+          <div className="flex items-center gap-1.5 text-xs" style={{ color: COLORS.textSecondary }}>
+            <Robot size={12} weight="regular" className="shrink-0" style={{ color: COLORS.accent }} />
             <span>{workersLine}</span>
           </div>
           {lastActionLine && (
-            <div className="flex items-center gap-1.5 text-xs text-fg/70">
-              <Lightning size={12} weight="regular" className="text-amber-400 shrink-0" />
+            <div className="flex items-center gap-1.5 text-xs" style={{ color: COLORS.textMuted }}>
+              <Lightning size={12} weight="regular" className="shrink-0" style={{ color: COLORS.warning }} />
               <span className="truncate">{lastActionLine}</span>
             </div>
           )}
@@ -2757,35 +2824,35 @@ function ActivityNarrativeHeader({
 
       {/* Narrative feed card */}
       {(narrativeLines.length > 0 || steeringLog.length > 0) && (
-        <div className="rounded-lg border border-border/15 bg-card/60 px-3 py-2.5">
-          <div className="text-[10px] font-medium text-muted-fg uppercase tracking-wider mb-1.5">Recent Activity</div>
+        <div className="px-3 py-2.5" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+          <div className="text-[10px] font-bold uppercase tracking-[1px] mb-1.5" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>RECENT ACTIVITY</div>
           <div className="space-y-1">
             {/* Show steering directives first */}
             {steeringLog.map((d, i) => (
               <div key={`steer-${i}`} className="flex items-start gap-2">
-                <ChatCircle size={12} weight="regular" className="text-cyan-400 shrink-0 mt-0.5" />
+                <ChatCircle size={12} weight="regular" className="shrink-0 mt-0.5" style={{ color: "#06B6D4" }} />
                 <div className="flex-1 min-w-0">
-                  <span className="text-[11px] text-cyan-300">User directive: {d.directive}</span>
-                  <span className="ml-2 text-[10px] text-muted-fg">{relativeWhen(d.appliedAt)}</span>
+                  <span className="text-[11px]" style={{ color: "#06B6D4" }}>User directive: {d.directive}</span>
+                  <span className="ml-2 text-[10px]" style={{ color: COLORS.textMuted }}>{relativeWhen(d.appliedAt)}</span>
                 </div>
               </div>
             ))}
             {/* Show recent timeline events with icons */}
             {recentEvents.map((ev, i) => {
               const Icon = iconForEventType(ev.eventType);
-              const color = iconColorForEventType(ev.eventType, ev.reason);
+              const hex = iconHexForEventType(ev.eventType, ev.reason);
               return (
                 <div key={`ev-${ev.id ?? i}`} className="flex items-start gap-2">
-                  <Icon className={cn("h-3 w-3 shrink-0 mt-0.5", color)} />
+                  <Icon className="h-3 w-3 shrink-0 mt-0.5" style={{ color: hex }} />
                   <div className="flex-1 min-w-0">
-                    <span className="text-[11px] text-fg/80">{narrativeForEvent(ev)}</span>
-                    <span className="ml-2 text-[10px] text-muted-fg">{relativeWhen(ev.createdAt)}</span>
+                    <span className="text-[11px]" style={{ color: COLORS.textSecondary }}>{narrativeForEvent(ev)}</span>
+                    <span className="ml-2 text-[10px]" style={{ color: COLORS.textMuted }}>{relativeWhen(ev.createdAt)}</span>
                   </div>
                 </div>
               );
             })}
             {narrativeLines.length === 0 && steeringLog.length === 0 && (
-              <div className="text-[11px] text-muted-fg">Processing events...</div>
+              <div className="text-[11px]" style={{ color: COLORS.textMuted }}>Processing events...</div>
             )}
           </div>
         </div>
@@ -2813,9 +2880,9 @@ function StepDetailPanel({
 
   if (!step) {
     return (
-      <aside className="rounded-lg border border-border/15 bg-card/60 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
-        <div className="text-[11px] font-semibold text-fg">Step Details</div>
-        <p className="mt-2 text-[11px] text-muted-fg">Select a card in Board or a node in DAG to inspect worker progress.</p>
+      <aside className="p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+        <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>STEP DETAILS</div>
+        <p className="mt-2 text-[11px]" style={{ color: COLORS.textMuted }}>Select a card in Board or a node in DAG to inspect worker progress.</p>
       </aside>
     );
   }
@@ -2841,113 +2908,114 @@ function StepDetailPanel({
     ? resultEnvelope
     : isRecord(resultEnvelope) ? JSON.stringify(resultEnvelope, null, 2) : null;
 
+  const stepHex = STEP_STATUS_HEX[step.status] ?? COLORS.textMuted;
+  const detailCellStyle: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: "4px 8px" };
+
   return (
-    <aside className="rounded-lg border border-border/15 bg-card/60 p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full">
+    <aside className="p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
       <div className="flex items-center justify-between">
-        <div className="text-[11px] font-semibold text-fg">Step Details</div>
-        <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium", STEP_STATUS_COLORS[step.status] ?? "bg-muted/20 text-muted-fg")}>
+        <div className="text-[11px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT }}>STEP DETAILS</div>
+        <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(stepHex)}>
           {step.status}
         </span>
       </div>
 
       <div className="mt-2">
-        <div className="text-xs font-medium text-fg">{step.title}</div>
-        <div className="mt-1 min-h-[28px] text-[10px] text-muted-fg leading-snug">{stepIntentSummary(step)}</div>
+        <div className="text-xs font-medium" style={{ color: COLORS.textPrimary }}>{step.title}</div>
+        <div className="mt-1 min-h-[28px] text-[10px] leading-snug" style={{ color: COLORS.textMuted }}>{stepIntentSummary(step)}</div>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
-        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
-          <div className="text-muted-fg">Key</div>
-          <div className="font-medium text-fg">{step.stepKey}</div>
+        <div style={detailCellStyle}>
+          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>KEY</div>
+          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{step.stepKey}</div>
         </div>
-        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
-          <div className="text-muted-fg">Type</div>
-          <div className="font-medium text-fg">{stepType}</div>
+        <div style={detailCellStyle}>
+          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>TYPE</div>
+          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{stepType}</div>
         </div>
-        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
-          <div className="text-muted-fg">Attempts</div>
-          <div className="font-medium text-fg">{attempts.length}</div>
+        <div style={detailCellStyle}>
+          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>ATTEMPTS</div>
+          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{attempts.length}</div>
         </div>
-        <div className="rounded border border-border/15 bg-card/50 px-2 py-1">
-          <div className="text-muted-fg">Dependencies</div>
-          <div className="font-medium text-fg">{step.dependencyStepIds.length}</div>
+        <div style={detailCellStyle}>
+          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>DEPENDENCIES</div>
+          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{step.dependencyStepIds.length}</div>
         </div>
-        <div className="col-span-2 rounded border border-border/15 bg-card/50 px-2 py-1">
-          <div className="text-muted-fg">Lane</div>
-          <div className="font-medium text-fg">{step.laneId ?? "none"}</div>
+        <div className="col-span-2" style={detailCellStyle}>
+          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>LANE</div>
+          <div className="font-medium" style={{ color: COLORS.textPrimary }}>{step.laneId ?? "none"}</div>
         </div>
       </div>
 
       {(dependencyLabels.length > 0 || doneCriteria || expectedSignals.length > 0) && (
-        <div className="mt-3 rounded border border-border/15 bg-card/50 px-2 py-2 text-[10px] space-y-1.5">
+        <div className="mt-3 px-2 py-2 text-[10px] space-y-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
           {dependencyLabels.length > 0 && (
             <div>
-              <div className="text-muted-fg">Depends on</div>
-              <div className="mt-0.5 text-fg leading-snug">{dependencyLabels.join(", ")}</div>
+              <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>DEPENDS ON</div>
+              <div className="mt-0.5 leading-snug" style={{ color: COLORS.textPrimary }}>{dependencyLabels.join(", ")}</div>
             </div>
           )}
           {doneCriteria && (
             <div>
-              <div className="text-muted-fg">Completion Criteria</div>
-              <div className="mt-0.5 text-fg leading-snug">{compactText(doneCriteria, 220)}</div>
+              <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>COMPLETION CRITERIA</div>
+              <div className="mt-0.5 leading-snug" style={{ color: COLORS.textPrimary }}>{compactText(doneCriteria, 220)}</div>
             </div>
           )}
           {expectedSignals.length > 0 && (
             <div>
-              <div className="text-muted-fg">Expected Signals</div>
-              <div className="mt-0.5 text-fg leading-snug">{expectedSignals.slice(0, 4).join(", ")}</div>
+              <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>EXPECTED SIGNALS</div>
+              <div className="mt-0.5 leading-snug" style={{ color: COLORS.textPrimary }}>{expectedSignals.slice(0, 4).join(", ")}</div>
             </div>
           )}
         </div>
       )}
 
-      <div className="mt-3 rounded border border-border/15 bg-card/50 px-2 py-2 text-[10px]">
-        <div className="text-muted-fg">Latest Worker Attempt</div>
+      <div className="mt-3 px-2 py-2 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+        <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px", fontSize: 9 }}>LATEST WORKER ATTEMPT</div>
         {latestAttempt ? (
           <div className="mt-1 space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-muted-fg">Executor</span>
-              <span className={cn(
-                "rounded px-1 py-0.5 text-[9px] font-medium",
-                EXECUTOR_BADGE_CLASSES[latestAttempt.executorKind] ?? "bg-muted/20 text-muted-fg"
-              )}>
+              <span style={{ color: COLORS.textMuted }}>Executor</span>
+              <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(EXECUTOR_BADGE_HEX[latestAttempt.executorKind] ?? COLORS.textMuted)}>
                 {latestAttempt.executorKind}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-fg">Status</span>
-              <span className="text-fg">{latestAttempt.status}</span>
+              <span style={{ color: COLORS.textMuted }}>Status</span>
+              <span style={{ color: COLORS.textPrimary }}>{latestAttempt.status}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-fg">Started</span>
-              <span className="text-fg">{latestAttempt.startedAt ? relativeWhen(latestAttempt.startedAt) : "--"}</span>
+              <span style={{ color: COLORS.textMuted }}>Started</span>
+              <span style={{ color: COLORS.textPrimary }}>{latestAttempt.startedAt ? relativeWhen(latestAttempt.startedAt) : "--"}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-fg">Heartbeat age</span>
-              <span className="text-fg">{latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}</span>
+              <span style={{ color: COLORS.textMuted }}>Heartbeat age</span>
+              <span style={{ color: COLORS.textPrimary }}>{latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}</span>
             </div>
             {latestAttempt.errorMessage && (
-              <div className="rounded border border-red-500/25 bg-red-500/10 px-1.5 py-1 text-red-300">
+              <div className="px-1.5 py-1" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>
                 {compactText(latestAttempt.errorMessage, 160)}
               </div>
             )}
           </div>
         ) : (
-          <div className="mt-1 text-muted-fg">No attempt has started yet.</div>
+          <div className="mt-1" style={{ color: COLORS.textMuted }}>No attempt has started yet.</div>
         )}
       </div>
 
       {resultText && (
-        <div className="mt-3 rounded border border-border/15 bg-card/50 px-2 py-2 text-[10px]">
+        <div className="mt-3 px-2 py-2 text-[10px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
           <button
             onClick={() => setShowFullOutput(!showFullOutput)}
-            className="flex items-center gap-1 text-muted-fg hover:text-fg transition-colors w-full"
+            className="flex items-center gap-1 transition-colors w-full"
+            style={{ color: COLORS.textMuted }}
           >
             <CaretDown className={cn("h-3 w-3 transition-transform", showFullOutput && "rotate-180")} />
-            <span className="font-medium">View Full Output</span>
+            <span className="font-bold uppercase tracking-[1px]" style={{ fontFamily: MONO_FONT }}>VIEW FULL OUTPUT</span>
           </button>
           {showFullOutput && (
-            <pre className="mt-2 max-h-[300px] overflow-auto rounded bg-card/80 p-2 text-[10px] font-mono text-fg/80 whitespace-pre-wrap break-all">
+            <pre className="mt-2 max-h-[300px] overflow-auto p-2 text-[10px] whitespace-pre-wrap break-all" style={{ background: COLORS.recessedBg, color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
               {resultText}
             </pre>
           )}
@@ -2965,9 +3033,10 @@ function StepDetailPanel({
             sessionId: latestAttempt.executorSessionId ?? null,
             laneId: step.laneId ?? null
           })}
-          className="mt-3 w-full rounded border border-accent/30 bg-accent/10 px-2 py-1.5 text-[10px] font-medium text-accent transition-colors hover:bg-accent/20"
+          className="mt-3 w-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+          style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}
         >
-          Jump To Worker Channel
+          JUMP TO WORKER CHANNEL
         </button>
       )}
     </aside>
@@ -2991,9 +3060,9 @@ function BoardTab({
 
   if (!hasAnySteps) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-muted-fg">
-        <SquaresFour size={32} weight="regular" className="opacity-20 mb-2" />
-        <p className="text-xs">No steps yet. Start a run to see the board.</p>
+      <div className="flex flex-col items-center justify-center py-16" style={{ color: COLORS.textMuted }}>
+        <SquaresFour size={32} weight="regular" style={{ opacity: 0.2 }} className="mb-2" />
+        <p className="text-xs" style={{ fontFamily: MONO_FONT }}>No steps yet. Start a run to see the board.</p>
       </div>
     );
   }
@@ -3002,18 +3071,17 @@ function BoardTab({
     <div className="flex gap-3 overflow-x-auto pb-2">
       {STEP_STATUS_COLUMNS.map((col) => {
         const steps = stepsByStatus.get(col.status) ?? [];
+        const colHex = STEP_STATUS_HEX[col.status] ?? COLORS.textMuted;
         return (
           <div
             key={col.status}
-            className="w-[220px] shrink-0 rounded-lg border border-border/10 bg-card/70 backdrop-blur-sm"
+            className="w-[220px] shrink-0"
+            style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
           >
             {/* Column header */}
-            <div className="flex items-center justify-between border-b border-border/15 px-3 py-2">
-              <span className="text-xs font-semibold text-fg">{col.label}</span>
-              <span className={cn(
-                "rounded-full px-1.5 py-0.5 text-[9px] font-medium",
-                steps.length > 0 ? "bg-accent/15 text-accent" : "bg-muted/10 text-muted-fg"
-              )}>
+            <div className="flex items-center justify-between px-3 py-2" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+              <span className="text-[10px] font-bold uppercase tracking-[1px]" style={{ color: colHex, fontFamily: MONO_FONT }}>{col.label}</span>
+              <span className="px-1.5 py-0.5 text-[9px] font-bold" style={steps.length > 0 ? inlineBadge(COLORS.accent) : { color: COLORS.textMuted }}>
                 {steps.length}
               </span>
             </div>
@@ -3021,7 +3089,7 @@ function BoardTab({
             {/* Step cards */}
             <div className="space-y-1.5 p-2">
               {steps.length === 0 && (
-                <div className="px-2 py-3 text-center text-[10px] text-muted-fg/50">Empty</div>
+                <div className="px-2 py-3 text-center text-[10px]" style={{ color: COLORS.textDim }}>Empty</div>
               )}
               {steps.map((step) => {
                 const attempts = attemptsByStep.get(step.id) ?? [];
@@ -3036,32 +3104,28 @@ function BoardTab({
                   <div
                     key={step.id}
                     onClick={() => onStepSelect(step.id)}
-                    className={cn(
-                      "rounded-lg border px-2.5 py-2 transition-colors cursor-pointer",
-                      selectedStepId === step.id
-                        ? "border-accent/45 bg-accent/10"
-                        : "border-border/15 bg-card/50 hover:bg-card/70"
-                    )}
+                    className="px-2.5 py-2 transition-colors cursor-pointer"
+                    style={selectedStepId === step.id
+                      ? { background: "#A78BFA12", borderLeft: `3px solid ${COLORS.accent}`, border: `1px solid ${COLORS.accent}30` }
+                      : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
+                    }
                   >
-                    <div className="text-xs font-medium text-fg truncate">{step.title}</div>
-                    <div className="mt-0.5 text-[11px] text-muted-fg leading-snug h-[28px] overflow-hidden">
+                    <div className="text-xs font-medium truncate" style={{ color: COLORS.textPrimary }}>{step.title}</div>
+                    <div className="mt-0.5 text-[11px] leading-snug h-[28px] overflow-hidden" style={{ color: COLORS.textMuted }}>
                       {stepIntentSummary(step)}
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                       {latestAttempt && (
-                        <span className={cn(
-                          "rounded px-1 py-0.5 text-[9px] font-medium",
-                          EXECUTOR_BADGE_CLASSES[latestAttempt.executorKind] ?? "bg-muted/20 text-muted-fg"
-                        )}>
+                        <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(EXECUTOR_BADGE_HEX[latestAttempt.executorKind] ?? COLORS.textMuted)}>
                           {latestAttempt.executorKind}
                         </span>
                       )}
                       {attempts.length > 0 && (
-                        <span className="text-[9px] text-muted-fg">
+                        <span className="text-[9px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
                           {attempts.length} attempt{attempts.length !== 1 ? "s" : ""}
                         </span>
                       )}
-                      <span className="text-[9px] text-muted-fg ml-auto">{duration}</span>
+                      <span className="text-[9px] ml-auto" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{duration}</span>
                     </div>
                   </div>
                 );

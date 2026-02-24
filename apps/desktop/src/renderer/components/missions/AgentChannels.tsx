@@ -26,9 +26,9 @@ function relativeWhen(iso: string): string {
 }
 
 const STATUS_DOT: Record<string, string> = {
-  active: "bg-green-400",
-  closed: "bg-gray-500",
-  failed: "bg-red-400"
+  active: "#22C55E",
+  closed: "#52525B",
+  failed: "#EF4444"
 };
 
 export function AgentChannels({ missionId, threads, onSendMessage }: AgentChannelsProps) {
@@ -37,6 +37,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefreshTimerRef = useRef<number | null>(null);
 
@@ -172,9 +173,17 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
   return (
     <div className="flex h-full min-h-0">
       {/* Channel Sidebar */}
-      <aside className="w-[200px] shrink-0 border-r border-border/10 bg-[#16213e]/60 flex flex-col">
-        <div className="border-b border-border/10 px-3 py-2">
-          <div className="text-xs font-semibold text-fg">Channels</div>
+      <aside
+        className="w-[200px] shrink-0 flex flex-col"
+        style={{ background: "#13101A", borderRight: "1px solid #1E1B26" }}
+      >
+        <div className="px-3 py-2" style={{ borderBottom: "1px solid #1E1B26" }}>
+          <div
+            className="text-xs font-semibold"
+            style={{ color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", letterSpacing: "1px", textTransform: "uppercase" }}
+          >
+            CHANNELS
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
           {/* Coordinator channel */}
@@ -190,8 +199,11 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
           {/* Active workers */}
           {activeWorkers.length > 0 && (
             <>
-              <div className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/60">
-                Active
+              <div
+                className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
+                style={{ color: "#52525B", letterSpacing: "1px", fontFamily: "JetBrains Mono, monospace" }}
+              >
+                ACTIVE
               </div>
               {activeWorkers.map((t) => (
                 <ChannelButton
@@ -207,8 +219,11 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
           {/* Completed workers */}
           {completedWorkers.length > 0 && (
             <>
-              <div className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/60">
-                Completed
+              <div
+                className="px-2 pt-2 pb-0.5 text-[9px] font-medium uppercase tracking-wider"
+                style={{ color: "#52525B", letterSpacing: "1px", fontFamily: "JetBrains Mono, monospace" }}
+              >
+                COMPLETED
               </div>
               {completedWorkers.map((t) => (
                 <ChannelButton
@@ -222,7 +237,7 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
           )}
 
           {threads.length === 0 && (
-            <div className="px-2 py-4 text-center text-[10px] text-muted-fg">
+            <div className="px-2 py-4 text-center text-[10px]" style={{ color: "#71717A" }}>
               No channels yet
             </div>
           )}
@@ -230,16 +245,21 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
       </aside>
 
       {/* Conversation Area */}
-      <div className="flex min-w-0 flex-1 flex-col bg-[#1a1a2e]/40">
+      <div className="flex min-w-0 flex-1 flex-col" style={{ background: "#0F0D14" }}>
         {/* Header */}
-        <div className="border-b border-border/10 px-4 py-2 flex items-center gap-2">
-          <Hash size={14} weight="regular" className="text-muted-fg" />
-          <span className="text-xs font-semibold text-fg">{channelName}</span>
+        <div className="px-4 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid #1E1B26" }}>
+          <Hash size={14} weight="regular" style={{ color: "#71717A" }} />
+          <span
+            className="text-xs font-semibold"
+            style={{ color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace" }}
+          >
+            {channelName}
+          </span>
           {selectedThread && (
-            <span className={cn(
-              "ml-1 inline-block h-2 w-2 rounded-full",
-              STATUS_DOT[selectedThread.status] ?? "bg-gray-500"
-            )} />
+            <span
+              className="ml-1 inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: STATUS_DOT[selectedThread.status] ?? "#52525B" }}
+            />
           )}
         </div>
 
@@ -250,12 +270,12 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
           className="flex-1 overflow-y-auto px-4 py-3 space-y-2 relative"
         >
           {!selectedThread && (
-            <div className="flex items-center justify-center h-full text-xs text-muted-fg">
+            <div className="flex items-center justify-center h-full text-xs" style={{ color: "#71717A" }}>
               Select a channel to view messages
             </div>
           )}
           {selectedThread && messages.length === 0 && (
-            <div className="flex items-center justify-center h-32 text-xs text-muted-fg">
+            <div className="flex items-center justify-center h-32 text-xs" style={{ color: "#71717A" }}>
               No messages yet in this channel.
             </div>
           )}
@@ -267,16 +287,25 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
           {showJumpToLatest && (
             <button
               onClick={jumpToLatest}
-              className="sticky bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-accent/90 px-3 py-1 text-[10px] font-medium text-accent-fg shadow-lg hover:bg-accent transition-colors flex items-center gap-1"
+              className="sticky bottom-2 left-1/2 -translate-x-1/2 px-3 py-1 font-bold shadow-lg hover:opacity-90 transition-opacity flex items-center gap-1"
+              style={{
+                background: "#A78BFA",
+                color: "#0F0D14",
+                borderRadius: 0,
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: "10px",
+                textTransform: "uppercase",
+                letterSpacing: "1px"
+              }}
             >
               <CaretDown size={12} weight="regular" />
-              Jump to latest
+              JUMP TO LATEST
             </button>
           )}
         </div>
 
         {/* Input bar */}
-        <div className="border-t border-border/10 px-4 py-2.5">
+        <div className="px-4 py-2.5" style={{ borderTop: "1px solid #1E1B26" }}>
           <div className="flex items-center gap-2">
             <input
               value={input}
@@ -287,9 +316,18 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
                   void handleSend();
                 }
               }}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
               disabled={!selectedThread}
               placeholder={`Message ${channelName}...`}
-              className="h-8 flex-1 rounded-lg border border-border/30 font-mono bg-surface-recessed px-3 text-xs text-fg outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20 disabled:opacity-50"
+              className="h-8 flex-1 px-3 text-xs outline-none disabled:opacity-50"
+              style={{
+                background: "#0C0A10",
+                border: inputFocused ? "1px solid #A78BFA" : "1px solid #27272A",
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#FAFAFA",
+                borderRadius: 0
+              }}
             />
             <Button
               variant="primary"
@@ -319,23 +357,39 @@ function ChannelButton({
   onClick: () => void;
 }) {
   const displayName = label ?? thread.title;
-  const statusColor = STATUS_DOT[thread.status] ?? "bg-gray-500";
+  const statusColor = STATUS_DOT[thread.status] ?? "#52525B";
 
   return (
     <button
       onClick={onClick}
-      className={cn(
-        "w-full rounded px-2 py-1.5 text-left transition-colors flex items-center gap-1.5",
+      className="w-full px-2 py-1.5 text-left transition-colors flex items-center gap-1.5"
+      style={
         isSelected
-          ? "bg-accent/15 text-fg"
-          : "text-muted-fg hover:bg-card/60 hover:text-fg"
-      )}
+          ? { background: "#A78BFA12", borderLeft: "3px solid #A78BFA", color: "#FAFAFA", borderRadius: 0 }
+          : { color: "#71717A", borderRadius: 0 }
+      }
+      onMouseEnter={(e) => {
+        if (!isSelected) {
+          (e.currentTarget as HTMLButtonElement).style.background = "#1A1720";
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!isSelected) {
+          (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+        }
+      }}
     >
-      <span className={cn("inline-block h-1.5 w-1.5 rounded-full shrink-0", statusColor)} />
-      <Hash size={12} weight="regular" className="shrink-0 text-muted-fg/60" />
+      <span
+        className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: statusColor }}
+      />
+      <Hash size={12} weight="regular" className="shrink-0" style={{ color: "#71717A" }} />
       <span className="truncate text-xs">{displayName}</span>
       {thread.unreadCount > 0 && (
-        <span className="ml-auto shrink-0 rounded bg-accent px-1 py-0.5 text-[9px] font-semibold text-accent-fg">
+        <span
+          className="ml-auto shrink-0 px-1 py-0.5 text-[9px] font-semibold"
+          style={{ background: "#A78BFA", color: "#0F0D14", borderRadius: 0 }}
+        >
           {thread.unreadCount}
         </span>
       )}
@@ -366,12 +420,21 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
 
   const roleIcon = isUser ? null : isWorker ? TerminalWindow : Robot;
 
+  const timestampStyle: React.CSSProperties = {
+    color: "#52525B",
+    fontFamily: "JetBrains Mono, monospace",
+    fontSize: "9px"
+  };
+
   if (isUser) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] rounded-lg border border-accent/40 bg-accent/15 px-3 py-2 text-xs text-fg">
+        <div
+          className="max-w-[75%] px-3 py-2 text-xs"
+          style={{ background: "#A78BFA18", border: "1px solid #A78BFA30", color: "#FAFAFA", borderRadius: 0 }}
+        >
           <div className="whitespace-pre-wrap">{msg.content}</div>
-          <div className="mt-1 text-right text-[9px] text-muted-fg">
+          <div className="mt-1 text-right" style={timestampStyle}>
             {new Date(msg.timestamp).toLocaleTimeString()}
           </div>
         </div>
@@ -382,8 +445,11 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
   if (isInterAgent) {
     return (
       <div className="flex justify-start ml-4">
-        <div className="max-w-[75%] rounded-lg border-l-2 border-violet-500/30 bg-card/60 px-3 py-2 text-xs">
-          <div className="mb-1 flex items-center gap-1 text-[10px] text-violet-300/80">
+        <div
+          className="max-w-[75%] px-3 py-2 text-xs"
+          style={{ borderLeft: "2px solid #A78BFA30", background: "#13101A", borderRadius: 0 }}
+        >
+          <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: "#A78BFA" }}>
             <ChatCircle size={12} weight="regular" />
             <span>
               {(() => {
@@ -395,8 +461,8 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
               })()}
             </span>
           </div>
-          <div className="whitespace-pre-wrap text-muted-fg">{msg.content}</div>
-          <div className="mt-1 text-[9px] text-muted-fg">
+          <div className="whitespace-pre-wrap" style={{ color: "#A1A1AA" }}>{msg.content}</div>
+          <div className="mt-1" style={timestampStyle}>
             {new Date(msg.timestamp).toLocaleTimeString()}
           </div>
         </div>
@@ -408,28 +474,37 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
     return (
       <div className="flex justify-start">
         <div className="max-w-[85%]">
-          <div className="mb-1 flex items-center gap-1 text-[10px] text-muted-fg">
+          <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: "#71717A" }}>
             {roleIcon && React.createElement(roleIcon, { size: 12, weight: "regular" })}
             <span>{roleName}</span>
             {msg.stepKey && <span>- {msg.stepKey}</span>}
-            <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+            <span style={timestampStyle}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
           </div>
           <button
             onClick={() => setExpanded(!expanded)}
-            className={cn(
-              "w-full rounded-lg border px-3 py-2 text-left text-[11px] transition-colors",
+            className="w-full px-3 py-2 text-left text-[11px] transition-colors"
+            style={
               isFileEdit
-                ? "border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10"
-                : "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10"
-            )}
+                ? { border: "1px solid #22C55E30", background: "#22C55E08", borderRadius: 0 }
+                : { border: "1px solid #F59E0B30", background: "#F59E0B08", borderRadius: 0 }
+            }
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = isFileEdit ? "#22C55E14" : "#F59E0B14";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = isFileEdit ? "#22C55E08" : "#F59E0B08";
+            }}
           >
-            <div className="flex items-center gap-1 text-[11px] font-medium text-muted-fg">
+            <div className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#A1A1AA" }}>
               <TerminalWindow size={12} weight="regular" />
               {isFileEdit ? "File Edit" : "Tool Call"}
               <CaretDown size={12} weight="regular" className={cn("ml-auto transition-transform", expanded && "rotate-180")} />
             </div>
             {expanded && (
-              <pre className="mt-2 max-h-[200px] overflow-auto rounded bg-surface-recessed p-2 text-[10px] font-mono text-muted-fg whitespace-pre-wrap break-all">
+              <pre
+                className="mt-2 max-h-[200px] overflow-auto p-2 text-[10px] whitespace-pre-wrap break-all"
+                style={{ background: "#0C0A10", color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", borderRadius: 0 }}
+              >
                 {msg.content}
               </pre>
             )}
@@ -443,7 +518,10 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
   if (msg.role === "orchestrator" && msg.content.length < 80 && !msg.content.includes("\n")) {
     return (
       <div className="flex justify-center py-1">
-        <span className="rounded-full bg-card/60 px-3 py-0.5 text-[10px] text-muted-fg">
+        <span
+          className="px-3 py-0.5 text-[10px]"
+          style={{ background: "#13101A", color: "#71717A", borderRadius: 0 }}
+        >
           {msg.content}
         </span>
       </div>
@@ -456,19 +534,26 @@ function MessageBubble({ msg, attemptNameMap }: { msg: OrchestratorChatMessage; 
   const isCoordinator = msg.role === "orchestrator" || msg.role === "agent";
   return (
     <div className={cn("flex justify-start", isWorker && "ml-4")}>
-      <div className={cn(
-        "rounded-lg border px-3 py-2 text-xs",
-        isWorker
-          ? "border-l-2 border-l-violet-500 border-violet-500/35 bg-violet-500/10 text-violet-100 max-w-[85%]"
-          : isCoordinator
-            ? "w-full border-border/30 bg-card/80 text-fg"
-            : "max-w-[85%] border-border/30 bg-card/80 text-fg"
-      )}>
-        <div className="mb-1 flex items-center gap-1 text-[10px] text-muted-fg">
+      <div
+        className={cn(
+          "px-3 py-2 text-xs",
+          isWorker
+            ? "max-w-[85%]"
+            : isCoordinator
+              ? "w-full"
+              : "max-w-[85%]"
+        )}
+        style={
+          isWorker
+            ? { background: "#8B5CF618", borderLeft: "2px solid #8B5CF6", border: "1px solid #8B5CF630", borderLeftWidth: "2px", borderLeftColor: "#8B5CF6", color: "#FAFAFA", borderRadius: 0 }
+            : { background: "#13101A", border: "1px solid #1E1B26", color: "#FAFAFA", borderRadius: 0 }
+        }
+      >
+        <div className="mb-1 flex items-center gap-1 text-[10px]" style={{ color: "#71717A" }}>
           {roleIcon && React.createElement(roleIcon, { size: 12, weight: "regular" })}
           <span>{roleName}</span>
           {msg.stepKey && <span>- {msg.stepKey}</span>}
-          <span className="ml-auto">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+          <span className="ml-auto" style={timestampStyle}>{new Date(msg.timestamp).toLocaleTimeString()}</span>
         </div>
         <div className="whitespace-pre-wrap">{msg.content}</div>
       </div>

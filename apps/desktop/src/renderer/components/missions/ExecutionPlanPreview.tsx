@@ -16,44 +16,55 @@ import type {
   ExecutionPlanStepPreview,
   OrchestratorWorkerRole
 } from "../../../shared/types";
-import { cn } from "../ui/cn";
-
 /* ── Helpers ── */
 
-const ROLE_BADGE_CLASSES: Record<OrchestratorWorkerRole, string> = {
-  planning: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  implementation: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-  testing: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-  code_review: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
-  test_review: "bg-teal-500/20 text-teal-300 border-teal-500/30",
-  integration: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-  merge: "bg-orange-500/20 text-orange-300 border-orange-500/30"
+const ROLE_BADGE_STYLES: Record<OrchestratorWorkerRole, React.CSSProperties> = {
+  planning: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
+  implementation: { background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30" },
+  testing: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" },
+  code_review: { background: "#06B6D418", color: "#06B6D4", border: "1px solid #06B6D430" },
+  test_review: { background: "#14B8A618", color: "#14B8A6", border: "1px solid #14B8A630" },
+  integration: { background: "#22C55E18", color: "#22C55E", border: "1px solid #22C55E30" },
+  merge: { background: "#F9731618", color: "#F97316", border: "1px solid #F9731630" }
 };
 
 const ROLE_LABELS: Record<OrchestratorWorkerRole, string> = {
-  planning: "Planning",
-  implementation: "Implementation",
-  testing: "Testing",
-  code_review: "Code Review",
-  test_review: "Test Review",
-  integration: "Integration",
-  merge: "Merge"
+  planning: "PLANNING",
+  implementation: "IMPLEMENTATION",
+  testing: "TESTING",
+  code_review: "CODE REVIEW",
+  test_review: "TEST REVIEW",
+  integration: "INTEGRATION",
+  merge: "MERGE"
 };
 
-const EXECUTOR_BADGE_CLASSES: Record<string, string> = {
-  claude: "bg-violet-500/20 text-violet-300",
-  codex: "bg-emerald-500/20 text-emerald-300",
-  shell: "bg-amber-500/20 text-amber-300",
-  manual: "bg-blue-500/20 text-blue-300"
+const EXECUTOR_BADGE_STYLES: Record<string, React.CSSProperties> = {
+  claude: { background: "#A78BFA18", color: "#A78BFA" },
+  codex: { background: "#22C55E18", color: "#22C55E" },
+  shell: { background: "#F59E0B18", color: "#F59E0B" },
+  manual: { background: "#3B82F618", color: "#3B82F6" }
+};
+
+const FALLBACK_ROLE_STYLE: React.CSSProperties = { background: "#1E1B26", color: "#71717A", border: "1px solid #27272A" };
+const FALLBACK_EXECUTOR_STYLE: React.CSSProperties = { background: "#1E1B26", color: "#71717A" };
+
+const badgeBase: React.CSSProperties = {
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 9,
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "1px",
+  padding: "3px 8px",
+  borderRadius: 0
 };
 
 function RoleBadge({ role }: { role: OrchestratorWorkerRole }) {
   return (
     <span
-      className={cn(
-        "rounded px-1.5 py-0.5 text-[9px] font-medium border",
-        ROLE_BADGE_CLASSES[role] ?? "bg-muted/30 text-muted-fg border-border/30"
-      )}
+      style={{
+        ...badgeBase,
+        ...(ROLE_BADGE_STYLES[role] ?? FALLBACK_ROLE_STYLE)
+      }}
     >
       {ROLE_LABELS[role] ?? role}
     </span>
@@ -64,47 +75,75 @@ function RoleBadge({ role }: { role: OrchestratorWorkerRole }) {
 
 function PhaseSection({ phase }: { phase: ExecutionPlanPhase }) {
   const [expanded, setExpanded] = useState(false);
+  const [hovered, setHovered] = useState(false);
 
   return (
-    <div className="rounded border border-border/20 bg-surface-recessed">
+    <div style={{ background: "#0C0A10", border: "1px solid #1E1B26", borderRadius: 0 }}>
       <button
         onClick={() => setExpanded((prev) => !prev)}
-        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-card/60"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors"
+        style={{ background: hovered ? "#1A1720" : "transparent" }}
       >
         {expanded
-          ? <CaretDown size={12} weight="regular" className="text-muted-fg shrink-0" />
-          : <CaretRight size={12} weight="regular" className="text-muted-fg shrink-0" />
+          ? <CaretDown size={12} weight="regular" style={{ color: "#71717A", flexShrink: 0 }} />
+          : <CaretRight size={12} weight="regular" style={{ color: "#71717A", flexShrink: 0 }} />
         }
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-fg capitalize">
-              {phase.phase.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2")}
+            <span
+              style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#FAFAFA",
+                textTransform: "uppercase",
+                letterSpacing: "1px"
+              }}
+            >
+              {phase.phase.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase()}
             </span>
-            <span className="text-[9px] text-muted-fg">
+            <span
+              style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 9,
+                color: "#71717A"
+              }}
+            >
               {phase.stepCount} step{phase.stepCount !== 1 ? "s" : ""}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <span className={cn(
-            "rounded px-1 py-0.5 text-[9px] font-medium",
-            EXECUTOR_BADGE_CLASSES[phase.executorKind] ?? "bg-muted/30 text-muted-fg"
-          )}>
+          <span
+            style={{
+              ...badgeBase,
+              ...(EXECUTOR_BADGE_STYLES[phase.executorKind] ?? FALLBACK_EXECUTOR_STYLE)
+            }}
+          >
             {phase.model !== "default" ? phase.model : phase.executorKind}
           </span>
           {phase.gatePolicy !== "none" && phase.gatePolicy !== "off" && (
-            <span className="rounded px-1 py-0.5 text-[9px] font-medium bg-sky-500/15 text-sky-300 border border-sky-500/30">
+            <span
+              style={{
+                ...badgeBase,
+                background: "#3B82F618",
+                color: "#3B82F6",
+                border: "1px solid #3B82F630"
+              }}
+            >
               {phase.gatePolicy}
             </span>
           )}
           {phase.recoveryEnabled && (
-            <ArrowsClockwise size={12} weight="regular" className="text-amber-400" />
+            <ArrowsClockwise size={12} weight="regular" style={{ color: "#F59E0B" }} />
           )}
         </div>
       </button>
 
       {expanded && phase.steps.length > 0 && (
-        <div className="border-t border-border/15 px-2.5 py-1.5 space-y-1">
+        <div className="px-2.5 py-1.5 space-y-1" style={{ borderTop: "1px solid #1E1B26" }}>
           {phase.steps.map((step) => (
             <StepRow key={step.stepKey} step={step} />
           ))}
@@ -120,19 +159,37 @@ function StepRow({ step }: { step: ExecutionPlanStepPreview }) {
   return (
     <div className="flex items-center gap-2 py-1 pl-5">
       <div className="flex-1 min-w-0">
-        <div className="text-[10px] text-fg truncate">{step.title}</div>
+        <div
+          className="truncate"
+          style={{
+            fontFamily: "JetBrains Mono, monospace",
+            fontSize: 10,
+            color: "#FAFAFA"
+          }}
+        >
+          {step.title}
+        </div>
         {step.dependencies.length > 0 && (
-          <div className="text-[9px] text-muted-fg truncate">
+          <div
+            className="truncate"
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 9,
+              color: "#71717A"
+            }}
+          >
             depends on: {step.dependencies.join(", ")}
           </div>
         )}
       </div>
       <div className="flex items-center gap-1 shrink-0">
         <RoleBadge role={step.role} />
-        <span className={cn(
-          "rounded px-1 py-0.5 text-[9px] font-medium",
-          EXECUTOR_BADGE_CLASSES[step.executorKind] ?? "bg-muted/30 text-muted-fg"
-        )}>
+        <span
+          style={{
+            ...badgeBase,
+            ...(EXECUTOR_BADGE_STYLES[step.executorKind] ?? FALLBACK_EXECUTOR_STYLE)
+          }}
+        >
           {step.executorKind}
         </span>
       </div>
@@ -149,8 +206,19 @@ type ExecutionPlanPreviewProps = {
 export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
   if (!preview) {
     return (
-      <div className="rounded-lg border border-border/20 bg-card/60 px-3 py-3 text-center">
-        <div className="text-xs text-muted-fg">No execution plan available</div>
+      <div
+        className="px-3 py-3 text-center"
+        style={{ background: "#13101A", border: "1px solid #1E1B26", borderRadius: 0 }}
+      >
+        <div
+          style={{
+            fontFamily: "JetBrains Mono, monospace",
+            fontSize: 12,
+            color: "#71717A"
+          }}
+        >
+          No execution plan available
+        </div>
       </div>
     );
   }
@@ -158,39 +226,98 @@ export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
   const { strategy, teamSummary, phases, recoveryPolicy, integrationPrPlan, aligned, driftNotes } = preview;
 
   return (
-    <div className="rounded-lg border border-border/20 bg-card/60 space-y-2.5 p-3">
+    <div
+      className="space-y-2.5 p-3"
+      style={{ background: "#13101A", border: "1px solid #1E1B26", borderRadius: 0 }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Stack size={14} weight="regular" className="text-accent" />
-          <span className="text-xs font-semibold text-fg">Execution Plan</span>
+          <Stack size={14} weight="regular" style={{ color: "#A78BFA" }} />
+          <span
+            style={{
+              fontFamily: "Space Grotesk, sans-serif",
+              fontSize: 13,
+              fontWeight: 700,
+              color: "#FAFAFA"
+            }}
+          >
+            Execution Plan
+          </span>
         </div>
         {aligned ? (
-          <span className="flex items-center gap-1 text-[10px] text-emerald-300">
-            <CheckCircle size={12} weight="regular" />
-            Aligned
+          <span className="flex items-center gap-1">
+            <CheckCircle size={12} weight="regular" style={{ color: "#22C55E" }} />
+            <span
+              style={{
+                color: "#22C55E",
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "1px"
+              }}
+            >
+              ALIGNED
+            </span>
           </span>
         ) : (
-          <span className="flex items-center gap-1 text-[10px] text-amber-300">
-            <Warning size={12} weight="regular" />
-            Drift detected
+          <span className="flex items-center gap-1">
+            <Warning size={12} weight="regular" style={{ color: "#F59E0B" }} />
+            <span
+              style={{
+                color: "#F59E0B",
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "1px"
+              }}
+            >
+              DRIFT DETECTED
+            </span>
           </span>
         )}
       </div>
 
       {/* Strategy line */}
-      <div className="text-[10px] text-fg/80 leading-snug">{strategy}</div>
+      <div
+        style={{
+          fontFamily: "JetBrains Mono, monospace",
+          fontSize: 10,
+          color: "#A1A1AA",
+          lineHeight: 1.5
+        }}
+      >
+        {strategy}
+      </div>
 
       {/* Team summary */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 text-[10px] text-muted-fg">
-          <Users size={12} weight="regular" />
-          <span>{teamSummary.workerCount} worker{teamSummary.workerCount !== 1 ? "s" : ""}</span>
+        <div className="flex items-center gap-1">
+          <Users size={12} weight="regular" style={{ color: "#71717A" }} />
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              color: "#71717A"
+            }}
+          >
+            {teamSummary.workerCount} worker{teamSummary.workerCount !== 1 ? "s" : ""}
+          </span>
         </div>
         {teamSummary.parallelLanes > 0 && (
-          <div className="flex items-center gap-1 text-[11px] text-muted-fg">
-            <Stack size={12} weight="regular" />
-            <span>{teamSummary.parallelLanes} lane{teamSummary.parallelLanes !== 1 ? "s" : ""}</span>
+          <div className="flex items-center gap-1">
+            <Stack size={12} weight="regular" style={{ color: "#71717A" }} />
+            <span
+              style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 11,
+                color: "#71717A"
+              }}
+            >
+              {teamSummary.parallelLanes} lane{teamSummary.parallelLanes !== 1 ? "s" : ""}
+            </span>
           </div>
         )}
         <div className="flex items-center gap-1 flex-wrap">
@@ -211,12 +338,18 @@ export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
 
       {/* Recovery policy */}
       {recoveryPolicy.enabled && (
-        <div className="flex items-center gap-2 text-[10px] text-muted-fg">
-          <Shield size={12} weight="regular" className="text-amber-400 shrink-0" />
-          <span>
+        <div className="flex items-center gap-2">
+          <Shield size={12} weight="regular" style={{ color: "#F59E0B", flexShrink: 0 }} />
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              color: "#71717A"
+            }}
+          >
             Auto-recovery: up to {recoveryPolicy.maxIterations} iteration{recoveryPolicy.maxIterations !== 1 ? "s" : ""}
             {recoveryPolicy.onExhaustion !== "fail" && (
-              <span className="ml-1 text-[9px]">
+              <span style={{ marginLeft: 4, fontSize: 9 }}>
                 (on exhaustion: {recoveryPolicy.onExhaustion.replace(/_/g, " ")})
               </span>
             )}
@@ -226,9 +359,15 @@ export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
 
       {/* Integration PR plan */}
       {integrationPrPlan.enabled && (
-        <div className="flex items-center gap-2 text-[10px] text-muted-fg">
-          <GitPullRequest size={12} weight="regular" className="text-emerald-400 shrink-0" />
-          <span>
+        <div className="flex items-center gap-2">
+          <GitPullRequest size={12} weight="regular" style={{ color: "#22C55E", flexShrink: 0 }} />
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              color: "#71717A"
+            }}
+          >
             Will create integration PR when complete
             {integrationPrPlan.draft && " (draft)"}
           </span>
@@ -237,10 +376,34 @@ export function ExecutionPlanPreview({ preview }: ExecutionPlanPreviewProps) {
 
       {/* Drift notes */}
       {driftNotes.length > 0 && (
-        <div className="rounded border border-amber-500/25 bg-amber-500/10 px-2 py-1.5 space-y-0.5">
-          <div className="text-[10px] font-medium text-amber-300">Drift Notes</div>
+        <div
+          className="px-2 py-1.5 space-y-0.5"
+          style={{ background: "#F59E0B08", border: "1px solid #F59E0B30", borderRadius: 0 }}
+        >
+          <div
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#F59E0B",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            DRIFT NOTES
+          </div>
           {driftNotes.map((note, i) => (
-            <div key={i} className="text-[9px] text-amber-200/80">{note}</div>
+            <div
+              key={i}
+              style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 9,
+                color: "#F59E0B",
+                opacity: 0.8
+              }}
+            >
+              {note}
+            </div>
           ))}
         </div>
       )}
