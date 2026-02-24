@@ -7,36 +7,52 @@ type MissionPolicyBadgeProps = {
   className?: string;
 };
 
-function detectPresetLabel(policy: MissionExecutionPolicy): { label: string; color: string } {
+function detectPresetLabel(policy: MissionExecutionPolicy): { label: string; style: React.CSSProperties } {
   if (
     policy.planning.mode === "off" &&
     policy.testing.mode === "none" &&
     policy.validation.mode === "off" &&
     policy.codeReview.mode === "off" &&
     policy.merge.mode === "off"
-  ) return { label: "Quick", color: "bg-sky-500/20 text-sky-300 border-sky-500/30" };
+  ) return {
+    label: "QUICK",
+    style: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" }
+  };
 
   if (
     policy.planning.mode === "manual_review" &&
     policy.validation.mode === "required" &&
     policy.codeReview.mode === "required"
-  ) return { label: "Thorough", color: "bg-orange-500/20 text-orange-300 border-orange-500/30" };
+  ) return {
+    label: "THOROUGH",
+    style: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" }
+  };
 
   if (
     policy.planning.mode === "auto" &&
     policy.testing.mode === "post_implementation"
-  ) return { label: "Standard", color: "bg-violet-500/20 text-violet-300 border-violet-500/30" };
+  ) return {
+    label: "STANDARD",
+    style: { background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30" }
+  };
 
-  return { label: "Custom", color: "bg-muted/30 text-muted-fg border-border/30" };
+  return {
+    label: "CUSTOM",
+    style: { background: "#1E1B26", color: "#71717A", border: "1px solid #27272A" }
+  };
 }
 
 function PhaseIcon({ active, label }: { active: boolean; label: string }) {
   return (
     <span
-      className={cn(
-        "text-[8px] font-bold uppercase leading-none",
-        active ? "text-fg/60" : "text-fg/20"
-      )}
+      style={{
+        fontFamily: "JetBrains Mono, monospace",
+        fontSize: 8,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        lineHeight: 1,
+        color: active ? "#FAFAFA" : "#52525B"
+      }}
       title={label}
     >
       {label.charAt(0)}
@@ -49,7 +65,18 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
     const preset = detectPresetLabel(policy);
     return (
       <div className={cn("inline-flex items-center gap-1", className)}>
-        <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium border", preset.color)}>
+        <span
+          style={{
+            ...preset.style,
+            fontFamily: "JetBrains Mono, monospace",
+            fontSize: 9,
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: "1px",
+            padding: "3px 8px",
+            borderRadius: 0
+          }}
+        >
           {preset.label}
         </span>
         <span className="inline-flex items-center gap-px">
@@ -58,7 +85,15 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
           <PhaseIcon active={policy.merge.mode !== "off"} label="M" />
         </span>
         {policy.implementation.model && (
-          <span className="text-[8px] font-bold text-fg/40 uppercase">
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 8,
+              fontWeight: 700,
+              color: "#52525B",
+              textTransform: "uppercase"
+            }}
+          >
             {policy.implementation.model === "claude" ? "C" : "X"}
           </span>
         )}
@@ -67,8 +102,22 @@ export function MissionPolicyBadge({ policy, className }: MissionPolicyBadgeProp
   }
 
   return (
-    <span className={cn("rounded px-1.5 py-0.5 text-[9px] font-medium border border-border/30 bg-muted/30 text-muted-fg", className)}>
-      Classic
+    <span
+      className={cn("", className)}
+      style={{
+        background: "#1E1B26",
+        color: "#71717A",
+        border: "1px solid #27272A",
+        fontFamily: "JetBrains Mono, monospace",
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "1px",
+        padding: "3px 8px",
+        borderRadius: 0
+      }}
+    >
+      CLASSIC
     </span>
   );
 }

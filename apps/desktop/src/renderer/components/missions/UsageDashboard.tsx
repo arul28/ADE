@@ -1,15 +1,14 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Pulse, Cpu, CurrencyDollar, Clock, CheckCircle, XCircle, SpinnerGap } from "@phosphor-icons/react";
 import type { AggregatedUsageStats } from "../../../shared/types";
-import { cn } from "../ui/cn";
 
 const MODEL_COLORS: Record<string, string> = {
-  "claude-opus": "bg-blue-700",
-  "claude-sonnet": "bg-blue-500",
-  "claude-haiku": "bg-blue-400",
-  "codex": "bg-emerald-500",
-  "codex-mini": "bg-emerald-400",
-  "default": "bg-muted-fg"
+  "claude-opus": "#1D4ED8",
+  "claude-sonnet": "#3B82F6",
+  "claude-haiku": "#60A5FA",
+  "codex": "#22C55E",
+  "codex-mini": "#4ADE80",
+  "default": "#71717A"
 };
 
 function getModelColor(model: string): string {
@@ -72,8 +71,8 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
 
   if (loading && !stats) {
     return (
-      <div className="flex items-center justify-center h-48 text-muted-fg text-xs">
-        <SpinnerGap size={16} weight="regular" className="animate-spin mr-1.5" />
+      <div className="flex items-center justify-center h-48" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
+        <SpinnerGap size={16} weight="regular" className="animate-spin mr-1.5" style={{ color: "#71717A" }} />
         Loading usage data...
       </div>
     );
@@ -81,7 +80,7 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
 
   if (!stats) {
     return (
-      <div className="flex items-center justify-center h-48 text-muted-fg text-xs">
+      <div className="flex items-center justify-center h-48" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>
         No usage data available
       </div>
     );
@@ -98,13 +97,13 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
   return (
     <div className="flex flex-col gap-3 p-4 overflow-y-auto">
       {/* Scope indicator */}
-      <div className="rounded border border-border/10 bg-card/80 backdrop-blur-sm px-3 py-1.5 text-xs text-fg font-medium">
+      <div className="px-3 py-1.5" style={{ background: "#13101A", border: "1px solid #1E1B26", color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px" }}>
         {scopeLabel}
       </div>
 
       {/* Error banner */}
       {error && (
-        <div className="rounded border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+        <div className="px-3 py-2 text-xs" style={{ background: "#EF444418", border: "1px solid #EF444430", color: "#EF4444", fontFamily: "JetBrains Mono, monospace" }}>
           Failed to load usage data: {error}
         </div>
       )}
@@ -112,8 +111,8 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Empty state */}
       {isEmpty ? (
         <div className="flex flex-col items-center justify-center py-10 text-center gap-2">
-          <span className="text-sm font-medium text-muted-fg">No usage data yet</span>
-          <span className="text-xs text-muted-fg/70 leading-relaxed max-w-xs">
+          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: "14px", fontWeight: 500, color: "#71717A" }}>No usage data yet</span>
+          <span className="leading-relaxed max-w-xs" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "12px" }}>
             Usage metrics will appear here once AI agents begin processing steps.
             This includes token counts, costs, compute time, and model breakdowns.
           </span>
@@ -131,20 +130,26 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Active Sessions */}
       {stats.activeSessions.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">Live Sessions</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Live Sessions</h3>
           <div className="flex flex-col gap-1">
             {stats.activeSessions.map((s) => (
-              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded border border-border/10 bg-card">
+              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1.5" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
                 <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                  <span className="animate-ping absolute inline-flex h-full w-full" style={{ borderRadius: "9999px", backgroundColor: "#22C55E", opacity: 0.75 }} />
+                  <span className="relative inline-flex h-2 w-2" style={{ borderRadius: "9999px", backgroundColor: "#22C55E" }} />
                 </span>
-                <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-medium", s.provider === "codex" ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}>
+                <span
+                  className="px-1.5 py-0.5"
+                  style={s.provider === "codex"
+                    ? { background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
+                    : { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
+                  }
+                >
                   {s.provider}
                 </span>
-                <span className="text-xs text-fg/80 truncate">{s.model}</span>
-                <span className="text-[10px] text-muted-fg ml-auto">{s.feature}</span>
-                <span className="text-[10px] text-fg/60">{formatDuration(s.elapsedMs)}</span>
+                <span className="text-xs truncate" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{s.model}</span>
+                <span className="ml-auto" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{s.feature}</span>
+                <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatDuration(s.elapsedMs)}</span>
               </div>
             ))}
           </div>
@@ -154,7 +159,7 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Model Breakdown */}
       {stats.byModel.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">By Model</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Model</h3>
           <div className="flex flex-col gap-1.5">
             {stats.byModel.map((m) => {
               const total = m.inputTokens + m.outputTokens;
@@ -163,19 +168,25 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
                 <div key={`${m.provider}-${m.model}`} className="flex flex-col gap-0.5">
                   <div className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-1.5">
-                      <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-medium", m.provider === "codex" ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}>
+                      <span
+                        className="px-1.5 py-0.5"
+                        style={m.provider === "codex"
+                          ? { background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
+                          : { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
+                        }
+                      >
                         {m.provider}
                       </span>
-                      <span className="text-fg/80">{m.model}</span>
+                      <span style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{m.model}</span>
                     </div>
-                    <div className="flex items-center gap-3 text-muted-fg text-[10px]">
+                    <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
                       <span>{m.sessions} sessions</span>
                       <span>{formatTokens(total)} tokens</span>
                       <span>{formatCost(m.costEstimateUsd)}</span>
                     </div>
                   </div>
-                  <div className="h-1.5 rounded-full bg-card overflow-hidden">
-                    <div className={cn("h-full rounded-full transition-all", getModelColor(m.model))} style={{ width: `${pct}%` }} />
+                  <div className="h-1.5 overflow-hidden" style={{ background: "#1E1B26", borderRadius: 0 }}>
+                    <div className="h-full transition-all" style={{ width: `${pct}%`, backgroundColor: getModelColor(m.model), borderRadius: 0 }} />
                   </div>
                 </div>
               );
@@ -187,12 +198,12 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Mission Breakdown (hidden when scoped to a single mission) */}
       {!missionId && stats.missionBreakdown.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">By Mission</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>By Mission</h3>
           <div className="flex flex-col gap-0.5">
             {stats.missionBreakdown.map((m) => (
-              <div key={m.missionId} className="flex items-center justify-between px-2.5 py-1.5 rounded border border-border/10 bg-card/80 text-[11px]">
-                <span className="text-fg/80 truncate max-w-[60%]">{m.missionTitle}</span>
-                <div className="flex items-center gap-3 text-muted-fg text-[10px]">
+              <div key={m.missionId} className="flex items-center justify-between px-2.5 py-1.5 text-[11px]" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
+                <span className="truncate max-w-[60%]" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace" }}>{m.missionTitle}</span>
+                <div className="flex items-center gap-3" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>
                   <span>{formatTokens(m.totalTokens)}</span>
                   <span>{formatCost(m.costEstimateUsd)}</span>
                 </div>
@@ -205,21 +216,27 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
       {/* Recent Sessions */}
       {stats.recentSessions.length > 0 && (
         <section>
-          <h3 className="text-xs font-medium text-muted-fg mb-1.5 uppercase tracking-wide">Recent Sessions</h3>
+          <h3 style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Recent Sessions</h3>
           <div className="flex flex-col gap-0.5">
             {stats.recentSessions.slice(0, 20).map((s) => (
-              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 rounded border border-border/10 bg-card/60 text-[11px]">
+              <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 text-[11px]" style={{ background: "#13101A", border: "1px solid #1E1B26" }}>
                 {s.success ? (
-                  <CheckCircle size={12} weight="regular" className="text-emerald-400 shrink-0" />
+                  <CheckCircle size={12} weight="regular" className="shrink-0" style={{ color: "#22C55E" }} />
                 ) : (
-                  <XCircle size={12} weight="regular" className="text-red-400 shrink-0" />
+                  <XCircle size={12} weight="regular" className="shrink-0" style={{ color: "#EF4444" }} />
                 )}
-                <span className={cn("px-1 py-0.5 rounded text-[9px] font-medium", s.provider === "codex" ? "bg-emerald-500/20 text-emerald-300" : "bg-violet-500/20 text-violet-300")}>
+                <span
+                  className="px-1 py-0.5"
+                  style={s.provider === "codex"
+                    ? { background: "#22C55E18", color: "#22C55E", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
+                    : { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace", fontSize: "9px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }
+                  }
+                >
                   {s.provider}
                 </span>
-                <span className="text-muted-fg truncate">{s.feature}</span>
-                <span className="text-muted-fg text-[10px] ml-auto">{formatTokens(s.inputTokens + s.outputTokens)}</span>
-                <span className="text-muted-fg/60 text-[10px]">{formatDuration(s.durationMs)}</span>
+                <span className="truncate" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>{s.feature}</span>
+                <span className="ml-auto" style={{ color: "#A1A1AA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatTokens(s.inputTokens + s.outputTokens)}</span>
+                <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{formatDuration(s.durationMs)}</span>
               </div>
             ))}
           </div>
@@ -233,13 +250,13 @@ export function UsageDashboard({ missionId, missionTitle }: UsageDashboardProps)
 
 function SummaryCard({ icon: Icon, label, value, sub }: { icon: React.ElementType; label: string; value: string; sub?: string }) {
   return (
-    <div className="flex flex-col gap-0.5 p-2.5 rounded-lg border border-border/10 bg-card">
+    <div className="flex flex-col gap-0.5" style={{ background: "#13101A", border: "1px solid #1E1B26", padding: "16px" }}>
       <div className="flex items-center gap-1.5">
-        <Icon size={12} weight="regular" className="text-muted-fg" />
-        <span className="text-[11px] text-muted-fg uppercase tracking-wide">{label}</span>
+        <Icon size={12} weight="regular" style={{ color: "#71717A" }} />
+        <span style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px" }}>{label}</span>
       </div>
-      <span className="font-mono text-2xl font-semibold tracking-tight text-fg">{value}</span>
-      {sub && <span className="text-[11px] text-muted-fg">{sub}</span>}
+      <span style={{ color: "#FAFAFA", fontFamily: "'Space Grotesk', sans-serif", fontSize: "28px", fontWeight: 700 }}>{value}</span>
+      {sub && <span style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}>{sub}</span>}
     </div>
   );
 }

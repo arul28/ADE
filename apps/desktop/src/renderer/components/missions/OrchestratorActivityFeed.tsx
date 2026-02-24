@@ -228,7 +228,8 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="h-7 rounded border border-border/30 bg-card px-2 text-[11px] text-fg outline-none focus:border-accent/40"
+          className="h-7 px-2 text-[10px] outline-none"
+          style={{ background: "#0C0A10", border: "1px solid #27272A", color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
         >
           {CATEGORY_OPTIONS.map((opt) => (
             <option key={opt} value={opt}>{opt}</option>
@@ -239,20 +240,20 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           placeholder="Filter events..."
-          className="h-7 w-40 rounded border border-border/30 bg-card px-2 text-[11px] text-fg outline-none focus:border-accent/40"
+          className="h-7 w-40 px-2 text-[11px] outline-none"
+          style={{ background: "#0C0A10", border: "1px solid #27272A", color: "#FAFAFA", fontFamily: "JetBrains Mono, monospace", borderRadius: 0 }}
         />
 
-        <div className="flex rounded border border-border/30 overflow-hidden">
+        <div className="flex overflow-hidden" style={{ border: "1px solid #1E1B26", borderRadius: 0 }}>
           {(["all", "warnings", "errors"] as const).map((sev) => (
             <button
               key={sev}
               onClick={() => setSeverity(sev)}
-              className={cn(
-                "px-2 py-0.5 text-[11px] font-medium transition-colors",
-                severity === sev
-                  ? "bg-accent/20 text-accent"
-                  : "bg-card text-muted-fg hover:bg-card/80"
-              )}
+              className="px-2 py-0.5 text-[11px] font-medium transition-colors"
+              style={severity === sev
+                ? { background: "#A78BFA18", color: "#A78BFA", fontFamily: "JetBrains Mono, monospace" }
+                : { background: "#13101A", color: "#71717A", fontFamily: "JetBrains Mono, monospace" }
+              }
             >
               {sev === "all" ? "All" : sev === "warnings" ? "Warnings" : "Errors"}
             </button>
@@ -262,7 +263,8 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
         {(category !== "All Events" || severity !== "all" || searchText) && (
           <button
             onClick={() => { setCategory("All Events"); setSeverity("all"); setSearchText(""); }}
-            className="text-[11px] text-muted-fg hover:text-fg transition-colors"
+            className="text-[11px] transition-colors hover:text-white"
+            style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}
           >
             Clear
           </button>
@@ -273,7 +275,8 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="relative max-h-[400px] overflow-y-auto rounded border border-border/20 bg-card/60"
+        className="relative max-h-[400px] overflow-y-auto"
+        style={{ border: "1px solid #1E1B26", background: "#13101A", borderRadius: 0 }}
       >
         {!autoScroll && (
           <button
@@ -281,18 +284,19 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
               setAutoScroll(true);
               if (scrollRef.current) scrollRef.current.scrollTop = 0;
             }}
-            className="sticky top-0 z-10 w-full bg-accent/90 px-2 py-1 text-[10px] font-medium text-accent-fg text-center hover:bg-accent transition-colors"
+            className="sticky top-0 z-10 w-full px-2 py-1 text-[10px] text-center transition-colors"
+            style={{ background: "#A78BFA", color: "#0F0D14", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
           >
             Jump to latest
           </button>
         )}
 
         {grouped.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-muted-fg">
+          <div className="px-3 py-6 text-center text-xs" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>
             {events.length === 0 ? "No events yet" : "No events match the active filters"}
           </div>
         ) : (
-          <div className="divide-y divide-border/10">
+          <div style={{ borderColor: "#1E1B26" }} className="divide-y">
             {grouped.map((group) => {
               const first = group.events[0];
               const config = EVENT_CONFIG[first.eventType] ?? DEFAULT_CONFIG;
@@ -303,19 +307,29 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
                   <button
                     key={first.id}
                     onClick={() => setExpandedId(first.id)}
-                    className="w-full text-left px-3 py-1.5 hover:bg-muted/10 transition-colors"
+                    className="w-full text-left px-3 py-1.5 transition-colors"
+                    style={{ borderColor: "#1E1B26" }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#1A1720"; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   >
                     <div className="flex items-center gap-2">
                       <span className={cn("text-[12px] leading-none", config.color)}>
                         {config.icon}
                       </span>
-                      <span className="rounded bg-muted/15 px-1.5 py-0.5 text-[11px] font-medium text-muted-fg">
+                      <span
+                        className="px-1.5 py-0.5 text-[10px]"
+                        style={{ background: "#1E1B26", color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
+                      >
                         {config.label}
                       </span>
-                      <span className="text-xs text-muted-fg">
+                      <span className="text-xs" style={{ color: "#71717A", fontFamily: "JetBrains Mono, monospace" }}>
                         {group.events.length} {config.label.toLowerCase()} events
                       </span>
-                      <span className="ml-auto shrink-0 text-[11px] text-muted-fg" title={formatTimestamp(first.createdAt)}>
+                      <span
+                        className="ml-auto shrink-0 text-[11px]"
+                        title={formatTimestamp(first.createdAt)}
+                        style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
+                      >
                         {relativeTime(first.createdAt)}
                       </span>
                     </div>
@@ -328,15 +342,30 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
                 const evConfig = EVENT_CONFIG[ev.eventType] ?? DEFAULT_CONFIG;
                 const isExpanded = expandedId === ev.id;
                 const sev = eventSeverity(ev);
+
+                const rowStyle: React.CSSProperties = { borderColor: "#1E1B26" };
+                if (sev === "error") {
+                  rowStyle.borderLeft = "2px solid #EF4444";
+                  rowStyle.background = "#EF444408";
+                } else if (sev === "warning") {
+                  rowStyle.borderLeft = "2px solid #F59E0B";
+                  rowStyle.background = "#F59E0B08";
+                }
+
                 return (
                   <button
                     key={ev.id}
                     onClick={() => setExpandedId(isExpanded ? null : ev.id)}
-                    className={cn(
-                      "w-full text-left px-3 py-2 hover:bg-muted/10 transition-colors",
-                      sev === "error" && "border-l-2 border-red-500 bg-red-500/5",
-                      sev === "warning" && "border-l-2 border-amber-500 bg-amber-500/5"
-                    )}
+                    className="w-full text-left px-3 py-2 transition-colors"
+                    style={rowStyle}
+                    onMouseEnter={(e) => {
+                      if (sev === "info") (e.currentTarget as HTMLElement).style.background = "#1A1720";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (sev === "error") (e.currentTarget as HTMLElement).style.background = "#EF444408";
+                      else if (sev === "warning") (e.currentTarget as HTMLElement).style.background = "#F59E0B08";
+                      else (e.currentTarget as HTMLElement).style.background = "transparent";
+                    }}
                   >
                     <div className="flex items-start gap-2">
                       <span className={cn("mt-0.5 text-[12px] leading-none", evConfig.color)}>
@@ -344,24 +373,34 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="rounded bg-muted/15 px-1.5 py-0.5 text-[11px] font-medium text-muted-fg">
+                          <span
+                            className="px-1.5 py-0.5 text-[10px]"
+                            style={{ background: "#1E1B26", color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "1px", borderRadius: 0 }}
+                          >
                             {evConfig.label}
                           </span>
-                          <span className="flex-1 truncate text-xs text-fg">
+                          <span className="flex-1 truncate text-xs" style={{ color: "#FAFAFA" }}>
                             {ev.reason}
                           </span>
-                          <span className="shrink-0 text-[11px] text-muted-fg" title={formatTimestamp(ev.createdAt)}>
+                          <span
+                            className="shrink-0"
+                            title={formatTimestamp(ev.createdAt)}
+                            style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px" }}
+                          >
                             {relativeTime(ev.createdAt)}
                           </span>
                         </div>
                         {ev.stepId && (
-                          <div className="mt-0.5 text-[11px] text-muted-fg/70 truncate">
+                          <div className="mt-0.5 truncate" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "11px" }}>
                             step: {ev.stepId.slice(0, 8)}
                             {ev.attemptId ? ` / attempt: ${ev.attemptId.slice(0, 8)}` : ""}
                           </div>
                         )}
                         {isExpanded && ev.detail && (
-                          <pre className="mt-1.5 max-h-[200px] overflow-auto rounded bg-muted/10 p-2 text-[10px] text-muted-fg font-mono whitespace-pre-wrap break-all">
+                          <pre
+                            className="mt-1.5 max-h-[200px] overflow-auto p-2 whitespace-pre-wrap break-all"
+                            style={{ background: "#0C0A10", fontFamily: "JetBrains Mono, monospace", color: "#71717A", fontSize: "10px", borderRadius: 0 }}
+                          >
                             {JSON.stringify(ev.detail, null, 2)}
                           </pre>
                         )}
@@ -375,7 +414,7 @@ export function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
         )}
       </div>
 
-      <div className="text-[11px] text-muted-fg/60 text-right">
+      <div className="text-right" style={{ color: "#52525B", fontFamily: "JetBrains Mono, monospace", fontSize: "10px", textTransform: "uppercase", letterSpacing: "1px" }}>
         {filteredEvents.length} event{filteredEvents.length !== 1 ? "s" : ""}
         {filteredEvents.length !== events.length ? ` (filtered from ${events.length})` : ""}
       </div>

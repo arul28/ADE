@@ -8,26 +8,30 @@ type CompletionBannerProps = {
   className?: string;
 };
 
-const BANNER_STYLES: Partial<Record<OrchestratorRunStatus, { bg: string; text: string; label: string }>> = {
+const BANNER_STYLES: Partial<Record<OrchestratorRunStatus, {
+  containerStyle: React.CSSProperties;
+  textColor: string;
+  label: string;
+}>> = {
   succeeded: {
-    bg: "bg-emerald-500/10 border-emerald-500/30",
-    text: "text-emerald-300",
-    label: "Mission completed successfully"
+    containerStyle: { background: "#22C55E18", border: "1px solid #22C55E30" },
+    textColor: "#22C55E",
+    label: "MISSION COMPLETED SUCCESSFULLY"
   },
   succeeded_with_risk: {
-    bg: "bg-amber-500/10 border-amber-500/30",
-    text: "text-amber-300",
-    label: "Mission completed with risk"
+    containerStyle: { background: "#F59E0B18", border: "1px solid #F59E0B30" },
+    textColor: "#F59E0B",
+    label: "MISSION COMPLETED WITH RISK"
   },
   failed: {
-    bg: "bg-red-500/10 border-red-500/30",
-    text: "text-red-300",
-    label: "Mission failed"
+    containerStyle: { background: "#EF444418", border: "1px solid #EF444430" },
+    textColor: "#EF4444",
+    label: "MISSION FAILED"
   },
   paused: {
-    bg: "bg-amber-500/10 border-amber-500/30",
-    text: "text-amber-300",
-    label: "Mission paused"
+    containerStyle: { background: "#F59E0B18", border: "1px solid #F59E0B30" },
+    textColor: "#F59E0B",
+    label: "MISSION PAUSED"
   }
 };
 
@@ -39,13 +43,34 @@ export function CompletionBanner({ status, evaluation, className }: CompletionBa
   const riskFactors = evaluation?.riskFactors ?? [];
 
   return (
-    <div className={cn("rounded-lg border px-3 py-2", style.bg, className)}>
-      <div className={cn("text-xs font-medium", style.text)}>{style.label}</div>
+    <div
+      className={cn("px-3 py-2", className)}
+      style={{ ...style.containerStyle, borderRadius: 0 }}
+    >
+      <div
+        style={{
+          color: style.textColor,
+          fontFamily: "JetBrains Mono, monospace",
+          fontSize: 11,
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "1px"
+        }}
+      >
+        {style.label}
+      </div>
 
       {riskFactors.length > 0 && (
         <div className="mt-1 space-y-0.5">
           {riskFactors.map((factor, i) => (
-            <div key={i} className="text-[10px] text-amber-300/80">
+            <div
+              key={i}
+              style={{
+                color: "#F59E0B",
+                fontSize: 10,
+                fontFamily: "JetBrains Mono, monospace"
+              }}
+            >
               {"\u26A0"} {factor.replace(/_/g, " ")}
             </div>
           ))}
@@ -55,7 +80,14 @@ export function CompletionBanner({ status, evaluation, className }: CompletionBa
       {blockingDiagnostics.length > 0 && (
         <div className="mt-1 space-y-0.5">
           {blockingDiagnostics.map((d, i) => (
-            <div key={i} className="text-[10px] text-red-300/80">
+            <div
+              key={i}
+              style={{
+                color: "#EF4444",
+                fontSize: 10,
+                fontFamily: "JetBrains Mono, monospace"
+              }}
+            >
               {"\u2717"} {d.message}
             </div>
           ))}

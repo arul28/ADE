@@ -175,7 +175,10 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
   if (steps.length === 0) {
     return (
-      <div className="flex items-center justify-center rounded border border-border/10 bg-card/60 p-6 text-xs text-muted-fg">
+      <div
+        className="flex items-center justify-center p-6"
+        style={{ border: "1px solid #1E1B26", background: "#13101A", color: "#71717A", fontFamily: "JetBrains Mono, monospace", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" }}
+      >
         No steps to display
       </div>
     );
@@ -183,8 +186,8 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
   return (
     <div
-      className="overflow-auto rounded border border-border/10 bg-card/60"
-      style={{ perspective: '1200px', perspectiveOrigin: '50% 40%' }}
+      className="overflow-auto"
+      style={{ perspective: '1200px', perspectiveOrigin: '50% 40%', border: "1px solid #1E1B26", background: "#13101A" }}
     >
       {/* Inline style for flow animation */}
       <style>{`
@@ -276,7 +279,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                     y={-3}
                     width={nodeW + 6}
                     height={NODE_H + 6}
-                    rx={11}
+                    rx={0}
                     fill="none"
                     stroke="#3b82f6"
                     strokeWidth={1.5}
@@ -293,7 +296,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                   y={-2}
                   width={nodeW + 4}
                   height={NODE_H + 4}
-                  rx={10}
+                  rx={0}
                   fill="none"
                   stroke={statusColor}
                   strokeWidth={2}
@@ -312,7 +315,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
               <rect
                 width={nodeW}
                 height={NODE_H}
-                rx={8}
+                rx={0}
                 fill={phaseTint}
               />
 
@@ -323,8 +326,8 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                   y={4}
                   width={nodeW - 8}
                   height={NODE_H - 8}
-                  rx={4}
-                  fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
+                  rx={0}
+                  fill={isHovered ? "#1A1720" : "#13101A"}
                   stroke={statusColor}
                   strokeWidth={isHovered ? 2 : 1.5}
                   strokeDasharray="4 2"
@@ -334,8 +337,8 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 <rect
                   width={nodeW}
                   height={NODE_H}
-                  rx={NODE_H / 2}
-                  fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
+                  rx={0}
+                  fill={isHovered ? "#1A1720" : "#13101A"}
                   stroke={statusColor}
                   strokeWidth={isHovered ? 2 : 1.5}
                   opacity={0.9}
@@ -344,8 +347,8 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 <rect
                   width={nodeW}
                   height={NODE_H}
-                  rx={8}
-                  fill={isHovered ? "var(--color-muted)" : "var(--color-card)"}
+                  rx={0}
+                  fill={isHovered ? "#1A1720" : "#13101A"}
                   stroke={statusColor}
                   strokeWidth={isHovered ? 2 : 1.5}
                   opacity={0.9}
@@ -358,7 +361,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 y={0}
                 width={nodeW - 16}
                 height={3}
-                rx={1.5}
+                rx={0}
                 fill={statusColor}
               />
 
@@ -367,9 +370,10 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 x={nodeW / 2}
                 y={26}
                 textAnchor="middle"
-                fill="var(--color-fg)"
+                fill="#FAFAFA"
                 fontSize={11}
                 fontWeight={500}
+                fontFamily="'Space Grotesk', sans-serif"
               >
                 {truncateTitle(node.step.title)}
               </text>
@@ -382,6 +386,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                 fill={statusColor}
                 fontSize={9}
                 fontWeight={400}
+                fontFamily="JetBrains Mono, monospace"
               >
                 {node.step.status}
               </text>
@@ -438,7 +443,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                   <rect
                     width={20}
                     height={14}
-                    rx={7}
+                    rx={0}
                     fill={statusColor}
                     opacity={0.2}
                   />
@@ -449,6 +454,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                     fill={statusColor}
                     fontSize={9}
                     fontWeight={600}
+                    fontFamily="JetBrains Mono, monospace"
                   >
                     {node.attemptCount}
                   </text>

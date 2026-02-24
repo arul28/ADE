@@ -10,23 +10,23 @@ type PhaseProgressBarProps = {
 };
 
 const PHASE_LABELS: Record<ExecutionPhase, string> = {
-  planning: "Planning",
-  implementation: "Implementation",
-  testing: "Testing",
-  codeReview: "Review",
-  integration: "Integration",
-  merge: "Merge",
-  other: "Other"
+  planning: "PLANNING",
+  implementation: "IMPLEMENTATION",
+  testing: "TESTING",
+  codeReview: "REVIEW",
+  integration: "INTEGRATION",
+  merge: "MERGE",
+  other: "OTHER"
 };
 
 const PHASE_COLORS: Record<ExecutionPhase, { bg: string; fill: string }> = {
-  planning: { bg: "bg-blue-500/10", fill: "bg-blue-500" },
-  implementation: { bg: "bg-violet-500/10", fill: "bg-violet-500" },
-  testing: { bg: "bg-cyan-500/10", fill: "bg-cyan-500" },
-  codeReview: { bg: "bg-amber-500/10", fill: "bg-amber-500" },
-  integration: { bg: "bg-emerald-500/10", fill: "bg-emerald-500" },
-  merge: { bg: "bg-pink-500/10", fill: "bg-pink-500" },
-  other: { bg: "bg-gray-500/10", fill: "bg-gray-500" }
+  planning: { bg: "#3B82F618", fill: "#3B82F6" },
+  implementation: { bg: "#A78BFA18", fill: "#A78BFA" },
+  testing: { bg: "#06B6D418", fill: "#06B6D4" },
+  codeReview: { bg: "#F59E0B18", fill: "#F59E0B" },
+  integration: { bg: "#22C55E18", fill: "#22C55E" },
+  merge: { bg: "#EC489918", fill: "#EC4899" },
+  other: { bg: "#71717A18", fill: "#71717A" }
 };
 
 function stepTypeToPhase(stepType: string, taskType?: string): ExecutionPhase {
@@ -73,15 +73,34 @@ export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
 
   return (
     <div className={cn("space-y-1.5", className)}>
-      <div className="mb-2 pb-2 border-b border-border/10">
+      <div className="mb-2 pb-2" style={{ borderBottom: "1px solid #1E1B26" }}>
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] font-medium text-muted-fg">Overall Progress</span>
-          <span className="text-[10px] text-muted-fg">{totalCompleted} of {totalSteps} ({overallPct}%)</span>
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#71717A",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            OVERALL PROGRESS
+          </span>
+          <span
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              color: "#71717A"
+            }}
+          >
+            {totalCompleted} of {totalSteps} ({overallPct}%)
+          </span>
         </div>
-        <div className="h-1.5 rounded-full overflow-hidden bg-accent/10">
+        <div className="h-1.5 overflow-hidden" style={{ background: "#A78BFA18", borderRadius: 0 }}>
           <div
-            className="h-full rounded-full bg-accent transition-all duration-300"
-            style={{ width: `${overallPct}%` }}
+            className="h-full transition-all duration-300"
+            style={{ width: `${overallPct}%`, background: "#A78BFA", borderRadius: 0 }}
           />
         </div>
       </div>
@@ -90,18 +109,44 @@ export function PhaseProgressBar({ steps, className }: PhaseProgressBarProps) {
         const colors = PHASE_COLORS[phase];
         return (
           <div key={phase} className="flex items-center gap-2">
-            <span className="w-20 shrink-0 text-[10px] text-muted-fg">{PHASE_LABELS[phase]}</span>
-            <div className={cn("flex-1 h-1.5 rounded-full overflow-hidden", colors.bg)}>
+            <span
+              className="w-20 shrink-0"
+              style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 10,
+                color: "#71717A",
+                textTransform: "uppercase",
+                letterSpacing: "1px"
+              }}
+            >
+              {PHASE_LABELS[phase]}
+            </span>
+            <div className="flex-1 h-1.5 overflow-hidden" style={{ background: colors.bg, borderRadius: 0 }}>
               <div
-                className={cn("h-full rounded-full transition-all duration-300", colors.fill)}
-                style={{ width: `${pct}%` }}
+                className="h-full transition-all duration-300"
+                style={{ width: `${pct}%`, background: colors.fill, borderRadius: 0 }}
               />
             </div>
-            <span className="w-12 shrink-0 text-[10px] text-muted-fg text-right">
+            <span
+              className="w-12 shrink-0 text-right"
+              style={{
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 10,
+                color: "#71717A"
+              }}
+            >
               {group.completed}/{group.total}
             </span>
             {group.failed > 0 && (
-              <span className="text-[10px] text-red-400">{group.failed} failed</span>
+              <span
+                style={{
+                  fontFamily: "JetBrains Mono, monospace",
+                  fontSize: 10,
+                  color: "#EF4444"
+                }}
+              >
+                {group.failed} failed
+              </span>
             )}
           </div>
         );

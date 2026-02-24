@@ -8,8 +8,6 @@ import type {
   PhaseModelChoice,
   PrStrategy
 } from "../../../shared/types";
-import { cn } from "../ui/cn";
-
 type PolicyEditorProps = {
   value: MissionExecutionPolicy;
   onChange: (policy: MissionExecutionPolicy) => void;
@@ -57,11 +55,23 @@ const PRESET_THOROUGH: MissionExecutionPolicy = {
 
 type PresetKey = "quick" | "standard" | "thorough" | "custom";
 
-const PRESET_LABELS: Record<PresetKey, { label: string; desc: string; color: string }> = {
-  quick: { label: "Quick", desc: "Minimal steps, no testing", color: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
-  standard: { label: "Standard", desc: "Balanced with testing", color: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
-  thorough: { label: "Thorough", desc: "Full pipeline with review", color: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
-  custom: { label: "Custom", desc: "Phase-level configuration", color: "border-border/40 bg-muted/20 text-muted-fg" }
+const PRESET_LABELS: Record<PresetKey, { label: string; desc: string }> = {
+  quick: { label: "QUICK", desc: "Minimal steps, no testing" },
+  standard: { label: "STANDARD", desc: "Balanced with testing" },
+  thorough: { label: "THOROUGH", desc: "Full pipeline with review" },
+  custom: { label: "CUSTOM", desc: "Phase-level configuration" }
+};
+
+const PRESET_ACTIVE_STYLES: Record<string, React.CSSProperties> = {
+  quick: { background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630" },
+  standard: { background: "#A78BFA18", color: "#A78BFA", border: "1px solid #A78BFA30" },
+  thorough: { background: "#F59E0B18", color: "#F59E0B", border: "1px solid #F59E0B30" }
+};
+
+const PRESET_INACTIVE_STYLE: React.CSSProperties = {
+  background: "#13101A",
+  color: "#71717A",
+  border: "1px solid #1E1B26"
 };
 
 function detectPreset(policy: MissionExecutionPolicy): PresetKey {
@@ -89,7 +99,17 @@ function detectPreset(policy: MissionExecutionPolicy): PresetKey {
   return "custom";
 }
 
-const selectClass = "h-7 rounded border border-border/30 bg-card px-1.5 text-xs text-fg outline-none focus:border-accent/40";
+const selectStyle: React.CSSProperties = {
+  height: 28,
+  background: "#0C0A10",
+  border: "1px solid #27272A",
+  color: "#FAFAFA",
+  fontFamily: "JetBrains Mono, monospace",
+  fontSize: 12,
+  padding: "0 6px",
+  outline: "none",
+  borderRadius: 0
+};
 
 const CODEX_MODELS = ["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-max", "codex-mini-latest", "o4-mini", "o3"];
 
@@ -136,9 +156,22 @@ function PhaseRow({
 
   return (
     <div className="flex items-center gap-2 py-1">
-      <span className="w-24 shrink-0 text-xs text-muted-fg">{label}</span>
+      <span
+        className="w-24 shrink-0"
+        style={{
+          fontFamily: "JetBrains Mono, monospace",
+          fontSize: 10,
+          fontWeight: 700,
+          color: "#71717A",
+          textTransform: "uppercase",
+          letterSpacing: "1px"
+        }}
+      >
+        {label}
+      </span>
       <select
-        className={cn(selectClass, "flex-1")}
+        className="flex-1"
+        style={selectStyle}
         value={mode}
         onChange={(e) => onModeChange(e.target.value)}
       >
@@ -148,7 +181,8 @@ function PhaseRow({
       </select>
       {showModel && onModelChange ? (
         <select
-          className={cn(selectClass, "w-28")}
+          className="w-28"
+          style={selectStyle}
           value={model ?? "codex"}
           onChange={(e) => onModelChange(e.target.value as PhaseModelChoice)}
         >
@@ -172,7 +206,8 @@ function PhaseRow({
       )}
       {showModel && onReasoningEffortChange ? (
         <select
-          className={cn(selectClass, "w-20")}
+          className="w-20"
+          style={selectStyle}
           value={reasoningEffort ?? "medium"}
           onChange={(e) => onReasoningEffortChange(e.target.value)}
         >
@@ -211,25 +246,81 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           <button
             key={key}
             onClick={() => applyPreset(key)}
-            className={cn(
-              "flex-1 rounded-lg border px-2 py-1.5 text-center text-xs font-medium transition-colors",
-              preset === key
-                ? PRESET_LABELS[key].color
-                : "border-border/20 bg-card/60 text-muted-fg hover:border-border/40"
-            )}
+            className="flex-1 px-2 py-1.5 text-center transition-colors"
+            style={{
+              ...(preset === key ? PRESET_ACTIVE_STYLES[key] : PRESET_INACTIVE_STYLE),
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 11,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+              borderRadius: 0
+            }}
           >
             <div>{PRESET_LABELS[key].label}</div>
-            {!compact && <div className="text-[9px] opacity-70">{PRESET_LABELS[key].desc}</div>}
+            {!compact && (
+              <div style={{ fontSize: 9, opacity: 0.7, fontWeight: 400, textTransform: "none", letterSpacing: "0px" }}>
+                {PRESET_LABELS[key].desc}
+              </div>
+            )}
           </button>
         ))}
       </div>
 
-      <div className="rounded-lg border border-border/20 bg-card/60 p-2 space-y-0.5">
-        <div className="flex items-center gap-2 pb-1 border-b border-border/10 mb-1">
-          <span className="w-24 text-[11px] text-muted-fg font-medium">Phase</span>
-          <span className="flex-1 text-[11px] text-muted-fg font-medium">Mode</span>
-          <span className="w-28 text-[11px] text-muted-fg font-medium">Model</span>
-          <span className="w-20 text-[11px] text-muted-fg font-medium">Thinking</span>
+      <div className="p-2 space-y-0.5" style={{ background: "#13101A", border: "1px solid #1E1B26", borderRadius: 0 }}>
+        <div className="flex items-center gap-2 pb-1 mb-1" style={{ borderBottom: "1px solid #1E1B26" }}>
+          <span
+            className="w-24"
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#71717A",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            PHASE
+          </span>
+          <span
+            className="flex-1"
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#71717A",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            MODE
+          </span>
+          <span
+            className="w-28"
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#71717A",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            MODEL
+          </span>
+          <span
+            className="w-20"
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#71717A",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            THINKING
+          </span>
         </div>
 
         <PhaseRow
@@ -339,11 +430,23 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           showModel={value.integration.mode !== "off"}
         />
 
-        <div className="pt-2 border-t border-border/10 mt-1 space-y-2">
-          <div className="text-[11px] text-muted-fg font-medium">PR Strategy</div>
+        <div className="pt-2 mt-1 space-y-2" style={{ borderTop: "1px solid #1E1B26" }}>
+          <div
+            style={{
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#71717A",
+              textTransform: "uppercase",
+              letterSpacing: "1px"
+            }}
+          >
+            PR STRATEGY
+          </div>
           <div className="flex items-center gap-2">
             <select
-              className={cn(selectClass, "flex-1")}
+              className="flex-1"
+              style={selectStyle}
               value={value.prStrategy?.kind ?? "manual"}
               onChange={(e) => {
                 const kind = e.target.value as PrStrategy["kind"];
@@ -372,7 +475,18 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           {value.prStrategy?.kind !== "manual" && (
             <div className="flex items-center gap-2">
               <input
-                className="h-7 flex-1 rounded border border-border/30 bg-card px-1.5 text-xs text-fg outline-none focus:border-accent/40"
+                className="flex-1"
+                style={{
+                  height: 28,
+                  background: "#0C0A10",
+                  border: "1px solid #27272A",
+                  color: "#FAFAFA",
+                  fontFamily: "JetBrains Mono, monospace",
+                  fontSize: 12,
+                  padding: "0 6px",
+                  outline: "none",
+                  borderRadius: 0
+                }}
                 placeholder="Target branch"
                 value={(value.prStrategy && "targetBranch" in value.prStrategy ? value.prStrategy.targetBranch : undefined) ?? "main"}
                 onChange={(e) => {
@@ -380,7 +494,10 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
                   onChange({ ...value, prStrategy: { ...prev, targetBranch: e.target.value } });
                 }}
               />
-              <label className="flex items-center gap-1 text-xs text-muted-fg cursor-pointer whitespace-nowrap">
+              <label
+                className="flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
+              >
                 <input
                   type="checkbox"
                   checked={(value.prStrategy && "draft" in value.prStrategy ? value.prStrategy.draft : true) ?? true}
@@ -388,7 +505,6 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
                     const prev = value.prStrategy as Exclude<PrStrategy, { kind: "manual" }>;
                     onChange({ ...value, prStrategy: { ...prev, draft: e.target.checked } });
                   }}
-                  className="rounded"
                 />
                 Draft PR
               </label>
@@ -396,7 +512,10 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           )}
           {value.prStrategy?.kind === "queue" && (
             <div className="flex items-center gap-3">
-              <label className="flex items-center gap-1 text-xs text-muted-fg cursor-pointer whitespace-nowrap">
+              <label
+                className="flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
+              >
                 <input
                   type="checkbox"
                   checked={(value.prStrategy && "autoRebase" in value.prStrategy ? value.prStrategy.autoRebase : true) ?? true}
@@ -404,11 +523,13 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
                     const prev = value.prStrategy as Extract<PrStrategy, { kind: "queue" }>;
                     onChange({ ...value, prStrategy: { ...prev, autoRebase: e.target.checked } });
                   }}
-                  className="rounded"
                 />
                 Auto-rebase
               </label>
-              <label className="flex items-center gap-1 text-xs text-muted-fg cursor-pointer whitespace-nowrap">
+              <label
+                className="flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
+              >
                 <input
                   type="checkbox"
                   checked={(value.prStrategy && "ciGating" in value.prStrategy ? value.prStrategy.ciGating : false) ?? false}
@@ -416,7 +537,6 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
                     const prev = value.prStrategy as Extract<PrStrategy, { kind: "queue" }>;
                     onChange({ ...value, prStrategy: { ...prev, ciGating: e.target.checked } });
                   }}
-                  className="rounded"
                 />
                 CI gating
               </label>
@@ -424,29 +544,33 @@ export function PolicyEditor({ value, onChange, compact }: PolicyEditorProps) {
           )}
         </div>
 
-        <div className="flex items-center gap-2 pt-1 border-t border-border/10 mt-1">
-          <label className="flex items-center gap-1.5 text-xs text-muted-fg cursor-pointer">
+        <div className="flex items-center gap-2 pt-1 mt-1" style={{ borderTop: "1px solid #1E1B26" }}>
+          <label
+            className="flex items-center gap-1.5 cursor-pointer"
+            style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
+          >
             <input
               type="checkbox"
               checked={value.completion.allowCompletionWithRisk}
               onChange={(e) => updatePhase("completion", { allowCompletionWithRisk: e.target.checked })}
-              className="rounded"
             />
             Allow completion with risk
           </label>
         </div>
 
-        <div className="flex items-center gap-2 pt-1 border-t border-border/10 mt-1">
-          <label className="flex items-center gap-1.5 text-xs text-muted-fg cursor-pointer">
+        <div className="flex items-center gap-2 pt-1 mt-1" style={{ borderTop: "1px solid #1E1B26" }}>
+          <label
+            className="flex items-center gap-1.5 cursor-pointer"
+            style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#71717A" }}
+          >
             <input
               type="checkbox"
               checked={value.useAgentTeams ?? false}
               onChange={(e) => onChange({ ...value, useAgentTeams: e.target.checked })}
-              className="rounded"
             />
             Agent Teams
           </label>
-          <span className="text-[11px] text-muted-fg/70">
+          <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, color: "#52525B" }}>
             Enable multiple AI agents working in parallel
           </span>
         </div>
