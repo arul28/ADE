@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Warning as AlertTriangle,
   BookOpenText,
+  ArrowSquareOut,
   CaretDown as ChevronDown,
   CaretRight as ChevronRight,
   FileZip as FileArchive,
@@ -19,6 +20,7 @@ import {
   Sparkle as Sparkles,
   Terminal as TerminalSquare,
   FileXls as FileSpreadsheet,
+  X,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type {
@@ -28,12 +30,13 @@ import type {
   FilesWorkspace,
   GitCommitSummary
 } from "../../../shared/types";
-import { Button } from "../ui/Button";
 import { MonacoDiffView } from "../lanes/MonacoDiffView";
+import { LaneTerminalsPanel } from "../lanes/LaneTerminalsPanel";
 import { useAppStore } from "../../state/appStore";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { revealLabel } from "../../lib/platform";
 import type { PaneConfig, PaneSplit } from "../ui/PaneTilingLayout";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, primaryButton, dangerButton, cardStyle } from "../lanes/laneDesignTokens";
 type OpenTab = {
   path: string;
   content: string;
@@ -71,6 +74,42 @@ type TextPromptState = {
   validate?: (value: string) => string | null;
   resolve: (value: string | null) => void;
 };
+
+type EditorViewMode = "edit" | "diff" | "conflict";
+type EditorThemeMode = "dark" | "light";
+type ExternalEditorTarget = "finder" | "vscode" | "cursor" | "zed";
+
+type FilesPageSessionState = {
+  workspaceId: string;
+  allowPrimaryEdit: boolean;
+  selectedNodePath: string | null;
+  openTabs: OpenTab[];
+  activeTabPath: string | null;
+  mode: EditorViewMode;
+  searchQuery: string;
+  editorTheme: EditorThemeMode;
+};
+
+const filesPageSessionByProject = new Map<string, FilesPageSessionState>();
+const FILES_EDITOR_THEME_KEY = "ade.files.editorTheme";
+
+function readStoredEditorTheme(): EditorThemeMode {
+  try {
+    const raw = window.localStorage.getItem(FILES_EDITOR_THEME_KEY);
+    if (raw === "light" || raw === "dark") return raw;
+  } catch {
+    // ignore
+  }
+  return "dark";
+}
+
+function persistEditorTheme(theme: EditorThemeMode): void {
+  try {
+    window.localStorage.setItem(FILES_EDITOR_THEME_KEY, theme);
+  } catch {
+    // ignore
+  }
+}
 
 let monacoInit: Promise<typeof import("monaco-editor")> | null = null;
 
@@ -157,7 +196,20 @@ function parentDirOfPath(filePath: string): string {
   return normalized.slice(0, idx);
 }
 
-function getFileIcon(fileName: string): { icon: React.ComponentType<any>; className: string } {
+const FILE_ICON_COLORS = {
+  code: "#38BDF8",       // sky-400
+  json: "#34D399",       // emerald-400
+  config: "#FB923C",     // orange-400
+  markdown: "#FBBF24",   // amber-400
+  style: "#818CF8",      // indigo-400
+  shell: "#2DD4BF",      // teal-400
+  image: "#E879F9",      // fuchsia-400
+  archive: "#FB7185",    // rose-400
+  spreadsheet: "#4ADE80", // green-400
+  default: COLORS.textMuted,
+} as const;
+
+function getFileIcon(fileName: string): { icon: React.ComponentType<any>; color: string } {
   const lower = fileName.toLowerCase();
   const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
 
@@ -171,46 +223,40 @@ function getFileIcon(fileName: string): { icon: React.ComponentType<any>; classN
     ext === ".mjs" ||
     ext === ".cjs"
   ) {
-    return { icon: FileCode2, className: "text-sky-400/80" };
+    return { icon: FileCode2, color: FILE_ICON_COLORS.code };
   }
   if (ext === ".json" || ext === ".jsonc") {
-    return { icon: FileBraces, className: "text-emerald-400/80" };
+    return { icon: FileBraces, color: FILE_ICON_COLORS.json };
   }
   if (ext === ".yml" || ext === ".yaml" || ext === ".toml" || ext === ".ini") {
-    return { icon: FileCog, className: "text-orange-400/80" };
+    return { icon: FileCog, color: FILE_ICON_COLORS.config };
   }
   if (ext === ".md" || ext === ".mdx") {
-    return { icon: BookOpenText, className: "text-amber-400/80" };
+    return { icon: BookOpenText, color: FILE_ICON_COLORS.markdown };
   }
   if (ext === ".css" || ext === ".scss" || ext === ".sass" || ext === ".less") {
-    return { icon: FileCode2, className: "text-indigo-400/80" };
+    return { icon: FileCode2, color: FILE_ICON_COLORS.style };
   }
   if (ext === ".sh" || ext === ".bash" || ext === ".zsh" || ext === ".fish" || ext === ".ps1") {
-    return { icon: TerminalSquare, className: "text-teal-400/80" };
+    return { icon: TerminalSquare, color: FILE_ICON_COLORS.shell };
   }
   if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".gif" || ext === ".webp" || ext === ".svg" || ext === ".ico") {
-    return { icon: FileImage, className: "text-fuchsia-400/80" };
+    return { icon: FileImage, color: FILE_ICON_COLORS.image };
   }
   if (ext === ".zip" || ext === ".tar" || ext === ".gz" || ext === ".tgz" || ext === ".rar" || ext === ".7z") {
-    return { icon: FileArchive, className: "text-rose-400/80" };
+    return { icon: FileArchive, color: FILE_ICON_COLORS.archive };
   }
   if (ext === ".csv" || ext === ".tsv" || ext === ".xls" || ext === ".xlsx") {
-    return { icon: FileSpreadsheet, className: "text-green-400/80" };
+    return { icon: FileSpreadsheet, color: FILE_ICON_COLORS.spreadsheet };
   }
-  return { icon: FileText, className: "text-muted-fg" };
+  return { icon: FileText, color: FILE_ICON_COLORS.default };
 }
 
-function changeStatusClasses(changeStatus: FileTreeNode["changeStatus"]): { dot: string; text: string } {
-  if (changeStatus === "A") {
-    return { dot: "bg-emerald-500", text: "text-emerald-600" };
-  }
-  if (changeStatus === "D") {
-    return { dot: "bg-rose-500", text: "text-rose-600" };
-  }
-  if (changeStatus === "M") {
-    return { dot: "bg-amber-500", text: "text-amber-600" };
-  }
-  return { dot: "bg-border", text: "text-muted-fg" };
+function changeStatusColor(changeStatus: FileTreeNode["changeStatus"]): string {
+  if (changeStatus === "A") return COLORS.success;
+  if (changeStatus === "D") return COLORS.danger;
+  if (changeStatus === "M") return COLORS.warning;
+  return COLORS.textDim;
 }
 
 /* ---- Floating-pane tiling layout for Files ---- */
@@ -231,12 +277,12 @@ const FILES_TILING_TREE: PaneSplit = {
         children: [
           {
             node: { type: "pane", id: "editor" },
-            defaultSize: 65,
+            defaultSize: 68,
             minSize: 25
           },
           {
-            node: { type: "pane", id: "search" },
-            defaultSize: 35,
+            node: { type: "pane", id: "terminals" },
+            defaultSize: 32,
             minSize: 10
           }
         ]
@@ -251,32 +297,35 @@ export function FilesPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
+  const initialSession = filesPageSessionByProject.get(projectRootPath);
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
-  const [workspaceId, setWorkspaceId] = useState<string>("");
-  const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
+  const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(initialSession?.allowPrimaryEdit ?? false);
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
+  const [selectedNodePath, setSelectedNodePath] = useState<string | null>(initialSession?.selectedNodePath ?? null);
   const pendingOpenRef = useRef<{ filePath: string; laneId: string | null; key: string } | null>(null);
 
-  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
-  const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
-  const [mode, setMode] = useState<"edit" | "diff" | "conflict">("edit");
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => initialSession?.openTabs.map((tab) => ({ ...tab })) ?? []);
+  const [activeTabPath, setActiveTabPath] = useState<string | null>(initialSession?.activeTabPath ?? null);
+  const [mode, setMode] = useState<EditorViewMode>(initialSession?.mode ?? "edit");
+  const [editorTheme, setEditorTheme] = useState<EditorThemeMode>(initialSession?.editorTheme ?? readStoredEditorTheme());
 
   const [quickOpen, setQuickOpen] = useState("");
   const [quickOpenResults, setQuickOpenResults] = useState<FilesQuickOpenItem[]>([]);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
 
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialSession?.searchQuery ?? "");
   const [searchResults, setSearchResults] = useState<FilesSearchTextMatch[]>([]);
-  const [showSearch, setShowSearch] = useState(false);
 
   const [resolvedConflictKeys, setResolvedConflictKeys] = useState<Set<string>>(new Set());
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<"loading" | "ready" | "failed">("loading");
   // PaneTilingLayout mounts panes async, so the editor host can appear after the first effect pass.
@@ -288,18 +337,78 @@ export function FilesPage() {
   const modelKeyRef = useRef<string | null>(null);
   const editorApplyingRef = useRef(false);
   const activeTabPathRef = useRef<string | null>(null);
+  const currentProjectRootRef = useRef(projectRootPath);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const openInMenuRef = useRef<HTMLDivElement | null>(null);
   const setEditorHostRef = useCallback((node: HTMLDivElement | null) => {
     setEditorHostEl(node);
   }, []);
 
   const activeWorkspace = useMemo(() => workspaces.find((ws) => ws.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const activeTab = useMemo(() => openTabs.find((tab) => tab.path === activeTabPath) ?? null, [openTabs, activeTabPath]);
-  const activeDirty = Boolean(activeTab && activeTab.content !== activeTab.savedContent);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
+
+  useEffect(() => {
+    if (currentProjectRootRef.current === projectRootPath) return;
+    currentProjectRootRef.current = projectRootPath;
+    const session = filesPageSessionByProject.get(projectRootPath);
+    setWorkspaceId(session?.workspaceId ?? "");
+    setAllowPrimaryEdit(session?.allowPrimaryEdit ?? false);
+    setSelectedNodePath(session?.selectedNodePath ?? null);
+    setOpenTabs(session?.openTabs.map((tab) => ({ ...tab })) ?? []);
+    setActiveTabPath(session?.activeTabPath ?? null);
+    setMode(session?.mode ?? "edit");
+    setSearchQuery(session?.searchQuery ?? "");
+    setEditorTheme(session?.editorTheme ?? readStoredEditorTheme());
+  }, [projectRootPath]);
 
   const hasUnsavedTabs = useMemo(
     () => openTabs.some((tab) => tab.content !== tab.savedContent),
     [openTabs]
+  );
+
+  useEffect(() => {
+    filesPageSessionByProject.set(projectRootPath, {
+      workspaceId,
+      allowPrimaryEdit,
+      selectedNodePath,
+      openTabs: openTabs.map((tab) => ({ ...tab })),
+      activeTabPath,
+      mode,
+      searchQuery,
+      editorTheme
+    });
+  }, [projectRootPath, workspaceId, allowPrimaryEdit, selectedNodePath, openTabs, activeTabPath, mode, searchQuery, editorTheme]);
+
+  useEffect(() => {
+    persistEditorTheme(editorTheme);
+  }, [editorTheme]);
+
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      if (openInMenuRef.current && !openInMenuRef.current.contains(event.target as Node)) {
+        setOpenInMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, []);
+
+  const openActivePathInExternalTool = useCallback(
+    async (target: ExternalEditorTarget) => {
+      if (!activeWorkspace || !activeTabPath) return;
+      setOpenInMenuOpen(false);
+      try {
+        await window.ade.app.openPathInEditor({
+          rootPath: activeWorkspace.rootPath,
+          relativePath: activeTabPath,
+          target
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [activeWorkspace, activeTabPath]
   );
 
   const requestTextInput = useCallback(
@@ -629,7 +738,15 @@ export function FilesPage() {
     window.ade.files.listWorkspaces()
       .then((items) => {
         setWorkspaces(items);
-        setWorkspaceId((current) => current || items[0]?.id || "");
+        setWorkspaceId((current) => {
+          if (current && items.some((workspace) => workspace.id === current)) return current;
+          if (current) {
+            setOpenTabs([]);
+            setActiveTabPath(null);
+            setSelectedNodePath(null);
+          }
+          return items[0]?.id ?? "";
+        });
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
@@ -680,7 +797,7 @@ export function FilesPage() {
       if (e.key === "Escape") {
         setContextMenu(null);
         if (showQuickOpen) setShowQuickOpen(false);
-        if (showSearch) setShowSearch(false);
+        if (openInMenuOpen) setOpenInMenuOpen(false);
         return;
       }
 
@@ -704,7 +821,8 @@ export function FilesPage() {
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        setShowSearch(true);
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
         return;
       }
 
@@ -720,7 +838,7 @@ export function FilesPage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveActive, activeTabPath, closeTab, renamePath, selectedNodePath, showQuickOpen, showSearch]);
+  }, [saveActive, activeTabPath, closeTab, renamePath, selectedNodePath, showQuickOpen, openInMenuOpen]);
 
   useEffect(() => {
     if (!quickOpen.trim()) {
@@ -734,7 +852,7 @@ export function FilesPage() {
   }, [quickOpen, workspaceId, showQuickOpen]);
 
   useEffect(() => {
-    if (!showSearch || !searchQuery.trim()) {
+    if (!searchQuery.trim()) {
       setSearchResults([]);
       return;
     }
@@ -744,7 +862,7 @@ export function FilesPage() {
         .catch(() => setSearchResults([]));
     }, 150);
     return () => clearTimeout(timer);
-  }, [searchQuery, workspaceId, showSearch]);
+  }, [searchQuery, workspaceId]);
 
   useEffect(() => {
     if (mode !== "edit") return;
@@ -762,7 +880,8 @@ export function FilesPage() {
         automaticLayout: true,
         minimap: { enabled: true },
         fontSize: 13,
-        readOnly: !canEdit
+        readOnly: !canEdit,
+        theme: editorTheme === "light" ? "vs" : "vs-dark"
       });
       editorRef.current = editor;
       editor.onDidChangeModelContent(() => {
@@ -799,7 +918,13 @@ export function FilesPage() {
       modelKeyRef.current = null;
       editorRef.current = null;
     };
-  }, [mode, editorHostEl]);
+  }, [mode, editorHostEl, canEdit, editorTheme]);
+
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    monaco.editor.setTheme(editorTheme === "light" ? "vs" : "vs-dark");
+  }, [editorTheme]);
 
   useEffect(() => {
     if (!editorRef.current || mode !== "edit") return;
@@ -866,18 +991,27 @@ export function FilesPage() {
       {nodes.map((node) => {
         const isExpanded = expanded.has(node.path);
         const isActive = activeTabPath === node.path || selectedNodePath === node.path;
-        const statusClasses = changeStatusClasses(node.changeStatus ?? null);
+        const statusColor = changeStatusColor(node.changeStatus ?? null);
         const fileIcon = node.type === "file" ? getFileIcon(node.name) : null;
         const FileIcon = fileIcon?.icon;
+        const folderColor = isActive ? COLORS.accent : COLORS.textMuted;
 
         return (
           <div key={node.path}>
             <button
-              className={cx(
-                "group relative flex h-6 w-full items-center gap-1.5 rounded-sm px-2 text-left text-xs text-muted-fg transition-colors hover:bg-muted/70 hover:text-fg",
-                isActive && "bg-accent/10 text-fg ring-1 ring-accent/30",
-              )}
-              style={{ paddingLeft: `${8 + level * 12}px` }}
+              className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
+              style={{
+                height: 26,
+                paddingLeft: `${10 + level * 14}px`,
+                paddingRight: 8,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                color: isActive ? COLORS.textPrimary : COLORS.textSecondary,
+                background: isActive ? COLORS.accentSubtle : "transparent",
+                border: "none",
+                borderLeft: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
+                cursor: "pointer",
+              }}
               onClick={() => {
                 setSelectedNodePath(node.path);
                 if (node.type === "directory") {
@@ -902,6 +1036,8 @@ export function FilesPage() {
                   nodeType: node.type
                 });
               }}
+              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = COLORS.hoverBg; }}
+              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
               title={node.path}
             >
               {level > 0 ? (
@@ -909,27 +1045,42 @@ export function FilesPage() {
                   {Array.from({ length: level }).map((_, idx) => (
                     <span
                       key={`${node.path}:guide:${idx}`}
-                      className="absolute inset-y-0 w-px bg-border/45 transition-colors group-hover:bg-border/70"
-                      style={{ left: `${8 + idx * 12 + 4}px` }}
+                      className="absolute inset-y-0"
+                      style={{ left: `${10 + idx * 14 + 5}px`, width: 1, background: `${COLORS.border}80` }}
                     />
                   ))}
                 </span>
               ) : null}
-              {isActive ? <span className="absolute inset-y-1 left-0 w-[2px] rounded bg-accent" /> : null}
               {node.type === "directory" ? (
                 <>
-                  {isExpanded ? <ChevronDown size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" /> : <ChevronRight size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" />}
-                  {isExpanded ? <FolderOpen size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" /> : <Folder size={14} weight="regular" className="text-muted-fg/90 transition-colors group-hover:text-fg" />}
+                  {isExpanded
+                    ? <ChevronDown size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />
+                    : <ChevronRight size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />}
+                  {isExpanded
+                    ? <FolderOpen size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />
+                    : <Folder size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />}
                 </>
               ) : (
                 <>
-                  <span className="w-3.5" />
-                  {FileIcon ? <FileIcon size={14} weight="regular" className={fileIcon?.className} /> : <FileText size={14} weight="regular" className="text-muted-fg" />}
+                  <span style={{ width: 12, flexShrink: 0 }} />
+                  {FileIcon
+                    ? <FileIcon size={14} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
+                    : <FileText size={14} weight="regular" style={{ color: COLORS.textMuted, flexShrink: 0 }} />}
                 </>
               )}
               <span className="truncate">{node.name}</span>
-              {node.type === "directory" && node.changeStatus ? <span className={cx("ml-auto h-1.5 w-1.5 rounded-full", statusClasses.dot)} /> : null}
-              {node.type === "file" && node.changeStatus ? <span className={cx("ml-auto text-[11px]", statusClasses.text)}>{node.changeStatus}</span> : null}
+              {node.type === "directory" && node.changeStatus ? (
+                <span style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
+              ) : null}
+              {node.type === "file" && node.changeStatus ? (
+                <span style={{
+                  marginLeft: "auto", flexShrink: 0,
+                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
+                  color: statusColor,
+                  padding: "1px 5px",
+                  background: `${statusColor}18`,
+                }}>{node.changeStatus}</span>
+              ) : null}
             </button>
             {node.type === "directory" && isExpanded && node.children?.length ? renderTree(node.children, level + 1) : null}
           </div>
@@ -941,6 +1092,15 @@ export function FilesPage() {
   const breadcrumbs = activeTabPath ? activeTabPath.split("/") : [];
   const conflictHunks = activeTab ? parseConflictHunks(activeTab.content) : [];
   const laneIdForDiff = activeWorkspace?.laneId;
+  const hasConflictMarkers = conflictHunks.length > 0;
+  const activeContextNode = activeContextPath ? nodeByPath.get(activeContextPath) ?? null : null;
+  const activeContextChangeStatus = activeContextNode?.changeStatus ?? null;
+  const editorModeHint =
+    mode === "edit"
+      ? "Code view: edit the file directly."
+      : mode === "diff"
+        ? "Changes view: compare this file against unstaged, staged, or commit versions."
+        : "Merge view: resolve conflict markers in this file.";
 
   const applyConflictResolution = (hunk: ConflictHunk, choice: "ours" | "theirs" | "both") => {
     if (!activeTab) return;
@@ -977,16 +1137,104 @@ export function FilesPage() {
       minimizable: true,
       headerActions: (
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" title="New file" className="h-5 w-5 p-0" onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+          <button
+            type="button"
+            title="New file"
+            style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+            onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
             <FilePlus2 size={12} weight="regular" />
-          </Button>
-          <Button size="sm" variant="ghost" title="New folder" className="h-5 w-5 p-0" onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>
+          </button>
+          <button
+            type="button"
+            title="New folder"
+            style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+            onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
             <FolderPlus size={12} weight="regular" />
-          </Button>
+          </button>
         </div>
       ),
-      bodyClassName: "overflow-auto",
-      children: renderTree(tree)
+      bodyClassName: "flex min-h-0 flex-col overflow-hidden",
+      children: (
+        <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg }}>
+          {/* Search bar */}
+          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }}>
+            <div className="relative flex items-center">
+              <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
+              <input
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="SEARCH FILES"
+                style={{
+                  height: 30, width: "100%", padding: "0 28px 0 28px", fontSize: 10,
+                  fontFamily: MONO_FONT, fontWeight: 500,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textSecondary,
+                  outline: "none", textTransform: "uppercase", letterSpacing: "1px",
+                }}
+                onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+              />
+              {searchQuery.trim() ? (
+                <button
+                  type="button"
+                  className="absolute"
+                  style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
+                  onClick={() => setSearchQuery("")}
+                  title="Clear search"
+                >
+                  <X size={10} />
+                </button>
+              ) : null}
+            </div>
+            <div className="mt-1.5 flex items-center justify-end">
+              <button
+                type="button"
+                style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
+                onClick={() => setShowQuickOpen(true)}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+              >
+                <Search size={10} /> QUICK OPEN
+              </button>
+            </div>
+          </div>
+          {/* Search results */}
+          {searchQuery.trim() ? (
+            <div className="max-h-[38%] shrink-0 overflow-auto" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 4 }}>
+              {searchResults.map((item, idx) => {
+                const srIcon = getFileIcon(item.path.split("/").pop() ?? "");
+                const SrIcon = srIcon.icon;
+                return (
+                  <button
+                    key={`${item.path}:${item.line}:${idx}`}
+                    className="flex w-full items-start gap-2 text-left"
+                    style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                    onClick={() => { openFile(item.path).catch(() => {}); }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <SrIcon size={12} style={{ color: srIcon.color, flexShrink: 0, marginTop: 2 }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate" style={{ fontWeight: 600, color: COLORS.textPrimary }}>{item.path}:{item.line}:{item.column}</div>
+                      <div className="truncate" style={{ color: COLORS.textMuted, fontSize: 10 }}>{item.preview}</div>
+                    </div>
+                  </button>
+                );
+              })}
+              {!searchResults.length ? <div style={{ padding: "8px", fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>No matches</div> : null}
+            </div>
+          ) : null}
+          {/* File tree */}
+          <div className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }}>{renderTree(tree)}</div>
+        </div>
+      )
     },
     editor: {
       title: "Editor",
@@ -994,56 +1242,174 @@ export function FilesPage() {
       meta: activeTabPath ? activeTabPath.split("/").pop() : undefined,
       minimizable: true,
       headerActions: (
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("edit")}>Edit</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("diff")}>Diff</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setMode("conflict")}>Conflict</Button>
-          <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => saveActive().catch(() => {})} disabled={!activeTab || !canEdit || activeTab.isBinary}>
-            <Save size={12} weight="regular" className="mr-0.5" />
-            Save
-          </Button>
+        <div className="flex items-center gap-1.5">
+          {/* Mode toggle group */}
+          <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}` }}>
+            {(["edit", "diff", "conflict"] as const).map((m) => {
+              const label = m === "edit" ? "CODE" : m === "diff" ? "CHANGES" : "MERGE";
+              const isActive = mode === m;
+              const disabled = m === "diff" ? (!laneIdForDiff || !activeTabPath) : m === "conflict" ? !activeTabPath : false;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  style={{
+                    height: 24, padding: "0 10px",
+                    fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
+                    color: isActive ? COLORS.pageBg : disabled ? COLORS.textDim : COLORS.textMuted,
+                    background: isActive ? COLORS.accent : "transparent",
+                    border: "none", cursor: disabled ? "default" : "pointer",
+                    opacity: disabled ? 0.4 : 1,
+                  }}
+                  onClick={() => !disabled && setMode(m)}
+                  disabled={disabled}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 9 }) }}
+            onClick={() => setEditorTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+            title="Toggle editor theme"
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
+            {editorTheme === "dark" ? "LIGHT" : "DARK"}
+          </button>
+          <button
+            type="button"
+            style={{
+              ...primaryButton({ height: 24, padding: "0 10px", fontSize: 9 }),
+              opacity: (!activeTab || !canEdit || activeTab.isBinary) ? 0.35 : 1,
+            }}
+            onClick={() => saveActive().catch(() => {})}
+            disabled={!activeTab || !canEdit || activeTab.isBinary}
+          >
+            <Save size={11} weight="bold" /> SAVE
+          </button>
         </div>
       ),
       bodyClassName: "flex flex-col",
       children: (
-        <div className="flex flex-col h-full min-h-0">
+        <div className="flex flex-col h-full min-h-0" style={{ background: COLORS.cardBg }}>
           {/* Tab bar */}
-          <div className="flex items-center gap-1 border-b border-border/10 px-2 py-1 shrink-0">
-            {openTabs.map((tab) => {
+          <div className="flex items-center shrink-0 overflow-x-auto" style={{ borderBottom: `1px solid ${COLORS.border}`, minHeight: 36 }}>
+            {openTabs.length === 0 ? (
+              <span style={{ padding: "0 14px", fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, letterSpacing: "1px", color: COLORS.textDim }}>
+                NO OPEN FILES
+              </span>
+            ) : null}
+            {openTabs.map((tab, idx) => {
               const dirty = tab.content !== tab.savedContent;
+              const isActiveTab = activeTabPath === tab.path;
+              const tabNumber = String(idx + 1).padStart(2, "0");
+              const tabFileIcon = getFileIcon(tab.path.split("/").pop() ?? "");
+              const TabFileIcon = tabFileIcon.icon;
               return (
-                <div key={tab.path} className={cx("flex items-center gap-1 rounded-lg border px-2 py-1 text-xs", activeTabPath === tab.path ? "border-accent/40 bg-card border-b-2 border-b-accent" : "border-border/40 bg-card")}>
-                  <button className="max-w-[220px] truncate text-left flex items-center gap-1" onClick={() => setActiveTabPath(tab.path)}>
+                <div
+                  key={tab.path}
+                  className="group flex items-center gap-2 shrink-0 cursor-pointer"
+                  style={{
+                    padding: "0 14px",
+                    height: 36,
+                    borderLeft: isActiveTab ? `2px solid ${COLORS.accent}` : "2px solid transparent",
+                    background: isActiveTab ? COLORS.accentSubtle : "transparent",
+                  }}
+                  onMouseEnter={(e) => { if (!isActiveTab) e.currentTarget.style.background = COLORS.hoverBg; }}
+                  onMouseLeave={(e) => { if (!isActiveTab) e.currentTarget.style.background = "transparent"; }}
+                >
+                  <span style={{ fontFamily: MONO_FONT, fontSize: 9, fontWeight: 600, letterSpacing: "1px", color: isActiveTab ? COLORS.accent : COLORS.textDim }}>{tabNumber}</span>
+                  <TabFileIcon size={12} style={{ color: tabFileIcon.color, flexShrink: 0 }} />
+                  <button
+                    className="truncate text-left"
+                    style={{
+                      maxWidth: 180, fontFamily: MONO_FONT, fontSize: 11, letterSpacing: "0.5px",
+                      fontWeight: isActiveTab ? 600 : 400,
+                      color: isActiveTab ? COLORS.textPrimary : COLORS.textMuted,
+                      background: "transparent", border: "none", cursor: "pointer",
+                    }}
+                    onClick={() => setActiveTabPath(tab.path)}
+                  >
                     {tab.path.split("/").pop()}
-                    {dirty ? <span className="ml-0.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" title="Unsaved changes" /> : null}
                   </button>
-                  <button className="text-muted-fg hover:text-fg" onClick={() => closeTab(tab.path)}>x</button>
+                  {dirty ? (
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.warning, flexShrink: 0 }} title="Unsaved changes" />
+                  ) : null}
+                  <button
+                    type="button"
+                    className="shrink-0 transition-opacity opacity-0 group-hover:opacity-100"
+                    style={{ display: "inline-flex", width: 16, height: 16, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textDim, cursor: "pointer" }}
+                    onClick={() => closeTab(tab.path)}
+                    title="Close tab"
+                  >
+                    <X size={10} />
+                  </button>
                 </div>
               );
             })}
           </div>
 
           {/* Breadcrumb + git actions */}
-          <div className="flex items-center justify-between border-b border-border/10 px-3 py-1 text-xs text-muted-fg shrink-0">
-            <div>{breadcrumbs.length ? breadcrumbs.join(" > ") : "No file selected"}</div>
+          <div className="flex items-center justify-between shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "4px 12px" }}>
+            <div className="truncate flex items-center gap-1" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
+              {breadcrumbs.length ? breadcrumbs.map((part, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 ? <span style={{ color: COLORS.textDim, margin: "0 2px" }}>/</span> : null}
+                  <span style={{ color: i === breadcrumbs.length - 1 ? COLORS.textPrimary : COLORS.textMuted }}>{part}</span>
+                </React.Fragment>
+              )) : <span style={{ color: COLORS.textDim }}>NO FILE SELECTED</span>}
+            </div>
             <div className="flex items-center gap-2">
               {activeContextPath && activeContextNodeType === "file" && laneIdForDiff ? (
                 <>
-                  <Button size="sm" variant="ghost" onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Stage</Button>
-                  <Button size="sm" variant="ghost" onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Unstage</Button>
-                  <Button size="sm" variant="ghost" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Discard</Button>
+                  {activeContextChangeStatus ? (
+                    <span style={inlineBadge(changeStatusColor(activeContextChangeStatus), { fontSize: 8 })}>
+                      {activeContextChangeStatus === "A" ? "ADDED" : activeContextChangeStatus === "D" ? "DELETED" : activeContextChangeStatus === "M" ? "MODIFIED" : activeContextChangeStatus}
+                    </span>
+                  ) : null}
+                  <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git add" onClick={() => stagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.success; e.currentTarget.style.color = COLORS.success; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                  >STAGE</button>
+                  <button type="button" style={outlineButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="git reset" onClick={() => unstagePath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                  >UNSTAGE</button>
+                  <button type="button" style={dangerButton({ height: 22, padding: "0 8px", fontSize: 9 })} title="Discard local changes" onClick={() => discardPath(activeContextPath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>DISCARD</button>
                 </>
               ) : null}
             </div>
           </div>
+          {/* Mode hint */}
+          <div className="shrink-0" style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "3px 12px", ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>
+            {editorModeHint.toUpperCase()}
+          </div>
 
           {/* Editor content */}
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 flex-1" style={{ position: "relative" }}>
+            {!activeTab ? (
+              <div className="flex h-full items-center justify-center" style={{ background: COLORS.recessedBg }}>
+                <div style={{ textAlign: "center" }}>
+                  <FileCode2 size={32} weight="thin" style={{ color: COLORS.textDim, margin: "0 auto 8px" }} />
+                  <div style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 600, letterSpacing: "1px", color: COLORS.textDim }}>
+                    OPEN A FILE TO START EDITING
+                  </div>
+                  <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, marginTop: 4, opacity: 0.6 }}>
+                    CMD+P TO QUICK OPEN
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {mode === "edit" ? (
               <div className="h-full">
                 <div ref={setEditorHostRef} className={cx("h-full", editorStatus === "failed" && "hidden")} />
                 {editorStatus === "loading" ? (
-                  <div className="flex h-full items-center justify-center text-sm text-muted-fg">Loading editor...</div>
+                  <div className="flex h-full items-center justify-center" style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
+                    <span className="animate-pulse">LOADING EDITOR...</span>
+                  </div>
                 ) : null}
                 {editorStatus === "failed" ? (
                   <textarea
@@ -1055,41 +1421,70 @@ export function FilesPage() {
                         prev.map((tab) => (tab.path === activeTab.path ? { ...tab, content: e.target.value } : tab))
                       );
                     }}
-                    className="h-full w-full resize-none bg-bg p-3 font-mono text-xs outline-none"
+                    style={{
+                      height: "100%", width: "100%", resize: "none", padding: 12,
+                      fontFamily: MONO_FONT, fontSize: 12, outline: "none",
+                      background: COLORS.recessedBg, color: COLORS.textPrimary, border: "none",
+                    }}
                   />
                 ) : null}
               </div>
             ) : mode === "diff" ? (
               laneIdForDiff && activeTabPath ? (
-                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} />
+                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} theme={editorTheme} />
               ) : (
-                <div className="p-4 text-sm text-muted-fg">Diff mode requires a lane workspace and an open file.</div>
+                <div style={{ padding: 16, fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
+                  DIFF MODE REQUIRES A LANE WORKSPACE AND AN OPEN FILE.
+                </div>
               )
             ) : (
-              <div className="grid h-full grid-cols-[300px_1fr]">
-                <div className="p-2">
-                  <div className="mb-2 flex items-center justify-between text-xs font-semibold">
-                    <span>Conflict Hunks</span>
-                    <span className="text-muted-fg">{resolvedConflictKeys.size}/{conflictHunks.length} resolved</span>
+              <div className="grid h-full" style={{ gridTemplateColumns: "300px 1fr" }}>
+                <div style={{ padding: 12, borderRight: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+                    <span style={{ ...LABEL_STYLE }}>CONFLICT HUNKS</span>
+                    <span style={inlineBadge(
+                      resolvedConflictKeys.size === conflictHunks.length && conflictHunks.length > 0 ? COLORS.success : COLORS.textMuted,
+                      { fontSize: 8 }
+                    )}>
+                      {resolvedConflictKeys.size}/{conflictHunks.length}
+                    </span>
                   </div>
-                  <div className="space-y-2">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {conflictHunks.map((hunk) => {
                       const resolved = resolvedConflictKeys.has(hunk.key);
                       return (
-                        <div key={hunk.key} className={cx("rounded border border-border/10 bg-card backdrop-blur-sm p-2 text-xs", resolved ? "border-emerald-500/40" : "border-border/40")}>
-                          <div className="flex items-center justify-between">
-                            <span>Lines {hunk.startLine}-{hunk.endLine}</span>
-                            {resolved ? <span className="inline-flex items-center gap-1 text-emerald-300"><Sparkles size={12} weight="regular" />Resolved</span> : null}
+                        <div key={hunk.key} style={{
+                          ...cardStyle({ padding: 10 }),
+                          borderLeft: resolved ? `3px solid ${COLORS.success}` : `3px solid ${COLORS.danger}`,
+                        }}>
+                          <div className="flex items-center justify-between" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textSecondary }}>
+                            <span>L{hunk.startLine}–{hunk.endLine}</span>
+                            {resolved ? (
+                              <span className="inline-flex items-center gap-1" style={{ color: COLORS.success, fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT }}>
+                                <Sparkles size={10} weight="fill" /> RESOLVED
+                              </span>
+                            ) : null}
                           </div>
-                          <div className="mt-1 flex gap-1">
-                            <Button size="sm" variant="outline" onClick={() => applyConflictResolution(hunk, "ours")}>Accept Ours</Button>
-                            <Button size="sm" variant="outline" onClick={() => applyConflictResolution(hunk, "theirs")}>Accept Theirs</Button>
-                            <Button size="sm" variant="outline" onClick={() => applyConflictResolution(hunk, "both")}>Accept Both</Button>
+                          <div className="flex gap-1" style={{ marginTop: 6 }}>
+                            <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "ours")}
+                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.info; e.currentTarget.style.color = COLORS.info; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                            >OURS</button>
+                            <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "theirs")}
+                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                            >THEIRS</button>
+                            <button type="button" style={outlineButton({ height: 22, padding: "0 6px", fontSize: 8 })} onClick={() => applyConflictResolution(hunk, "both")}
+                              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                            >BOTH</button>
                           </div>
                         </div>
                       );
                     })}
-                    {conflictHunks.length === 0 ? <div className="text-xs text-muted-fg">No conflict markers in current file.</div> : null}
+                    {conflictHunks.length === 0 ? (
+                      <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>NO CONFLICT MARKERS IN CURRENT FILE.</div>
+                    ) : null}
                   </div>
                 </div>
                 <div className="h-full">
@@ -1099,7 +1494,11 @@ export function FilesPage() {
                       if (!activeTab) return;
                       setOpenTabs((prev) => prev.map((tab) => (tab.path === activeTab.path ? { ...tab, content: e.target.value } : tab)));
                     }}
-                    className="h-full w-full resize-none bg-bg p-3 font-mono text-xs outline-none"
+                    style={{
+                      height: "100%", width: "100%", resize: "none", padding: 12,
+                      fontFamily: MONO_FONT, fontSize: 12, outline: "none",
+                      background: COLORS.recessedBg, color: COLORS.textPrimary, border: "none",
+                    }}
                   />
                 </div>
               </div>
@@ -1108,119 +1507,206 @@ export function FilesPage() {
         </div>
       )
     },
-    search: {
-      title: "Search",
-      icon: Search,
-      meta: searchResults.length > 0 ? `${searchResults.length} results` : undefined,
+    terminals: {
+      title: "Terminals",
+      icon: TerminalSquare,
+      meta: laneIdForDiff ? `lane ${activeWorkspace?.name ?? ""}` : "Pick a lane workspace",
       minimizable: true,
       headerActions: (
-        <Button size="sm" variant="ghost" className="h-5 px-1 text-[11px]" onClick={() => setShowQuickOpen(true)}>
-          Quick Open
-        </Button>
+        <button
+          type="button"
+          style={{
+            ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }),
+            opacity: laneIdForDiff ? 1 : 0.35,
+          }}
+          onClick={() => {
+            if (!laneIdForDiff) return;
+            navigate(`/terminals?laneId=${encodeURIComponent(laneIdForDiff)}`);
+          }}
+          disabled={!laneIdForDiff}
+          title={laneIdForDiff ? "Open this lane in the dedicated Terminals tab" : "Select a lane workspace to open terminals"}
+          onMouseEnter={(e) => { if (laneIdForDiff) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+        >
+          OPEN TAB
+        </button>
       ),
-      bodyClassName: "flex flex-col",
+      bodyClassName: "h-full overflow-hidden",
       children: (
-        <div className="flex flex-col h-full min-h-0 p-2">
-          <div className="flex items-center gap-2 rounded-lg border border-border/15 bg-surface-recessed px-2 shrink-0">
-            <Search size={14} weight="regular" className="text-muted-fg" />
-            <input
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                if (!showSearch) setShowSearch(true);
-              }}
-              placeholder="Search in files..."
-              className="h-7 w-full bg-transparent text-xs text-fg outline-none placeholder:text-muted-fg/50"
-            />
-          </div>
-          <div className="mt-2 flex-1 min-h-0 overflow-auto rounded-lg">
-            {searchResults.map((item, idx) => (
-              <button
-                key={`${item.path}:${item.line}:${idx}`}
-                className="block w-full px-2 py-1.5 text-left text-xs hover:bg-muted/40 rounded"
-                onClick={() => {
-                  openFile(item.path).catch(() => {});
-                }}
-              >
-                <div className="font-medium truncate">{item.path}:{item.line}:{item.column}</div>
-                <div className="text-muted-fg truncate">{item.preview}</div>
-              </button>
-            ))}
-            {searchQuery.trim() && !searchResults.length ? <div className="px-2 py-2 text-xs text-muted-fg">No matches</div> : null}
-            {!searchQuery.trim() ? <div className="px-2 py-2 text-xs text-muted-fg/60 italic">Type to search across files</div> : null}
-          </div>
-        </div>
+        <LaneTerminalsPanel overrideLaneId={laneIdForDiff ?? null} />
       )
     }
   }), [
     tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab,
-    breadcrumbs, mode, canEdit, editorStatus, laneIdForDiff, activeContextPath,
-    activeContextNodeType, searchQuery, searchResults, showSearch, conflictHunks,
+    breadcrumbs, mode, canEdit, editorStatus, laneIdForDiff, activeContextPath, activeContextChangeStatus,
+    activeContextNodeType, searchQuery, searchResults, conflictHunks, editorTheme, editorModeHint, hasConflictMarkers,
     resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
-    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen
+    closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate
   ]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
-      <div className="flex items-center justify-between gap-2 px-3 py-2 mb-1 shrink-0 border-b border-border/10 bg-card backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="text-sm font-semibold text-fg">Files</div>
-          <select
-            value={workspaceId}
-            onChange={(e) => switchWorkspace(e.target.value)}
-            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
+      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: COLORS.pageBg, borderBottom: `1px solid ${COLORS.border}` }}>
+        {/* Numbered title group */}
+        <div className="flex items-center gap-2 shrink-0">
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
+          <FolderOpen size={18} weight="fill" style={{ color: COLORS.accent }} />
+          <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>FILES</span>
+          <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{workspaces.length} WS</span>
+        </div>
+
+        {/* Workspace selector */}
+        <select
+          value={workspaceId}
+          onChange={(e) => switchWorkspace(e.target.value)}
+          style={{
+            height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
+            color: COLORS.success, background: "#18151F",
+            border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+          onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+        >
+          {workspaces.map((ws) => (
+            <option key={ws.id} value={ws.id}>
+              {ws.name} ({ws.kind})
+            </option>
+          ))}
+        </select>
+
+        {/* Read-only badge */}
+        {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
+          <span style={inlineBadge(COLORS.warning, { fontSize: 9, gap: 4, display: "inline-flex", alignItems: "center" })}>
+            <AlertTriangle size={10} weight="fill" /> READ-ONLY
+          </span>
+        ) : null}
+
+        {/* Trust / edit toggle */}
+        {activeWorkspace?.isReadOnlyByDefault ? (
+          <button
+            type="button"
+            style={allowPrimaryEdit ? dangerButton({ height: 28, padding: "0 10px", fontSize: 9 }) : outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
+            onClick={() => setAllowPrimaryEdit((v) => !v)}
+            onMouseEnter={(e) => { if (!allowPrimaryEdit) { e.currentTarget.style.borderColor = COLORS.warning; e.currentTarget.style.color = COLORS.warning; } }}
+            onMouseLeave={(e) => { if (!allowPrimaryEdit) { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; } }}
           >
-            {workspaces.map((ws) => (
-              <option key={ws.id} value={ws.id}>
-                {ws.name} ({ws.kind})
-              </option>
-            ))}
-          </select>
-          {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-            <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
-              <AlertTriangle size={12} weight="regular" />
-              Primary workspace is read-only
-            </span>
+            {allowPrimaryEdit ? "DISABLE EDITS" : "TRUST & EDIT"}
+          </button>
+        ) : null}
+
+        {/* Spacer */}
+        <div style={{ flex: 1, height: 1 }} />
+
+        {/* Open in external editor */}
+        <div className="relative shrink-0" ref={openInMenuRef}>
+          <button
+            type="button"
+            style={{
+              ...outlineButton({ height: 28, padding: "0 10px", fontSize: 9 }),
+              opacity: (!activeWorkspace || !activeTabPath) ? 0.35 : 1,
+            }}
+            onClick={() => setOpenInMenuOpen((prev) => !prev)}
+            disabled={!activeWorkspace || !activeTabPath}
+            title={activeTabPath ? "Open current file in an external app" : "Open a file first"}
+            onMouseEnter={(e) => { if (activeWorkspace && activeTabPath) { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; } }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+          >
+            <ArrowSquareOut size={12} weight="regular" /> OPEN IN
+          </button>
+          {openInMenuOpen ? (
+            <div className="absolute right-0 top-full z-50 mt-1" style={{ width: 220, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "2px 0" }}>
+              {(
+                [
+                  { key: "finder", label: revealLabel.toUpperCase() },
+                  { key: "vscode", label: "VS CODE" },
+                  { key: "cursor", label: "CURSOR" },
+                  { key: "zed", label: "ZED" },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className="flex w-full items-center gap-2 text-left"
+                  style={{
+                    padding: "8px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px",
+                    color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; e.currentTarget.style.color = COLORS.textPrimary; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = COLORS.textSecondary; }}
+                  onClick={() => void openActivePathInExternalTool(item.key)}
+                >
+                  <ArrowSquareOut size={12} /> {item.label}
+                </button>
+              ))}
+            </div>
           ) : null}
         </div>
 
-        <div className="flex items-center gap-2">
-          {activeWorkspace?.isReadOnlyByDefault ? (
-            <Button size="sm" variant="outline" onClick={() => setAllowPrimaryEdit((v) => !v)}>
-              {allowPrimaryEdit ? "Disable edits" : "Trust and enable edits"}
-            </Button>
-          ) : null}
-          <Button size="sm" variant="outline" onClick={() => navigate("/lanes")}>Jump to Lanes</Button>
-          <Button size="sm" variant="outline" onClick={() => navigate("/conflicts")}>Jump to Conflicts</Button>
-        </div>
+        {/* Nav buttons */}
+        <button
+          type="button"
+          style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
+          onClick={() => navigate("/lanes")}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+        >
+          LANES
+        </button>
+
+        {/* File count stat */}
+        <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
+          {openTabs.length} OPEN
+        </span>
       </div>
 
+      {/* Warning banners */}
       {(activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit) || (activeWorkspace?.kind === "primary" && suggestedLaneWorkspace) ? (
-        <div className={cx(
-          "flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-xs shrink-0",
-          activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit
-            ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
-            : "border-orange-500/30 bg-orange-500/10 text-orange-400"
-        )}>
+        <div className="flex flex-wrap items-center gap-3 shrink-0" style={{
+          padding: "6px 24px",
+          borderBottom: `1px solid ${COLORS.warning}30`,
+          background: activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? `${COLORS.warning}15` : `${COLORS.warning}08`,
+        }}>
+          <AlertTriangle size={14} weight="fill" style={{ color: COLORS.warning, flexShrink: 0 }} />
           {activeWorkspace?.isReadOnlyByDefault && !allowPrimaryEdit ? (
-            <span>
-              Editing is disabled for Primary workspace by default. Use <span className="font-semibold">Trust and enable edits</span> to unlock writes.
+            <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.warning }}>
+              PRIMARY WORKSPACE IS READ-ONLY. USE "TRUST & EDIT" TO UNLOCK.
             </span>
           ) : (
-            <span>
-              You are editing directly in Primary workspace. Lane workspaces are safer for branch-scoped edits.
+            <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.warning }}>
+              EDITING DIRECTLY IN PRIMARY. LANE WORKSPACES ARE SAFER.
             </span>
           )}
           {suggestedLaneWorkspace ? (
-            <Button size="sm" variant="outline" onClick={() => switchWorkspace(suggestedLaneWorkspace.id)}>
-              Switch to lane: {suggestedLaneWorkspace.name}
-            </Button>
+            <button
+              type="button"
+              style={primaryButton({ height: 24, padding: "0 10px", fontSize: 9 })}
+              onClick={() => switchWorkspace(suggestedLaneWorkspace.id)}
+            >
+              SWITCH TO: {suggestedLaneWorkspace.name.toUpperCase()}
+            </button>
           ) : null}
         </div>
       ) : null}
 
-      {error ? <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-400 shrink-0">{error}</div> : null}
+      {/* Error banner */}
+      {error ? (
+        <div className="flex items-center gap-2 shrink-0" style={{
+          padding: "6px 24px",
+          borderBottom: `1px solid ${COLORS.danger}30`,
+          background: `${COLORS.danger}12`,
+        }}>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{error}</span>
+          <button
+            type="button"
+            style={{ background: "transparent", border: "none", padding: "0 4px", color: COLORS.danger, cursor: "pointer", fontSize: 14, marginLeft: "auto" }}
+            onClick={() => setError(null)}
+            title="Dismiss"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      ) : null}
 
       {/* Floating pane tiling area */}
       <div className="flex-1 min-h-0">
@@ -1234,73 +1720,99 @@ export function FilesPage() {
       {/* Context menu overlay */}
       {contextMenu ? (
         <div
-          className="fixed z-40 min-w-[190px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-40"
+          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 200, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "4px 0" }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           {contextMenu.nodeType === "file" ? (
             <>
-              <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => openFile(contextMenu.nodePath))}>Open</button>
-              <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => {
-                await openFile(contextMenu.nodePath);
-                setMode("diff");
-              })}>Open Diff</button>
+              <div style={{ ...LABEL_STYLE, padding: "4px 12px", fontSize: 8 }}>FILE</div>
+              {[
+                { label: "OPEN", action: async () => openFile(contextMenu.nodePath), color: COLORS.textSecondary },
+                { label: "OPEN DIFF", action: async () => { await openFile(contextMenu.nodePath); setMode("diff"); }, color: COLORS.info },
+              ].map((item) => (
+                <button
+                  key={item.label}
+                  className="flex w-full items-center text-left"
+                  style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: item.color, background: "transparent", border: "none", cursor: "pointer" }}
+                  onClick={() => runContextAction(item.action)}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                >
+                  {item.label}
+                </button>
+              ))}
               {laneIdForWorkspace ? (
                 <>
-                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => stagePath(contextMenu.nodePath))}>Stage</button>
-                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => unstagePath(contextMenu.nodePath))}>Unstage</button>
-                  <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => discardPath(contextMenu.nodePath))}>Discard</button>
+                  <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
+                  <div style={{ ...LABEL_STYLE, padding: "4px 12px", fontSize: 8 }}>GIT</div>
+                  <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.success, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => stagePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>STAGE</button>
+                  <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.warning, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => unstagePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>UNSTAGE</button>
+                  <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => discardPath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>DISCARD</button>
                 </>
               ) : null}
             </>
           ) : null}
 
-          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
-            setContextMenu(null);
-            navigator.clipboard.writeText(contextMenu.nodePath).catch(() => {});
-          }}>Copy Path</button>
-          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => {
-            setContextMenu(null);
-            if (activeWorkspace) {
-              window.ade.app.revealPath(`${activeWorkspace.rootPath}/${contextMenu.nodePath}`).catch(() => {});
-            }
-          }}>{revealLabel}</button>
-          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => createFileAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))}>New File</button>
-          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => createDirectoryAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))}>New Folder</button>
-          <button className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-muted/60" onClick={() => runContextAction(async () => renamePath(contextMenu.nodePath))}>Rename</button>
-          <button className="block w-full rounded px-2 py-1 text-left text-xs text-red-300 hover:bg-red-500/20" onClick={() => runContextAction(async () => deletePath(contextMenu.nodePath))}>Delete</button>
+          <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
+          <div style={{ ...LABEL_STYLE, padding: "4px 12px", fontSize: 8 }}>FILE OPS</div>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => { setContextMenu(null); window.ade.app.writeClipboardText(contextMenu.nodePath).catch((err) => setError(err instanceof Error ? err.message : String(err))); }} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>COPY PATH</button>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => { setContextMenu(null); if (activeWorkspace) window.ade.app.revealPath(`${activeWorkspace.rootPath}/${contextMenu.nodePath}`).catch(() => {}); }} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{revealLabel.toUpperCase()}</button>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => createFileAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>NEW FILE</button>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => createDirectoryAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>NEW FOLDER</button>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => renamePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>RENAME</button>
+          <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => deletePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = `${COLORS.danger}18`; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>DELETE</button>
         </div>
       ) : null}
 
       {/* Quick Open overlay */}
       {showQuickOpen ? (
-        <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/40 pt-20">
-          <div className="w-[640px] rounded bg-[--color-surface-overlay] border border-border/50 p-3 shadow-float">
-            <div className="flex items-center gap-2 rounded-lg border border-border/15 bg-surface-recessed px-2">
-              <Search size={16} weight="regular" className="text-muted-fg" />
+        <div className="absolute inset-0 z-30 flex items-start justify-center" style={{ background: "rgba(0,0,0,0.6)", paddingTop: 80 }}>
+          <div style={{ width: 640, background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: 16 }}>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8, fontSize: 9 }}>QUICK OPEN</div>
+            <div className="relative flex items-center">
+              <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 10, color: COLORS.textDim }} />
               <input
                 autoFocus
                 value={quickOpen}
                 onChange={(e) => setQuickOpen(e.target.value)}
-                placeholder="Quick open (Ctrl/Cmd+P)"
-                className="h-9 w-full bg-transparent text-sm text-fg outline-none placeholder:text-muted-fg/50"
+                placeholder="Type to search files... (Cmd+P)"
+                style={{
+                  height: 36, width: "100%", padding: "0 36px 0 32px",
+                  fontSize: 12, fontFamily: MONO_FONT, fontWeight: 500,
+                  background: COLORS.recessedBg, border: `1px solid ${COLORS.accent}`,
+                  color: COLORS.textPrimary, outline: "none",
+                  letterSpacing: "0.3px",
+                }}
+                onKeyDown={(e) => { if (e.key === "Escape") setShowQuickOpen(false); }}
               />
-              <Button size="sm" variant="ghost" onClick={() => setShowQuickOpen(false)}>Esc</Button>
+              <button
+                type="button"
+                className="absolute"
+                style={{ right: 8, ...outlineButton({ height: 22, padding: "0 6px", fontSize: 8 }) }}
+                onClick={() => setShowQuickOpen(false)}
+              >ESC</button>
             </div>
-            <div className="mt-2 max-h-[40vh] overflow-auto rounded-lg border border-border/10 bg-card backdrop-blur-sm">
-              {quickOpenResults.map((item) => (
-                <button
-                  key={item.path}
-                  className="block w-full px-3 py-2 text-left text-xs hover:bg-muted/40"
-                  onClick={() => {
-                    openFile(item.path).catch(() => {});
-                    setShowQuickOpen(false);
-                  }}
-                >
-                  {item.path}
-                </button>
-              ))}
-              {!quickOpenResults.length ? <div className="px-3 py-2 text-xs text-muted-fg">No matches</div> : null}
+            <div className="mt-2 max-h-[40vh] overflow-auto" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+              {quickOpenResults.map((item) => {
+                const qoFileIcon = getFileIcon(item.path.split("/").pop() ?? "");
+                const QoIcon = qoFileIcon.icon;
+                return (
+                  <button
+                    key={item.path}
+                    className="flex w-full items-center gap-2 text-left"
+                    style={{ padding: "8px 12px", fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                    onClick={() => { openFile(item.path).catch(() => {}); setShowQuickOpen(false); }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; e.currentTarget.style.color = COLORS.textPrimary; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = COLORS.textSecondary; }}
+                  >
+                    <QoIcon size={14} style={{ color: qoFileIcon.color, flexShrink: 0 }} />
+                    <span className="truncate">{item.path}</span>
+                  </button>
+                );
+              })}
+              {!quickOpenResults.length ? <div style={{ padding: "12px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>NO MATCHES</div> : null}
             </div>
           </div>
         </div>
@@ -1308,40 +1820,47 @@ export function FilesPage() {
 
       {/* Text prompt modal */}
       {textPrompt ? (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-[min(520px,100%)] rounded bg-[--color-surface-overlay] border border-border/50 p-3 shadow-float">
-            <div className="mb-1 text-sm font-semibold text-fg">{textPrompt.title}</div>
-            {textPrompt.message ? <div className="mb-2 text-xs text-muted-fg">{textPrompt.message}</div> : null}
-            <input
-              autoFocus
-              value={textPrompt.value}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setTextPrompt((prev) => (prev ? { ...prev, value: nextValue } : prev));
-                if (textPromptError) setTextPromptError(null);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelTextPrompt();
-                  return;
-                }
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitTextPrompt();
-                }
-              }}
-              placeholder={textPrompt.placeholder}
-              className="h-9 w-full rounded-lg border border-border/15 bg-surface-recessed px-2 text-sm text-fg outline-none"
-            />
-            {textPromptError ? <div className="mt-2 text-xs text-red-300">{textPromptError}</div> : null}
-            <div className="mt-3 flex justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={cancelTextPrompt}>
-                Cancel
-              </Button>
-              <Button size="sm" variant="primary" onClick={submitTextPrompt}>
-                {textPrompt.confirmLabel}
-              </Button>
+        <div className="absolute inset-0 z-40 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.6)", padding: 16 }}>
+          <div style={{ width: 520, maxWidth: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            {/* Modal header */}
+            <div style={{ height: 48, padding: "0 16px", display: "flex", alignItems: "center", background: COLORS.recessedBg, borderBottom: `1px solid ${COLORS.border}` }}>
+              <span style={{ fontFamily: SANS_FONT, fontSize: 14, fontWeight: 700, color: COLORS.textPrimary }}>{textPrompt.title.toUpperCase()}</span>
+            </div>
+            {/* Modal body */}
+            <div style={{ padding: 20 }}>
+              {textPrompt.message ? (
+                <div style={{ marginBottom: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>{textPrompt.message}</div>
+              ) : null}
+              <input
+                autoFocus
+                value={textPrompt.value}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setTextPrompt((prev) => (prev ? { ...prev, value: nextValue } : prev));
+                  if (textPromptError) setTextPromptError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") { event.preventDefault(); cancelTextPrompt(); return; }
+                  if (event.key === "Enter") { event.preventDefault(); submitTextPrompt(); }
+                }}
+                placeholder={textPrompt.placeholder}
+                style={{
+                  height: 36, width: "100%", padding: "0 12px",
+                  fontSize: 12, fontFamily: MONO_FONT,
+                  background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
+                  color: COLORS.textPrimary, outline: "none",
+                }}
+                onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
+              />
+              {textPromptError ? (
+                <div style={{ marginTop: 8, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{textPromptError}</div>
+              ) : null}
+            </div>
+            {/* Modal footer */}
+            <div style={{ height: 56, padding: "0 16px", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, background: COLORS.recessedBg, borderTop: `1px solid ${COLORS.border}` }}>
+              <button type="button" style={outlineButton()} onClick={cancelTextPrompt}>CANCEL</button>
+              <button type="button" style={primaryButton()} onClick={submitTextPrompt}>{textPrompt.confirmLabel.toUpperCase()}</button>
             </div>
           </div>
         </div>
@@ -1350,7 +1869,7 @@ export function FilesPage() {
   );
 }
 
-function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
+function FilesDiffPanel({ laneId, path, theme }: { laneId: string; path: string; theme: EditorThemeMode }) {
   const [mode, setMode] = useState<"unstaged" | "staged" | "commit">("unstaged");
   const [diff, setDiff] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1408,17 +1927,43 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
   }, [laneId, path, mode, compareRef]);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border/10 px-2 py-1">
-        <Button size="sm" variant="outline" onClick={() => setMode("unstaged")}>Unstaged</Button>
-        <Button size="sm" variant="outline" onClick={() => setMode("staged")}>Staged</Button>
-        <Button size="sm" variant="outline" onClick={() => setMode("commit")}>Commit</Button>
+    <div className="flex h-full flex-col" style={{ background: COLORS.cardBg }}>
+      <div className="flex items-center gap-2" style={{ padding: "6px 12px", borderBottom: `1px solid ${COLORS.border}` }}>
+        {/* Mode toggle group */}
+        <div className="inline-flex items-center" style={{ border: `1px solid ${COLORS.outlineBorder}` }}>
+          {(["unstaged", "staged", "commit"] as const).map((m) => {
+            const label = m === "unstaged" ? "WORKING TREE" : m === "staged" ? "STAGED" : "COMMIT";
+            const isActive = mode === m;
+            return (
+              <button
+                key={m}
+                type="button"
+                style={{
+                  height: 24, padding: "0 10px",
+                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
+                  color: isActive ? COLORS.pageBg : COLORS.textMuted,
+                  background: isActive ? COLORS.accent : "transparent",
+                  border: "none", cursor: "pointer",
+                }}
+                onClick={() => setMode(m)}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
 
         {mode === "commit" ? (
           <select
             value={compareRef}
             onChange={(e) => setCompareRef(e.target.value)}
-            className="h-8 rounded-lg border border-border/15 bg-surface-recessed px-2 text-xs text-fg"
+            style={{
+              height: 28, padding: "0 8px", fontSize: 11, fontFamily: MONO_FONT,
+              background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`,
+              color: COLORS.textSecondary, cursor: "pointer", outline: "none",
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
           >
             {commits.map((commit) => (
               <option key={commit.sha} value={commit.sha}>
@@ -1428,11 +1973,11 @@ function FilesDiffPanel({ laneId, path }: { laneId: string; path: string }) {
           </select>
         ) : null}
 
-        <div className="truncate text-xs text-muted-fg">{path}</div>
+        <span className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted, marginLeft: "auto" }}>{path}</span>
       </div>
 
-      {error ? <div className="p-3 text-xs text-red-400">{error}</div> : null}
-      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView diff={diff} className="h-full" /> : null}</div>
+      {error ? <div style={{ padding: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{error}</div> : null}
+      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView diff={diff} className="h-full" theme={theme} /> : null}</div>
     </div>
   );
 }
