@@ -91,6 +91,7 @@ import type {
   PrReview,
   PrStatus,
   PrSummary,
+  UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
   LandStackArgs,
@@ -192,6 +193,13 @@ import type {
   CreateIntegrationPrResult,
   SimulateIntegrationArgs,
   IntegrationProposal,
+  IntegrationResolutionState,
+  CreateIntegrationLaneForProposalArgs,
+  CreateIntegrationLaneForProposalResult,
+  StartIntegrationResolutionArgs,
+  StartIntegrationResolutionResult,
+  RecheckIntegrationStepArgs,
+  RecheckIntegrationStepResult,
   CommitIntegrationArgs,
   LandStackEnhancedArgs,
   LandQueueNextArgs,
@@ -775,6 +783,12 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsSimulateIntegration, args),
     commitIntegration: (args: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> =>
       ipcRenderer.invoke(IPC.prsCommitIntegration, args),
+    listProposals: (): Promise<IntegrationProposal[]> =>
+      ipcRenderer.invoke(IPC.prsListProposals),
+    updateProposal: (args: UpdateIntegrationProposalArgs): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsUpdateProposal, args),
+    deleteProposal: (proposalId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsDeleteProposal, proposalId),
     landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
       ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
     landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
@@ -789,6 +803,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
     listWithConflicts: (): Promise<PrWithConflicts[]> =>
       ipcRenderer.invoke(IPC.prsListWithConflicts),
+    createIntegrationLaneForProposal: (args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
+      ipcRenderer.invoke(IPC.prsCreateIntegrationLaneForProposal, args),
+    startIntegrationResolution: (args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult> =>
+      ipcRenderer.invoke(IPC.prsStartIntegrationResolution, args),
+    getIntegrationResolutionState: (proposalId: string): Promise<IntegrationResolutionState | null> =>
+      ipcRenderer.invoke(IPC.prsGetIntegrationResolutionState, { proposalId }),
+    recheckIntegrationStep: (args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> =>
+      ipcRenderer.invoke(IPC.prsRecheckIntegrationStep, args),
     onEvent: (cb: (ev: PrEventPayload) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: PrEventPayload) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);

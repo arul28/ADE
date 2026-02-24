@@ -9,12 +9,16 @@ import type {
   CreateStackedPrsResult,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
+  CreateIntegrationLaneForProposalArgs,
+  CreateIntegrationLaneForProposalResult,
   CommitIntegrationArgs,
   DeletePrArgs,
   DeletePrResult,
   GitHubRepoRef,
   IntegrationProposal,
   IntegrationProposalStep,
+  IntegrationResolutionState,
+  IntegrationStepResolution,
   LandResult,
   LandPrArgs,
   LandQueueNextArgs,
@@ -37,7 +41,12 @@ import type {
   PrSummary,
   PrWithConflicts,
   QueueLandingState,
+  RecheckIntegrationStepArgs,
+  RecheckIntegrationStepResult,
   SimulateIntegrationArgs,
+  StartIntegrationResolutionArgs,
+  StartIntegrationResolutionResult,
+  UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -49,6 +58,7 @@ import type { createPackService } from "../packs/packService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
+import type { createAgentChatService } from "../chat/agentChatService";
 import { runGit, runGitOrThrow } from "../git/git";
 
 type PullRequestRow = {
@@ -294,6 +304,7 @@ export function createPrService({
   conflictService?: ReturnType<typeof createConflictService>;
   openExternal: (url: string) => Promise<void>;
 }) {
+  let agentChatService: ReturnType<typeof createAgentChatService> | undefined;
   const getRow = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
       `
@@ -1562,6 +1573,46 @@ export function createPrService({
     };
   };
 
+  const extractConflictDetail = async (
+    treeOid: string,
+    filePath: string,
+    cwd: string
+  ): Promise<{ conflictMarkers: string; oursExcerpt: string; theirsExcerpt: string; diffHunk: string }> => {
+    try {
+      const result = await runGit(
+        ["show", `${treeOid}:${filePath}`],
+        { cwd, timeoutMs: 10_000 }
+      );
+      const content = result.stdout;
+      if (!content.includes("<<<<<<<")) {
+        return { conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
+      }
+
+      // Extract conflict markers and excerpts
+      const markerRegex = /(<<<<<<<[^\n]*\n)([\s\S]*?)(=======\n)([\s\S]*?)(>>>>>>>[^\n]*)/g;
+      const markers: string[] = [];
+      const oursLines: string[] = [];
+      const theirsLines: string[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = markerRegex.exec(content)) !== null) {
+        markers.push(match[0]);
+        oursLines.push(match[2]!.trim());
+        theirsLines.push(match[4]!.trim());
+      }
+
+      const conflictMarkers = markers.join("\n---\n").slice(0, 2000);
+      const oursExcerpt = oursLines.join("\n---\n").slice(0, 500);
+      const theirsExcerpt = theirsLines.join("\n---\n").slice(0, 500);
+
+      // Build a simple diff hunk preview
+      const diffHunk = markers.map((m) => m.split("\n").slice(0, 12).join("\n")).join("\n...\n").slice(0, 500);
+
+      return { conflictMarkers, oursExcerpt, theirsExcerpt, diffHunk };
+    } catch {
+      return { conflictMarkers: "", oursExcerpt: "", theirsExcerpt: "", diffHunk: "" };
+    }
+  };
+
   const simulateIntegration = async (args: SimulateIntegrationArgs): Promise<IntegrationProposal> => {
     const proposalId = randomUUID();
     const now = nowIso();
@@ -1606,18 +1657,36 @@ export function createPrService({
       const hasConflict = mergeTreeResult.exitCode !== 0;
       const conflictingFiles: IntegrationProposalStep["conflictingFiles"] = [];
 
+      // The tree OID is always on the first line of stdout, even in conflict case
+      const treeOid = mergeTreeResult.stdout.trim().split("\n")[0]?.trim();
+
       if (hasConflict) {
         // Parse conflicting file paths from stderr/stdout
         const lines = (mergeTreeResult.stdout + "\n" + mergeTreeResult.stderr).split("\n");
+        const conflictPaths: string[] = [];
         for (const line of lines) {
           const match = line.match(/CONFLICT \([^)]+\): (?:Merge conflict in |content )(.+)/);
           if (match?.[1]) {
-            conflictingFiles.push({ path: match[1].trim(), conflictMarkers: "" });
+            conflictPaths.push(match[1].trim());
+          }
+        }
+        // Extract detailed conflict info for each file
+        for (const filePath of conflictPaths) {
+          if (treeOid) {
+            const detail = await extractConflictDetail(treeOid, filePath, projectRoot);
+            conflictingFiles.push({
+              path: filePath,
+              conflictMarkers: detail.conflictMarkers,
+              oursExcerpt: detail.oursExcerpt || null,
+              theirsExcerpt: detail.theirsExcerpt || null,
+              diffHunk: detail.diffHunk || null
+            });
+          } else {
+            conflictingFiles.push({ path: filePath, conflictMarkers: "", oursExcerpt: null, theirsExcerpt: null, diffHunk: null });
           }
         }
       } else {
-        // On success, the first line is the tree OID for chaining
-        const treeOid = mergeTreeResult.stdout.trim().split("\n")[0]?.trim();
+        // On success, use the tree OID for chaining
         if (treeOid) currentTreeBase = treeOid;
       }
 
@@ -1654,13 +1723,14 @@ export function createPrService({
       baseBranch: args.baseBranch,
       steps,
       overallOutcome,
-      createdAt: now
+      createdAt: now,
+      status: "proposed"
     };
 
     // Persist in DB
     db.run(
-      `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, overall_outcome, created_at) values (?, ?, ?, ?, ?, ?, ?)`,
-      [proposalId, projectId, JSON.stringify(args.sourceLaneIds), args.baseBranch, JSON.stringify(steps), overallOutcome, now]
+      `insert into integration_proposals(id, project_id, source_lane_ids_json, base_branch, steps_json, overall_outcome, created_at, status) values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [proposalId, projectId, JSON.stringify(args.sourceLaneIds), args.baseBranch, JSON.stringify(steps), overallOutcome, now, "proposed"]
     );
 
     return proposal;
@@ -1676,7 +1746,7 @@ export function createPrService({
 
     const sourceLaneIds = JSON.parse(String(proposalRow.source_lane_ids_json)) as string[];
 
-    return await createIntegrationPr({
+    const result = await createIntegrationPr({
       sourceLaneIds,
       integrationLaneName: args.integrationLaneName,
       baseBranch: String(proposalRow.base_branch),
@@ -1684,6 +1754,10 @@ export function createPrService({
       body: args.body,
       draft: args.draft
     });
+
+    db.run(`update integration_proposals set status = 'committed' where id = ?`, [args.proposalId]);
+
+    return result;
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
@@ -1792,6 +1866,309 @@ export function createPrService({
       results.push({ ...summary, conflictAnalysis });
     }
     return results;
+  };
+
+  const listIntegrationProposals = (): IntegrationProposal[] => {
+    const rows = db.all<{
+      id: string; source_lane_ids_json: string; base_branch: string;
+      steps_json: string; overall_outcome: string; created_at: string;
+      title: string; body: string; draft: number;
+      integration_lane_name: string; status: string;
+      integration_lane_id: string | null; resolution_state_json: string | null;
+    }>(
+      `select * from integration_proposals where project_id = ? and status = 'proposed' order by created_at desc`,
+      [projectId]
+    );
+    return rows.map((row) => ({
+      proposalId: String(row.id),
+      sourceLaneIds: JSON.parse(String(row.source_lane_ids_json)) as string[],
+      baseBranch: String(row.base_branch),
+      steps: JSON.parse(String(row.steps_json)) as IntegrationProposalStep[],
+      overallOutcome: String(row.overall_outcome) as IntegrationProposal["overallOutcome"],
+      createdAt: String(row.created_at),
+      title: String(row.title || ""),
+      body: String(row.body || ""),
+      draft: Boolean(row.draft),
+      integrationLaneName: String(row.integration_lane_name || ""),
+      status: String(row.status) as IntegrationProposal["status"],
+      integrationLaneId: row.integration_lane_id || null,
+      resolutionState: row.resolution_state_json ? JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState : null
+    }));
+  };
+
+  const updateIntegrationProposal = (args: UpdateIntegrationProposalArgs): void => {
+    const sets: string[] = [];
+    const params: (string | number | null)[] = [];
+    if (args.title !== undefined) { sets.push("title = ?"); params.push(args.title); }
+    if (args.body !== undefined) { sets.push("body = ?"); params.push(args.body); }
+    if (args.draft !== undefined) { sets.push("draft = ?"); params.push(args.draft ? 1 : 0); }
+    if (args.integrationLaneName !== undefined) { sets.push("integration_lane_name = ?"); params.push(args.integrationLaneName); }
+    if (sets.length === 0) return;
+    params.push(args.proposalId);
+    db.run(`update integration_proposals set ${sets.join(", ")} where id = ?`, params);
+  };
+
+  const deleteIntegrationProposal = (proposalId: string): void => {
+    db.run(`delete from integration_proposals where id = ?`, [proposalId]);
+  };
+
+  // B1: Create integration lane for a proposal, merge clean steps
+  const createIntegrationLaneForProposal = async (
+    args: CreateIntegrationLaneForProposalArgs
+  ): Promise<CreateIntegrationLaneForProposalResult> => {
+    const proposalRow = db.get<{
+      id: string; source_lane_ids_json: string; base_branch: string;
+      steps_json: string; overall_outcome: string;
+    }>(
+      `select id, source_lane_ids_json, base_branch, steps_json, overall_outcome from integration_proposals where id = ?`,
+      [args.proposalId]
+    );
+    if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
+
+    const steps = JSON.parse(String(proposalRow.steps_json)) as IntegrationProposalStep[];
+    const allLanes = await laneService.list({ includeArchived: false });
+    const laneMap = new Map(allLanes.map((l) => [l.id, l]));
+
+    // Find a parent lane to base the integration lane on (use baseBranch's lane or first source lane)
+    const baseBranch = String(proposalRow.base_branch);
+    const parentLaneId = allLanes.find((l) => {
+      const base = branchNameFromRef(l.branchRef);
+      return base === baseBranch || l.baseRef === baseBranch;
+    })?.id ?? steps[0]?.laneId;
+
+    if (!parentLaneId) throw new Error("No suitable parent lane found for integration lane");
+
+    const shortId = args.proposalId.slice(0, 8);
+    const integrationLane = await laneService.createChild({
+      parentLaneId,
+      name: `integration/${shortId}`,
+      description: `Integration lane for proposal ${args.proposalId}`
+    });
+
+    const mergedCleanLanes: string[] = [];
+    const conflictingLanes: string[] = [];
+
+    for (const step of steps) {
+      if (step.outcome === "clean") {
+        const sourceLane = laneMap.get(step.laneId);
+        if (!sourceLane) {
+          conflictingLanes.push(step.laneId);
+          continue;
+        }
+        const sourceBranch = branchNameFromRef(sourceLane.branchRef);
+        const mergeRes = await runGit(
+          ["merge", "--no-ff", "-m", `Merge ${sourceLane.name} into integration`, sourceBranch],
+          { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
+        );
+        if (mergeRes.exitCode !== 0) {
+          await runGit(["merge", "--abort"], { cwd: integrationLane.worktreePath, timeoutMs: 10_000 });
+          conflictingLanes.push(step.laneId);
+        } else {
+          mergedCleanLanes.push(step.laneId);
+        }
+      } else if (step.outcome === "conflict") {
+        conflictingLanes.push(step.laneId);
+      }
+    }
+
+    // Build initial resolution state
+    const stepResolutions: Record<string, IntegrationStepResolution> = {};
+    for (const step of steps) {
+      if (mergedCleanLanes.includes(step.laneId)) {
+        stepResolutions[step.laneId] = "merged-clean";
+      } else if (conflictingLanes.includes(step.laneId)) {
+        stepResolutions[step.laneId] = "pending";
+      }
+    }
+
+    const resolutionState: IntegrationResolutionState = {
+      integrationLaneId: integrationLane.id,
+      stepResolutions,
+      activeChatSessionId: null,
+      activeLaneId: null,
+      updatedAt: nowIso()
+    };
+
+    db.run(
+      `update integration_proposals set integration_lane_id = ?, resolution_state_json = ? where id = ?`,
+      [integrationLane.id, JSON.stringify(resolutionState), args.proposalId]
+    );
+
+    return { integrationLaneId: integrationLane.id, mergedCleanLanes, conflictingLanes };
+  };
+
+  // B2: Start AI-assisted resolution for a conflicting step
+  const startIntegrationResolution = async (
+    args: StartIntegrationResolutionArgs
+  ): Promise<StartIntegrationResolutionResult> => {
+    if (!agentChatService) throw new Error("Agent chat service not available");
+
+    const proposalRow = db.get<{
+      id: string; integration_lane_id: string | null; resolution_state_json: string | null;
+      steps_json: string;
+    }>(
+      `select id, integration_lane_id, resolution_state_json, steps_json from integration_proposals where id = ?`,
+      [args.proposalId]
+    );
+    if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
+    if (!proposalRow.integration_lane_id) throw new Error("Integration lane not created yet. Call createIntegrationLaneForProposal first.");
+
+    const integrationLaneId = String(proposalRow.integration_lane_id);
+    const allLanes = await laneService.list({ includeArchived: false });
+    const integrationLane = allLanes.find((l) => l.id === integrationLaneId);
+    if (!integrationLane) throw new Error(`Integration lane not found: ${integrationLaneId}`);
+
+    const sourceLane = allLanes.find((l) => l.id === args.laneId);
+    if (!sourceLane) throw new Error(`Source lane not found: ${args.laneId}`);
+
+    // Attempt merge (will leave conflict markers in files)
+    const sourceBranch = branchNameFromRef(sourceLane.branchRef);
+    const mergeRes = await runGit(
+      ["merge", "--no-ff", "-m", `Merge ${sourceLane.name} into integration`, sourceBranch],
+      { cwd: integrationLane.worktreePath, timeoutMs: 60_000 }
+    );
+
+    // Get conflicting files from git status
+    const statusRes = await runGit(
+      ["status", "--porcelain"],
+      { cwd: integrationLane.worktreePath, timeoutMs: 10_000 }
+    );
+    const conflictFiles = statusRes.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("UU") || line.startsWith("AA") || line.startsWith("DD"))
+      .map((line) => line.slice(3).trim());
+
+    // Create agent chat session
+    const session = await agentChatService.createSession({
+      laneId: integrationLaneId,
+      provider: args.provider,
+      model: args.model,
+      reasoningEffort: args.reasoningEffort
+    });
+
+    // Build and send resolution prompt
+    const prompt = buildIntegrationResolutionPrompt(conflictFiles, sourceLane.name, args.autoApprove);
+    await agentChatService.sendMessage({ sessionId: session.id, text: prompt });
+
+    // Update resolution state
+    const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
+      ? JSON.parse(String(proposalRow.resolution_state_json))
+      : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+
+    resolutionState.stepResolutions[args.laneId] = "resolving";
+    resolutionState.activeChatSessionId = session.id;
+    resolutionState.activeLaneId = args.laneId;
+    resolutionState.updatedAt = nowIso();
+
+    db.run(
+      `update integration_proposals set resolution_state_json = ? where id = ?`,
+      [JSON.stringify(resolutionState), args.proposalId]
+    );
+
+    return { chatSessionId: session.id, integrationLaneId };
+  };
+
+  // B3: Build prompt for AI resolution
+  const buildIntegrationResolutionPrompt = (
+    conflictFiles: string[],
+    sourceLaneName: string,
+    autoApprove?: boolean
+  ): string => {
+    const fileList = conflictFiles.map((f) => `  - ${f}`).join("\n");
+    const modeInstruction = autoApprove
+      ? "Apply changes directly. Resolve all conflicts and commit the result."
+      : "Show your proposed changes and wait for approval before committing.";
+
+    return [
+      `You are resolving merge conflicts in an integration lane.`,
+      `The branch "${sourceLaneName}" is being merged and has conflicts in the following files:`,
+      fileList,
+      ``,
+      `Instructions:`,
+      `1. Examine each conflicting file and understand both sides of the conflict.`,
+      `2. Resolve all conflicts by editing the files to produce the correct merged result.`,
+      `3. After resolving, run \`git add\` on each resolved file and \`git commit\` to finalize the merge.`,
+      `4. Explain your resolution choices briefly.`,
+      ``,
+      modeInstruction
+    ].join("\n");
+  };
+
+  // B4: Recheck integration step after resolution
+  const recheckIntegrationStep = async (
+    args: RecheckIntegrationStepArgs
+  ): Promise<RecheckIntegrationStepResult> => {
+    const proposalRow = db.get<{
+      id: string; integration_lane_id: string | null; resolution_state_json: string | null;
+      steps_json: string;
+    }>(
+      `select id, integration_lane_id, resolution_state_json, steps_json from integration_proposals where id = ?`,
+      [args.proposalId]
+    );
+    if (!proposalRow) throw new Error(`Proposal not found: ${args.proposalId}`);
+    if (!proposalRow.integration_lane_id) throw new Error("Integration lane not created yet");
+
+    const integrationLaneId = String(proposalRow.integration_lane_id);
+    const allLanes = await laneService.list({ includeArchived: false });
+    const integrationLane = allLanes.find((l) => l.id === integrationLaneId);
+    if (!integrationLane) throw new Error(`Integration lane not found: ${integrationLaneId}`);
+
+    // Check git status for unmerged files
+    const statusRes = await runGit(
+      ["status", "--porcelain"],
+      { cwd: integrationLane.worktreePath, timeoutMs: 10_000 }
+    );
+    const conflictFiles = statusRes.stdout
+      .split("\n")
+      .filter((line) => line.startsWith("UU") || line.startsWith("AA") || line.startsWith("DD"))
+      .map((line) => line.slice(3).trim());
+
+    const resolutionState: IntegrationResolutionState = proposalRow.resolution_state_json
+      ? JSON.parse(String(proposalRow.resolution_state_json))
+      : { integrationLaneId, stepResolutions: {}, activeChatSessionId: null, activeLaneId: null, updatedAt: nowIso() };
+
+    let resolution: IntegrationStepResolution;
+    if (conflictFiles.length === 0) {
+      resolution = "resolved";
+      resolutionState.stepResolutions[args.laneId] = "resolved";
+      if (resolutionState.activeLaneId === args.laneId) {
+        resolutionState.activeChatSessionId = null;
+        resolutionState.activeLaneId = null;
+      }
+    } else {
+      resolution = "resolving";
+      resolutionState.stepResolutions[args.laneId] = "resolving";
+    }
+    resolutionState.updatedAt = nowIso();
+
+    // Check if all steps are resolved
+    const steps = JSON.parse(String(proposalRow.steps_json)) as IntegrationProposalStep[];
+    const allResolved = steps.every((step) => {
+      const stepRes = resolutionState.stepResolutions[step.laneId];
+      return stepRes === "merged-clean" || stepRes === "resolved";
+    });
+
+    // Update DB
+    db.run(
+      `update integration_proposals set resolution_state_json = ? where id = ?`,
+      [JSON.stringify(resolutionState), args.proposalId]
+    );
+
+    if (allResolved) {
+      db.run(`update integration_proposals set overall_outcome = 'clean' where id = ?`, [args.proposalId]);
+    }
+
+    return { resolution, remainingConflictFiles: conflictFiles, allResolved };
+  };
+
+  // B5: Get integration resolution state
+  const getIntegrationResolutionState = (proposalId: string): IntegrationResolutionState | null => {
+    const row = db.get<{ resolution_state_json: string | null }>(
+      `select resolution_state_json from integration_proposals where id = ?`,
+      [proposalId]
+    );
+    if (!row?.resolution_state_json) return null;
+    return JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState;
   };
 
   return {
@@ -1922,6 +2299,38 @@ export function createPrService({
 
     async listWithConflicts(): Promise<PrWithConflicts[]> {
       return await listWithConflicts();
+    },
+
+    listIntegrationProposals(): IntegrationProposal[] {
+      return listIntegrationProposals();
+    },
+
+    updateIntegrationProposal(args: UpdateIntegrationProposalArgs): void {
+      return updateIntegrationProposal(args);
+    },
+
+    deleteIntegrationProposal(proposalId: string): void {
+      return deleteIntegrationProposal(proposalId);
+    },
+
+    async createIntegrationLaneForProposal(args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> {
+      return await createIntegrationLaneForProposal(args);
+    },
+
+    async startIntegrationResolution(args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult> {
+      return await startIntegrationResolution(args);
+    },
+
+    getIntegrationResolutionState(proposalId: string): IntegrationResolutionState | null {
+      return getIntegrationResolutionState(proposalId);
+    },
+
+    async recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> {
+      return await recheckIntegrationStep(args);
+    },
+
+    setAgentChatService(svc: ReturnType<typeof createAgentChatService>): void {
+      agentChatService = svc;
     }
   };
 }

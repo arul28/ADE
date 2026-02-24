@@ -1,13 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { ChatCircle, Terminal } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
-import { Button } from "../ui/Button";
 import { LaneTerminalsPanel } from "./LaneTerminalsPanel";
 import { AgentChatPane } from "../chat/AgentChatPane";
+import { COLORS, MONO_FONT } from "./laneDesignTokens";
 
 function isChatToolType(toolType: string | null | undefined): boolean {
   return toolType === "codex-chat" || toolType === "claude-chat";
 }
+
+const WORK_TABS = [
+  { id: "terminal" as const, num: "01", label: "TERMINAL", Icon: Terminal },
+  { id: "chat" as const, num: "02", label: "CHAT", Icon: ChatCircle },
+];
 
 export function LaneWorkPane({
   laneId
@@ -50,26 +55,50 @@ export function LaneWorkPane({
   }, [focusedSessionId, laneId]);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="mb-2 flex items-center gap-2 rounded-lg border border-border/30 bg-card/60 p-1">
-        <Button
-          size="sm"
-          variant={view === "terminal" ? "primary" : "outline"}
-          className="h-7 px-2 text-xs"
-          onClick={() => setView("terminal")}
-        >
-          <Terminal size={14} />
-          Terminal view
-        </Button>
-        <Button
-          size="sm"
-          variant={view === "chat" ? "primary" : "outline"}
-          className="h-7 px-2 text-xs"
-          onClick={() => setView("chat")}
-        >
-          <ChatCircle size={14} />
-          Chat view
-        </Button>
+    <div className="flex h-full flex-col" style={{ background: COLORS.pageBg }}>
+      <div
+        className="flex items-center gap-0.5 shrink-0"
+        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}
+      >
+        {WORK_TABS.map((tab) => {
+          const isActive = view === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              className="relative flex items-center gap-2 px-4 py-2 transition-colors duration-150"
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                ...(isActive
+                  ? {
+                      background: COLORS.accentSubtle,
+                      borderLeft: `2px solid ${COLORS.accent}`,
+                      color: COLORS.textPrimary,
+                    }
+                  : {
+                      background: "transparent",
+                      borderLeft: "2px solid transparent",
+                      color: COLORS.textMuted,
+                    }),
+              }}
+              onClick={() => setView(tab.id)}
+              onMouseEnter={(e) => {
+                if (!isActive) e.currentTarget.style.color = COLORS.textSecondary;
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive) e.currentTarget.style.color = COLORS.textMuted;
+              }}
+            >
+              <span style={{ color: isActive ? COLORS.accent : COLORS.textDim }}>{tab.num}</span>
+              <tab.Icon size={14} />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
       </div>
       <div className="relative flex-1 min-h-0">
         <div className="absolute inset-0 p-2">

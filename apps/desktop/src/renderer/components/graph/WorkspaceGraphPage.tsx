@@ -22,7 +22,7 @@ import {
   useReactFlow
 } from "@xyflow/react";
 import { Warning, ArrowSquareOut, Funnel, Flag, GitBranch, Stack, Plus, MagnifyingGlass, Shield, Sparkle, Star, Tag, Lightning, Cube, SquaresFour } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type {
   BatchAssessmentResult,
   ConflictStatus,
@@ -48,7 +48,8 @@ import type {
   PrReviewStatus,
   PrState,
   PrStatus,
-  PrSummary
+  PrSummary,
+  IntegrationProposal
 } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
@@ -74,6 +75,8 @@ type GraphNodeData = {
   restackPulse: boolean;
   mergeInProgress: boolean;
   mergeDisappearing: boolean;
+  isIntegration: boolean;
+  focusGlow: boolean;
 };
 
 type RestackPublishOutcome =
@@ -95,7 +98,7 @@ type GraphPrOverlay = {
 };
 
 type GraphEdgeData = {
-  edgeType: "topology" | "stack" | "risk";
+  edgeType: "topology" | "stack" | "risk" | "integration";
   riskLevel?: "none" | "low" | "medium" | "high";
   overlapCount?: number;
   stale?: boolean;
@@ -499,6 +502,7 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         "group relative rounded-lg border bg-card/90 px-2 py-1.5 text-[11px] shadow-sm transition-all duration-150",
         lane.laneType === "attached" ? "border-dashed text-muted-fg" : "border-border text-fg",
         lane.laneType === "primary" && "border-[3px] border-accent",
+        data.isIntegration && "border-2",
         selected && "ring-2 ring-accent",
         data.dimmed && "opacity-20 scale-50",
         data.highlight && "scale-[1.02] shadow-[0_2px_8px_rgba(0,0,0,0.2)]",
@@ -506,17 +510,28 @@ function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>) {
         data.restackFailed && "border-red-500 ring-1 ring-red-500/80",
         data.restackPulse && "ade-node-failed-pulse",
         data.mergeInProgress && "ade-node-merging",
-        data.mergeDisappearing && "ade-node-disappear"
+        data.mergeDisappearing && "ade-node-disappear",
+        data.focusGlow && "ring-2 ring-purple-400/60 shadow-[0_0_20px_rgba(167,139,250,0.35)]"
       )}
       style={{
         width: dimensions.width,
         minHeight: dimensions.height,
-        borderColor: lane.color ?? data.environment?.color ?? undefined
+        borderColor: data.isIntegration ? "#A78BFA" : (lane.color ?? data.environment?.color ?? undefined)
       }}
     >
       <div className="flex items-center gap-1">
         {iconGlyph(lane.icon)}
         <span className="truncate font-semibold">{lane.name}</span>
+        {data.isIntegration ? (
+          <span
+            className="ml-auto flex items-center gap-0.5 rounded px-1 py-0 text-[9px] font-medium uppercase tracking-wider"
+            style={{ color: "#A78BFA", backgroundColor: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)" }}
+            title="Integration lane"
+          >
+            <GitBranch size={10} weight="bold" />
+            Integration
+          </span>
+        ) : null}
       </div>
       <div className="truncate text-[11px] text-muted-fg">{lane.branchRef}</div>
       <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -605,15 +620,17 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
   });
   const pr = data?.pr;
   const color =
-    data?.edgeType === "risk"
-      ? riskStrokeColor(data.riskLevel)
-      : pr
-        ? prOverlayColor(pr)
-        : data?.edgeType === "stack"
-          ? "#38bdf8"
-          : "#6b7280";
-  const width = pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
-  const dash = data?.edgeType === "risk" ? "5 3" : undefined;
+    data?.edgeType === "integration"
+      ? "#A78BFA"
+      : data?.edgeType === "risk"
+        ? riskStrokeColor(data.riskLevel)
+        : pr
+          ? prOverlayColor(pr)
+          : data?.edgeType === "stack"
+            ? "#38bdf8"
+            : "#6b7280";
+  const width = data?.edgeType === "integration" ? 2.4 : pr && data?.edgeType !== "risk" ? 2.6 : data?.edgeType === "stack" ? 3 : 1.8;
+  const dash = data?.edgeType === "risk" ? "5 3" : data?.edgeType === "integration" ? "8 4" : undefined;
   const effectiveWidth = (selected ? width + 1 : width) + (data?.highlight ? 0.5 : 0);
   const effectiveOpacity = data?.dimmed ? 0.16 : data?.highlight ? 1 : data?.stale ? 0.55 : 0.9;
   const badgeColor = pr ? prOverlayColor(pr) : "#6b7280";
@@ -673,8 +690,16 @@ function RiskEdge(props: EdgeProps<Edge<GraphEdgeData>>) {
 const nodeTypes = { lane: GraphLaneNode };
 const edgeTypes = { custom: RiskEdge };
 
+function isIntegrationLane(lane: LaneSummary): boolean {
+  return (
+    (lane.description != null && lane.description.includes("Integration lane")) ||
+    lane.name.startsWith("integration/")
+  );
+}
+
 function GraphInner() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
@@ -793,6 +818,8 @@ function GraphInner() {
   const [prDialog, setPrDialog] = React.useState<PrDialogState | null>(null);
   const [conflictPanel, setConflictPanel] = React.useState<ConflictPanelState | null>(null);
   const [integrationDialog, setIntegrationDialog] = React.useState<IntegrationDialogState | null>(null);
+  const [integrationProposals, setIntegrationProposals] = React.useState<IntegrationProposal[]>([]);
+  const [focusLaneId, setFocusLaneId] = React.useState<string | null>(null);
   const [edgeHover, setEdgeHover] = React.useState<{ x: number; y: number; label: string } | null>(null);
   const [dragTrail, setDragTrail] = React.useState<{ laneId: string; from: { x: number; y: number }; to: { x: number; y: number } } | null>(null);
   const [dropPreview, setDropPreview] = React.useState<{
@@ -972,6 +999,25 @@ function GraphInner() {
     return map;
   }, [laneById, laneIdByBranchRef, mergeInProgressByLaneId, primaryLaneId, prs]);
 
+  // Map integration lane id → source lane ids from proposals
+  const integrationSourcesByLaneId = React.useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const proposal of integrationProposals) {
+      // Find integration lanes that were created from this proposal
+      for (const lane of lanes) {
+        if (!isIntegrationLane(lane)) continue;
+        // Match by description containing proposalId or by source lane overlap
+        const proposalSources = proposal.sourceLaneIds;
+        if (proposalSources.length > 0) {
+          const existing = map.get(lane.id) ?? [];
+          const merged = new Set([...existing, ...proposalSources]);
+          map.set(lane.id, [...merged]);
+        }
+      }
+    }
+    return map;
+  }, [integrationProposals, lanes]);
+
   const connectedToHoveredNode = React.useMemo(() => {
     if (!hoveredNodeId) return new Set<string>();
     const connected = new Set<string>([hoveredNodeId]);
@@ -1138,7 +1184,7 @@ function GraphInner() {
   React.useEffect(() => {
     setLoadingTopology(true);
     void refreshLanes()
-      .catch(() => {})
+      .catch((err) => console.warn("[Graph] refreshLanes failed:", err))
       .finally(() => setLoadingTopology(false));
     void refreshRiskBatch();
     void refreshActivity();
@@ -1155,7 +1201,7 @@ function GraphInner() {
         if (cancelled) return;
         setPrs(list);
       })
-      .catch(() => {})
+      .catch((err) => console.warn("[Graph] listAll PRs failed:", err))
       .finally(() => {
         if (!cancelled) setLoadingPrs(false);
       });
@@ -1174,6 +1220,13 @@ function GraphInner() {
   }, []);
 
   React.useEffect(() => {
+    window.ade.prs
+      .listProposals()
+      .then((proposals) => setIntegrationProposals(proposals))
+      .catch((err) => console.warn("[Graph] Failed to load integration proposals:", err));
+  }, [lanes]);
+
+  React.useEffect(() => {
     if (!project?.rootPath) return;
     setLoadedGraphState(false);
     void window.ade.graphState
@@ -1181,7 +1234,8 @@ function GraphInner() {
       .then((state) => {
         setGraphState(ensureGraphState(state));
       })
-      .catch(() => {
+      .catch((err) => {
+        console.warn("[Graph] Failed to load graph state:", err);
         setGraphState(createDefaultState());
       })
       .finally(() => {
@@ -1194,6 +1248,32 @@ function GraphInner() {
     const timer = window.setTimeout(() => setUndoToast(null), 10_000);
     return () => window.clearTimeout(timer);
   }, [undoToast]);
+
+  // E3: Handle ?focusLane= query param
+  React.useEffect(() => {
+    const focusParam = searchParams.get("focusLane");
+    if (!focusParam || !loadedGraphState || lanes.length === 0) return;
+    const targetLane = lanes.find((lane) => lane.id === focusParam);
+    if (!targetLane) return;
+    setFocusLaneId(focusParam);
+    // Center on the focused node
+    const timer = window.setTimeout(() => {
+      const targetNode = nodes.find((node) => node.id === focusParam);
+      if (targetNode) {
+        void reactFlow.fitView({ nodes: [targetNode], duration: 500, padding: 0.4 });
+      }
+      // Clear the param after initial focus
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("focusLane");
+        return next;
+      }, { replace: true });
+      // Clear glow after 4 seconds
+      const glowTimer = window.setTimeout(() => setFocusLaneId(null), 4000);
+      return () => window.clearTimeout(glowTimer);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchParams, loadedGraphState, lanes, nodes, reactFlow, setSearchParams]);
 
   React.useEffect(() => {
     const laneId = nodeTooltip?.laneId ?? null;
@@ -1288,7 +1368,7 @@ function GraphInner() {
       setAutoRebaseByLaneId(next);
     });
     const interval = window.setInterval(() => {
-      void refreshLanes().catch(() => {});
+      void refreshLanes().catch((err) => console.warn("[Graph] periodic refreshLanes failed:", err));
       void refreshActivity();
     }, 5000);
     const syncInterval = window.setInterval(() => {
@@ -1355,7 +1435,9 @@ function GraphInner() {
           restackFailed: restackFailedLaneId === lane.id,
           restackPulse: restackFailedLaneId === lane.id && restackFailedPulse,
           mergeInProgress: Boolean(mergeInProgressByLaneId[lane.id]),
-          mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id])
+          mergeDisappearing: Boolean(mergeDisappearingAtByLaneId[lane.id]),
+          isIntegration: isIntegrationLane(lane),
+          focusGlow: focusLaneId === lane.id
         },
         selected: selectedLaneIds.includes(lane.id),
         draggable: true
@@ -1456,6 +1538,30 @@ function GraphInner() {
       }
     }
 
+    // Integration edges: source lane → integration lane
+    for (const [integLaneId, sourceLaneIds] of integrationSourcesByLaneId.entries()) {
+      if (hiddenByCollapse.has(integLaneId)) continue;
+      if (!laneById.has(integLaneId)) continue;
+      for (const srcId of sourceLaneIds) {
+        if (hiddenByCollapse.has(srcId)) continue;
+        if (!laneById.has(srcId)) continue;
+        const edgeId = `integration:${srcId}:${integLaneId}`;
+        const visual = edgeVisualState(edgeId, srcId, integLaneId);
+        nextEdges.push({
+          id: edgeId,
+          source: srcId,
+          target: integLaneId,
+          sourceHandle: "source",
+          targetHandle: "target",
+          type: "custom",
+          data: { edgeType: "integration", ...visual },
+          markerEnd: { type: MarkerType.ArrowClosed },
+          animated: true,
+          selected: visual.highlight
+        });
+      }
+    }
+
     setEdges(nextEdges);
   }, [
     activityBucketByLaneId,
@@ -1464,8 +1570,10 @@ function GraphInner() {
     appearanceEditor,
     collapsedLaneIds,
     connectedToHoveredNode,
+    focusLaneId,
     hiddenByCollapse,
     hoveredNodeId,
+    integrationSourcesByLaneId,
     laneById,
     laneMatchesFilters,
     lanes,
@@ -2407,6 +2515,8 @@ function GraphInner() {
     );
   }
 
+  const allNodesHidden = nodes.length > 0 && nodes.every((node) => node.data.dimmed);
+
   return (
     <div className="relative h-full w-full">
       <div className="absolute inset-0 h-full w-full bg-bg [background-image:radial-gradient(var(--color-border)_1px,transparent_1px)] [background-size:16px_16px] [opacity:0.3]" />
@@ -2994,6 +3104,28 @@ function GraphInner() {
             </div>
           </Panel>
         </ReactFlow>
+        {allNodesHidden ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center pt-[52px]">
+            <div className="pointer-events-auto rounded-lg border border-border/10 bg-card/90 backdrop-blur-sm shadow-card px-5 py-4 text-center">
+              <Funnel size={24} weight="regular" className="mx-auto mb-2 text-muted-fg" />
+              <div className="text-sm font-medium text-fg">No visible lanes</div>
+              <div className="mt-1 text-xs text-muted-fg">All lanes are hidden by the current filters.</div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3 text-xs"
+                onClick={() => {
+                  updateGraphSnapshot((snapshot) => ({
+                    ...snapshot,
+                    filters: buildDefaultFilter()
+                  }));
+                }}
+              >
+                Reset Filters
+              </Button>
+            </div>
+          </div>
+        ) : null}
         {dragTrailScreen ? (
           <svg className="pointer-events-none absolute inset-x-0 bottom-0 top-[52px] z-10">
             <line

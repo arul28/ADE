@@ -446,6 +446,9 @@ app.whenReady().then(async () => {
       onSessionEnded: onTrackedSessionEnded
     });
 
+    // Wire agentChatService into prService for integration resolution
+    prService.setAgentChatService(agentChatService);
+
     const gitService = createGitOperationsService({
       laneService,
       operationService,

@@ -19,6 +19,8 @@ import type {
   QueueLandingState,
   PrEventPayload,
   LaneSummary,
+  AutoRebaseLaneStatus,
+  AutoRebaseEventPayload,
 } from "../../../../shared/types";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
@@ -53,6 +55,7 @@ type PrsState = {
 
   // Rebase state
   rebaseNeeds: RebaseNeed[];
+  autoRebaseStatuses: AutoRebaseLaneStatus[];
 
   // Queue state
   queueStates: Record<string, QueueLandingState>;
@@ -126,6 +129,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Rebase state
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
+  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
 
   // Queue state
   const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
@@ -327,6 +331,19 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Subscribe to auto-rebase events
+  useEffect(() => {
+    window.ade.lanes.listAutoRebaseStatuses().then(setAutoRebaseStatuses).catch((err) => {
+      console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);
+    });
+    const unsub = window.ade.lanes.onAutoRebaseEvent((event: AutoRebaseEventPayload) => {
+      if (event.type === "auto-rebase-updated") {
+        setAutoRebaseStatuses(event.statuses);
+      }
+    });
+    return unsub;
+  }, []);
+
   const value = useMemo<PrsContextValue>(
     () => ({
       activeTab,
@@ -345,6 +362,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailComments,
       detailBusy,
       rebaseNeeds,
+      autoRebaseStatuses,
       queueStates,
       inlineTerminal,
       resolverModel,
@@ -381,6 +399,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailComments,
       detailBusy,
       rebaseNeeds,
+      autoRebaseStatuses,
       queueStates,
       inlineTerminal,
       resolverModel,

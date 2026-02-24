@@ -1,17 +1,22 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import type { ConflictOverlap, ConflictStatus } from "../../../shared/types";
-import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
-import { cn } from "../ui/cn";
+import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 
-function statusTone(status: ConflictStatus["status"]): { label: string; className: string } {
-  if (status === "conflict-active") return { label: "conflict-active", className: "text-red-200 border-red-700/60 bg-red-900/20" };
-  if (status === "conflict-predicted") return { label: "conflict-predicted", className: "text-orange-200 border-orange-700/60 bg-orange-900/20" };
-  if (status === "behind-base") return { label: "behind-base", className: "text-amber-200 border-amber-700/60 bg-amber-900/20" };
-  if (status === "merge-ready") return { label: "merge-ready", className: "text-emerald-200 border-emerald-700/60 bg-emerald-900/20" };
-  return { label: "unknown", className: "text-muted-fg border-border bg-card/30" };
+function statusBadge(status: ConflictStatus["status"]): { label: string; color: string } {
+  if (status === "conflict-active") return { label: "CONFLICT-ACTIVE", color: COLORS.danger };
+  if (status === "conflict-predicted") return { label: "CONFLICT-PREDICTED", color: COLORS.warning };
+  if (status === "behind-base") return { label: "BEHIND-BASE", color: COLORS.warning };
+  if (status === "merge-ready") return { label: "MERGE-READY", color: COLORS.success };
+  return { label: "UNKNOWN", color: COLORS.textMuted };
+}
+
+function riskColor(level: string): string {
+  if (level === "high") return COLORS.danger;
+  if (level === "medium") return COLORS.warning;
+  if (level === "low") return COLORS.success;
+  return COLORS.textMuted;
 }
 
 export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
@@ -53,88 +58,113 @@ export function LaneConflictsPanel({ laneId }: { laneId: string | null }) {
     return <EmptyState title="No lane selected" description="Select a lane to view its conflict status." />;
   }
 
-  const tone = status ? statusTone(status.status) : null;
+  const badge = status ? statusBadge(status.status) : null;
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-fg">Lane Conflicts</span>
-          {tone ? (
-            <Chip className={cn("text-[11px] px-1.5", tone.className)}>{tone.label}</Chip>
+          <span style={LABEL_STYLE}>LANE CONFLICTS</span>
+          {badge ? (
+            <span style={inlineBadge(badge.color, { fontSize: 9 })}>{badge.label}</span>
           ) : (
-            <Chip className="text-[11px] px-1.5">{loading ? "loading…" : "unknown"}</Chip>
+            <span style={inlineBadge(COLORS.textMuted, { fontSize: 9 })}>{loading ? "LOADING..." : "UNKNOWN"}</span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" className="h-7" onClick={() => void refresh()} disabled={loading}>
-            Refresh
-          </Button>
-          <Button size="sm" variant="primary" className="h-7" onClick={() => navigate("/conflicts")}>
-            Open Conflicts Tab
-          </Button>
+          <button type="button" style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => void refresh()} disabled={loading}>
+            REFRESH
+          </button>
+          <button type="button" style={primaryButton({ height: 28, padding: "0 10px", fontSize: 10 })} onClick={() => navigate("/conflicts")}>
+            OPEN CONFLICTS
+          </button>
         </div>
       </div>
 
       {status ? (
-        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-          <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-2.5 shadow-card transition-all duration-150 hover:shadow-card-hover hover:bg-card/50">
-            <div className="text-[11px] uppercase tracking-wider text-muted-fg">Overlaps</div>
-            <div className={cn("font-semibold text-fg", status.overlappingFileCount > 0 && "text-amber-400")}>{status.overlappingFileCount}</div>
+        <div className="mt-2 grid grid-cols-3 gap-2" style={{ fontSize: 12 }}>
+          <div style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 10 }}>
+            <div style={LABEL_STYLE}>OVERLAPS</div>
+            <div style={{
+              fontFamily: MONO_FONT, fontSize: 13, fontWeight: 700, marginTop: 4,
+              color: status.overlappingFileCount > 0 ? COLORS.warning : COLORS.textPrimary
+            }}>
+              {status.overlappingFileCount}
+            </div>
           </div>
-          <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-2.5 shadow-card transition-all duration-150 hover:shadow-card-hover hover:bg-card/50">
-            <div className="text-[11px] uppercase tracking-wider text-muted-fg">Peers</div>
-            <div className={cn("font-semibold text-fg", status.peerConflictCount > 0 && "text-red-400")}>{status.peerConflictCount}</div>
+          <div style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 10 }}>
+            <div style={LABEL_STYLE}>PEERS</div>
+            <div style={{
+              fontFamily: MONO_FONT, fontSize: 13, fontWeight: 700, marginTop: 4,
+              color: status.peerConflictCount > 0 ? COLORS.danger : COLORS.textPrimary
+            }}>
+              {status.peerConflictCount}
+            </div>
           </div>
-          <div className="rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm p-2.5 shadow-card transition-all duration-150 hover:shadow-card-hover hover:bg-card/50">
-            <div className="text-[11px] uppercase tracking-wider text-muted-fg">Predicted</div>
-            <div className="font-semibold text-fg">{status.lastPredictedAt ? new Date(status.lastPredictedAt).toLocaleString() : "---"}</div>
+          <div style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 10 }}>
+            <div style={LABEL_STYLE}>PREDICTED</div>
+            <div style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 700, marginTop: 4, color: COLORS.textPrimary }}>
+              {status.lastPredictedAt ? new Date(status.lastPredictedAt).toLocaleString() : "---"}
+            </div>
           </div>
         </div>
       ) : null}
 
-      {error ? <div className="mt-2 rounded-lg border border-red-500/20 bg-red-950/20 p-2.5 text-xs text-red-300 shadow-[0_0_8px_-2px_rgba(239,68,68,0.15)]">{error}</div> : null}
+      {error ? (
+        <div style={{ marginTop: 8, background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, padding: 10, fontSize: 12, color: COLORS.danger }}>
+          {error}
+        </div>
+      ) : null}
 
-      <div className="mt-2 flex-1 min-h-0 overflow-auto rounded-lg border border-border/10 bg-card/30 backdrop-blur-sm shadow-card">
-        <div className="px-3 py-1.5 text-[11px] uppercase tracking-wider text-muted-fg bg-card/30">Overlaps</div>
-        <div className="flex flex-col gap-1.5 p-1.5">
-          {overlaps.map((overlap) => (
-            <div key={overlap.peerId ?? "base"} className={cn(
-              "rounded-lg border border-border/10 bg-card/40 backdrop-blur-sm px-3 py-2.5 text-xs transition-all duration-150 hover:bg-card/60 hover:shadow-card-hover hover:-translate-y-[0.5px]",
-              overlap.riskLevel === "high" && "border-red-500/15 shadow-[0_0_8px_-2px_rgba(239,68,68,0.1)]",
-              overlap.riskLevel === "medium" && "border-amber-500/15 shadow-[0_0_8px_-2px_rgba(245,158,11,0.1)]",
-              overlap.riskLevel === "low" && "border-emerald-500/15"
-            )}>
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="truncate font-semibold text-fg">{overlap.peerName}</div>
-                  <div className="truncate text-[11px] text-muted-fg">
-                    risk: <span className={cn(
-                      overlap.riskLevel === "high" && "text-red-400",
-                      overlap.riskLevel === "medium" && "text-amber-400",
-                      overlap.riskLevel === "low" && "text-emerald-400"
-                    )}>{overlap.riskLevel}</span> · files: {overlap.files.length}
-                  </div>
-                </div>
-              </div>
-              {overlap.files.length ? (
-                <div className="mt-1.5 max-h-[120px] overflow-auto rounded-md bg-bg/30 p-1.5">
-                  {overlap.files.slice(0, 12).map((file) => (
-                    <div key={file.path} className="truncate font-mono text-[11px] text-muted-fg py-0.5" title={file.path}>
-                      {file.path}
+      <div
+        className="mt-2 flex-1 min-h-0 overflow-auto"
+        style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+      >
+        <div style={{ padding: "6px 12px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
+          <span style={LABEL_STYLE}>OVERLAPS</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {overlaps.map((overlap) => {
+            const rc = riskColor(overlap.riskLevel);
+            return (
+              <div
+                key={overlap.peerId ?? "base"}
+                style={{
+                  padding: "10px 12px",
+                  fontSize: 12,
+                  borderBottom: `1px solid ${COLORS.border}`,
+                  borderLeft: `3px solid ${rc}`,
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate" style={{ fontWeight: 600, color: COLORS.textPrimary }}>{overlap.peerName}</div>
+                    <div className="truncate" style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
+                      risk: <span style={{ color: rc }}>{overlap.riskLevel}</span> · files: {overlap.files.length}
                     </div>
-                  ))}
-                  {overlap.files.length > 12 ? (
-                    <div className="px-1 py-0.5 text-[11px] text-muted-fg">+{overlap.files.length - 12} more...</div>
-                  ) : null}
+                  </div>
+                  <span style={inlineBadge(rc, { fontSize: 9 })}>{overlap.riskLevel.toUpperCase()}</span>
                 </div>
-              ) : null}
-            </div>
-          ))}
-          {!overlaps.length && !loading ? <div className="px-3 py-3 text-xs text-muted-fg">No overlaps detected.</div> : null}
+                {overlap.files.length ? (
+                  <div style={{ marginTop: 6, maxHeight: 120, overflow: "auto", background: COLORS.recessedBg, padding: 6 }}>
+                    {overlap.files.slice(0, 12).map((file) => (
+                      <div key={file.path} className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted, padding: "1px 0" }} title={file.path}>
+                        {file.path}
+                      </div>
+                    ))}
+                    {overlap.files.length > 12 ? (
+                      <div style={{ fontSize: 11, color: COLORS.textDim, padding: "2px 0" }}>+{overlap.files.length - 12} more...</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {!overlaps.length && !loading ? (
+            <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textDim, fontStyle: "italic" }}>No overlaps detected.</div>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
-

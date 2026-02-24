@@ -848,6 +848,13 @@ function migrate(db: Database) {
     )
   `);
   db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
+  addColumnIfMissing(db, "integration_proposals", "title text default ''", "title");
+  addColumnIfMissing(db, "integration_proposals", "body text default ''", "body");
+  addColumnIfMissing(db, "integration_proposals", "draft integer not null default 0", "draft");
+  addColumnIfMissing(db, "integration_proposals", "integration_lane_name text default ''", "integration_lane_name");
+  addColumnIfMissing(db, "integration_proposals", "status text not null default 'proposed'", "status");
+  addColumnIfMissing(db, "integration_proposals", "integration_lane_id text", "integration_lane_id");
+  addColumnIfMissing(db, "integration_proposals", "resolution_state_json text", "resolution_state_json");
 
   // Queue landing state table (crash recovery for sequential landing)
   db.run(`

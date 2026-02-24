@@ -1,6 +1,6 @@
 import React from "react";
 import type { GitCommitSummary } from "../../../shared/types";
-import { cn } from "../ui/cn";
+import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
 
 function formatTs(ts: string): string {
   const date = new Date(ts);
@@ -59,7 +59,6 @@ export function CommitTimeline({
     setError(null);
     try {
       const rows = await window.ade.git.listRecentCommits({ laneId, limit });
-      // Oldest first at top, newest at bottom (reversed from API which returns newest first)
       setCommits([...rows].reverse());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -81,7 +80,6 @@ export function CommitTimeline({
     void load();
   }, [load, refreshTrigger]);
 
-  // Scroll to bottom on initial load so newest commits are visible
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -112,7 +110,6 @@ export function CommitTimeline({
 
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
-    // Load older commits when user scrolls near the top (oldest commits are at top)
     if (el.scrollTop < 60 && !loading) {
       setLimit((prev) => Math.min(200, prev + 40));
     }
@@ -122,49 +119,72 @@ export function CommitTimeline({
   const hoveredMeta = hovered ? metaByShaRef.current.get(hovered.sha) ?? null : null;
 
   return (
-    <div ref={containerRef} className="relative flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between px-2 py-1.5 bg-card/40 backdrop-blur-sm">
+    <div ref={containerRef} className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
+      {/* Header */}
+      <div
+        className="flex items-center justify-between shrink-0"
+        style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+      >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-fg">Commits</span>
-          <span className="text-[11px] text-muted-fg">{loading ? "loading..." : `${commits.length}`}</span>
-          <span className="text-[11px] text-muted-fg/80" title="Blue timeline node means merge commit (multiple parents).">
-            blue dot = merge
+          <span style={LABEL_STYLE}>COMMITS</span>
+          <span style={{ ...inlineBadge(COLORS.accent), fontSize: 9 }}>
+            {loading ? "..." : commits.length}
+          </span>
+          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }} title="Blue node = merge commit">
+            blue = merge
           </span>
         </div>
         <button
           type="button"
-          className="text-[11px] text-muted-fg hover:text-fg"
+          style={{
+            fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700,
+            color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
+            textTransform: "uppercase", letterSpacing: "1px",
+          }}
           onClick={() => void load()}
           disabled={!laneId || loading}
           title="Refresh"
+          onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textPrimary; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textMuted; }}
         >
-          Refresh
+          REFRESH
         </button>
       </div>
 
-      {error ? <div className="px-2 py-2 text-xs text-red-300">{error}</div> : null}
+      {error ? (
+        <div style={{ padding: "8px 12px", fontSize: 12, color: COLORS.danger }}>{error}</div>
+      ) : null}
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onScroll={onScroll}>
-        <div className="relative pl-5 pr-1 py-1">
-          {/* Continuous vertical line with accent tint */}
-          <div className="absolute left-[11px] top-0 bottom-0 w-px ade-timeline-line" />
+        <div className="relative" style={{ paddingLeft: 20, paddingRight: 4, paddingTop: 4, paddingBottom: 4 }}>
+          {/* Continuous vertical line */}
+          <div
+            className="absolute"
+            style={{ left: 11, top: 0, bottom: 0, width: 1, background: COLORS.border }}
+          />
 
           {commits.map((commit, idx) => {
             const isNewest = idx === commits.length - 1;
             const isSelected = selectedSha === commit.sha;
             const isMerge = commit.parents.length > 1;
             const isLast = idx === commits.length - 1;
+
+            const dotColor = isNewest ? COLORS.success : isMerge ? COLORS.info : COLORS.outlineBorder;
+            const dotBg = isNewest ? COLORS.success : isMerge ? "transparent" : COLORS.pageBg;
+
             return (
               <React.Fragment key={commit.sha}>
                 <button
                   type="button"
                   title={isMerge ? "Merge commit (multiple parents)." : "Commit"}
-                  className={cn(
-                    "group relative flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left text-xs transition-all duration-150",
-                    isSelected
-                      ? "bg-accent/10 text-fg shadow-[0_0_10px_-3px_rgba(6,214,160,0.15)] border border-accent/10"
-                      : "text-muted-fg hover:bg-card/40 hover:text-fg hover:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.3)] hover:-translate-y-[0.5px] border border-transparent hover:border-border/10"
-                  )}
+                  className="relative flex w-full items-start gap-2 text-left transition-all duration-150"
+                  style={{
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    borderLeft: isSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+                    background: isSelected ? COLORS.accentSubtle : "transparent",
+                    color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
+                  }}
                   onClick={() => onSelectCommit(commit)}
                   onMouseEnter={(e) => {
                     setHoveredSha(commit.sha);
@@ -177,64 +197,60 @@ export function CommitTimeline({
                         y: rect.top - containerRect.top
                       });
                     }
+                    if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg;
                   }}
-                  onMouseLeave={() => {
+                  onMouseLeave={(e) => {
                     setHoveredSha((prev) => (prev === commit.sha ? null : prev));
                     setTooltipPos(null);
+                    if (!isSelected) e.currentTarget.style.background = "transparent";
                   }}
                 >
                   {/* Node on the line */}
-                  <div className="absolute left-[-8px] top-[6px]">
+                  <div className="absolute" style={{ left: -8, top: 10 }}>
                     <div
-                      className={cn(
-                        "h-2.5 w-2.5 rounded-full border-2 transition-all duration-150",
-                        isNewest
-                          ? "border-emerald-400 bg-emerald-500 ade-glow-emerald"
-                          : isMerge
-                            ? "border-sky-400 bg-transparent ade-glow-sky"
-                            : "border-border/50 bg-bg hover:border-amber-500/40",
-                        isSelected && "ring-2 ring-accent/60 ring-offset-1 ring-offset-bg"
-                      )}
+                      style={{
+                        width: 10, height: 10, borderRadius: "50%",
+                        border: `2px solid ${dotColor}`,
+                        background: dotBg,
+                        boxShadow: isSelected ? `0 0 0 2px ${COLORS.accent}60` : "none",
+                      }}
                     />
                     {isMerge ? (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="h-1 w-1 rounded-full bg-sky-400" />
+                      <div className="absolute" style={{ inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div style={{ width: 4, height: 4, borderRadius: "50%", background: COLORS.info }} />
                       </div>
                     ) : null}
                   </div>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className={cn("font-mono text-[11px]", isNewest ? "text-emerald-300" : "text-muted-fg")}>
+                      <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: isNewest ? COLORS.success : COLORS.textMuted }}>
                         {commit.shortSha}
                       </span>
-                      {isNewest ? <span className="rounded bg-emerald-900/30 border border-emerald-700/60 px-1 text-[9px] text-emerald-300 uppercase tracking-wider">HEAD</span> : null}
-                      {isMerge ? <span className="rounded px-1 text-[9px] bg-sky-500/15 text-sky-700">merge</span> : null}
+                      {isNewest ? <span style={inlineBadge(COLORS.success, { fontSize: 9 })}>HEAD</span> : null}
+                      {isMerge ? <span style={inlineBadge(COLORS.info, { fontSize: 9 })}>MERGE</span> : null}
                       {hasUpstream === false ? (
-                        <span className="rounded px-1 text-[9px] bg-slate-500/15 text-slate-700" title="No upstream branch yet. Push once to publish this lane.">
-                          unpublished
-                        </span>
+                        <span style={inlineBadge(COLORS.textMuted, { fontSize: 9 })} title="No upstream branch yet.">UNPUBLISHED</span>
                       ) : commit.pushed ? (
-                        <span className="rounded px-1 text-[9px] bg-sky-500/15 text-sky-600" title="This commit exists on the remote branch.">
-                          remote
-                        </span>
+                        <span style={inlineBadge(COLORS.info, { fontSize: 9 })} title="This commit exists on the remote branch.">REMOTE</span>
                       ) : (
-                        <span className="rounded px-1 text-[9px] bg-amber-500/15 text-amber-700" title="This commit is local only and will be published on push.">
-                          needs push
-                        </span>
+                        <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title="This commit is local only.">NEEDS PUSH</span>
                       )}
-                      <span className="ml-auto text-[11px] text-muted-fg/60 shrink-0">{formatRelative(commit.authoredAt)}</span>
+                      <span className="ml-auto shrink-0" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>
+                        {formatRelative(commit.authoredAt)}
+                      </span>
                     </div>
-                    <div className="truncate text-fg leading-tight">{commit.subject}</div>
+                    <div className="truncate" style={{ color: COLORS.textPrimary, lineHeight: 1.4, marginTop: 2 }}>
+                      {commit.subject}
+                    </div>
                   </div>
                 </button>
-                {/* Arrow connector pointing up between commits */}
+                {/* Arrow connector */}
                 {!isLast ? (
-                  <div className="relative flex items-center justify-start pl-[3px] h-3">
-                    <div className="absolute left-[10px] top-0 bottom-0 w-px ade-timeline-line" />
-                    {/* Small upward arrow */}
-                    <svg className="absolute left-[6px] top-[1px]" width="10" height="10" viewBox="0 0 10 10">
-                      <path d="M5 9 L5 2 M2 5 L5 1 L8 5" fill="none" stroke="currentColor" className="text-amber-500/50" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <div className="relative" style={{ height: 12, paddingLeft: 3 }}>
+                    <div className="absolute" style={{ left: 10, top: 0, bottom: 0, width: 1, background: COLORS.border }} />
+                    <svg className="absolute" style={{ left: 6, top: 1 }} width="10" height="10" viewBox="0 0 10 10">
+                      <path d="M5 9 L5 2 M2 5 L5 1 L8 5" fill="none" stroke={COLORS.warning} strokeOpacity={0.5} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </div>
                 ) : null}
@@ -242,32 +258,39 @@ export function CommitTimeline({
             );
           })}
           {!commits.length && !loading ? (
-            <div className="p-3 text-center text-xs text-muted-fg opacity-60 italic">No commits found</div>
+            <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textDim, fontStyle: "italic" }}>
+              No commits found
+            </div>
           ) : null}
         </div>
       </div>
 
-      {/* Tooltip that follows hovered item */}
+      {/* Tooltip */}
       {hovered && tooltipPos ? (
         <div
-          className="pointer-events-none absolute z-50 w-[260px] rounded-lg border border-border/20 bg-card/80 p-2.5 text-xs shadow-float backdrop-blur-md"
+          className="pointer-events-none absolute z-50"
           style={{
+            width: 260,
+            background: COLORS.cardBg,
+            border: `1px solid ${COLORS.border}`,
+            padding: 10,
+            fontSize: 12,
             left: Math.min(tooltipPos.x, (containerRef.current?.clientWidth ?? 300) - 270),
             top: Math.max(0, tooltipPos.y - 8),
-            transform: "translateY(-100%)"
+            transform: "translateY(-100%)",
           }}
         >
           <div className="flex items-center justify-between gap-2">
-            <div className="font-mono text-[11px] text-muted-fg truncate">{hovered.sha}</div>
-            <div className="text-[11px] text-muted-fg shrink-0">{formatTs(hovered.authoredAt)}</div>
+            <div className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>{hovered.sha}</div>
+            <div className="shrink-0" style={{ fontSize: 11, color: COLORS.textMuted }}>{formatTs(hovered.authoredAt)}</div>
           </div>
-          <div className="mt-1 truncate text-fg">{hovered.subject}</div>
-          <div className="mt-1 text-[11px] text-muted-fg">
+          <div className="truncate" style={{ marginTop: 4, color: COLORS.textPrimary }}>{hovered.subject}</div>
+          <div style={{ marginTop: 4, fontSize: 11, color: COLORS.textMuted }}>
             {hovered.authorName}
             {hoveredMeta?.fileCount != null ? ` · ${hoveredMeta.fileCount} file${hoveredMeta.fileCount === 1 ? "" : "s"}` : ""}
           </div>
           {hoveredMeta?.message ? (
-            <div className="mt-1 max-h-[100px] overflow-hidden whitespace-pre-wrap text-[11px] text-muted-fg/80">
+            <div style={{ marginTop: 4, maxHeight: 100, overflow: "hidden", whiteSpace: "pre-wrap", fontSize: 11, color: COLORS.textDim }}>
               {hoveredMeta.message}
             </div>
           ) : null}

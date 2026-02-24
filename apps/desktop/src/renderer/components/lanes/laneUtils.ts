@@ -154,10 +154,10 @@ export const LANES_TILING_TREE: PaneSplit = {
                 { node: { type: "pane", id: "inspector" }, defaultSize: 50, minSize: 20 }
               ]
             },
-            defaultSize: 30,
+            defaultSize: 35,
             minSize: 12
           },
-          { node: { type: "pane", id: "work" }, defaultSize: 70, minSize: 25 }
+          { node: { type: "pane", id: "work" }, defaultSize: 65, minSize: 25 }
         ]
       },
       defaultSize: 72,

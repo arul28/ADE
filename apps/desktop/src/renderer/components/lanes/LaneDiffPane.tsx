@@ -3,12 +3,10 @@ import { FolderOpen, FloppyDisk } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
-import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
-import { cn } from "../ui/cn";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
 import type { FileDiff, GitCommitSummary } from "../../../shared/types";
+import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
 
 export function LaneDiffPane({
   laneId,
@@ -30,7 +28,6 @@ export function LaneDiffPane({
   const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
-  // Load diff for selected working tree file
   useEffect(() => {
     setDiff(null);
     if (!laneId || !selectedPath || !selectedFileMode) return;
@@ -40,7 +37,6 @@ export function LaneDiffPane({
       .catch(() => setDiff(null));
   }, [laneId, selectedPath, selectedFileMode]);
 
-  // Load commit file list
   useEffect(() => {
     setCommitFiles([]);
     setSelectedCommitFilePath(null);
@@ -65,7 +61,6 @@ export function LaneDiffPane({
     };
   }, [laneId, selectedCommit]);
 
-  // Load commit file diff
   useEffect(() => {
     setCommitDiff(null);
     if (!laneId || !selectedCommit || !selectedCommitFilePath) return;
@@ -92,14 +87,19 @@ export function LaneDiffPane({
   // Commit diff view
   if (selectedCommit && laneId) {
     return (
-      <div className="h-full flex flex-col">
-        <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-card/40 backdrop-blur-sm shrink-0">
-          <div className="min-w-0 flex items-center gap-2 text-xs">
-            <span className="text-muted-fg/70">Commit</span>
-            <span className="font-mono text-fg rounded bg-accent/8 px-1.5 py-0.5">{selectedCommit.shortSha}</span>
-            <span className="truncate text-muted-fg">{selectedCommit.subject}</span>
+      <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
+        <div
+          className="flex items-center justify-between gap-2 shrink-0"
+          style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+        >
+          <div className="min-w-0 flex items-center gap-2" style={{ fontSize: 12 }}>
+            <span style={LABEL_STYLE}>COMMIT</span>
+            <span style={{ ...inlineBadge(COLORS.accent), fontFamily: MONO_FONT }}>{selectedCommit.shortSha}</span>
+            <span className="truncate" style={{ color: COLORS.textMuted }}>{selectedCommit.subject}</span>
           </div>
-          <Chip className="text-[11px] shadow-[0_0_6px_-1px_rgba(6,214,160,0.15)]">{commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}</Chip>
+          <span style={inlineBadge(COLORS.success, { fontSize: 9 })}>
+            {commitFiles.length} FILE{commitFiles.length === 1 ? "" : "S"}
+          </span>
         </div>
         <div className="flex-1 min-h-0">
           <Group
@@ -107,34 +107,44 @@ export function LaneDiffPane({
             orientation="horizontal"
             className="h-full min-h-0"
           >
-            <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="26%" className="min-w-0 bg-[--color-surface-recessed] shadow-inset ade-surface-recessed">
+            <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="26%" className="min-w-0" style={{ background: COLORS.recessedBg }}>
               <div className="flex h-full min-h-0 flex-col">
-                <div className="flex items-center justify-between bg-card/40 backdrop-blur-sm px-2 py-1 shrink-0">
+                <div
+                  className="flex items-center justify-between shrink-0"
+                  style={{ padding: "6px 8px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+                >
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-fg/70">Files</span>
-                    <Chip className="h-4 px-1 text-[11px] shadow-[0_0_4px_-1px_rgba(6,214,160,0.1)]">{commitFiles.length}</Chip>
+                    <span style={LABEL_STYLE}>FILES</span>
+                    <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{commitFiles.length}</span>
                   </div>
                 </div>
-                <div className="flex-1 min-h-0 overflow-auto p-1.5 space-y-1">
+                <div className="flex-1 min-h-0 overflow-auto" style={{ padding: 4 }}>
                   {commitFiles.length ? (
-                    commitFiles.map((file) => (
-                      <button
-                        key={file}
-                        type="button"
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-all duration-150",
-                          selectedCommitFilePath === file
-                            ? "bg-accent/10 text-fg shadow-[0_0_8px_-2px_rgba(6,214,160,0.15)] border border-accent/10"
-                            : "text-muted-fg hover:bg-card/40 hover:text-fg hover:shadow-[0_1px_4px_-1px_rgba(0,0,0,0.2)] border border-transparent"
-                        )}
-                        onClick={() => setSelectedCommitFilePath(file)}
-                        title={file}
-                      >
-                        <span className="truncate">{file}</span>
-                      </button>
-                    ))
+                    commitFiles.map((file) => {
+                      const isFileSelected = selectedCommitFilePath === file;
+                      return (
+                        <button
+                          key={file}
+                          type="button"
+                          className="flex w-full items-center gap-2 text-left transition-all duration-150"
+                          style={{
+                            padding: "6px 8px",
+                            fontSize: 12,
+                            borderLeft: isFileSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+                            background: isFileSelected ? COLORS.accentSubtle : "transparent",
+                            color: isFileSelected ? COLORS.textPrimary : COLORS.textMuted,
+                          }}
+                          onClick={() => setSelectedCommitFilePath(file)}
+                          title={file}
+                          onMouseEnter={(e) => { if (!isFileSelected) e.currentTarget.style.background = COLORS.hoverBg; }}
+                          onMouseLeave={(e) => { if (!isFileSelected) e.currentTarget.style.background = "transparent"; }}
+                        >
+                          <span className="truncate">{file}</span>
+                        </button>
+                      );
+                    })
                   ) : (
-                    <div className="p-3 text-center text-xs text-muted-fg opacity-60 italic">
+                    <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textDim, fontStyle: "italic" }}>
                       Loading files...
                     </div>
                   )}
@@ -148,7 +158,7 @@ export function LaneDiffPane({
                   <EmptyState title="No files found" description="This commit may be empty." />
                 </div>
               ) : !commitDiff ? (
-                <div className="flex h-full items-center justify-center text-xs text-muted-fg">Loading diff...</div>
+                <div className="flex h-full items-center justify-center" style={{ fontSize: 12, color: COLORS.textMuted }}>Loading diff...</div>
               ) : (
                 <MonacoDiffView diff={commitDiff} editable={false} className="h-full" />
               )}
@@ -162,40 +172,45 @@ export function LaneDiffPane({
   // Working tree file diff
   if (selectedPath && diff && laneId) {
     return (
-      <div className="h-full flex flex-col">
-        <div className="flex items-center justify-between px-3 py-1.5 bg-card/40 backdrop-blur-sm shrink-0">
-          <div className="flex items-center gap-1 text-xs">
-            <span className="text-muted-fg/70 rounded bg-muted/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wider">{selectedFileMode === "unstaged" ? "Working Tree" : "Index"}</span>
-            <span className="text-muted-fg/30 mx-1">/</span>
+      <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
+        <div
+          className="flex items-center justify-between shrink-0"
+          style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
+        >
+          <div className="flex items-center gap-1" style={{ fontSize: 12 }}>
+            <span style={inlineBadge(selectedFileMode === "unstaged" ? COLORS.warning : COLORS.info, { fontSize: 9 })}>
+              {selectedFileMode === "unstaged" ? "WORKING TREE" : "INDEX"}
+            </span>
+            <span style={{ color: COLORS.textDim, margin: "0 4px" }}>/</span>
             {diff.path.split("/").map((segment, idx, arr) => (
               <React.Fragment key={idx}>
-                <span className={cn(
-                  idx === arr.length - 1
-                    ? "font-semibold text-fg rounded bg-accent/8 px-1 py-0.5"
-                    : "text-muted-fg/60 hover:text-muted-fg transition-colors"
-                )}>{segment}</span>
-                {idx < arr.length - 1 && <span className="text-accent/30 mx-0.5">/</span>}
+                <span style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  ...(idx === arr.length - 1
+                    ? { fontWeight: 600, color: COLORS.textPrimary, background: COLORS.accentSubtle, padding: "1px 4px" }
+                    : { color: COLORS.textDim }),
+                }}>{segment}</span>
+                {idx < arr.length - 1 && <span style={{ color: COLORS.textDim, margin: "0 2px" }}>/</span>}
               </React.Fragment>
             ))}
           </div>
           <div className="flex items-center gap-1">
             {selectedFileMode === "unstaged" ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 px-1 text-[11px]"
+              <button
+                type="button"
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
                 onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
                 title="Open in Files tab"
               >
-                <FolderOpen size={12} className="mr-0.5" />
-                Files
-              </Button>
+                <FolderOpen size={12} />
+                FILES
+              </button>
             ) : null}
             {selectedFileMode === "unstaged" && !diff.isBinary ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 px-1 text-[11px]"
+              <button
+                type="button"
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
                 disabled={busyAction != null}
                 onClick={() => {
                   const text = diffRef.current?.getModifiedValue();
@@ -204,7 +219,6 @@ export function LaneDiffPane({
                   window.ade.files
                     .writeTextAtomic({ laneId, path: selectedPath, text })
                     .then(() => {
-                      // Reload diff
                       return window.ade.diff.getFile({ laneId, path: selectedPath, mode: "unstaged" });
                     })
                     .then((value) => setDiff(value))
@@ -212,9 +226,9 @@ export function LaneDiffPane({
                     .finally(() => setBusyAction(null));
                 }}
               >
-                <FloppyDisk size={12} className="mr-0.5" />
-                Save
-              </Button>
+                <FloppyDisk size={12} />
+                SAVE
+              </button>
             ) : null}
           </div>
         </div>
@@ -225,7 +239,11 @@ export function LaneDiffPane({
 
   // Loading state
   if (selectedPath && !diff) {
-    return <div className="flex items-center justify-center h-full text-muted-fg text-xs">Loading diff...</div>;
+    return (
+      <div className="flex items-center justify-center h-full" style={{ color: COLORS.textMuted, fontSize: 12 }}>
+        Loading diff...
+      </div>
+    );
   }
 
   // Empty state

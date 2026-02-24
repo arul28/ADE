@@ -3784,7 +3784,13 @@ export type IntegrationProposalStep = {
   laneName: string;
   position: number;
   outcome: "clean" | "conflict" | "blocked" | "pending";
-  conflictingFiles: Array<{ path: string; conflictMarkers: string }>;
+  conflictingFiles: Array<{
+    path: string;
+    conflictMarkers: string;
+    oursExcerpt: string | null;
+    theirsExcerpt: string | null;
+    diffHunk: string | null;
+  }>;
   diffStat: { insertions: number; deletions: number; filesChanged: number };
 };
 
@@ -3795,6 +3801,21 @@ export type IntegrationProposal = {
   steps: IntegrationProposalStep[];
   overallOutcome: "clean" | "conflict" | "blocked";
   createdAt: string;
+  title?: string;
+  body?: string;
+  draft?: boolean;
+  integrationLaneName?: string;
+  status: "proposed" | "committed";
+  integrationLaneId?: string | null;
+  resolutionState?: IntegrationResolutionState | null;
+};
+
+export type UpdateIntegrationProposalArgs = {
+  proposalId: string;
+  title?: string;
+  body?: string;
+  draft?: boolean;
+  integrationLaneName?: string;
 };
 
 export type SimulateIntegrationArgs = {
@@ -3809,6 +3830,51 @@ export type CommitIntegrationArgs = {
   body?: string;
   draft?: boolean;
   pauseOnConflict?: boolean;
+};
+
+export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
+
+export type IntegrationResolutionState = {
+  integrationLaneId: string;
+  stepResolutions: Record<string, IntegrationStepResolution>; // keyed by laneId
+  activeChatSessionId: string | null;
+  activeLaneId: string | null;
+  updatedAt: string;
+};
+
+export type CreateIntegrationLaneForProposalArgs = {
+  proposalId: string;
+};
+
+export type CreateIntegrationLaneForProposalResult = {
+  integrationLaneId: string;
+  mergedCleanLanes: string[];
+  conflictingLanes: string[];
+};
+
+export type StartIntegrationResolutionArgs = {
+  proposalId: string;
+  laneId: string; // the conflicting source lane to resolve
+  provider: AgentChatProvider;
+  model: string;
+  reasoningEffort?: string;
+  autoApprove?: boolean;
+};
+
+export type StartIntegrationResolutionResult = {
+  chatSessionId: string;
+  integrationLaneId: string;
+};
+
+export type RecheckIntegrationStepArgs = {
+  proposalId: string;
+  laneId: string;
+};
+
+export type RecheckIntegrationStepResult = {
+  resolution: IntegrationStepResolution;
+  remainingConflictFiles: string[];
+  allResolved: boolean;
 };
 
 // --------------------------------

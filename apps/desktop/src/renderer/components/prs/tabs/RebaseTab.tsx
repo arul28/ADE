@@ -124,7 +124,7 @@ export function RebaseTab({
     if (aiAssisted) {
       // For AI-assisted: validate that we can resolve the target lane, then open modal
       if (!resolverTargetLaneId) {
-        setRebaseError(`Cannot find a lane matching base branch "${selectedNeed.baseBranch}". Create the lane first or rebase manually.`);
+        setRebaseError(`Cannot find a lane matching base branch "${selectedNeed.baseBranch}". Create the lane first or sync manually.`);
         return;
       }
       setResolverOpen(true);
@@ -213,7 +213,7 @@ export function RebaseTab({
                 borderRadius: 0,
               }}
             >
-              {need.behindBy} BEHIND
+              {need.behindBy} UPDATES
             </span>
           )}
           {need.conflictPredicted && (
@@ -238,9 +238,9 @@ export function RebaseTab({
   };
 
   const urgencyGroups: Array<{ key: UrgencyCategory; title: string; color: string; icon: typeof Warning }> = [
-    { key: "attention", title: "Needs Attention", color: S.warning, icon: Warning },
-    { key: "clean", title: "Clean Rebase", color: S.info, icon: ArrowsDownUp },
-    { key: "recent", title: "Recently Rebased", color: S.accent, icon: Clock },
+    { key: "attention", title: "Needs Sync", color: S.warning, icon: Warning },
+    { key: "clean", title: "Ready to Sync", color: S.info, icon: ArrowsDownUp },
+    { key: "recent", title: "Recently Synced", color: S.accent, icon: Clock },
     { key: "upToDate", title: "Up to Date", color: S.success, icon: CheckCircle },
   ];
 
@@ -256,7 +256,7 @@ export function RebaseTab({
   const paneConfigs: Record<string, PaneConfig> = React.useMemo(
     () => ({
       list: {
-        title: "Rebase Status",
+        title: "Sync Status",
         icon: ArrowsDownUp,
         bodyClassName: "overflow-auto",
         children: (
@@ -276,7 +276,7 @@ export function RebaseTab({
                   color: S.textSecondary,
                 }}
               >
-                REBASE / DRIFT STATE
+                SYNC / DRIFT STATE
               </span>
             </div>
 
@@ -284,7 +284,7 @@ export function RebaseTab({
               <div style={{ padding: 16 }}>
                 <EmptyState
                   title="All lanes up to date"
-                  description="No lanes need rebasing. This view auto-populates when lanes fall behind their base branch."
+                  description="No lanes need syncing. This view auto-populates when lanes fall behind their base branch."
                 />
               </div>
             ) : (
@@ -312,8 +312,8 @@ export function RebaseTab({
       },
       detail: {
         title: selectedNeed
-          ? `Rebase: ${laneById.get(selectedNeed.laneId)?.name ?? selectedNeed.laneId}`
-          : "Rebase Detail",
+          ? `Sync: ${laneById.get(selectedNeed.laneId)?.name ?? selectedNeed.laneId}`
+          : "Sync Detail",
         icon: Eye,
         bodyClassName: "overflow-auto",
         children: selectedNeed ? (
@@ -358,7 +358,7 @@ export function RebaseTab({
                   style={{ borderRadius: 0 }}
                 >
                   <Sparkle size={14} weight="regular" className="mr-1" />
-                  AI REBASE
+                  SYNC WITH AI
                 </Button>
               </div>
             </div>
@@ -403,7 +403,7 @@ export function RebaseTab({
                       marginBottom: 6,
                     }}
                   >
-                    BEHIND BY
+                    NEW UPDATES
                   </div>
                   <div
                     className="font-mono font-bold"
@@ -417,7 +417,7 @@ export function RebaseTab({
                       className="font-mono"
                       style={{ fontSize: 11, color: S.textMuted, marginLeft: 4, fontWeight: 400 }}
                     >
-                      commits
+                      on main
                     </span>
                   </div>
                 </div>
@@ -503,7 +503,7 @@ export function RebaseTab({
                     marginBottom: 12,
                   }}
                 >
-                  COMMITS AFFECTING REBASE
+                  FILES WITH OVERLAPPING CHANGES
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {selectedNeed.conflictingFiles.map((f) => (
@@ -571,7 +571,7 @@ export function RebaseTab({
                     className="font-mono font-bold uppercase"
                     style={{ fontSize: 10, letterSpacing: "1px" }}
                   >
-                    REBASE WITH AI
+                    SYNC WITH AI
                   </span>
                 </Button>
                 <Button
@@ -588,7 +588,7 @@ export function RebaseTab({
                     className="font-mono font-bold uppercase"
                     style={{ fontSize: 10, letterSpacing: "1px" }}
                   >
-                    MANUAL REBASE
+                    SYNC MANUALLY
                   </span>
                 </Button>
                 <Button
@@ -688,7 +688,7 @@ export function RebaseTab({
             className="flex h-full items-center justify-center"
             style={{ backgroundColor: S.mainBg }}
           >
-            <EmptyState title="No lane selected" description="Select a lane to view rebase status and resolve conflicts." />
+            <EmptyState title="No lane selected" description="Select a lane to view sync status and resolve conflicts." />
           </div>
         ),
       },

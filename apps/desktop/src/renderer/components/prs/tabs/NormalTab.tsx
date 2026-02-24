@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Clock, CalendarBlank, Plus, Minus, CheckCircle, XCircle, Circle, Warning } from "@phosphor-icons/react";
+import { ArrowRight, Eye, Sparkle, Trash, GitBranch, GitMerge, Clock, CalendarBlank, Plus, Minus, CheckCircle, XCircle, Circle, Warning, GithubLogo } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
   DeletePrResult,
@@ -20,6 +20,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
 import { PrConflictBadge } from "../PrConflictBadge";
+import { PrRebaseBanner } from "../PrRebaseBanner";
 import { ResolverTerminalModal } from "../../conflicts/modals/ResolverTerminalModal";
 import { usePrs } from "../state/PrsContext";
 
@@ -140,7 +141,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
   const navigate = useNavigate();
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
-  const { detailStatus, detailChecks, detailReviews, detailComments, detailBusy } = usePrs();
+  const { detailStatus, detailChecks, detailReviews, detailComments, detailBusy, rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
 
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
@@ -269,6 +270,8 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
       bodyClassName: "overflow-auto",
       children: selectedPr ? (
         <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 20, background: "#0F0D14" }}>
+
+          <PrRebaseBanner laneId={selectedPr.laneId} rebaseNeeds={rebaseNeeds} autoRebaseStatuses={autoRebaseStatuses} onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")} />
 
           {/* ===== TOP HEADER CARD ===== */}
           <div style={{ background: "#13101A", border: "1px solid #1E1B26", padding: 20 }}>
@@ -537,6 +540,31 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
                 VIEW DIFF
               </button>
 
+              {/* Open in GitHub */}
+              <button
+                type="button"
+                onClick={() => void window.ade.prs.openInGitHub(selectedPr.id)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 32,
+                  padding: "0 14px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "JetBrains Mono, monospace",
+                  textTransform: "uppercase",
+                  letterSpacing: "1px",
+                  color: "#FAFAFA",
+                  background: "transparent",
+                  border: "1px solid #27272A",
+                  cursor: "pointer",
+                }}
+              >
+                <GithubLogo size={14} weight="regular" />
+                OPEN IN GITHUB
+              </button>
+
               {/* View lane */}
               <button
                 type="button"
@@ -714,7 +742,7 @@ export function NormalTab({ prs, lanes, mergeContextByPrId, mergeMethod, selecte
         </div>
       ),
     },
-  }), [prs, selectedPr, selectedPrId, laneById, detailStatus, detailBusy, detailChecks, detailReviews, detailComments, actionBusy, actionError, actionResult, resolverOpen, resolverTargetLaneId, mergeMethod, deleteConfirm, deleteBusy, deleteCloseGh, navigate, onSelectPr, onRefresh]);
+  }), [prs, selectedPr, selectedPrId, laneById, detailStatus, detailBusy, detailChecks, detailReviews, detailComments, actionBusy, actionError, actionResult, resolverOpen, resolverTargetLaneId, mergeMethod, deleteConfirm, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, navigate, onSelectPr, onRefresh]);
 
   return <PaneTilingLayout layoutId="prs:normal:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

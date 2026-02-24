@@ -82,6 +82,13 @@ import type {
   DeletePrArgs,
   DeletePrResult,
   IntegrationProposal,
+  IntegrationResolutionState,
+  CreateIntegrationLaneForProposalArgs,
+  CreateIntegrationLaneForProposalResult,
+  StartIntegrationResolutionArgs,
+  StartIntegrationResolutionResult,
+  RecheckIntegrationStepArgs,
+  RecheckIntegrationStepResult,
   LinkPrToLaneArgs,
   LandResult,
   LandStackEnhancedArgs,
@@ -209,6 +216,7 @@ import type {
   UpdateMissionStepArgs,
   TestRunSummary,
   TestSuiteDefinition,
+  UpdateIntegrationProposalArgs,
   UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs,
   MissionDetail,
@@ -2654,11 +2662,35 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => getCtx().prService.commitIntegration(arg));
 
+  ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
+    getCtx().prService.listIntegrationProposals(),
+  );
+
+  ipcMain.handle(IPC.prsUpdateProposal, async (_event, arg: UpdateIntegrationProposalArgs): Promise<void> =>
+    getCtx().prService.updateIntegrationProposal(arg),
+  );
+
+  ipcMain.handle(IPC.prsDeleteProposal, async (_event, proposalId: string): Promise<void> =>
+    getCtx().prService.deleteIntegrationProposal(proposalId),
+  );
+
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => getCtx().prService.landQueueNext(arg));
 
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
 
   ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> => getCtx().prService.getQueueState(arg.groupId));
+
+  ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
+    getCtx().prService.createIntegrationLaneForProposal(arg));
+
+  ipcMain.handle(IPC.prsStartIntegrationResolution, async (_event, arg: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult> =>
+    getCtx().prService.startIntegrationResolution(arg));
+
+  ipcMain.handle(IPC.prsGetIntegrationResolutionState, async (_event, arg: { proposalId: string }): Promise<IntegrationResolutionState | null> =>
+    getCtx().prService.getIntegrationResolutionState(arg.proposalId));
+
+  ipcMain.handle(IPC.prsRecheckIntegrationStep, async (_event, arg: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult> =>
+    getCtx().prService.recheckIntegrationStep(arg));
 
   ipcMain.handle(IPC.rebaseScanNeeds, async () => getCtx().conflictService.scanRebaseNeeds());
 

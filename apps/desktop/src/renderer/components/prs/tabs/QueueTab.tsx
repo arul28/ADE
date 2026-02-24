@@ -1,5 +1,5 @@
 import React from "react";
-import { CaretRight, Pause, Play, SkipForward, ArrowsDownUp, Trash } from "@phosphor-icons/react";
+import { CaretRight, Pause, Play, SkipForward, ArrowsDownUp, Trash, GithubLogo, CheckCircle, XCircle, Circle } from "@phosphor-icons/react";
 import type {
   LandResult,
   LaneSummary,
@@ -15,6 +15,8 @@ import { Chip } from "../../ui/Chip";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../../ui/PaneTilingLayout";
+import { PrRebaseBanner } from "../PrRebaseBanner";
+import { usePrs } from "../state/PrsContext";
 
 const TILING_TREE: PaneSplit = {
   type: "split",
@@ -69,6 +71,34 @@ function GroupStatusBadge({ members }: { members: QueueGroup["members"] }) {
   );
 }
 
+function ChecksBadge({ status }: { status: PrSummary["checksStatus"] | undefined }) {
+  if (!status || status === "none") return null;
+  const config =
+    status === "passing"
+      ? { color: "#22C55E", bg: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.25)", icon: <CheckCircle size={11} weight="fill" style={{ color: "#22C55E" }} /> }
+      : status === "failing"
+        ? { color: "#EF4444", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)", icon: <XCircle size={11} weight="fill" style={{ color: "#EF4444" }} /> }
+        : { color: "#F59E0B", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.25)", icon: <Circle size={11} weight="fill" style={{ color: "#F59E0B" }} /> };
+  return (
+    <span
+      className="font-mono font-bold uppercase tracking-[1px]"
+      style={{
+        fontSize: 10,
+        color: config.color,
+        background: config.bg,
+        border: `1px solid ${config.border}`,
+        padding: "2px 6px",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+      }}
+    >
+      {config.icon}
+      CI
+    </span>
+  );
+}
+
 type QueueTabProps = {
   prs: PrWithConflicts[];
   lanes: LaneSummary[];
@@ -82,6 +112,7 @@ type QueueTabProps = {
 export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedGroupId, onSelectGroup, onRefresh }: QueueTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const prById = React.useMemo(() => new Map(prs.map((p) => [p.id, p])), [prs]);
+  const { rebaseNeeds, autoRebaseStatuses, setActiveTab } = usePrs();
 
   const [landBusy, setLandBusy] = React.useState(false);
   const [landError, setLandError] = React.useState<string | null>(null);
@@ -232,6 +263,11 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
       bodyClassName: "overflow-auto",
       children: selectedGroup ? (
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 20 }}>
+
+          {/* ===== Rebase banners for member lanes ===== */}
+          {selectedGroup.members.map((m) => (
+            <PrRebaseBanner key={m.laneId} laneId={m.laneId} rebaseNeeds={rebaseNeeds} autoRebaseStatuses={autoRebaseStatuses} onTabChange={(tab) => setActiveTab(tab as "normal" | "queue" | "integration" | "rebase")} />
+          ))}
 
           {/* ===== Header card ===== */}
           <div
@@ -470,15 +506,11 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                             >
                               {member.laneName}
                             </span>
-                            {/* PR number */}
-                            {member.pr ? (
-                              <span className="font-mono" style={{ fontSize: 11, color: "#71717A" }}>
-                                #{member.pr.githubPrNumber}
-                              </span>
-                            ) : null}
                           </div>
 
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                            {/* Checks badge */}
+                            {member.pr && <ChecksBadge status={member.pr.checksStatus} />}
                             {/* Status badge */}
                             <span
                               className="font-mono font-bold uppercase tracking-[1px]"
@@ -492,6 +524,27 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                             >
                               {badgeLabel}
                             </span>
+                            {/* Open in GitHub */}
+                            {member.pr && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); void window.ade.prs.openInGitHub(member.prId); }}
+                                style={{
+                                  padding: 2,
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "#52525B",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                }}
+                                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "#FAFAFA"; }}
+                                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "#52525B"; }}
+                                title="Open in GitHub"
+                              >
+                                <GithubLogo size={13} />
+                              </button>
+                            )}
                             {/* Delete button (not on landed items) */}
                             {!isLanded && (
                               <button
@@ -515,6 +568,25 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
                             )}
                           </div>
                         </div>
+
+                        {/* PR number + title */}
+                        {member.pr && (
+                          <div
+                            className="font-mono"
+                            style={{
+                              marginTop: 4,
+                              fontSize: 11,
+                              color: "#71717A",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            <span style={{ color: "#52525B" }}>#{member.pr.githubPrNumber}</span>
+                            {" "}
+                            <span>{member.pr.title}</span>
+                          </div>
+                        )}
 
                         {/* Delete confirmation inline */}
                         {deleteTarget === member.prId && (
@@ -621,7 +693,7 @@ export function QueueTab({ prs, lanes, mergeContextByPrId, mergeMethod, selected
         </div>
       ),
     },
-  }), [queueGroups, selectedGroup, selectedGroupId, landBusy, landError, landResult, mergeMethod, deleteTarget, deleteBusy, deleteCloseGh, onSelectGroup, onRefresh]);
+  }), [queueGroups, selectedGroup, selectedGroupId, landBusy, landError, landResult, mergeMethod, deleteTarget, deleteBusy, deleteCloseGh, rebaseNeeds, autoRebaseStatuses, setActiveTab, onSelectGroup, onRefresh]);
 
   return <PaneTilingLayout layoutId="prs:queue:v1" tree={TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
 }

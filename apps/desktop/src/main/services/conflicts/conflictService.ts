@@ -3627,7 +3627,10 @@ export function createConflictService({
 
       const conflictingFiles = merge.conflicts.map((c) => ({
         path: c.path,
-        conflictMarkers: c.markerPreview
+        conflictMarkers: c.markerPreview,
+        oursExcerpt: null as string | null,
+        theirsExcerpt: null as string | null,
+        diffHunk: null as string | null
       }));
 
       const outcome: IntegrationProposalStep["outcome"] =

@@ -1,7 +1,7 @@
 import React from "react";
 import { Stack } from "@phosphor-icons/react";
-import { Button } from "../ui/Button";
 import type { AutoRebaseLaneStatus, LaneSummary, RestackSuggestion } from "../../../shared/types";
+import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 
 export function LaneRestackBanner({
   visibleRestackSuggestions,
@@ -31,121 +31,166 @@ export function LaneRestackBanner({
   return (
     <>
       {visibleRestackSuggestions.length > 0 ? (
-        <div className="border-b border-border/15 bg-amber-500/5 px-2 py-2">
+        <div style={{ background: `${COLORS.warning}08`, borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs text-muted-fg/70">Restack suggested</div>
-            <div className="text-xs text-muted-fg">{visibleRestackSuggestions.length} lane(s) behind parent</div>
+            <span style={LABEL_STYLE}>RESTACK SUGGESTED</span>
+            <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>
+              {visibleRestackSuggestions.length} LANE{visibleRestackSuggestions.length === 1 ? "" : "S"}
+            </span>
           </div>
           {showAutoRebaseSettingsHint ? (
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded border border-sky-500/25 bg-sky-500/8 px-2 py-1.5">
-              <div className="text-xs text-sky-700">
+            <div
+              style={{
+                marginTop: 8,
+                background: `${COLORS.info}10`,
+                border: `1px solid ${COLORS.info}30`,
+                padding: "8px 10px",
+              }}
+              className="flex flex-wrap items-center justify-between gap-2"
+            >
+              <span style={{ fontSize: 12, color: COLORS.info }}>
                 Auto-rebase is off. Enable it in Settings to auto-restack child lanes after parent updates.
-              </div>
-              <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={onOpenAutoRebaseSettings}>
-                Open settings
-              </Button>
+              </span>
+              <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
+                SETTINGS
+              </button>
             </div>
           ) : null}
-          <div className="mt-2 space-y-2">
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
             {visibleRestackSuggestions.slice(0, 3).map((s) => {
               const lane = lanesById.get(s.laneId) ?? null;
               if (!lane) return null;
               const busy = restackBusyLaneId === s.laneId;
               return (
-                <div key={`restack:${s.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded shadow-card bg-card/40 p-2">
+                <div
+                  key={`restack:${s.laneId}`}
+                  style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 10 }}
+                  className="flex flex-wrap items-start justify-between gap-2"
+                >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
-                      {s.hasPr ? <span className="rounded-lg bg-sky-500/10 px-1 text-[11px] text-sky-700">PR</span> : null}
-                      <span className="text-xs text-muted-fg">{s.behindCount} behind</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }} className="truncate">{lane.name}</span>
+                      {s.hasPr ? <span style={inlineBadge(COLORS.info, { fontSize: 9 })}>PR</span> : null}
+                      <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>{s.behindCount} BEHIND</span>
                     </div>
-                    <div className="mt-0.5 text-xs text-muted-fg">Rebase this lane onto its parent to pick up new commits.</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>
+                      Rebase this lane onto its parent to pick up new commits.
+                    </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={Boolean(restackBusyLaneId)} onClick={() => onDeferRestack(s.laneId, 60)}>
-                      Defer 1h
-                    </Button>
-                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={Boolean(restackBusyLaneId)} onClick={() => onDismissRestack(s.laneId)}>
-                      Dismiss
-                    </Button>
-                    <Button size="sm" variant="primary" className="h-7 px-2 text-xs" disabled={Boolean(restackBusyLaneId)} onClick={() => onRestackNow(s.laneId)}>
-                      <Stack size={12} className="mr-1" />
-                      {busy ? "Restacking..." : "Restack now"}
-                    </Button>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      disabled={Boolean(restackBusyLaneId)}
+                      onClick={() => onDeferRestack(s.laneId, 60)}
+                    >
+                      DEFER 1H
+                    </button>
+                    <button
+                      type="button"
+                      style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      disabled={Boolean(restackBusyLaneId)}
+                      onClick={() => onDismissRestack(s.laneId)}
+                    >
+                      DISMISS
+                    </button>
+                    <button
+                      type="button"
+                      style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                      disabled={Boolean(restackBusyLaneId)}
+                      onClick={() => onRestackNow(s.laneId)}
+                    >
+                      <Stack size={12} />
+                      {busy ? "RESTACKING..." : "RESTACK NOW"}
+                    </button>
                   </div>
                 </div>
               );
             })}
             {visibleRestackSuggestions.length > 3 ? (
-              <div className="text-xs text-muted-fg">+ {visibleRestackSuggestions.length - 3} more suggestions.</div>
+              <div style={{ fontSize: 11, color: COLORS.textMuted }}>+ {visibleRestackSuggestions.length - 3} more suggestions.</div>
             ) : null}
             {restackSuggestionError ? (
-              <div className="rounded bg-red-500/10 p-2 text-xs text-red-200">{restackSuggestionError}</div>
+              <div style={{ background: `${COLORS.danger}15`, border: `1px solid ${COLORS.danger}30`, padding: 8, fontSize: 12, color: COLORS.danger }}>
+                {restackSuggestionError}
+              </div>
             ) : null}
           </div>
         </div>
       ) : null}
 
       {showAutoRebaseSettingsHint && visibleRestackSuggestions.length === 0 ? (
-        <div className="border-b border-border/15 bg-sky-500/8 px-2 py-2">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-sky-500/25 bg-card/30 px-2 py-1.5">
-            <div className="text-xs text-sky-700">
+        <div style={{ background: `${COLORS.info}08`, borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
+          <div
+            className="flex flex-wrap items-center justify-between gap-2"
+            style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.info}30`, padding: "8px 10px" }}
+          >
+            <span style={{ fontSize: 12, color: COLORS.info }}>
               Auto-rebase is off. Enable it in Settings to auto-restack child lanes after parent updates.
-            </div>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={onOpenAutoRebaseSettings}>
-              Open settings
-            </Button>
+            </span>
+            <button type="button" style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })} onClick={onOpenAutoRebaseSettings}>
+              SETTINGS
+            </button>
           </div>
         </div>
       ) : null}
 
       {visibleAutoRebaseNeedsAttention.length > 0 ? (
-        <div className="border-b border-border/15 bg-amber-500/5 px-2 py-2">
+        <div style={{ background: `${COLORS.warning}08`, borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs text-muted-fg/70">Auto-rebase needs attention</div>
-            <div className="text-xs text-muted-fg">{visibleAutoRebaseNeedsAttention.length} lane(s)</div>
+            <span style={LABEL_STYLE}>AUTO-REBASE NEEDS ATTENTION</span>
+            <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>
+              {visibleAutoRebaseNeedsAttention.length} LANE{visibleAutoRebaseNeedsAttention.length === 1 ? "" : "S"}
+            </span>
           </div>
-          <div className="mt-2 space-y-2">
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
             {visibleAutoRebaseNeedsAttention.slice(0, 3).map((status) => {
               const lane = lanesById.get(status.laneId) ?? null;
               if (!lane) return null;
               return (
-                <div key={`auto-rebase:${status.laneId}`} className="flex flex-wrap items-start justify-between gap-2 rounded bg-card/40 p-2 shadow-card">
+                <div
+                  key={`auto-rebase:${status.laneId}`}
+                  style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: 10 }}
+                  className="flex flex-wrap items-start justify-between gap-2"
+                >
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-xs font-semibold text-fg">{lane.name}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }} className="truncate">{lane.name}</span>
                       {status.state === "rebaseConflict" ? (
-                        <span className="rounded-lg bg-red-500/12 px-1 text-[11px] text-red-200">conflict</span>
+                        <span style={inlineBadge(COLORS.danger, { fontSize: 9 })}>CONFLICT</span>
                       ) : (
-                        <span className="rounded-lg bg-amber-500/12 px-1 text-[11px] text-amber-800">pending</span>
+                        <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>PENDING</span>
                       )}
                     </div>
-                    <div className="mt-0.5 text-xs text-muted-fg">
+                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>
                       {status.message ?? "Manual rebase and publish may be required for this lane."}
                     </div>
                   </div>
                   <div className="shrink-0">
                     {status.state === "rebaseConflict" ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
+                      <button
+                        type="button"
+                        style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
                         onClick={() => onOpenRebaseConflictResolver(status.laneId, status.parentLaneId ?? lane.parentLaneId ?? null)}
                       >
-                        Resolve in Conflicts
-                      </Button>
+                        RESOLVE IN CONFLICTS
+                      </button>
                     ) : (
-                      <Button size="sm" variant="primary" className="h-7 px-2 text-xs" onClick={() => onRestackNow(status.laneId)}>
-                        <Stack size={12} className="mr-1" />
-                        Restack now
-                      </Button>
+                      <button
+                        type="button"
+                        style={primaryButton({ height: 24, padding: "0 8px", fontSize: 10 })}
+                        onClick={() => onRestackNow(status.laneId)}
+                      >
+                        <Stack size={12} />
+                        RESTACK NOW
+                      </button>
                     )}
                   </div>
                 </div>
               );
             })}
             {visibleAutoRebaseNeedsAttention.length > 3 ? (
-              <div className="text-xs text-muted-fg">+ {visibleAutoRebaseNeedsAttention.length - 3} more lanes.</div>
+              <div style={{ fontSize: 11, color: COLORS.textMuted }}>+ {visibleAutoRebaseNeedsAttention.length - 3} more lanes.</div>
             ) : null}
           </div>
         </div>

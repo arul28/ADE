@@ -112,6 +112,13 @@ import type {
   CreateQueuePrsResult,
   SimulateIntegrationArgs,
   IntegrationProposal,
+  IntegrationResolutionState,
+  CreateIntegrationLaneForProposalArgs,
+  CreateIntegrationLaneForProposalResult,
+  StartIntegrationResolutionArgs,
+  StartIntegrationResolutionResult,
+  RecheckIntegrationStepArgs,
+  RecheckIntegrationStepResult,
   CommitIntegrationArgs,
   LandQueueNextArgs,
   QueueLandingState,
@@ -130,6 +137,7 @@ import type {
   PrStatus,
   PrSummary,
   PrMergeContext,
+  UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
   LandStackArgs,
@@ -577,6 +585,13 @@ declare global {
         createIntegration: (args: import("../shared/types").CreateIntegrationPrArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
         simulateIntegration: (args: SimulateIntegrationArgs) => Promise<IntegrationProposal>;
         commitIntegration: (args: CommitIntegrationArgs) => Promise<import("../shared/types").CreateIntegrationPrResult>;
+        listProposals(): Promise<IntegrationProposal[]>;
+        updateProposal(args: UpdateIntegrationProposalArgs): Promise<void>;
+        deleteProposal(proposalId: string): Promise<void>;
+        createIntegrationLaneForProposal(args: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult>;
+        startIntegrationResolution(args: StartIntegrationResolutionArgs): Promise<StartIntegrationResolutionResult>;
+        recheckIntegrationStep(args: RecheckIntegrationStepArgs): Promise<RecheckIntegrationStepResult>;
+        getIntegrationResolutionState(proposalId: string): Promise<IntegrationResolutionState | null>;
         landStackEnhanced: (args: import("../shared/types").LandStackEnhancedArgs) => Promise<import("../shared/types").LandResult[]>;
         landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
         getHealth: (prId: string) => Promise<PrHealth>;

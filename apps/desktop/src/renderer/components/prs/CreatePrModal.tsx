@@ -320,31 +320,20 @@ export function CreatePrModal({
         }
         setResults(result.prs);
       } else if (mode === "integration") {
-        const baseBranch = primaryLane?.branchRef ?? "main";
-        if (proposal) {
-          // Use commit flow (from proposal)
-          const result = await window.ade.prs.commitIntegration({
-            proposalId: proposal.proposalId,
-            integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
-            title: integrationTitle || "Integration PR",
-            body: integrationBody,
-            draft: integrationDraft,
-          });
-          setIntegrationResult(result);
-          setResults([result.pr]);
-        } else {
-          // Direct creation (no prior simulation)
-          const result = await window.ade.prs.createIntegration({
-            sourceLaneIds: integrationSources,
-            integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
-            baseBranch,
-            title: integrationTitle || "Integration PR",
-            body: integrationBody,
-            draft: integrationDraft,
-          });
-          setIntegrationResult(result);
-          setResults([result.pr]);
+        if (!proposal) {
+          setExecError("Run a simulation first to create a proposal.");
+          setBusy(false);
+          return;
         }
+        await window.ade.prs.updateProposal({
+          proposalId: proposal.proposalId,
+          title: integrationTitle || "Integration PR",
+          body: integrationBody,
+          draft: integrationDraft,
+          integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
+        });
+        // No PR created — proposal saved for later commit from Integration tab
+        setResults([]);
       }
       setStep("execute");
       setNumericStep(3);
@@ -375,7 +364,8 @@ export function CreatePrModal({
 
   const canCreateIntegration =
     integrationSources.length >= 2 &&
-    (proposal ? proposal.overallOutcome !== "blocked" : true);
+    !!proposal &&
+    proposal.overallOutcome !== "blocked";
 
   /* Can user advance from step 1 to step 2? */
   const canAdvanceStep1 =
@@ -1308,6 +1298,38 @@ export function CreatePrModal({
             {numericStep === 3 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
+                {/* Proposal saved (integration mode, no PRs created) */}
+                {results && results.length === 0 && mode === "integration" && !execError && (
+                  <div>
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      marginBottom: 12,
+                    }}>
+                      <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
+                      <span style={{
+                        fontFamily: "'Space Grotesk', sans-serif",
+                        fontSize: 16,
+                        fontWeight: 700,
+                        color: C.textPrimary,
+                      }}>
+                        Proposal Saved
+                      </span>
+                    </div>
+                    <div style={{
+                      background: C.bgInput,
+                      border: `1px solid ${C.border}`,
+                      padding: "12px 16px",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 12,
+                      color: C.textSecondary,
+                    }}>
+                      Go to the <span style={{ color: C.accent, fontWeight: 700 }}>INTEGRATION</span> tab to review and create the PR on GitHub.
+                    </div>
+                  </div>
+                )}
+
                 {/* Created PRs */}
                 {results && results.length > 0 && (
                   <div>
@@ -1558,7 +1580,7 @@ export function CreatePrModal({
                   }}
                 >
                   {busy && <CircleNotch size={12} className="animate-spin" />}
-                  {busy ? "CREATING..." : mode === "integration" ? "CREATE INTEGRATION PR" : "CREATE PR"}
+                  {busy ? (mode === "integration" ? "SAVING..." : "CREATING...") : mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR"}
                 </button>
               )}
               {numericStep === 3 && results && (

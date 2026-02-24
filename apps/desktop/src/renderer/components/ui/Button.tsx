@@ -12,7 +12,8 @@ export const Button = React.forwardRef<
     variant = "outline",
     size = "md",
     className,
-    ...props
+    style: styleProp,
+    ...rest
   },
   ref
 ) {
@@ -43,8 +44,8 @@ export const Button = React.forwardRef<
     <button
       ref={ref}
       className={cn(base, sizes, variants[variant], className)}
-      style={variantStyles[variant]}
-      {...props}
+      style={{ ...variantStyles[variant], ...styleProp }}
+      {...rest}
     />
   );
 });
