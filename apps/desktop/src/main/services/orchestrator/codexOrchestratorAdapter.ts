@@ -159,6 +159,34 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
           ].join("\n")
         );
 
+        // Communication style for team-like updates
+        systemParts.push(
+          [
+            "COMMUNICATION STYLE:",
+            "You are part of a team. When you make progress, share brief updates in natural, casual English.",
+            "Write like a teammate in a Slack channel — short blurbs, not formal reports.",
+            "Examples of good updates:",
+            '- "looking at the existing code first to understand the patterns"',
+            '- "implementing the auth middleware now, using JWT approach"',
+            '- "tests passing, moving on to the edge cases"',
+            '- "hit an issue with the import path, working around it"',
+            '- "done — changed 3 files, all tests green"',
+            "DO NOT dump full file contents, raw errors, or tool output into your updates.",
+            "Keep each update to 1-2 sentences max."
+          ].join("\n")
+        );
+
+        // Budget pressure directive injection
+        const budgetDirective = step.metadata?.budgetDirective;
+        if (typeof budgetDirective === "string" && budgetDirective.length > 0) {
+          systemParts.push(
+            [
+              "COST AWARENESS:",
+              budgetDirective
+            ].join("\n")
+          );
+        }
+
         const instructions =
           typeof step.metadata?.instructions === "string" ? step.metadata.instructions.trim() : "";
         if (instructions) {
@@ -239,6 +267,13 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
           systemParts.push(`Context from upstream steps:\n${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
         }
 
+        // Advisory dependency note
+        if (step.joinPolicy === "advisory" && step.dependencyStepIds.length > 0) {
+          systemParts.push(
+            "Note: Your upstream dependencies are advisory (non-blocking). Some upstream steps may still be running. Proceed with your best understanding and note any assumptions."
+          );
+        }
+
         // Recovery context for retry attempts
         if (args.previousCheckpoint || args.previousAttemptSummary) {
           const recoveryParts: string[] = ["RECOVERY CONTEXT — PREVIOUS PROGRESS:"];
@@ -259,6 +294,18 @@ export function createCodexOrchestratorAdapter(): OrchestratorExecutorAdapter {
               args.previousAttemptSummary,
               ""
             );
+          }
+          // Include AI diagnosis if the orchestrator diagnosed the failure
+          const recoveryDiagnosis = step.metadata?.lastRecoveryDiagnosis;
+          if (recoveryDiagnosis && typeof recoveryDiagnosis === "object" && !Array.isArray(recoveryDiagnosis)) {
+            const diag = recoveryDiagnosis as Record<string, unknown>;
+            const classification = typeof diag.classification === "string" ? diag.classification : "";
+            if (classification) {
+              recoveryParts.push(
+                `Orchestrator diagnosis of previous failure: ${classification}`,
+                "The steering directives above contain specific recovery guidance from the orchestrator. Follow them."
+              );
+            }
           }
           recoveryParts.push(
             "Resume from where you left off. Do not redo work that was already completed. Check the state of files mentioned in the checkpoint to verify what was actually saved."

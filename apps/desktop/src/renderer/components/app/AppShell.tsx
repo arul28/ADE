@@ -233,11 +233,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [keybindings]
   );
 
+  // Initialize zoom from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("ade:zoom-level");
+      if (saved) {
+        const level = parseInt(saved, 10);
+        if (level >= 70 && level <= 150) {
+          document.body.style.zoom = `${level}%`;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!eventMatchesBinding(e, commandPaletteBinding)) return;
       e.preventDefault();
-      setCommandOpen(true);
+      setCommandOpen((prev) => !prev);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

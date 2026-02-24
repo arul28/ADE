@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-24
 
 The AI integration layer replaces the previous hosted agent with a local-first, subscription-powered approach. Instead of a cloud backend with API keys and remote job queues, ADE spawns `claude` and `codex` CLI processes that inherit the user's existing subscriptions, coordinates them through an MCP server, and manages multi-step workflows via an AI orchestrator.
 
@@ -22,7 +22,10 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [Codex Executor](#codex-executor)
   - [AI Integration Service](#ai-integration-service)
   - [MCP Server](#mcp-server)
+  - [Computer Use MCP Tools](#computer-use-mcp-tools)
   - [AI Orchestrator](#ai-orchestrator)
+  - [Compute Backends for Agent Execution](#compute-backends-for-agent-execution)
+  - [Compute Environment Types](#compute-environment-types)
   - [Per-Task-Type Configuration](#per-task-type-configuration)
   - [One-Shot AI Task Patterns](#one-shot-ai-task-patterns)
   - [Agent Chat Service (Phase 1.5)](#agent-chat-service-phase-15)
@@ -31,6 +34,7 @@ The AI integration layer replaces the previous hosted agent with a local-first, 
   - [Job Engine](#job-engine)
   - [Mission Service](#mission-service)
   - [Pack Service](#pack-service)
+  - [Learning Packs](#learning-packs)
 - [Implementation Status](#implementation-status)
 
 ---
@@ -622,6 +626,33 @@ Every MCP tool invocation is logged to the orchestrator's timeline:
 
 This provides full traceability of what AI agents did during a mission run.
 
+### Computer Use MCP Tools
+
+Additional MCP tools available when the compute environment supports GUI interaction (browser or desktop mode). These tools enable agents to interact with running applications visually.
+
+| Tool | Description | Environment | Returns |
+|---|---|---|---|
+| `screenshot_environment` | Capture current screen state | browser, desktop | Base64-encoded PNG image |
+| `interact_gui` | Execute mouse/keyboard actions (click, type, scroll, key press, drag) | browser, desktop | Action confirmation + optional screenshot |
+| `record_environment` | Start/stop video recording of the environment | desktop | MP4 artifact reference |
+| `launch_app` | Start an application in the environment | browser, desktop | Process handle + initial screenshot |
+| `get_environment_info` | Current environment type, resolution, running processes | all | Environment metadata |
+
+**Computer use loop** (for agents interacting with GUIs):
+1. Agent calls `screenshot_environment` to see current screen state
+2. Screenshot sent to the model as part of the conversation
+3. Model reasons about what it sees and returns structured actions
+4. Agent calls `interact_gui` to execute actions (click, type, etc.)
+5. Repeat until task is complete
+
+**Provider integration**:
+- **Claude agents**: Uses Anthropic's Computer Use Tool (`computer_20250124`) natively. The screenshot/action loop is built into Claude's tool use protocol. Actions: `mouse_move`, `left_click`, `right_click`, `double_click`, `type`, `key`, `screenshot`, `scroll`, `hold_key`, `triple_click`, `wait`.
+- **Codex agents**: Uses OpenAI's CUA (Computer-Using Agent) API via the Responses API. Actions: `click(x,y)`, `type(text)`, `scroll`, `key`, `screenshot`, `wait`, `drag`.
+
+**Artifact production**: Screenshots and video recordings produced by computer use tools are automatically attached as artifacts to the owning lane, mission, or agent run. Artifact types: `screenshot` (PNG), `video` (MP4).
+
+**Permission control**: Computer use tools require `full-auto` / `bypassPermissions` permission level. Agents in `read-only` or `edit` modes cannot use GUI interaction tools (screenshot capture is allowed in all modes).
+
 ### AI Orchestrator
 
 The AI Orchestrator is the intelligent coordination layer that plans and executes multi-step missions. It uses a **leader/worker agent team architecture** inspired by Claude Code's agent teams model: one leader session (the orchestrator itself) coordinates multiple worker agents, each operating in its own context window and lane worktree. The orchestrator runs on top of the deterministic orchestrator service state machine, issuing commands through it rather than replacing it.
@@ -925,7 +956,7 @@ Agent execution can target different compute backends via the `ComputeBackend` i
 
 ```typescript
 interface ComputeBackend {
-  type: 'local' | 'vps' | 'daytona';
+  type: 'local' | 'vps' | 'daytona' | 'e2b';
   create(config: WorkspaceConfig): Promise<WorkspaceHandle>;
   destroy(handle: WorkspaceHandle): Promise<void>;
   exec(handle: WorkspaceHandle, command: string): Promise<ExecResult>;
@@ -939,7 +970,59 @@ interface ComputeBackend {
 
 **Daytona Backend** (Opt-in): Creates isolated cloud sandbox workspaces via the Daytona SDK. Each workspace gets its own filesystem, ports, and environment. Requires API key configuration.
 
+**E2B Backend** (Opt-in): Creates Firecracker microVM-based sandboxes via the E2B SDK. Sub-150ms cold start. Supports full desktop environments (Xfce desktop + Chromium browser) via E2B Desktop Sandbox. Per-second billing. Configured in Settings → Compute Backends with API key. E2B is always opt-in and provides an alternative to Daytona for teams that prefer managed cloud sandboxes over BYOC infrastructure.
+
 The orchestrator selects backends based on mission configuration, falling back to Local if no preference is set.
+
+### Compute Environment Types
+
+Each compute backend supports multiple environment types that determine what level of interaction an agent has with the running environment:
+
+```typescript
+type ComputeEnvironmentType = 'terminal-only' | 'browser' | 'desktop';
+
+interface ComputeEnvironment {
+  type: ComputeEnvironmentType;
+  display?: {                          // For browser and desktop environments
+    width: number;                     // Default: 1920
+    height: number;                    // Default: 1080
+    colorDepth: number;                // Default: 24
+  };
+  browserConfig?: {                    // For browser environments
+    headless: boolean;                 // Default: true
+    browser: 'chromium' | 'firefox';   // Default: 'chromium'
+  };
+  desktopConfig?: {                    // For desktop environments
+    windowManager: 'fluxbox' | 'xfce' | 'mutter';  // Default: 'fluxbox'
+    vncEnabled: boolean;               // Enable VNC for remote viewing. Default: true
+    vncPort: number;                   // Default: 5901
+    noVncPort: number;                 // Default: 6080 (browser-based VNC client)
+  };
+}
+```
+
+**Terminal-only** (default): Agent gets a shell in a worktree or sandbox. No GUI rendering. Suitable for code changes, test execution, and CLI operations. All backends support this.
+
+**Browser**: Headless browser (Playwright/Puppeteer) available. Agent can launch web applications, navigate pages, interact with UI elements, and capture screenshots. Suitable for web application testing and visual verification. Implementation: Playwright is launched in the compute environment with the dev server URL.
+
+**Desktop**: Full virtual desktop via Xvfb (X Virtual Framebuffer) + window manager. Agent gets programmatic mouse/keyboard control and screenshot/video capture. Suitable for desktop applications (Electron, native), mobile emulators (Android via docker-android), and any GUI application.
+
+Implementation stack for desktop environments:
+1. **Xvfb**: Virtual X11 display (e.g., `:99 -screen 0 1920x1080x24`)
+2. **Window manager**: Fluxbox (lightweight) or Mutter (full-featured)
+3. **VNC server**: x11vnc or TigerVNC for remote viewing
+4. **noVNC + websockify**: Browser-based VNC client for web/mobile access
+5. **xdotool**: Mouse/keyboard simulation for agent actions
+6. **scrot/ImageMagick**: Screenshot capture
+7. **ffmpeg**: Video recording via x11grab
+
+Backend capability matrix:
+| Backend | terminal-only | browser | desktop |
+|---------|:---:|:---:|:---:|
+| Local | Yes | Yes (local Playwright) | Yes (local Xvfb) |
+| VPS | Yes | Yes | Yes |
+| Daytona | Yes | Yes | Yes (native Computer Use API) |
+| E2B | Yes | Yes | Yes (Desktop Sandbox API) |
 
 ### Per-Task-Type Configuration
 
@@ -1352,6 +1435,45 @@ The pack service provides the context backbone for all AI operations:
 - **Token-budgeted exports**: Lite/Standard/Deep export tiers that bound context size for different AI task types.
 - **Pack events**: Every AI-generated artifact (narrative, proposal, PR description) is recorded as a pack event for audit and versioning.
 
+### Learning Packs
+
+A new context pack type that automatically accumulates project-specific knowledge from agent interactions. Unlike static project packs, learning packs grow over time as agents work and users provide feedback.
+
+**Knowledge sources** (automatic ingestion):
+- Agent run failures: when an agent fails and is manually corrected, the correction is recorded as a learning entry
+- User interventions: when a user interrupts an agent to correct its approach, the correction is inferred
+- Repeated errors: when the same error pattern appears across 3+ separate agent sessions
+- PR review patterns: when reviewers consistently request the same type of change
+
+**Entry schema**:
+```typescript
+interface LearningEntry {
+  id: string;
+  category: 'mistake-pattern' | 'preference' | 'flaky-test' | 'tool-usage' | 'architecture-rule';
+  scope: 'global' | 'directory' | 'file-pattern';
+  scopePattern?: string;              // e.g., "src/auth/**"
+  content: string;                    // Human-readable rule
+  confidence: number;                 // 0-1, increases with observations
+  observationCount: number;
+  sources: string[];                  // Contributing mission/session IDs
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+**Context injection**: Learning entries are included in the orchestrator and agent context window alongside project packs:
+- Entries with confidence > 0.7: always included
+- Entries with confidence 0.3-0.7: included when scope matches current task
+- Entries with confidence < 0.3: excluded (still accumulating evidence)
+
+**User controls**: Settings → Learning provides a review interface where users can confirm (boost confidence), edit, or delete entries. Confirmed entries immediately reach confidence 1.0.
+
+**Export/Import**: Learning packs can be exported to CLAUDE.md or agents.md format, and rules from those files can be imported as high-confidence learning entries. This provides interoperability with standard agent configuration.
+
+**Storage**: `learning_entries` SQLite table with full-text search index on `content` and `scopePattern` fields.
+
+**Privacy**: Learning packs are local-only, stored in the project's `.ade/` directory, and never transmitted to any external service.
+
 ---
 
 ## Implementation Status
@@ -1381,5 +1503,12 @@ The pack service provides the context backbone for all AI operations:
 | Call audit logging | Complete | Every MCP tool invocation writes durable `mcp_tool_call` history records |
 | Permission/policy layer | Complete | Mutation tools enforce claim/identity policy; spawn and ask_user guards applied |
 | Chat reasoning effort (Claude) | Complete | Reasoning effort forwarded to Claude provider when supported; validated for Codex |
+| Compute backends (Local, VPS, Daytona) | Complete | `ComputeBackend` interface with pluggable backends |
+| E2B compute backend | Planned | Phase 4 -- Firecracker microVM sandboxes via E2B SDK |
+| Compute environment types | Planned | Phase 4 -- terminal-only, browser, and desktop environment support |
+| Computer use MCP tools | Planned | Phase 4 -- `screenshot_environment`, `interact_gui`, `record_environment`, `launch_app`, `get_environment_info` |
+| Learning packs | Planned | Phase 4 -- auto-accumulating project knowledge from agent interactions, failures, and PR review patterns |
+| Task agents (lane artifacts) | Planned | Phase 4 -- specialized agents for artifact production within lanes |
+| Chat-to-mission escalation | Planned | Phase 4 -- promote a chat conversation into a full mission with pre-filled context |
 
-**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 (AI Orchestrator) is ~70% complete — missions overhaul shipped (fail-hard planner, PR strategies replacing merge phase, inter-agent messaging, AgentChannels UI, model selection per-mission, activity feed with category dropdown, missionId-filtered queries). Remaining Phase 3 work: live multi-agent orchestration, real-time coordination patterns, file conflict prevention at merge time, worker transcript tailing, and end-to-end validation.
+**Overall status**: Phases 1, 1.5, and 2 are complete. Phase 3 (AI Orchestrator) is ~70% complete — missions overhaul shipped (fail-hard planner, PR strategies replacing merge phase, inter-agent messaging, AgentChannels UI, model selection per-mission, activity feed with category dropdown, missionId-filtered queries). Remaining Phase 3 work: live multi-agent orchestration, real-time coordination patterns, file conflict prevention at merge time, worker transcript tailing, and end-to-end validation. Phase 4 (planned) expands scope to include: E2B compute backend, compute environment types (terminal/browser/desktop), computer use MCP tools, learning packs, task agents with lane artifacts, and chat-to-mission escalation.

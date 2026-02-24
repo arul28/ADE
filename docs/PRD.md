@@ -1,6 +1,6 @@
 # ADE (Agentic Development Environment) - Product Requirements Document
 
-Last updated: 2026-02-23
+Last updated: 2026-02-24
 
 Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope and core behavior; future sequencing lives in Final Plan).
 
@@ -35,6 +35,11 @@ Roadmap source of truth: `docs/final-plan.md` (this PRD captures product scope a
     - 10.3 [Workspace Graph](#103-workspace-graph)
     - 10.4 [Job Engine](#104-job-engine)
     - 10.5 [AI Integration](#105-ai-integration)
+    - 10.6 [Compute Backends](#106-compute-backends)
+    - 10.7 [Agent Computer Use](#107-agent-computer-use)
+    - 10.8 [Artifacts](#108-artifacts)
+    - 10.9 [Learning Packs](#109-learning-packs)
+    - 10.10 [Development Modes](#1010-development-modes)
 11. [Security and Privacy](#11-security-and-privacy)
 12. [Configuration Model](#12-configuration-model)
 13. [Non-Goals and Out of Scope](#13-non-goals-and-out-of-scope)
@@ -306,7 +311,7 @@ See: [features/HISTORY.md](features/HISTORY.md)
 
 ### 7.10 Agents
 
-The Agents tab is the control center for all autonomous ADE behavior. Users create, configure, and monitor agents that perform work on their behalf. Agent types include: **Automation Agents** (trigger-action workflows migrated from the previous Automations tab), **Night Shift Agents** (scheduled unattended tasks with strict guardrails and morning digest), **Watcher Agents** (monitors for upstream repos, APIs, and dependency feeds), and **Review Agents** (pre-review assigned PRs overnight). Each agent combines an identity (persona + policy profile), a trigger (when to activate), a behavior (what to do), and guardrails (budget caps + stop conditions). The tab features a card-based UI for agent management, a guided Custom Agent Builder wizard with natural language support, and a Morning Briefing — a swipeable card interface (inspired by Tinder/TikTok) for rapidly reviewing overnight results with approve/dismiss/investigate actions.
+The Agents tab is the control center for all autonomous ADE behavior. Users create, configure, and monitor agents that perform work on their behalf. Agent types include: **Task Agent** (one-off background task with custom instructions — users define a prompt, select a compute backend (local/VPS/Daytona/E2B), choose a compute environment (terminal-only/browser/desktop), and configure completion behaviors (open PR, take screenshots, record video, run tests, notify); task agents run in the background and report back with artifacts; launched from the Agents tab, command palette, or programmatically; this is the general-purpose "launch an agent to do a thing" — the catch-all for any background work that isn't active development), **Automation Agents** (trigger-action workflows migrated from the previous Automations tab), **Night Shift Agents** (scheduled unattended tasks with strict guardrails and morning digest), **Watcher Agents** (monitors for upstream repos, APIs, and dependency feeds), and **Review Agents** (pre-review assigned PRs overnight). Each agent combines an identity (persona + policy profile), a trigger (when to activate), a behavior (what to do), and guardrails (budget caps + stop conditions). The tab features a card-based UI for agent management, a guided Custom Agent Builder wizard with natural language support, and a Morning Briefing — a swipeable card interface (inspired by Tinder/TikTok) for rapidly reviewing overnight results with approve/dismiss/investigate actions.
 
 See: [features/AGENTS.md](features/AGENTS.md)
 
@@ -343,7 +348,7 @@ Each feature area is specified in detail in the following documents. These are t
 | 9 | Workspace Graph | [features/WORKSPACE_GRAPH.md](features/WORKSPACE_GRAPH.md) | Infinite-canvas topology overview. Covers primary/worktree/attached node rendering, stack and risk edge overlays, merge simulation interactions, and snapshot-based status overlays. |
 | 10 | Missions | [features/MISSIONS.md](features/MISSIONS.md) | AI orchestrator control center for mission intake and execution. Covers mission lifecycle, orchestrator run management, step DAG visualization, intervention queues, artifacts (including PR links), timeline events, and per-task-type model routing. |
 | 11 | Onboarding and Settings | [features/ONBOARDING_AND_SETTINGS.md](features/ONBOARDING_AND_SETTINGS.md) | Repository initialization and user preferences. Covers onboarding flow (repo selection, `.ade/` setup, CLI tool detection), trust surfaces, operation previews, escape hatches, AI provider and per-task-type routing configuration, and theme/keybinding settings. |
-| 12 | Agents | [features/AGENTS.md](features/AGENTS.md) | Unified autonomous agent system. Covers automation agents (trigger-action workflows), Night Shift agents (unattended scheduled execution with morning digest), watcher agents (repo/API monitoring), review agents (PR pre-review), agent identities (persona/policy profiles), the Custom Agent Builder wizard, and Morning Briefing UI. |
+| 12 | Agents | [features/AGENTS.md](features/AGENTS.md) | Unified autonomous agent system. Covers task agents (one-off background tasks with custom instructions, compute backend/environment selection, and completion behaviors), automation agents (trigger-action workflows), Night Shift agents (unattended scheduled execution with morning digest), watcher agents (repo/API monitoring), review agents (PR pre-review), agent identities (persona/policy profiles), the Custom Agent Builder wizard, and Morning Briefing UI. |
 
 ---
 
@@ -393,7 +398,7 @@ See: [features/PACKS.md](features/PACKS.md)
 
 ### 10.2 Agents
 
-Agents are ADE's unified system for autonomous behavior. The Agents tab (renamed from Automations in Phase 4) is the hub where users create, configure, and monitor agents that perform work on their behalf. Agent types include automation agents (wrapping the existing trigger-action engine), Night Shift agents (scheduled unattended execution), watcher agents (resource monitors), and review agents (PR pre-reviewers). Each agent combines an identity, trigger, behavior, and guardrails. The Morning Briefing provides a swipeable card interface for reviewing overnight results. Agents are configured in `.ade/ade.yaml` or `.ade/local.yaml` under the `agents:` key and can be managed from the Agents tab or Settings.
+Agents are ADE's unified system for autonomous behavior. The Agents tab (renamed from Automations in Phase 4) is the hub where users create, configure, and monitor agents that perform work on their behalf. Agent types include task agents (one-off background tasks with custom instructions and completion behaviors), automation agents (wrapping the existing trigger-action engine), Night Shift agents (scheduled unattended execution), watcher agents (resource monitors), and review agents (PR pre-reviewers). Each agent combines an identity, trigger, behavior, and guardrails. The Morning Briefing provides a swipeable card interface for reviewing overnight results. Agents are configured in `.ade/ade.yaml` or `.ade/local.yaml` under the `agents:` key and can be managed from the Agents tab or Settings.
 
 See: [features/AGENTS.md](features/AGENTS.md)
 
@@ -444,6 +449,61 @@ The AI Integration Layer provides narrative augmentation, conflict resolution pr
 **Cost controls**: Execution is tied to session boundaries, not keystrokes. Context pack exports are bounded by default. The orchestrator context profile excludes narrative text unless explicitly opted in. Content-hash caching avoids redundant work.
 
 **Usage tracking**: Every AI call is logged to a local `ai_usage_log` table with feature type, provider, model, token counts, duration, and success status. The Settings tab surfaces this data as a usage dashboard with per-feature progress bars, subscription status, and configurable budget controls. Budget enforcement is the foundation for Night Shift (Phase 4) budget caps — the same per-feature limits and counters are reused for unattended batch execution.
+
+### 10.6 Compute Backends
+
+ADE agents can execute on multiple compute backends, configured per-agent or per-mission step. All backends provide isolated environments for agent work.
+
+- **Local** (Default): Agent runs as a subprocess on the developer's machine, operating in a git worktree managed by ADE. Zero setup, zero cost, full access to local tools and credentials.
+- **VPS** (Opt-in): User-provisioned remote machine (SSH target). ADE syncs the worktree, runs the agent remotely, and streams output back. Configured in Settings → Compute Backends with SSH credentials.
+- **Daytona** (Opt-in): Dev environment-as-a-service via Daytona SDK. Provides reproducible, containerized development environments with pre-configured toolchains. Configured in Settings → Compute Backends with API key. Always opt-in.
+- **E2B** (Opt-in): Firecracker microVM-based sandboxes via E2B SDK. Sub-150ms cold start. Supports full desktop environments (Xfce + Chromium) for computer use scenarios. Per-second billing (~$0.05/hr for 1 vCPU). Configured in Settings → Compute Backends with API key. Always opt-in.
+
+### 10.7 Agent Computer Use
+
+Agents can interact with running applications visually through computer use capabilities. Three compute environment types support different levels of interaction:
+
+- **Terminal-only**: Default. Agent operates via CLI commands in a worktree or sandbox.
+- **Browser**: Headless browser (Playwright) for web app testing and verification. Agent can navigate, click, type, screenshot.
+- **Desktop**: Full virtual desktop (Xvfb + window manager) for desktop apps, Electron apps, mobile emulators. Agent gets mouse/keyboard control, screenshot capture, and video recording.
+
+Computer use is powered by provider-native APIs: Anthropic's Computer Use Tool for Claude agents, OpenAI's CUA for Codex agents. All compute backends (Local, VPS, Daytona, E2B) support all environment types.
+
+Artifacts produced by computer use (screenshots, videos, test results) attach to the lane or mission and are auto-included in PR descriptions.
+
+### 10.8 Artifacts
+
+Artifacts are first-class objects that can attach to missions, lanes, or agent runs. Types include: summary, pr, link, note, patch, screenshot, video, test-result.
+
+Lane-level artifacts enable agents working in a lane (via chat, task agents, or mission steps) to attach visual proof and outputs directly to the lane. When a PR is opened from a lane, attached artifacts (screenshots, videos) are auto-included in the PR description.
+
+Artifact storage is local under `.ade/artifacts/`, organized by mission or lane. Artifacts are referenced by ID in the SQLite database and linked to their parent entity (mission, lane, or agent run).
+
+### 10.9 Learning Packs
+
+Learning packs are auto-curated project knowledge that accumulates from agent interactions. The system observes agent failures, user corrections, repeated issues, and PR review patterns to build a persistent memory bank that improves agent performance over time.
+
+Knowledge entries have categories (mistake-pattern, preference, flaky-test, tool-usage, architecture-rule), scopes (global, directory, file-pattern), and confidence scores that increase with repeated observations. High-confidence entries are injected into agent context alongside project packs.
+
+Users can review, edit, confirm, or delete entries in Settings → Learning. Learning packs can export to/from CLAUDE.md or agents.md format for interoperability. Learning packs are local-only and never transmitted.
+
+### 10.10 Development Modes
+
+ADE supports two complementary modes of work:
+
+**Active Development** (interactive, user-in-the-loop):
+- Work Tab / Lane Chat: Direct conversation with Claude or Codex in a lane worktree
+- Terminals: Interactive CLI sessions
+- Missions: Orchestrated multi-agent workflows with real-time monitoring and approval gates
+
+**Background Work** (fire-and-forget, agents tab):
+- Task Agents: One-off background tasks with custom instructions and completion behaviors
+- Automation Agents: Trigger-action pipelines (on commit, on schedule, etc.)
+- Night Shift Agents: Scheduled overnight execution with morning digest
+- Watcher Agents: External resource monitoring (repos, APIs, dependency feeds)
+- Review Agents: PR pre-review and summarization
+
+The Agents tab is the unified launch pad and monitoring view for all background work. Users configure what the agent does, where it runs, and what it produces when done.
 
 ---
 

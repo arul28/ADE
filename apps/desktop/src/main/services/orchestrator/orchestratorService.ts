@@ -2238,6 +2238,11 @@ export function createOrchestratorService({
     if (!step.dependencyStepIds.length) {
       return { satisfied: true, permanentlyBlocked: false };
     }
+    // Advisory dependencies are non-blocking — step proceeds immediately but
+    // may receive handoff context from upstream steps when they complete.
+    if (step.joinPolicy === "advisory") {
+      return { satisfied: true, permanentlyBlocked: false };
+    }
     const depSteps = step.dependencyStepIds.map((id) => stepsById.get(id) ?? null);
     const depStatuses = depSteps.map((dep) => dep?.status ?? "pending");
     const successCount = depStatuses.filter((status) => status === "succeeded" || status === "skipped").length;

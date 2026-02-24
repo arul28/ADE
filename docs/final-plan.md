@@ -1,6 +1,6 @@
 # ADE Final Plan (Canonical Roadmap)
 
-Last updated: 2026-02-23
+Last updated: 2026-02-24
 Owner: ADE
 Status: Active
 
@@ -114,6 +114,12 @@ Every planned feature in this roadmap is assigned to exactly one primary build p
 | Morning Briefing UI | Phase 4 | Phase 3 | Planned |
 | Play runtime isolation | Phase 5 | Phase 3 | Planned |
 | Compute backend abstraction | Phase 5.5 | Phase 5 | Planned |
+| Task Agents (one-off background agents) | Phase 4 | Phase 3 | Planned |
+| Computer Use (agent GUI interaction) | Phase 5.5 | Phase 5 | Planned |
+| E2B compute backend | Phase 5.5 | Phase 5 | Planned |
+| Lane-level artifacts | Phase 4 | Phase 3 | Planned |
+| Learning Packs (auto-curated knowledge) | Phase 4 | Phase 3 | Planned |
+| Chat-to-mission escalation | Phase 4 | Phase 3 | Planned |
 | Integration sandbox + readiness gates | Phase 6 | Phase 5 | Planned |
 | Core extraction (`packages/core`) | Phase 7 | Phases 3, 5, 6 | Planned |
 | Relay + Machines | Phase 8 | Phase 7 | Planned |
@@ -752,6 +758,7 @@ Agent = Identity + Trigger + Behavior + Guardrails
 | **Night Shift Agent** | Queued tasks that run unattended during off-hours. Stricter guardrails, budget caps, and stop conditions. Produces a morning digest for review. | Scheduled (time-based, e.g., "run at 2am") | "Refactor auth module overnight, park on failure" |
 | **Watcher Agent** | Monitors external resources (upstream repos, APIs, logs, dependency feeds) and surfaces findings. Does not modify code — observation only. | Polling (interval-based) or webhook | "Watch react repo for deprecation notices affecting our codebase" |
 | **Review Agent** | Watches the team's PR feed and pre-reviews PRs assigned to the user. Summarizes changes, flags concerns, and provides a morning briefing card. | Polling (GitHub API interval) or webhook | "Pre-review my assigned PRs overnight, summarize in morning briefing" |
+| **Task Agent** | One-off background task with custom instructions. Fire-and-forget: define what to do, where to run, and what to produce when done. | Manual or programmatic (launched from Agents tab, command palette, or API) | "Refactor auth module, take screenshots to verify, open a PR" |
 
 All agent types share the same underlying schema, identity system, and guardrail infrastructure. The type determines default behavior templates and UI affordances.
 
@@ -788,7 +795,7 @@ All agent types share the same underlying schema, identity system, and guardrail
 interface Agent {
   id: string;
   name: string;
-  type: 'automation' | 'night-shift' | 'watcher' | 'review';
+  type: 'automation' | 'night-shift' | 'watcher' | 'review' | 'task';
   description?: string;
   icon?: string;                    // Lucide icon name or emoji
   identity: AgentIdentity;          // Persona + policy profile
@@ -856,6 +863,13 @@ interface AgentBehavior {
   // For review agents: review config
   reviewScope?: 'assigned-to-me' | 'team' | 'all-open';
   reviewDepth?: 'summary' | 'detailed' | 'security-focused';
+
+  // For task agents: one-off background task
+  taskPrompt?: string;              // Natural language task description
+  taskLaneId?: string;              // Target lane (optional, agent can create one)
+  computeBackend?: 'local' | 'vps' | 'daytona' | 'e2b';
+  computeEnvironment?: 'terminal-only' | 'browser' | 'desktop';
+  completionBehaviors?: CompletionBehavior[];
 }
 
 interface AgentGuardrails {
@@ -884,6 +898,15 @@ type StopCondition =
   | { type: 'intervention-threshold'; maxInterventions: number }
   | { type: 'error-rate'; maxErrorPercent: number }
   | { type: 'time-exceeded' };
+
+type CompletionBehavior =
+  | { type: 'open-pr'; baseBranch?: string; draft?: boolean }
+  | { type: 'screenshot'; pages?: string[] }           // Screenshot specified pages/routes
+  | { type: 'record-video'; durationLimitMs?: number }  // Record agent interaction
+  | { type: 'attach-artifacts-to-lane' }                // Attach all artifacts to the target lane
+  | { type: 'run-tests'; command?: string }             // Run tests and attach results
+  | { type: 'notify'; channel?: 'ui' | 'push' }        // Notify user on completion
+  | { type: 'custom-command'; command: string };         // Run arbitrary command on completion
 ```
 
 - Add `agents` table to SQLite (extends existing `automation_runs` schema):
@@ -893,7 +916,7 @@ CREATE TABLE agents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     name TEXT NOT NULL,
-    type TEXT NOT NULL,              -- 'automation' | 'night-shift' | 'watcher' | 'review'
+    type TEXT NOT NULL,              -- 'automation' | 'night-shift' | 'watcher' | 'review' | 'task'
     config TEXT NOT NULL,            -- JSON: full Agent schema
     identity_id TEXT,                -- FK to agent_identities table
     enabled INTEGER DEFAULT 1,
@@ -955,7 +978,7 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
   ```
   +------------------------------------------------------------------+
   | AGENTS                                          [+ NEW AGENT]     |
-  | [All] [Automation] [Night Shift] [Watcher] [Review]   [Search]   |
+  | [All] [Automation] [Night Shift] [Watcher] [Review] [Task] [Search]|
   +------------------------------------------------------------------+
   | ┌──────────────┐ ┌──────────────┐ ┌──────────────┐              |
   | │ 🔧 Lint on   │ │ 🌙 Refactor │ │ 👁 Watch     │              |
@@ -967,22 +990,22 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
   | │ ✓ 47 runs    │ │ ✓ 12 runs   │ │ 3 findings   │              |
   | │         [ON] │ │         [ON] │ │         [ON] │              |
   | └──────────────┘ └──────────────┘ └──────────────┘              |
-  | ┌──────────────┐ ┌──────────────┐                                |
-  | │ 📋 PR Review │ │ 🧹 Code     │                                |
-  | │    Agent      │ │    Health    │                                |
-  | │              │ │              │                                |
-  | │ REVIEW       │ │ WATCHER      │                                |
-  | │ ◐ Overnight  │ │ ● Weekly     │                                |
-  | │ 5 PRs queued │ │ Last: Mon    │                                |
-  | │ 2 flagged    │ │ 14 findings  │                                |
-  | │         [ON] │ │         [ON] │                                |
-  | └──────────────┘ └──────────────┘                                |
+  | ┌──────────────┐ ┌──────────────┐ ┌──────────────┐              |
+  | │ 📋 PR Review │ │ 🧹 Code     │ │ ⚡ Refactor  │              |
+  | │    Agent      │ │    Health    │ │    Payments  │              |
+  | │              │ │              │ │              │              |
+  | │ REVIEW       │ │ WATCHER      │ │ TASK         │              |
+  | │ ◐ Overnight  │ │ ● Weekly     │ │ ● Running    │              |
+  | │ 5 PRs queued │ │ Last: Mon    │ │ Step 4/7     │              |
+  | │ 2 flagged    │ │ 14 findings  │ │ PR + tests   │              |
+  | │         [ON] │ │         [ON] │ │    [CANCEL]  │              |
+  | └──────────────┘ └──────────────┘ └──────────────┘              |
   +------------------------------------------------------------------+
   ```
 
 - **Agent Card** (standard card from design system: `bg-secondary`, `border-default`, `0px` radius):
   - Top: Icon + name (heading-sm, JetBrains Mono 12px/600).
-  - Type badge (label-sm, ALL-CAPS, 9px): `AUTOMATION` / `NIGHT SHIFT` / `WATCHER` / `REVIEW` with type-specific accent colors.
+  - Type badge (label-sm, ALL-CAPS, 9px): `AUTOMATION` / `NIGHT SHIFT` / `WATCHER` / `REVIEW` / `TASK` with type-specific accent colors.
   - Status line: active/idle/sleeping/error with colored dot indicator.
   - Stats: last run timestamp, total run count, findings count (for watchers/reviewers).
   - Enable/disable toggle in bottom-right corner.
@@ -996,7 +1019,7 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
   - **"Run Now" button**: Manual trigger for any agent type.
   - **Delete button** (danger styling from design system).
 
-- **Type filter tabs**: Segmented control at top to filter by agent type (All / Automation / Night Shift / Watcher / Review).
+- **Type filter tabs**: Segmented control at top to filter by agent type (All / Automation / Night Shift / Watcher / Review / Task).
 - **Search**: Filter agents by name or description.
 
 #### W5: Custom Agent Builder
@@ -1004,7 +1027,7 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
 A guided wizard for creating new agents, accessible via the "+ NEW AGENT" button.
 
 - **Step 1 — Choose Type**:
-  - Four type cards with icon, name, and short description.
+  - Five type cards with icon, name, and short description.
   - Each card shows example use cases.
   - Selecting a type loads appropriate defaults for the remaining steps.
 
@@ -1026,6 +1049,7 @@ A guided wizard for creating new agents, accessible via the "+ NEW AGENT" button
   - **Night Shift agents**: Mission prompt textarea + lane selector + PR strategy picker.
   - **Watcher agents**: Watch target list + report format selector.
   - **Review agents**: Scope selector + depth selector.
+  - **Task agents**: Task prompt textarea + compute backend selector + compute environment selector + completion behavior checklist (screenshot, video, PR, tests, notify).
 
 - **Step 5 — Set Guardrails**:
   - Budget controls: time limit, token budget, step limit, USD cap.
@@ -1275,9 +1299,69 @@ A distinctive, swipeable card interface for reviewing Night Shift results — in
 - Existing `automation_runs` records remain queryable via the new agent run history UI.
 - IPC backward compatibility: old `ade.automations.*` channels are aliased to `ade.agents.*` for one version cycle.
 
-#### W11: Validation
+#### W11: Lane-Level Artifacts
 
-- Agent schema validation tests (all four types, all trigger types, all behavior configs).
+Artifacts become a first-class concept on lanes, not just missions. This enables agents (task agents, chat sessions, mission workers) to attach visual proof, test results, and other outputs directly to the lane where work happened.
+
+- Extend the `mission_artifacts` table into a shared `artifacts` table with polymorphic ownership:
+  - `owner_type`: 'mission' | 'lane' | 'agent-run'
+  - `owner_id`: mission ID, lane ID, or agent run ID
+- New artifact types beyond existing (summary, pr, link, note, patch):
+  - `screenshot`: PNG/JPEG image captured from agent environment
+  - `video`: Screen recording of agent work (MP4)
+  - `test-result`: Structured test output (pass/fail counts, log)
+- Lane detail view: new "Artifacts" sub-pane showing attached artifacts with thumbnails
+- PR description generator (Phase 1 W8) updated to auto-include lane artifacts in PR body (embedded images, video links)
+- Agent chat sessions can produce artifacts: agent takes screenshot → attaches to lane as artifact
+- IPC channels: `ade.artifacts.list`, `ade.artifacts.get`, `ade.artifacts.attach`, `ade.artifacts.delete`
+
+#### W12: Learning Packs (Auto-Curated Project Knowledge)
+
+A new context pack type that automatically accumulates project-specific knowledge from agent interactions, building a persistent memory that improves agent performance over time.
+
+- New pack type: `LearningPack` alongside existing Lane/Project/Mission/Feature packs.
+- **Knowledge sources** (automatic):
+  - Mission/agent run failures and their resolutions (what went wrong, how it was fixed)
+  - User interventions during agent work (what the user corrected → inferred rule)
+  - Repeated issues across agent chat sessions (same error 3+ times → recorded pattern)
+  - PR review feedback patterns (reviewer consistently requests X → recorded preference)
+- **Knowledge entries**:
+  ```typescript
+  interface LearningEntry {
+    id: string;
+    category: 'mistake-pattern' | 'preference' | 'flaky-test' | 'tool-usage' | 'architecture-rule';
+    scope: 'global' | 'directory' | 'file-pattern';  // How broadly it applies
+    scopePattern?: string;                              // e.g., "src/auth/**" for directory scope
+    content: string;                                    // The actual learning (human-readable rule)
+    confidence: number;                                 // 0-1, increases with repeated observations
+    observationCount: number;                           // How many times this was observed
+    sources: string[];                                  // IDs of missions/sessions that contributed
+    createdAt: string;
+    updatedAt: string;
+  }
+  ```
+- **Injection**: Learning pack contents are injected into orchestrator context alongside project packs. High-confidence entries (confidence > 0.7) are always included; low-confidence entries are included when scope matches the current task.
+- **User review**: Entries are visible and editable in Settings → Learning. Users can confirm, edit, or delete entries. Confirmed entries get confidence boost.
+- **Export/import**: Learning packs can be exported to/from CLAUDE.md or agents.md format for interoperability with standard agent config files.
+- **Storage**: New `learning_entries` SQLite table with full-text search for efficient retrieval.
+- **Privacy**: Learning packs are local-only (never transmitted). They travel with the project directory.
+
+#### W13: Chat-to-Mission Escalation
+
+Bridge between the interactive agent chat (Work Tab) and the mission system. When a chat task grows beyond a single-agent scope, the system can escalate to full mission orchestration.
+
+- **Escalation trigger**: Agent or user recognizes the task needs multiple lanes/agents.
+- **Escalation flow**:
+  1. In agent chat, user says "this needs a full mission" or agent suggests escalation
+  2. Chat context (conversation history, files changed, current state) is packaged as mission input
+  3. Mission launcher opens pre-filled with the chat context as the prompt
+  4. User confirms → mission created, chat session linked as source
+- **Reverse flow**: Mission results can be summarized back into the originating chat session.
+- **IPC**: `ade.agentChat.escalateToMission(sessionId)` → opens mission launcher with context.
+
+#### W14: Validation
+
+- Agent schema validation tests (all five types, all trigger types, all behavior configs).
 - Identity policy application tests (identity override precedence, denial enforcement, tool filtering).
 - Identity version history tests (version increment, snapshot accuracy, diff correctness).
 - Backward compatibility tests for missions with no explicit identity (default identity applied).
@@ -1289,13 +1373,38 @@ A distinctive, swipeable card interface for reviewing Night Shift results — in
 - Watcher agent polling tests (change detection, finding emission, deduplication).
 - Review agent PR detection tests (new PR detection, review generation, finding accuracy).
 - Agent builder wizard flow tests (all steps, NL creation, validation on create).
+- Task agent lifecycle tests (create, run, complete with completion behaviors).
+- Completion behavior execution tests (screenshot, video, PR, tests, notify, custom-command).
 - IPC backward compatibility tests (old `ade.automations.*` channels still work).
 - Config migration tests (existing automations → agents, round-trip correctness).
+- Lane-level artifact CRUD tests (attach, list, get, delete across owner types).
+- Artifact polymorphic ownership tests (mission, lane, agent-run owners).
+- Learning pack entry accumulation tests (auto-capture from failures, interventions, repeated issues).
+- Learning pack confidence scoring tests (observation count → confidence increase, user confirmation boost).
+- Learning pack injection tests (high-confidence always included, scope-matched low-confidence included).
+- Learning pack export/import roundtrip tests (CLAUDE.md format, agents.md format).
+- Chat-to-mission escalation flow tests (context packaging, pre-filled launcher, session linking).
+- Reverse escalation tests (mission results summarized back into originating chat session).
+
+### Phase 4 / Phase 5.5 Bridge Notes
+
+Phase 4 introduces Task Agents with `computeBackend`, `computeEnvironment`, and completion behavior fields (screenshot, video) that reference infrastructure built in Phase 5.5. This is intentional — Phase 4 establishes the schema and UI; Phase 5.5 activates the full capabilities.
+
+**Task Agents in Phase 4** (before Phase 5.5 is built):
+- `computeBackend` field is present in the schema but defaults to `'local'`. UI shows the selector with Daytona/E2B options grayed out as "Available after Phase 5.5."
+- `computeEnvironment` field defaults to `'terminal-only'`. Browser and desktop options are grayed out as "Available after Phase 5.5."
+- Completion behaviors `screenshot` and `record-video` are configurable but display a note: "Requires computer use backend (Phase 5.5)." If selected, they are stored in config but skipped during execution until Phase 5.5 MCP tools are available.
+- Task Agents **fully function** in Phase 4 for terminal-only local execution: custom prompts, lane creation, PR opening, test running, and notification all work without Phase 5.5.
+
+**Phase 5.5 activation**:
+- When Phase 5.5 ships, the grayed-out options in the Task Agent builder activate automatically — no schema migration needed.
+- Computer Use MCP tools (`screenshot_environment`, `record_environment`, etc.) become available to all agent types, not just Task Agents.
+- Daytona and E2B backends become selectable for any agent type that declares a compute backend preference.
 
 ### Exit criteria
 
 - Automations tab is fully rebranded as Agents with card-based UI following the ADE design system.
-- Users can create agents of all four types via the guided wizard or natural language.
+- Users can create agents of all five types via the guided wizard or natural language.
 - Agent identities provide reusable persona/policy profiles that constrain agent behavior.
 - Identity policy is consistently enforced by both AI orchestrator and deterministic runtime.
 - Identity changes are versioned and auditable.
@@ -1306,6 +1415,13 @@ A distinctive, swipeable card interface for reviewing Night Shift results — in
 - Existing automations are seamlessly migrated to automation agents with no behavior change.
 - Night Shift runs can be inspected and audited like manual missions.
 - Agent builder supports both guided wizard creation and natural language description.
+- Task agents execute one-off background tasks with configurable completion behaviors (screenshot, video, PR, tests, notify).
+- Lane-level artifacts support polymorphic ownership (mission, lane, agent-run) with screenshot, video, and test-result types.
+- Lane detail view shows attached artifacts with thumbnails; PR descriptions auto-include lane artifacts.
+- Learning packs accumulate project knowledge from agent interactions with confidence scoring and scope matching.
+- Learning pack entries are visible and editable in Settings; export/import to CLAUDE.md format is supported.
+- Chat-to-mission escalation packages chat context into a pre-filled mission launcher; mission results can be summarized back into the originating chat.
+- Task Agents execute successfully with local/terminal-only defaults. Compute backend and environment selectors display Phase 5.5 options as "coming soon" with graceful fallback.
 
 ---
 
@@ -1357,6 +1473,18 @@ Goal: Concurrent lane runtimes without collisions. Full lane environment initial
 #### W6: Auth Redirect Handling
 - Redirect URI rewriting per-lane hostname.
 - OAuth callback routing to correct lane dev server.
+- **State-parameter routing** (recommended approach):
+  - Single OAuth callback URL registered with provider: `localhost:8080/oauth/callback`
+  - ADE's proxy intercepts all OAuth callbacks at this URL
+  - The `state` parameter in OAuth flows (which ADE controls) encodes the originating lane ID
+  - Proxy parses the lane ID from the `state` parameter and forwards the callback to the correct lane's dev server
+  - This requires zero changes to OAuth provider configuration regardless of how many lanes are running
+  - Works with any OAuth provider (GCP, Auth0, GitHub, etc.) since `state` is a standard OAuth 2.0 parameter
+- **Hostname-based routing** (alternative for providers supporting wildcards):
+  - Register `*.localhost:8080/callback` as redirect URI (where supported)
+  - Each lane gets its own hostname: `lane-1.localhost:8080`, `lane-2.localhost:8080`
+  - Proxy routes by Host header to the correct lane's dev server
+- **Setup assistant**: Settings → Proxy & Preview shows a "Copy Redirect URIs" helper that generates the exact URIs to register with your OAuth provider based on your proxy configuration.
 
 #### W7: LaneOverlayPolicy Extension
 - Extend existing `laneOverlayMatcher.ts` for env/port/proxy overlays.
@@ -1393,7 +1521,7 @@ Goal: Concurrent lane runtimes without collisions. Full lane environment initial
 
 ## Phase 5.5 -- Compute Backend Abstraction (3-4 weeks)
 
-Goal: Abstract lane execution behind a pluggable compute backend interface, enabling lanes to run locally, on a VPS, or in Daytona cloud sandboxes (opt-in).
+Goal: Abstract lane execution behind a pluggable compute backend interface, enabling lanes to run locally, on a VPS, in Daytona cloud sandboxes, or in E2B microVMs. Add computer use capabilities for agents that need to interact with running applications visually.
 
 ### Reference docs
 
@@ -1404,6 +1532,7 @@ Goal: Abstract lane execution behind a pluggable compute backend interface, enab
 ### Dependencies
 
 - Phase 5 complete.
+- Phase 4 complete (Task Agents, lane artifacts, and agent schema with compute backend/environment fields are shipped — Phase 5.5 activates the full compute infrastructure these fields reference).
 
 ### Workstreams
 
@@ -1440,18 +1569,68 @@ Goal: Abstract lane execution behind a pluggable compute backend interface, enab
 - Daytona: SDK-provided workspace URL.
 - VPS: relay-routed preview.
 
-#### W7: Validation
+#### W7: E2B Backend (Opt-in)
+- Integrate E2B SDK for Firecracker microVM-based sandboxes.
+- Workspace creation via E2B API with repo cloning and environment setup.
+- Sub-150ms cold start for lightweight agent tasks.
+- Desktop sandbox support: full Xfce environment with Chromium, mouse/keyboard APIs, screenshot capture.
+- E2B configuration in Settings → Compute Backends:
+  - API key
+  - Default sandbox template (custom or standard)
+  - Resource allocation (CPU, RAM)
+  - Auto-stop timeout
+- E2B is always opt-in and never required for ADE functionality.
+
+#### W8: Compute Environment Types
+- Each compute backend supports multiple environment types:
+  - **terminal-only**: Default. Agent gets a shell in a worktree/sandbox. No GUI rendering. Suitable for code changes, test runs, CLI operations.
+  - **browser**: Headless browser (Playwright/Puppeteer) available. Agent can launch web apps, navigate, screenshot, interact. Suitable for web application testing and verification.
+  - **desktop**: Full virtual desktop (Xvfb + window manager). Agent gets mouse/keyboard control and screenshot/video capture. Suitable for desktop apps (Electron, native), mobile emulators, and any GUI application.
+- Environment type is declared by the agent/mission planner based on task requirements.
+- Backend capability matrix:
+  | Backend | terminal-only | browser | desktop |
+  |---------|:---:|:---:|:---:|
+  | Local | Yes | Yes (local Playwright) | Yes (local Xvfb) |
+  | VPS | Yes | Yes | Yes |
+  | Daytona | Yes | Yes | Yes (native computer use API) |
+  | E2B | Yes | Yes | Yes (Desktop Sandbox) |
+
+#### W9: Computer Use MCP Tools
+- New MCP tools exposed to agents for GUI interaction:
+  - `screenshot_environment` — Capture current screen state as PNG. Returns base64-encoded image.
+  - `interact_gui` — Execute mouse/keyboard actions: click(x,y), type(text), scroll, key_press, drag. Uses Anthropic's computer use tool format for Claude agents, or equivalent for Codex.
+  - `record_environment` — Start/stop video recording of the agent's environment. Produces MP4 artifact.
+  - `launch_app` — Start an application in the environment (browser, Electron app, mobile emulator).
+  - `get_environment_info` — Return current environment type, resolution, running processes.
+- These tools are only available when the compute environment supports GUI interaction (browser or desktop mode).
+- Computer use loop: screenshot → send to model → receive actions → execute → repeat.
+- For Claude agents: uses Anthropic's computer use API (`computer_20250124` tool) natively.
+- For Codex agents: uses OpenAI's CUA (Computer-Using Agent) API via the Responses API.
+- Artifacts produced (screenshots, videos) are automatically attached to the lane or mission.
+
+#### W10: Validation
 - Backend interface contract tests.
 - Local backend parity tests (existing behavior preserved).
 - Daytona backend integration tests (opt-in, requires API key).
+- E2B backend integration tests (opt-in, requires API key).
 - Backend selection persistence and override tests.
+- Compute environment type selection and capability validation tests.
+- Computer use MCP tool tests (screenshot, interact, record, launch, get_environment_info).
+- Computer use loop tests (screenshot → model → actions → execute cycle).
+- Artifact attachment tests (screenshots, videos auto-attached to lanes and missions).
 
 ### Exit criteria
 
-- Lanes can execute on Local, Daytona, or VPS (stub) backends via unified interface.
+- Lanes can execute on Local, Daytona, E2B, or VPS (stub) backends via unified interface.
 - Daytona is fully opt-in with clear configuration in Settings.
+- E2B is fully opt-in with clear configuration in Settings.
 - Preview URLs work across all backends.
 - Backend selection is configurable per-project, per-lane, and per-mission.
+- E2B backend creates and manages sandboxes via the E2B SDK.
+- Computer use MCP tools (screenshot, interact, record, launch) function across all backends that support GUI.
+- Desktop compute environments provide full virtual desktop with mouse/keyboard control.
+- Browser compute environments provide headless browser interaction via Playwright.
+- Agents can produce visual artifacts (screenshots, videos) that attach to lanes and missions.
 
 ---
 
@@ -1675,6 +1854,8 @@ Pull-forward rules:
 - Phase 2 (MCP Server) and Phase 1 (Agent SDK Integration) may overlap in late Phase 1 for tool contract design work.
 - Phase 1.5 (Agent Chat Integration) runs in parallel with Phase 1. It depends only on Phase 1 W1 (package installation) being complete. All other Phase 1.5 work is independent of Phase 1's migration workstreams.
 - Daytona SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration.
+- E2B SDK exploration may begin during Phase 5 to derisk Phase 5.5 integration alongside Daytona.
+- Computer use tool prototyping may begin during Phase 4 (task agents) since task agents reference compute environments and completion behaviors that depend on computer use capabilities.
 
 ---
 
@@ -1707,6 +1888,8 @@ Each phase must satisfy:
 | Claude multi-turn session quality vs Codex | Claude via community provider may have rougher multi-turn UX than Codex's purpose-built App Server | `AgentChatService` interface allows per-provider UX tuning; feature parity is a goal but not a hard requirement |
 | localhost subdomain browser compatibility | Safari/Firefox may not resolve `*.localhost` subdomains | Feature detection at startup; fallback to port-based isolation; document browser requirements |
 | Daytona SDK stability | Pre-1.0 SDK, API may change between versions | Pin SDK version; `ComputeBackend` interface isolates callers; Daytona is always opt-in |
+| E2B SDK stability | E2B API may change; Desktop Sandbox availability may vary | Pin SDK version; `ComputeBackend` interface isolates callers; E2B is always opt-in; terminal-only fallback if desktop sandbox unavailable |
+| Computer use reliability | GUI interaction is inherently less deterministic than CLI operations | Screenshot verification loop; agent retry with different strategy on failure; human intervention fallback; time limits on computer use loops |
 | Port exhaustion on machines with many lanes | Machines with 20+ lanes may exhaust ephemeral port ranges | Configurable port range size per lane; lease release on lane archive; diagnostics for port pressure |
 | Docker dependency for lane environment init | Lane env init features require Docker for service startup | Docker is optional; env file copying and dependency install work without Docker; clear error messages when Docker is unavailable |
 
@@ -1735,6 +1918,8 @@ Each phase must satisfy:
 - Port collision rate: 0%
 - Proxy latency overhead: <5ms per request
 - Daytona workspace creation latency: <15s
+- E2B sandbox cold start latency: <150ms
+- Computer use screenshot-to-action loop latency: <2s per cycle
 
 ### Adoption KPIs
 
@@ -1745,6 +1930,10 @@ Each phase must satisfy:
 - Morning Briefing items approved vs. dismissed ratio
 - Watcher/Review agent finding actionability rate
 - Agent builder completion rate (wizard started vs. agent created)
+- Task agent completion rate (task started vs. successfully completed with all completion behaviors)
+- Chat-to-mission escalation rate (escalations triggered vs. missions successfully created)
+- Learning pack entry confirmation rate (auto-generated entries confirmed by users vs. deleted)
+- Lane artifact attachment rate (agents producing artifacts vs. agents with no artifacts)
 
 ---
 
@@ -1756,13 +1945,17 @@ The program is complete when:
 - AI orchestrator executes across lanes/processes/tests/PRs via MCP tools with robust recovery.
 - Orchestrator decisions flow through the deterministic runtime with full context provenance.
 - Play supports deterministic lane isolation and integration sandbox verification.
-- Agents tab provides unified autonomous agent system with automation, Night Shift, watcher, and review agent types.
+- Agents tab provides unified autonomous agent system with automation, Night Shift, watcher, review, and task agent types.
 - Agent identities provide reusable persona/policy profiles that constrain agent and orchestrator behavior.
 - Night Shift agents execute unattended with hard guardrails and produce reliable morning digests.
 - Morning Briefing provides a swipeable card interface for rapid review of overnight agent results.
 - Desktop and iOS can operate against local and relay machine targets.
 - MCP server safely exposes ADE capabilities to the AI orchestrator and external agent ecosystems.
-- Compute backend abstraction enables lanes to execute on Local, VPS, or Daytona (opt-in) backends.
+- Compute backend abstraction enables lanes to execute on Local, VPS, Daytona (opt-in), or E2B (opt-in) backends.
+- Computer use MCP tools enable agents to interact with running applications visually across supported compute environments.
+- Lane-level artifacts provide polymorphic attachment of screenshots, videos, and test results to lanes, missions, and agent runs.
+- Learning packs automatically accumulate project-specific knowledge from agent interactions with confidence-based injection.
+- Chat-to-mission escalation bridges interactive chat sessions with full mission orchestration.
 - Preview URLs work across all compute backends with unified generation and access.
 - Lane isolation (env, ports, hostname, cookies) prevents cross-lane interference.
 - All core features work in `guest` mode without any subscriptions.

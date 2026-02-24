@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-16
+> Last updated: 2026-02-24
 
 ---
 
@@ -478,7 +478,7 @@ lanes (
 | LANES-051 | Per-lane hostname proxy (*.localhost) | TODO |
 | LANES-052 | Preview launch service | TODO |
 | LANES-053 | Lane template CRUD and storage | TODO |
-| LANES-054 | Auth redirect handling per-lane | TODO |
+| LANES-054 | Auth redirect handling per-lane: state-parameter routing (single OAuth callback URL, route by state param to correct lane), hostname-based routing (for providers supporting wildcards), setup assistant in Settings | TODO |
 | LANES-055 | LaneOverlayPolicy extension for env/port/proxy | TODO |
 | LANES-056 | Runtime diagnostics (health checks, port conflicts) | TODO |
 | LANES-057 | Renderer UI updates for lane env/proxy/preview | TODO |
@@ -513,6 +513,39 @@ Each lane can be assigned a unique `.localhost` subdomain for isolated web acces
 - **Browser Profile Isolation** (optional): Auto-launch Chrome with a lane-specific profile directory
 
 This solves the common pain point where multiple dev servers on the same `localhost` share cookies, ports, and auth state — causing silent failures when switching between branches/lanes.
+
+### Lane Artifacts
+
+Artifacts are first-class objects on lanes, enabling agents, chat sessions, and mission workers to attach visual proof and outputs directly to the lane where work happened.
+
+**Artifact types**:
+- `summary`: Text summary of work performed
+- `pr`: PR link and metadata
+- `link`: External URL reference
+- `note`: Free-form text note
+- `patch`: Code diff/patch
+- `screenshot`: PNG/JPEG image captured from agent environment (new)
+- `video`: Screen recording of agent work in MP4 format (new)
+- `test-result`: Structured test output with pass/fail counts and log (new)
+
+**Artifact sources**:
+- Agent chat sessions: Agent captures screenshots or records video while working in a lane
+- Task agents: Background agents attach artifacts on completion
+- Mission steps: When a mission step targets a lane, artifacts attach to both the mission and the lane
+- Manual: Users can attach files directly via the lane detail UI
+
+**Artifact display**: Lane detail view includes an "Artifacts" sub-pane showing attached artifacts with thumbnails, timestamps, and source labels (which agent/session produced them).
+
+**PR integration**: When a PR is opened from a lane, the PR description generator auto-includes attached artifacts:
+- Screenshots are embedded as images in the PR body
+- Videos are linked (uploaded to a configured destination or attached as GitHub PR assets)
+- Test results are formatted as a summary table
+
+**Storage**: Shared `artifacts` table with polymorphic ownership:
+- `owner_type`: 'mission' | 'lane' | 'agent-run'
+- `owner_id`: mission ID, lane ID, or agent run ID
+
+**IPC channels**: `ade.artifacts.list(ownerId)`, `ade.artifacts.get(artifactId)`, `ade.artifacts.attach(ownerId, artifact)`, `ade.artifacts.delete(artifactId)`
 
 ---
 

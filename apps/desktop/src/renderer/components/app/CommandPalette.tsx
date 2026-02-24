@@ -3,7 +3,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { MagnifyingGlass, ArrowRight } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router-dom";
-import { Kbd } from "../ui/Kbd";
 import { cn } from "../ui/cn";
 import { useAppStore } from "../../state/appStore";
 import { fadeScale } from "../../lib/motion";
@@ -37,6 +36,48 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       { id: "go-history", title: "Go to History", shortcut: "G H", group: "Navigation", run: () => navigate("/history") },
       { id: "go-missions", title: "Go to Missions", shortcut: "G M", group: "Navigation", run: () => navigate("/missions") },
       { id: "go-settings", title: "Go to Settings", shortcut: "G S", group: "Navigation", run: () => navigate("/settings") },
+      { id: "go-settings-general", title: "Go to General Settings", hint: "Provider, model, theme", group: "Settings", run: () => navigate("/settings") },
+      { id: "go-settings-github", title: "Go to GitHub Settings", hint: "Token, repos, PRs", group: "Settings", run: () => navigate("/settings") },
+      { id: "go-settings-context", title: "Go to Context & Docs", hint: "Context files, docs generation", group: "Settings", run: () => navigate("/settings") },
+      { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings") },
+      {
+        id: "action-create-lane",
+        title: "Create Lane",
+        hint: "Create a new development lane",
+        group: "Actions",
+        run: () => navigate("/lanes")
+      },
+      {
+        id: "action-open-terminal",
+        title: "Open Terminal",
+        hint: "Switch to work / terminals view",
+        group: "Actions",
+        run: () => navigate("/work")
+      },
+      {
+        id: "action-refresh-packs",
+        title: "Refresh Packs",
+        hint: "Refresh AI context packs",
+        group: "Actions",
+        run: () => {
+          // Navigate to lanes where packs can be refreshed
+          navigate("/lanes");
+        }
+      },
+      {
+        id: "action-open-graph",
+        title: "Open Workspace Graph",
+        hint: "Visual dependency graph",
+        group: "Actions",
+        run: () => navigate("/graph")
+      },
+      {
+        id: "action-automations",
+        title: "Go to Automations",
+        hint: "CI/CD and automation rules",
+        group: "Actions",
+        run: () => navigate("/automations")
+      },
       {
         id: "lane-next",
         title: "Select Next Lane",
@@ -197,10 +238,9 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                 className={cn(
                   "fixed left-1/2 top-[18%] -translate-x-1/2",
                   "w-[560px] max-w-[90vw] max-h-[400px]",
-                  "bg-[--color-surface-overlay]",
-                  "border border-white/[0.06]",
+                  "bg-[#13101A]",
+                  "border border-[#1E1B26]",
                   "shadow-[0_24px_48px_-12px_rgba(0,0,0,0.5)]",
-                  "rounded-xl",
                   "flex flex-col overflow-hidden",
                   "focus:outline-none"
                 )}
@@ -213,8 +253,11 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                 <Dialog.Title className="sr-only">Command palette</Dialog.Title>
 
                 {/* Search input */}
-                <div className="flex items-center gap-3 px-4 border-b border-border/30">
-                  <MagnifyingGlass size={18} weight="regular" className="shrink-0 text-muted-fg" />
+                <div
+                  className="flex items-center gap-3 px-4 border-b border-[#1E1B26]"
+                  style={{ background: "#0C0A10" }}
+                >
+                  <MagnifyingGlass size={18} weight="regular" className="shrink-0 text-[#71717A]" />
                   <input
                     value={q}
                     onChange={(e) => {
@@ -223,23 +266,40 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                     }}
                     onKeyDown={handleKeyDown}
                     placeholder="Search commands..."
-                    className="h-12 w-full bg-transparent text-lg outline-none placeholder:text-muted-fg"
+                    className="h-12 w-full bg-transparent text-lg text-[#FAFAFA] outline-none placeholder:text-[#71717A] font-mono"
                     autoFocus
                   />
-                  <Kbd className="hidden sm:inline-flex shrink-0">Esc</Kbd>
+                  <span
+                    className={cn(
+                      "hidden sm:inline-flex shrink-0 items-center",
+                      "font-mono text-[10px] text-[#71717A]",
+                      "px-1.5 py-0.5",
+                      "border border-[#27272A] bg-[#13101A]"
+                    )}
+                  >
+                    ESC
+                  </span>
                 </div>
 
                 {/* Results */}
                 <div className="flex-1 overflow-auto">
                   {filtered.length === 0 ? (
-                    <div className="px-4 py-6 text-sm text-muted-fg">No matches.</div>
+                    <div className="px-4 py-6 text-sm text-[#71717A] font-mono">No matches.</div>
                   ) : (
                     <ul ref={listRef} className="py-1">
                       {(() => {
                         let flatIdx = 0;
                         return grouped.map((group) => (
                           <li key={group.label}>
-                            <div className="text-[10px] uppercase tracking-widest text-muted-fg font-medium px-3 py-1.5">
+                            <div
+                              className="font-mono font-medium px-3 py-1.5"
+                              style={{
+                                fontSize: 10,
+                                textTransform: "uppercase",
+                                letterSpacing: "1px",
+                                color: "#71717A",
+                              }}
+                            >
                               {group.label}
                             </div>
                             <ul>
@@ -250,23 +310,32 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                                   <li key={cmd.id} data-cmd-item>
                                     <button
                                       className={cn(
-                                        "flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm transition-colors",
+                                        "flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-sm font-mono transition-colors",
                                         isSelected
-                                          ? "bg-[--color-accent-muted] text-fg"
-                                          : "hover:bg-accent/8"
+                                          ? "bg-[#A78BFA18] text-[#FAFAFA] border-l-[3px] border-l-[#A78BFA]"
+                                          : "border-l-[3px] border-l-transparent hover:bg-[#A78BFA08]"
                                       )}
+                                      style={isSelected ? { paddingLeft: 9 } : { paddingLeft: 9 }}
                                       onMouseEnter={() => setSelectedIdx(idx)}
                                       onClick={() => runCommand(cmd)}
                                     >
                                       <div className="min-w-0">
-                                        <div className="truncate font-medium">{cmd.title}</div>
-                                        {cmd.hint ? <div className="truncate text-xs text-muted-fg mt-0.5">{cmd.hint}</div> : null}
+                                        <div className="truncate font-medium text-[#FAFAFA]">{cmd.title}</div>
+                                        {cmd.hint ? <div className="truncate text-xs text-[#71717A] mt-0.5">{cmd.hint}</div> : null}
                                       </div>
                                       <div className="flex items-center gap-2">
                                         {cmd.shortcut ? (
-                                          <span className="hidden sm:inline font-mono text-[10px] text-muted-fg">{cmd.shortcut}</span>
+                                          <span
+                                            className={cn(
+                                              "hidden sm:inline-flex items-center font-mono text-[10px] text-[#71717A]",
+                                              "px-1.5 py-0.5",
+                                              "border border-[#27272A] bg-[#0C0A10]"
+                                            )}
+                                          >
+                                            {cmd.shortcut}
+                                          </span>
                                         ) : null}
-                                        <ArrowRight size={14} weight="regular" className="text-muted-fg" />
+                                        <ArrowRight size={14} weight="regular" className="text-[#71717A]" />
                                       </div>
                                     </button>
                                   </li>

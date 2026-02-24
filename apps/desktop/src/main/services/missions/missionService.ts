@@ -1045,7 +1045,8 @@ export function createMissionService({
           executorPolicy,
           allowPlanningQuestions,
           ...(launchModel ? { orchestratorModel: launchModel } : {}),
-          ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {})
+          ...(launchThinkingBudgets ? { thinkingBudgets: launchThinkingBudgets } : {}),
+          ...(args.modelConfig ? { modelConfig: args.modelConfig } : {})
         },
         ...(missionDepth ? { missionDepth } : {}),
         ...(resolvedExecutionPolicy ? { executionPolicy: resolvedExecutionPolicy } : {}),

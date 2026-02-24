@@ -1,60 +1,103 @@
 import React, { useState } from "react";
-import { GearSix, GitBranch, BookOpenText, Robot, Terminal, Keyboard, Lightning } from "@phosphor-icons/react";
-import { cn } from "../ui/cn";
+import { GearSix, GitBranch, BookOpenText, Lightning } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { GitHubSection } from "../settings/GitHubSection";
 import { ContextSection } from "../settings/ContextSection";
-import { AutomationsSection } from "../settings/AutomationsSection";
-import { TerminalProfilesSection } from "../settings/TerminalProfilesSection";
-import { KeybindingsSection } from "../settings/KeybindingsSection";
 import { UsageDashboard } from "../missions/UsageDashboard";
+import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 const SECTIONS = [
-  { id: "general", label: "General", icon: GearSix },
-  { id: "github", label: "GitHub", icon: GitBranch },
-  { id: "context", label: "Context & Docs", icon: BookOpenText },
-  { id: "automations", label: "Automations", icon: Robot },
-  { id: "terminals", label: "Terminals", icon: Terminal },
-  { id: "keybindings", label: "Keybindings", icon: Keyboard },
-  { id: "usage", label: "Usage", icon: Lightning },
+  { id: "general", label: "GENERAL", icon: GearSix },
+  { id: "github", label: "GITHUB", icon: GitBranch },
+  { id: "context", label: "CONTEXT", icon: BookOpenText },
+  { id: "usage", label: "USAGE", icon: Lightning },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
+function padIndex(i: number): string {
+  return String(i + 1).padStart(2, "0");
+}
+
 export function SettingsPage() {
   const [section, setSection] = useState<SectionId>("general");
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   return (
-    <div className="flex h-full overflow-hidden rounded-xl border border-border/10 bg-card backdrop-blur-sm">
+    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
       {/* Left sidebar */}
-      <nav className="w-[180px] shrink-0 border-r border-border/10 bg-card/80 py-3 px-2">
-        <div className="text-[10px] uppercase tracking-wider text-muted-fg px-2 mb-2">Settings</div>
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => setSection(s.id)}
-            className={cn(
-              "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors",
-              section === s.id
-                ? "bg-accent/15 text-accent font-medium"
-                : "text-muted-fg hover:bg-muted/80 hover:text-fg"
-            )}
-          >
-            <s.icon size={16} weight="regular" className="shrink-0" />
-            {s.label}
-          </button>
-        ))}
+      <nav
+        style={{
+          width: 200,
+          flexShrink: 0,
+          background: COLORS.recessedBg,
+          borderRight: `1px solid ${COLORS.border}`,
+          paddingTop: 16,
+          paddingBottom: 16,
+          paddingLeft: 8,
+          paddingRight: 8,
+        }}
+      >
+        <div style={{ ...LABEL_STYLE, paddingLeft: 10, marginBottom: 12 }}>
+          SETTINGS
+        </div>
+
+        {SECTIONS.map((s, i) => {
+          const isActive = section === s.id;
+          const isHovered = hoveredId === s.id;
+
+          const itemStyle: React.CSSProperties = {
+            display: "flex",
+            width: "100%",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 10px",
+            border: "none",
+            borderLeft: isActive ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+            background: isActive
+              ? COLORS.accentSubtle
+              : isHovered
+                ? COLORS.hoverBg
+                : "transparent",
+            color: isActive ? COLORS.textPrimary : COLORS.textMuted,
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "1px",
+            cursor: "pointer",
+            borderRadius: 0,
+            transition: "background 120ms ease, color 120ms ease",
+          };
+
+          return (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setSection(s.id)}
+              onMouseEnter={() => setHoveredId(s.id)}
+              onMouseLeave={() => setHoveredId(null)}
+              style={itemStyle}
+            >
+              <s.icon size={14} weight="regular" style={{ flexShrink: 0 }} />
+              <span>{padIndex(i)} {s.label}</span>
+            </button>
+          );
+        })}
       </nav>
 
       {/* Right content */}
-      <div className="flex-1 overflow-auto p-4">
+      <div
+        style={{
+          flex: 1,
+          overflow: "auto",
+          background: COLORS.pageBg,
+          padding: 24,
+        }}
+      >
         {section === "general" && <GeneralSection />}
         {section === "github" && <GitHubSection />}
         {section === "context" && <ContextSection />}
-        {section === "automations" && <AutomationsSection />}
-        {section === "terminals" && <TerminalProfilesSection />}
-        {section === "keybindings" && <KeybindingsSection />}
         {section === "usage" && <UsageDashboard missionId={null} />}
       </div>
     </div>

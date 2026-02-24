@@ -2,13 +2,14 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-24
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
+  - [Two Ways to Use the Agents Tab](#two-ways-to-use-the-agents-tab)
 - [Core Concepts](#core-concepts)
   - [Agent Types](#agent-types)
   - [Agent Identity](#agent-identity)
@@ -21,7 +22,9 @@
 - [User Experience](#user-experience)
   - [Configuration in YAML](#configuration-in-yaml)
   - [Agents Tab Card-Based UI](#agents-tab-card-based-ui)
+    - [Task Agent Card States](#task-agent-card-states)
   - [Custom Agent Builder](#custom-agent-builder)
+  - [Task Agent Launch Workflow](#task-agent-launch-workflow)
   - [Morning Briefing UI](#morning-briefing-ui)
   - [Built-in Pipelines](#built-in-pipelines)
 - [Technical Implementation](#technical-implementation)
@@ -61,7 +64,7 @@ Agent = Identity + Trigger + Behavior + Guardrails
 - **Behavior**: What the agent does — run an automation pipeline, execute a mission, watch a repo/API and report findings, run code health scans.
 - **Guardrails**: Budget caps (time, tokens, steps, USD), stop conditions (first failure, intervention threshold, budget exhaustion), and approval requirements.
 
-The four agent types are:
+The five agent types are:
 
 | Agent Type | Description |
 |---|---|
@@ -69,10 +72,17 @@ The four agent types are:
 | **Night Shift** | Queued tasks that run unattended during off-hours. Core value prop: **maximize subscription utilization while the user sleeps** — Claude/Codex subscriptions have 5-hour rate limit reset windows, and Night Shift ensures idle tokens don't go to waste. Stricter guardrails, subscription-aware budget caps, and stop conditions. Produces a morning digest for review. |
 | **Watcher** | Monitors external resources (upstream repos, APIs, logs, dependency feeds) and surfaces findings. Observation only — does not modify code. |
 | **Review** | Watches the team's PR feed and pre-reviews PRs assigned to the user. Summarizes changes, flags concerns, and provides morning briefing cards. |
+| **Task Agent** | One-off background task with custom instructions. Fire-and-forget: users define what to do, where to run (local/VPS/Daytona/E2B), and what to produce when done (PR, screenshots, video, test results). The general-purpose agent for any background work that isn't active development. | Manual or programmatic (Agents tab, command palette, API) | "Refactor auth module, take screenshots, open a PR when done" |
 
 The automation system builds on the existing job engine, which already implements the core session-end pipeline (session end, checkpoint creation, pack refresh). The original automation rules, triggers, actions, NL-to-rule planner, trust enforcement, and UI management from Phase 8 form the foundation that Agents extends.
 
 Missions are ad-hoc goal objects documented in [features/MISSIONS.md](features/MISSIONS.md). Agents is not replaced by Missions; it remains the recurring trigger layer that can launch mission/orchestrator work. Night Shift agents specifically use the mission system to execute complex tasks overnight.
+
+### Two Ways to Use the Agents Tab
+
+**Configure Once, Runs Automatically** — Automation, Night Shift, Watcher, and Review agents are configured once and then run on their triggers (events, schedules, polls). They appear as persistent cards in the Agents tab and execute repeatedly without user intervention.
+
+**Prompt Now, Runs Once** — Task Agents are launched on-demand with a real-time prompt. Users describe what they want done, configure where and how it runs, and the agent executes immediately as a background task. Task Agents are the general-purpose "just do this thing" entry point — any work that doesn't require the user to be actively involved can be launched as a Task Agent.
 
 ---
 
@@ -86,6 +96,7 @@ Missions are ad-hoc goal objects documented in [features/MISSIONS.md](features/M
 | `night-shift` | Scheduled (time-based, e.g., "run at 2am") | Yes (via missions) | Yes (morning digest) | "Refactor auth module overnight, park on failure" |
 | `watcher` | Polling (interval-based) or webhook | No (observation only) | Yes | "Watch react repo for deprecation notices affecting our codebase" |
 | `review` | Polling (GitHub API interval) or webhook | No (observation only) | Yes | "Pre-review my assigned PRs overnight, summarize in morning briefing" |
+| `task` | Manual or programmatic (Agents tab, command palette, API) | Yes (via task execution) | Yes (completion artifacts) | "Refactor auth module, take screenshots, open a PR when done" |
 
 All agent types share the same underlying schema, identity system, and guardrail infrastructure. The type determines default behavior templates and UI affordances.
 
@@ -402,8 +413,8 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
 
 ```
 +------------------------------------------------------------------+
-| AGENTS                                          [+ NEW AGENT]     |
-| [All] [Automation] [Night Shift] [Watcher] [Review]   [Search]   |
+| AGENTS                     [+ NEW TASK]  [+ NEW AGENT]     |
+| [All] [Task] [Automation] [Night Shift] [Watcher] [Review]   [Search] |
 +------------------------------------------------------------------+
 | +--------------+ +--------------+ +--------------+               |
 | | Lint on      | | Refactor     | | Watch        |               |
@@ -430,7 +441,7 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
 
 **Agent Card** (standard card from design system: `bg-secondary`, `border-default`, `0px` radius):
 - Top: Icon + name (heading-sm, JetBrains Mono 12px/600).
-- Type badge (label-sm, ALL-CAPS, 9px): `AUTOMATION` / `NIGHT SHIFT` / `WATCHER` / `REVIEW` with type-specific accent colors.
+- Type badge (label-sm, ALL-CAPS, 9px): `AUTOMATION` / `NIGHT SHIFT` / `WATCHER` / `REVIEW` / `TASK` with type-specific accent colors.
 - Status line: active/idle/sleeping/error with colored dot indicator.
 - Stats: last run timestamp, total run count, findings count (for watchers/reviewers).
 - Enable/disable toggle in bottom-right corner.
@@ -443,7 +454,74 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
 - **"Run Now" button**: Manual trigger for any agent type.
 - **Delete button** (danger styling from design system).
 
-**Type filter tabs**: Segmented control at top to filter by agent type (All / Automation / Night Shift / Watcher / Review).
+#### Task Agent Card States
+
+Task Agent cards have unique visual states reflecting their one-off nature:
+
+**Idle / Template** (saved but not running):
+```
+┌──────────────┐
+│ ⚡ Deploy &   │
+│    Verify     │
+│               │
+│ TASK          │
+│ ○ On-demand   │
+│ Last: 2d ago  │
+│ ✓ 8 runs      │
+│      [RUN NOW]│
+└──────────────┘
+```
+
+**Running** (actively executing):
+```
+┌──────────────┐
+│ ⚡ Refactor   │
+│    Payments   │
+│               │
+│ TASK          │
+│ ● Running     │
+│ Step 4/7      │
+│ ~3 min left   │
+│      [CANCEL] │
+└──────────────┘
+```
+
+**Completed** (just finished, not yet dismissed):
+```
+┌──────────────┐
+│ ⚡ Refactor   │
+│    Payments   │
+│               │
+│ TASK          │
+│ ✓ Completed   │
+│ PR #42 opened │
+│ 3 screenshots │
+│  [SAVE] [RERUN]│
+└──────────────┘
+```
+
+**Failed** (stopped with error):
+```
+┌──────────────┐
+│ ⚡ Refactor   │
+│    Payments   │
+│               │
+│ TASK          │
+│ ✗ Failed      │
+│ Step 3/7      │
+│ Budget limit  │
+│  [LOGS] [RETRY]│
+└──────────────┘
+```
+
+- **[RUN NOW]**: Primary action for idle/template task agents. Opens a confirmation with option to edit prompt before running.
+- **[CANCEL]**: Stops a running task agent. Partial work is preserved in the lane.
+- **[SAVE]**: Saves a one-off completed task as a reusable template.
+- **[RERUN]**: Re-launches with the same configuration. Optionally edit prompt first.
+- **[LOGS]**: Opens the agent's execution log and transcript.
+- **[RETRY]**: Re-launches from the point of failure (if possible) or from scratch.
+
+**Type filter tabs**: Segmented control at top to filter by agent type (All / Task / Automation / Night Shift / Watcher / Review).
 
 **Search**: Filter agents by name or description.
 
@@ -452,7 +530,7 @@ The Agents tab replaces the old Automations list view with a card-based agent gr
 A guided wizard for creating new agents, accessible via the "+ NEW AGENT" button.
 
 **Step 1 — Choose Type**:
-- Four type cards with icon, name, and short description.
+- Five type cards with icon, name, and short description.
 - Each card shows example use cases.
 - Selecting a type loads appropriate defaults for the remaining steps.
 
@@ -474,6 +552,19 @@ A guided wizard for creating new agents, accessible via the "+ NEW AGENT" button
 - **Night Shift agents**: Mission prompt textarea + lane selector + PR strategy picker.
 - **Watcher agents**: Watch target list + report format selector.
 - **Review agents**: Scope selector + depth selector.
+- **Task agents**: Task prompt + compute backend + compute environment + completion behaviors (see below).
+
+**Task Agent configuration** (in Agent Builder Step 4 and Agent Detail):
+- Task prompt: Multi-line textarea for natural language task description
+- Compute backend selector: Local / VPS / Daytona / E2B (with availability indicators)
+- Compute environment: Terminal-only / Browser / Desktop (with descriptions of what each provides)
+- Completion behaviors checklist:
+  - [ ] Open PR (with base branch and draft options)
+  - [ ] Take screenshots (with page/route list)
+  - [ ] Record video of work
+  - [ ] Attach artifacts to lane
+  - [ ] Run tests
+  - [ ] Notify on completion
 
 **Step 5 — Set Guardrails**:
 - Budget controls: time limit, token budget, step limit, USD cap.
@@ -492,6 +583,54 @@ A guided wizard for creating new agents, accessible via the "+ NEW AGENT" button
 - Reuses the existing `automationPlannerService` NL-to-rule planner, extended for all agent types via the new `agentPlannerService`.
 - AI generates a full agent config from the description.
 - User reviews and edits before saving.
+
+### Task Agent Launch Workflow
+
+Task Agents are fundamentally different from other agent types: they have **no persistent trigger**. While Automation agents fire on events, Night Shift agents fire on schedule, and Watchers poll continuously, Task Agents are launched **on-demand with a real-time prompt**. They are the "just do this thing" entry point for any background work.
+
+#### One-Time Launch (Most Common)
+
+The primary workflow — user describes a task, agent runs it immediately:
+
+1. User clicks **[+ NEW TASK]** button in the Agents tab (prominent, separate from [+ NEW AGENT])
+2. **Quick Launch modal** opens (streamlined, not the full 6-step wizard):
+   - **Task prompt**: Multi-line textarea — "What do you want the agent to do?"
+   - **Identity**: Dropdown (default: Fast Implementer) — persona and model selection
+   - **Compute**: Backend (Local / VPS / Daytona / E2B) + Environment (Terminal / Browser / Desktop)
+   - **When done**: Completion behavior checklist (Open PR, Screenshot, Video, Run Tests, Notify)
+   - **Guardrails**: Expandable section with time limit, token budget, stop conditions
+3. User clicks **[RUN NOW]** — agent launches immediately
+4. A **running Task Agent card** appears in the Agents tab grid showing live progress
+5. On completion, artifacts attach to the target lane and user is notified
+6. Optionally: user clicks **[SAVE AS TEMPLATE]** on the completed card to reuse the configuration later
+
+#### Reusable Task Template
+
+For tasks you run repeatedly (e.g., "deploy to staging and verify"):
+
+1. Use the full 6-step Agent Builder wizard (click [+ NEW AGENT], select Task type)
+2. Configure identity, behavior, guardrails in detail
+3. In Step 6, click **[CREATE & SAVE]** — template appears as a persistent card in Agents tab
+4. Card shows "Manual (on-demand)" trigger — click **[RUN NOW]** anytime to launch with saved config
+5. Before running, user can optionally **edit the prompt** for this specific run without changing the template
+
+#### Command Palette Launch
+
+For power users:
+
+- `Cmd+K` → type "Run Task Agent" or "Launch Agent"
+- Inline prompt input appears with identity/backend quick-selectors
+- Press Enter to launch — no navigation away from current view
+- Agent runs in background; notification appears on completion
+
+#### Quick Launch from Other Tabs
+
+Task Agents can be launched contextually from anywhere in ADE:
+
+- **Lanes tab**: Right-click a lane → "Launch Task Agent in this lane" — pre-fills lane target
+- **Missions tab**: "Launch as background task" option for simple tasks that don't need full mission orchestration
+- **PRs tab**: "Launch review agent for this PR" — pre-fills review scope
+- **Command palette**: Global access from any tab
 
 ### Morning Briefing UI
 
@@ -553,6 +692,24 @@ Always active, managed by the job engine, not user-configurable:
 
 Built-in pipelines run before user-configurable agent automation pipelines, ensuring core functionality is always maintained.
 
+### Development Modes
+
+ADE distinguishes between active development and background work:
+
+**Active Development** (interactive, user-in-the-loop):
+- Work Tab / Lane Chat: Direct conversation with Claude or Codex
+- Terminals: Interactive CLI sessions
+- Missions: Orchestrated multi-agent workflows with monitoring and approval
+
+**Background Work** (fire-and-forget, Agents tab):
+- Task Agents: One-off background tasks with custom instructions
+- Automation Agents: Trigger-action pipelines
+- Night Shift Agents: Scheduled overnight execution
+- Watcher Agents: External resource monitoring
+- Review Agents: PR pre-review
+
+The Agents tab is the unified launch pad for all background work. Task Agents serve as the general-purpose entry point — any work that doesn't require active user participation can be launched as a Task Agent.
+
 ---
 
 ## Technical Implementation
@@ -611,7 +768,7 @@ All channels are prefixed `ade.agents.*`. During transition, `ade.automations.*`
 
 ```
 AgentsPage (route: /agents)
-  +-- Type filter tabs (All / Automation / Night Shift / Watcher / Review)
+  +-- Type filter tabs (All / Automation / Night Shift / Watcher / Review / Task)
   +-- Search input
   +-- Agent card grid
   |    +-- Per-agent card: icon, name, type badge, status, stats, enable toggle
@@ -622,10 +779,10 @@ AgentsPage (route: /agents)
   |    +-- "Run Now" button, "Delete" button
   |    +-- Edit mode: inline editing with save/cancel
   +-- AgentBuilderWizard (modal, opened via "+ NEW AGENT" button)
-  |    +-- Step 1: Choose Type (four type cards)
+  |    +-- Step 1: Choose Type (five type cards)
   |    +-- Step 2: Configure Identity (preset picker or inline create)
   |    +-- Step 3: Set Trigger (visual trigger type selector + type-specific config)
-  |    +-- Step 4: Define Behavior (type-specific: pipeline builder / mission config / watch config / review config)
+  |    +-- Step 4: Define Behavior (type-specific: pipeline builder / mission config / watch config / review config / task config)
   |    +-- Step 5: Set Guardrails (budget controls, stop conditions, approval requirements)
   |    +-- Step 6: Review & Create (summary, effective policy preview, simulation preview)
   |    +-- NL Creation alternative ("Describe what you want" textarea at top)
@@ -693,7 +850,7 @@ CREATE TABLE agents (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     name TEXT NOT NULL,
-    type TEXT NOT NULL,              -- 'automation' | 'night-shift' | 'watcher' | 'review'
+    type TEXT NOT NULL,              -- 'automation' | 'night-shift' | 'watcher' | 'review' | 'task'
     config TEXT NOT NULL,            -- JSON: full Agent schema
     identity_id TEXT,                -- FK to agent_identities table
     enabled INTEGER DEFAULT 1,
@@ -776,7 +933,7 @@ The `agents` key in `.ade/ade.yaml` or `.ade/local.yaml` accepts an array of age
 
 - `id` (string, lowercase with hyphens): Unique identifier.
 - `name` (string): Human-readable name.
-- `type` (string): One of `automation`, `night-shift`, `watcher`, `review`.
+- `type` (string): One of `automation`, `night-shift`, `watcher`, `review`, `task`.
 - `identity` (string): Reference to an agent identity ID, or inline identity config.
 - `trigger` (object): Trigger configuration with `type` and type-specific fields (`cron`, `branch`, `scheduleTime`, `scheduleDays`, `pollIntervalMs`, `pollTarget`).
 - `behavior` (object): Type-specific behavior configuration:
@@ -784,6 +941,7 @@ The `agents` key in `.ade/ade.yaml` or `.ade/local.yaml` accepts an array of age
   - Night Shift: `missionPrompt`, optional `missionLaneId`, optional `prStrategy`.
   - Watcher: `watchTargets` array, optional `reportFormat`.
   - Review: `reviewScope`, optional `reviewDepth`.
+  - Task: `taskPrompt`, optional `taskLaneId`, optional `computeBackend`, optional `computeEnvironment`, optional `completionBehaviors`.
 - `guardrails` (object): Budget caps, stop conditions, approval requirements.
 - `enabled` (boolean): Whether the agent is active.
 
@@ -795,7 +953,7 @@ For backward compatibility, the `automations` key is still read on startup and a
 interface Agent {
   id: string;
   name: string;
-  type: 'automation' | 'night-shift' | 'watcher' | 'review';
+  type: 'automation' | 'night-shift' | 'watcher' | 'review' | 'task';
   description?: string;
   icon?: string;                    // Lucide icon name or emoji
   identity: AgentIdentity;          // Persona + policy profile
@@ -872,6 +1030,13 @@ interface AgentBehavior {
   // For review agents: review config
   reviewScope?: 'assigned-to-me' | 'team' | 'all-open';
   reviewDepth?: 'summary' | 'detailed' | 'security-focused';
+
+  // For task agents: one-off background task
+  taskPrompt?: string;              // Natural language task description
+  taskLaneId?: string;              // Target lane (optional, agent creates one if not specified)
+  computeBackend?: 'local' | 'vps' | 'daytona' | 'e2b';
+  computeEnvironment?: 'terminal-only' | 'browser' | 'desktop';
+  completionBehaviors?: CompletionBehavior[];
 }
 
 interface AgentAction {
@@ -895,6 +1060,15 @@ interface AgentGuardrails {
   stopConditions: StopCondition[];  // When to halt
   requireApprovalFor?: string[];    // Actions requiring user approval before execution
 }
+
+type CompletionBehavior =
+  | { type: 'open-pr'; baseBranch?: string; draft?: boolean }
+  | { type: 'screenshot'; pages?: string[] }
+  | { type: 'record-video'; durationLimitMs?: number }
+  | { type: 'attach-artifacts-to-lane' }
+  | { type: 'run-tests'; command?: string }
+  | { type: 'notify'; channel?: 'ui' | 'push' }
+  | { type: 'custom-command'; command: string };
 
 type StopCondition =
   | { type: 'first-failure' }
@@ -1121,7 +1295,7 @@ All original automation tracking items are complete and form the foundation that
 
 Agent configurations will support a `computeBackend` field:
 
-- **Field**: `computeBackend: 'local' | 'vps' | 'daytona'` (optional, defaults to project setting)
+- **Field**: `computeBackend: 'local' | 'vps' | 'daytona' | 'e2b'` (optional, defaults to project setting)
 - **Use Case**: Route specific agents to specific backends
 - **Night Shift Integration**: When Night Shift agents trigger after-hours, they can be automatically routed to VPS or Daytona backends to avoid consuming local machine resources
 - **Example**: CI-like automation agents (lint, test, build) routed to Daytona for isolated execution; deployment agents routed to VPS for network access; Night Shift agents default to VPS for overnight runs
@@ -1148,4 +1322,4 @@ Missions remain separate ad-hoc goal objects (documented in [features/MISSIONS.m
 
 ---
 
-*This document describes the Agents feature for ADE. The foundation automation engine (AUTO-001 through AUTO-029) is fully implemented from Phase 8. Phase 4 extends this into a unified agent hub with four agent types (automation, night-shift, watcher, review), agent identities, Night Shift mode, Morning Briefing, and a card-based management UI.*
+*This document describes the Agents feature for ADE. The foundation automation engine (AUTO-001 through AUTO-029) is fully implemented from Phase 8. Phase 4 extends this into a unified agent hub with five agent types (automation, night-shift, watcher, review, task), agent identities, Night Shift mode, Morning Briefing, and a card-based management UI.*

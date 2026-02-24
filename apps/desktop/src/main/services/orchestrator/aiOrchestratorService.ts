@@ -66,16 +66,20 @@ import type {
   UsageMissionBreakdown,
   RecoveryLoopState,
   RecoveryLoopIteration,
+  RecoveryDiagnosisTier,
+  RecoveryDiagnosis,
   OrchestratorContextView,
   IntegrationPrPolicy,
   PrStrategy,
   SLASH_COMMAND_TRANSLATIONS
 } from "../../../shared/types";
+import type { ModelConfig, OrchestratorCallType, MissionModelConfig } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
   DEFAULT_CONTEXT_VIEW_POLICIES,
   DEFAULT_INTEGRATION_PR_POLICY
 } from "../../../shared/types";
+import { resolveCallTypeModel, modelConfigToServiceModel, thinkingLevelToReasoningEffort, legacyToModelConfig } from "../../../shared/modelProfiles";
 import { resolveExecutionPolicy, depthTierToPolicy, DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview } from "./executionPolicy";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -353,6 +357,19 @@ function parseSteeringDirective(value: unknown, missionId: string): UserSteering
 function parseChatVisibility(value: unknown): OrchestratorChatVisibilityMode | null {
   if (value === "full" || value === "digest_only" || value === "metadata_only") return value;
   return null;
+}
+
+const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "resume_recovered"]);
+
+function classifyFailureTier(args: {
+  errorClass: string;
+  retryCount: number;
+  errorMessage: string | null;
+}): RecoveryDiagnosisTier {
+  if (TRANSIENT_ERROR_CLASSES.has(args.errorClass)) return "transient";
+  if (args.errorClass === "policy") return "blocker";
+  if (args.retryCount >= 2) return "blocker";
+  return "semantic";
 }
 
 function parseChatDeliveryState(value: unknown): OrchestratorChatDeliveryState | null {
@@ -1153,6 +1170,24 @@ export function createAiOrchestratorService(args: {
   const workerDeliveryInterventionCooldowns = new Map<string, number>();
   const runTeamManifests = new Map<string, TeamManifest>();
   const runRecoveryLoopStates = new Map<string, RecoveryLoopState>();
+
+  // ── Persistent Coordinator Sessions ──
+  // A long-running AI session per mission run that accumulates understanding
+  // by receiving runtime events as messages. Uses aiIntegrationService.executeTask
+  // with sessionId for multi-turn conversation support.
+  const coordinatorSessions = new Map<string, {
+    sessionId: string | null;   // null until first executeTask returns a sessionId
+    missionId: string;
+    runId: string;
+    modelConfig: ModelConfig;   // resolved model config for coordinator calls
+    startedAt: string;
+    eventCount: number;
+    lastEventAt: string | null;
+    dead: boolean;
+    systemPrompt: string;
+    pendingInit: Promise<void> | null;  // guards against concurrent init
+  }>();
+
   let healthSweepTimer: NodeJS.Timeout | null = null;
   let disposed = false;
 
@@ -1874,20 +1909,301 @@ export function createAiOrchestratorService(args: {
     return normalized;
   };
 
+  /** Format orchestrator messages for the activity feed — keep them concise and prefixed */
+  const formatOrchestratorContent = (
+    content: string,
+    stepKey?: string | null,
+    metadata?: Record<string, unknown> | null
+  ): string => {
+    // Coordinator messages pass through as-is (they're already concise if prompted correctly)
+    if (metadata?.role === "coordinator") return content;
+
+    let formatted = content;
+
+    // Strip raw JSON blocks
+    formatted = formatted.replace(/```json[\s\S]*?```/g, "[json data]");
+    // Strip code blocks
+    formatted = formatted.replace(/```[\s\S]*?```/g, "[code block]");
+    // Strip raw file contents (unified diff format)
+    formatted = formatted.replace(/^[-+]{3}\s.*$/gm, "").replace(/^@@.*@@.*$/gm, "");
+    // Collapse multiple newlines
+    formatted = formatted.replace(/\n{3,}/g, "\n\n").trim();
+
+    // Truncate if still too long
+    if (formatted.length > 200) {
+      formatted = `${formatted.slice(0, 197).trimEnd()}...`;
+    }
+
+    // Prefix with step key for identification
+    if (stepKey) {
+      formatted = `[${stepKey}] ${formatted}`;
+    }
+
+    return formatted;
+  };
+
+  // ── Coordinator Session Management ──────────────────────────────
+  // Spins up a persistent AI coordinator session for a mission run.
+  // The coordinator observes runtime events and can intervene with
+  // steer/skip/broadcast commands. Uses aiIntegrationService.executeTask
+  // with sessionId for multi-turn conversation.
+
+  const startCoordinatorSession = async (
+    missionId: string,
+    runId: string,
+    plan: { steps: Array<{ stepKey: string; title: string; status: string; dependencyStepIds: string[] }> },
+    coordinatorModelConfig?: ModelConfig | null
+  ): Promise<string | null> => {
+    if (!aiIntegrationService || !projectRoot) {
+      logger.debug("ai_orchestrator.coordinator_session_skip", {
+        missionId,
+        reason: !aiIntegrationService ? "no_ai_integration_service" : "no_project_root"
+      });
+      return null;
+    }
+
+    try {
+      const planSummary = plan.steps
+        .map((s) => `- ${s.stepKey}: "${s.title}" [${s.status}]${s.dependencyStepIds.length ? ` (deps: ${s.dependencyStepIds.length})` : ""}`)
+        .join("\n");
+
+      const coordinatorSystemPrompt = [
+        PM_SYSTEM_PREAMBLE,
+        "",
+        "You are the persistent coordinator for this mission run. You observe events and intervene when needed.",
+        "",
+        "MISSION PLAN:",
+        planSummary,
+        "",
+        "AVAILABLE ACTIONS (use these as commands on their own line):",
+        "  steer <stepKey> <message> — send guidance to a specific worker",
+        "  skip <stepKey> <reason> — skip a step that's unnecessary",
+        "  add_step <after_stepKey> <title> | <instructions> — add a new step after an existing one",
+        "  broadcast <message> — send a message to all active workers",
+        "  escalate <reason> — flag something for the human operator",
+        "",
+        "BEHAVIOR:",
+        "- Most events need no action — just acknowledge and track internally.",
+        "- Only intervene when something is wrong or an opportunity is spotted.",
+        "- Respond in concise, casual English. No formal reports.",
+        "- Keep responses to 1-3 sentences unless a complex situation requires more.",
+        "- If you take an action, state what you're doing and why in one line before the command."
+      ].join("\n");
+
+      // Register the session entry immediately so events don't race ahead of init
+      const resolvedConfig = coordinatorModelConfig ?? resolveOrchestratorModelConfig(missionId, "coordinator");
+      const entry: typeof coordinatorSessions extends Map<string, infer V> ? V : never = {
+        sessionId: null,
+        missionId,
+        runId,
+        modelConfig: resolvedConfig,
+        startedAt: nowIso(),
+        eventCount: 0,
+        lastEventAt: null,
+        dead: false,
+        systemPrompt: coordinatorSystemPrompt,
+        pendingInit: null
+      };
+      coordinatorSessions.set(runId, entry);
+
+      // Fire the initial "session started" turn to establish the AI session
+      const initPromise = (async () => {
+        try {
+          const result = await aiIntegrationService.executeTask({
+            feature: "orchestrator" as const,
+            taskType: "review" as const,
+            prompt: [
+              "Mission run started. You are the persistent coordinator for this run.",
+              `${plan.steps.length} steps in the plan.`,
+              "Acknowledge and stand by for events. Keep this response very brief."
+            ].join(" "),
+            cwd: projectRoot,
+            provider: resolvedConfig.provider === "codex" ? "codex" : "claude",
+            model: modelConfigToServiceModel(resolvedConfig),
+            systemPrompt: coordinatorSystemPrompt,
+            reasoningEffort: thinkingLevelToReasoningEffort(resolvedConfig.thinkingLevel),
+            permissionMode: "read-only" as const,
+            oneShot: true,
+            timeoutMs: 30_000
+          });
+
+          if (typeof result.sessionId === "string" && result.sessionId.trim().length > 0) {
+            entry.sessionId = result.sessionId.trim();
+            logger.info("ai_orchestrator.coordinator_session_started", {
+              missionId,
+              runId,
+              sessionId: entry.sessionId,
+              initResponseChars: result.text?.length ?? 0
+            });
+          } else {
+            // No sessionId returned — provider may not support multi-turn resume.
+            // Session is still usable in a degraded stateless mode (each event is independent).
+            logger.warn("ai_orchestrator.coordinator_session_no_session_id", {
+              missionId,
+              runId,
+              reason: "executeTask did not return a sessionId — coordinator will operate in stateless mode"
+            });
+          }
+        } catch (error) {
+          entry.dead = true;
+          logger.warn("ai_orchestrator.coordinator_session_init_failed", {
+            missionId,
+            runId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        } finally {
+          entry.pendingInit = null;
+        }
+      })();
+
+      entry.pendingInit = initPromise;
+      // Don't await — let init happen in background so startMissionRun isn't blocked
+      return runId; // Return runId as a handle; actual sessionId is set asynchronously
+    } catch (error) {
+      logger.warn("ai_orchestrator.coordinator_session_start_failed", {
+        missionId,
+        runId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  };
+
+  const sendCoordinatorEvent = async (runId: string, eventMessage: string): Promise<void> => {
+    const session = coordinatorSessions.get(runId);
+    if (!session || session.dead || !aiIntegrationService || !projectRoot) return;
+
+    // Wait for init to complete if still in progress
+    if (session.pendingInit) {
+      try {
+        await session.pendingInit;
+      } catch {
+        // Init failure already handled and session marked dead
+        return;
+      }
+    }
+
+    if (session.dead) return; // Re-check after init
+
+    try {
+      session.eventCount++;
+      session.lastEventAt = nowIso();
+
+      const result = await aiIntegrationService.executeTask({
+        feature: "orchestrator" as const,
+        taskType: "review" as const,
+        prompt: eventMessage,
+        cwd: projectRoot,
+        provider: session.modelConfig.provider === "codex" ? "codex" : "claude",
+        model: modelConfigToServiceModel(session.modelConfig),
+        systemPrompt: session.systemPrompt,
+        reasoningEffort: thinkingLevelToReasoningEffort(session.modelConfig.thinkingLevel),
+        permissionMode: "read-only" as const,
+        oneShot: true,
+        timeoutMs: 20_000,
+        // Resume the existing session if we have a sessionId
+        ...(session.sessionId ? { sessionId: session.sessionId } : {})
+      });
+
+      // Update sessionId if returned (first turn or session rotation)
+      if (typeof result.sessionId === "string" && result.sessionId.trim().length > 0) {
+        session.sessionId = result.sessionId.trim();
+      }
+
+      // Parse coordinator response for action commands
+      const responseText = String(result.text ?? "").trim();
+      if (responseText.length > 0) {
+        parseAndDispatchCoordinatorActions(session.missionId, runId, responseText);
+      }
+    } catch (error) {
+      logger.warn("ai_orchestrator.coordinator_event_failed", {
+        runId,
+        missionId: session.missionId,
+        eventCount: session.eventCount,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      // Mark session as dead after failure so we don't keep retrying
+      session.dead = true;
+      logger.warn("ai_orchestrator.coordinator_session_dead", {
+        runId,
+        missionId: session.missionId,
+        reason: "event_send_failed"
+      });
+    }
+  };
+
+  const parseAndDispatchCoordinatorActions = (missionId: string, runId: string, responseText: string): void => {
+    // Look for action commands in the response (one per line)
+    const lines = responseText.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // steer <stepKey> <message>
+      const steerMatch = trimmed.match(/^steer\s+(\S+)\s+(.+)$/i);
+      if (steerMatch) {
+        const [, stepKey, message] = steerMatch;
+        logger.info("ai_orchestrator.coordinator_action_steer", { missionId, runId, stepKey, message: message.slice(0, 200) });
+        emitOrchestratorMessage(missionId, `Coordinator steering ${stepKey}: ${message}`, stepKey);
+        continue;
+      }
+
+      // skip <stepKey> <reason>
+      const skipMatch = trimmed.match(/^skip\s+(\S+)\s+(.+)$/i);
+      if (skipMatch) {
+        const [, stepKey, reason] = skipMatch;
+        logger.info("ai_orchestrator.coordinator_action_skip", { missionId, runId, stepKey, reason: reason.slice(0, 200) });
+        emitOrchestratorMessage(missionId, `Coordinator recommends skipping ${stepKey}: ${reason}`, stepKey);
+        continue;
+      }
+
+      // broadcast <message>
+      const broadcastMatch = trimmed.match(/^broadcast\s+(.+)$/i);
+      if (broadcastMatch) {
+        const [, message] = broadcastMatch;
+        logger.info("ai_orchestrator.coordinator_action_broadcast", { missionId, runId, message: message.slice(0, 200) });
+        emitOrchestratorMessage(missionId, `Coordinator broadcast: ${message}`);
+        continue;
+      }
+
+      // escalate <reason>
+      const escalateMatch = trimmed.match(/^escalate\s+(.+)$/i);
+      if (escalateMatch) {
+        const [, reason] = escalateMatch;
+        logger.info("ai_orchestrator.coordinator_action_escalate", { missionId, runId, reason: reason.slice(0, 200) });
+        emitOrchestratorMessage(missionId, `Coordinator escalation: ${reason}`);
+        continue;
+      }
+    }
+  };
+
+  const endCoordinatorSession = (runId: string): void => {
+    const session = coordinatorSessions.get(runId);
+    if (!session) return;
+    coordinatorSessions.delete(runId);
+    logger.info("ai_orchestrator.coordinator_session_ended", {
+      runId,
+      missionId: session.missionId,
+      sessionId: session.sessionId,
+      eventCount: session.eventCount,
+      durationMs: Date.now() - Date.parse(session.startedAt)
+    });
+  };
+
   const emitOrchestratorMessage = (
     missionId: string,
     content: string,
     stepKey?: string | null,
     metadata?: Record<string, unknown> | null
   ): OrchestratorChatMessage => {
+    const formattedContent = formatOrchestratorContent(content, stepKey, metadata);
     const msg: OrchestratorChatMessage = {
       id: randomUUID(),
       missionId,
       role: "orchestrator",
-      content,
+      content: formattedContent,
       timestamp: new Date().toISOString(),
       stepKey: stepKey ?? null,
-      metadata: metadata ?? null
+      metadata: metadata ? { ...metadata, rawContent: content !== formattedContent ? content : undefined } : null
     };
     return appendChatMessage(msg);
   };
@@ -3710,6 +4026,13 @@ export function createAiOrchestratorService(args: {
           }
         }
 
+        // Propagate structured handoff context to downstream steps
+        propagateHandoffContext({
+          runId: attempt.runId,
+          completedStepId: attempt.stepId,
+          digest
+        });
+
         adjustPlanFromResults({
           runId: attempt.runId,
           completedStepId: attempt.stepId,
@@ -3967,13 +4290,15 @@ export function createAiOrchestratorService(args: {
       "Reply as the orchestrator in plain text (max 6 short sentences)."
     ].join("\n");
 
+    const configChat = resolveOrchestratorModelConfig(chatArgs.missionId, "chat_response");
     const callArgs = {
       feature: "orchestrator" as const,
       taskType: "review" as const,
       prompt,
       cwd: projectRoot,
       provider,
-      reasoningEffort: "medium",
+      model: modelConfigToServiceModel(configChat),
+      reasoningEffort: thinkingLevelToReasoningEffort(configChat.thinkingLevel),
       permissionMode: "read-only" as const,
       oneShot: true,
       timeoutMs: 30_000
@@ -4441,14 +4766,18 @@ export function createAiOrchestratorService(args: {
         (runIdForAttempt ? runRuntimeProfiles.get(runIdForAttempt) : null)
         ?? (missionIdForAttempt ? resolveActiveRuntimeProfile(missionIdForAttempt) : null);
       const evaluationReasoningEffort = runtimeProfile?.evaluation.evaluationReasoningEffort ?? "medium";
+      const configWorkerEval = missionIdForAttempt
+        ? resolveOrchestratorModelConfig(missionIdForAttempt, "worker_evaluation")
+        : legacyToModelConfig("sonnet", evaluationReasoningEffort);
 
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
         prompt,
         cwd: projectRoot,
-        provider: args.provider,
-        reasoningEffort: evaluationReasoningEffort,
+        provider: configWorkerEval.provider === "codex" ? "codex" : "claude",
+        model: modelConfigToServiceModel(configWorkerEval),
+        reasoningEffort: thinkingLevelToReasoningEffort(configWorkerEval.thinkingLevel),
         jsonSchema: evaluationSchema,
         permissionMode: "read-only",
         oneShot: true,
@@ -4472,6 +4801,182 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Cross-step handoff propagation: automatically enrich downstream steps
+  // with structured context from completed upstream steps.
+  // This is model-agnostic — any model benefits from richer input context.
+  // ---------------------------------------------------------------------------
+
+  const propagateHandoffContext = (args: {
+    runId: string;
+    completedStepId: string;
+    digest: OrchestratorWorkerDigest;
+  }): void => {
+    try {
+      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+      const completedStep = graph.steps.find((s) => s.id === args.completedStepId);
+      if (!completedStep) return;
+
+      // Build structured handoff summary from digest
+      const parts: string[] = [];
+      parts.push(`[${completedStep.stepKey}] ${args.digest.summary.slice(0, 300)}`);
+
+      if (args.digest.filesChanged.length > 0) {
+        const fileList = args.digest.filesChanged.slice(0, 15).join(", ");
+        const more = args.digest.filesChanged.length > 15 ? ` (+${args.digest.filesChanged.length - 15} more)` : "";
+        parts.push(`Files changed: ${fileList}${more}`);
+      }
+
+      if (args.digest.testsRun.failed > 0) {
+        parts.push(`Tests: ${args.digest.testsRun.passed} passed, ${args.digest.testsRun.failed} FAILED, ${args.digest.testsRun.skipped} skipped`);
+      } else if (args.digest.testsRun.passed > 0) {
+        parts.push(`Tests: ${args.digest.testsRun.passed} passed`);
+      }
+
+      if (args.digest.warnings.length > 0) {
+        parts.push(`Warnings: ${args.digest.warnings.slice(0, 3).join("; ")}`);
+      }
+
+      const handoffText = parts.join(". ");
+      if (!handoffText.trim().length) return;
+
+      // Find all downstream steps that depend on the completed step
+      const downstreamSteps = graph.steps.filter((s) => {
+        if (s.status === "succeeded" || s.status === "failed" || s.status === "skipped" || s.status === "canceled") return false;
+        return s.dependencyStepIds.includes(args.completedStepId);
+      });
+
+      if (downstreamSteps.length === 0) return;
+
+      const now = nowIso();
+      for (const downstream of downstreamSteps) {
+        const meta = isRecord(downstream.metadata) ? { ...downstream.metadata } : {};
+        const existing = Array.isArray(meta.handoffSummaries) ? [...meta.handoffSummaries as unknown[]] : [];
+        existing.push(handoffText);
+        // Cap at 10 handoff entries to prevent prompt bloat
+        meta.handoffSummaries = existing.slice(-10);
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+          [JSON.stringify(meta), now, downstream.id, args.runId]
+        );
+      }
+
+      logger.debug("ai_orchestrator.handoff_propagated", {
+        runId: args.runId,
+        fromStepKey: completedStep.stepKey,
+        downstreamCount: downstreamSteps.length,
+        handoffLength: handoffText.length
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.handoff_propagation_failed", {
+        runId: args.runId,
+        completedStepId: args.completedStepId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Structured situation report: assembles a comprehensive, standardized context
+  // for coordinator AI calls. Any model performs better with structured input.
+  // ---------------------------------------------------------------------------
+
+  const buildSituationReport = (args: {
+    runId: string;
+    trigger: string;
+    triggerStepId?: string;
+  }): string => {
+    try {
+      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+      const missionId = graph.run.missionId;
+      const mission = missionService.get(missionId);
+
+      const succeeded = graph.steps.filter((s) => s.status === "succeeded");
+      const failed = graph.steps.filter((s) => s.status === "failed");
+      const running = graph.steps.filter((s) => s.status === "running");
+      const blocked = graph.steps.filter((s) => s.status === "blocked");
+      const pending = graph.steps.filter((s) => s.status === "pending" || s.status === "ready");
+      const total = graph.steps.length;
+      const pct = total > 0 ? Math.round((succeeded.length / total) * 100) : 0;
+
+      const lines: string[] = [];
+      lines.push("=== SITUATION REPORT ===");
+      lines.push(`Mission: "${mission?.title ?? missionId}"`);
+      lines.push(`Progress: ${succeeded.length}/${total} steps complete (${pct}%)`);
+      lines.push(`Status: ${succeeded.length} succeeded, ${failed.length} failed, ${running.length} running, ${blocked.length} blocked, ${pending.length} pending`);
+      lines.push(`Trigger: ${args.trigger}`);
+
+      if (running.length > 0) {
+        lines.push("");
+        lines.push("Running now:");
+        for (const s of running.slice(0, 5)) {
+          const activeAttempt = graph.attempts
+            .filter((a) => a.stepId === s.id && a.status === "running")
+            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+          const elapsed = activeAttempt ? `${Math.round((Date.now() - Date.parse(activeAttempt.createdAt)) / 1000)}s` : "?";
+          lines.push(`  - ${s.stepKey}: "${s.title}" (${elapsed} elapsed)`);
+        }
+      }
+
+      if (failed.length > 0) {
+        lines.push("");
+        lines.push("Failed steps:");
+        for (const s of failed.slice(0, 5)) {
+          const lastAttempt = graph.attempts
+            .filter((a) => a.stepId === s.id)
+            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+          const errMsg = lastAttempt?.errorMessage?.slice(0, 150) ?? "unknown error";
+          lines.push(`  - ${s.stepKey}: ${errMsg} (retries: ${s.retryCount}/${s.retryLimit})`);
+        }
+      }
+
+      if (blocked.length > 0) {
+        lines.push("");
+        lines.push("Blocked steps:");
+        for (const s of blocked.slice(0, 5)) {
+          const blockMeta = isRecord(s.metadata) ? s.metadata : {};
+          const blockReason = typeof blockMeta.blockedErrorMessage === "string" ? blockMeta.blockedErrorMessage.slice(0, 100) : "unknown";
+          lines.push(`  - ${s.stepKey}: ${blockReason}`);
+        }
+      }
+
+      // Recently completed — show last 3 for context
+      const recentlyDone = succeeded
+        .filter((s) => s.completedAt)
+        .sort((a, b) => Date.parse(b.completedAt!) - Date.parse(a.completedAt!))
+        .slice(0, 3);
+      if (recentlyDone.length > 0) {
+        lines.push("");
+        lines.push("Recently completed:");
+        for (const s of recentlyDone) {
+          const lastAttempt = graph.attempts
+            .filter((a) => a.stepId === s.id && a.status === "succeeded")
+            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+          const summary = lastAttempt?.resultEnvelope?.summary?.slice(0, 120) ?? "completed";
+          lines.push(`  - ${s.stepKey}: ${summary}`);
+        }
+      }
+
+      // Next up — what's ready to run
+      const ready = graph.steps.filter((s) => s.status === "ready");
+      if (ready.length > 0) {
+        lines.push("");
+        lines.push("Ready to start:");
+        for (const s of ready.slice(0, 5)) {
+          const deps = s.dependencyStepIds
+            .map((depId) => graph.steps.find((d) => d.id === depId)?.stepKey ?? depId.slice(0, 8))
+            .join(", ");
+          lines.push(`  - ${s.stepKey}: "${s.title}"${deps ? ` (depends on: ${deps})` : ""}`);
+        }
+      }
+
+      lines.push("=== END REPORT ===");
+      return lines.join("\n");
+    } catch (error) {
+      return `[Situation report unavailable: ${error instanceof Error ? error.message : String(error)}]`;
+    }
+  };
+
   // Internal async helper for Tier 2 AI-driven plan adjustment
   const adjustPlanWithAI = async (adjustArgs: {
     runId: string;
@@ -4486,25 +4991,41 @@ export function createAiOrchestratorService(args: {
     const targetStep = graph.steps.find((s) => s.id === adjustArgs.completedStepId);
 
     const steeringContext = getSteeringContext(graph.run.missionId);
+    const situationReport = buildSituationReport({
+      runId: adjustArgs.runId,
+      trigger: `step_completed:${targetStep?.stepKey ?? adjustArgs.completedStepId}`,
+      triggerStepId: adjustArgs.completedStepId
+    });
+
+    // Last completed step's output for detailed analysis
+    const lastAttempt = graph.attempts
+      .filter((a) => a.stepId === adjustArgs.completedStepId && (a.status === "succeeded" || a.status === "failed"))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+    const lastOutput = lastAttempt?.resultEnvelope?.summary?.slice(0, 1000) ?? "";
+    const lastWarnings = lastAttempt?.resultEnvelope?.warnings?.slice(0, 5).join("; ") ?? "";
+
     const prompt = [
       PM_SYSTEM_PREAMBLE,
       "Your current role: PLAN ADJUSTER. Based on completed step results, proactively evaluate the remaining plan.",
-      "Think like a PM reviewing sprint progress:",
-      "- Did this step produce outputs that change what downstream steps need to do?",
-      "- Are there remaining steps that are now redundant or can be simplified?",
-      "- Did the worker discover new requirements that need additional steps?",
-      "- Can remaining parallel steps be consolidated now that we have more context?",
-      "Be decisive — if a step is clearly redundant, skip it. If a gap is obvious, add a corrective step.",
       "",
-      `Run ID: ${adjustArgs.runId}`,
-      `Completed steps: ${completed.length}/${graph.steps.length}`,
-      `Remaining steps: ${remaining.map((s) => `${s.stepKey} (${s.status})`).join(", ") || "none"}`,
-      `Last completed step: ${targetStep?.stepKey ?? adjustArgs.completedStepId} — status: ${targetStep?.status ?? "unknown"}`,
+      situationReport,
+      "",
+      `Last completed step output: ${lastOutput}`,
+      lastWarnings ? `Warnings from last step: ${lastWarnings}` : "",
+      "",
       steeringContext,
-      "Available actions: add_step (add a new corrective step), skip_step (skip a remaining step), no_change.",
-      "Don't add steps 'just in case'. Every addition must have a clear reason grounded in the completed step's output.",
+      "",
+      "DECISION FRAMEWORK (choose the best action):",
+      "1. no_change — plan is on track, no adjustment needed (most common)",
+      "2. skip_step — a remaining step is now redundant based on what was just completed",
+      "3. add_step — a gap was discovered that needs a new step to address",
+      "",
+      "Rules:",
+      "- Only skip if you have specific evidence from the completed step that makes a downstream step unnecessary",
+      "- Only add if the completed step revealed a concrete gap (not hypothetical)",
+      "- Reference specific outputs, files, or errors in your reasoning",
       "Return a JSON object with your adjustments."
-    ].join("\n");
+    ].filter(Boolean).join("\n");
 
     const adjustmentSchema = {
       type: "object",
@@ -4538,14 +5059,16 @@ export function createAiOrchestratorService(args: {
 
     const missionId = graph.run.missionId;
     const runtimeProfile = runRuntimeProfiles.get(adjustArgs.runId) ?? resolveActiveRuntimeProfile(missionId);
-    const adjustReasoningEffort = runtimeProfile.evaluation.evaluationReasoningEffort;
+    const configPlanAdj = resolveOrchestratorModelConfig(missionId, "plan_adjustment");
 
     const result = await aiIntegrationService.executeTask({
       feature: "orchestrator",
       taskType: "planning",
       prompt,
       cwd: projectRoot,
-      reasoningEffort: adjustReasoningEffort,
+      provider: configPlanAdj.provider === "codex" ? "codex" : "claude",
+      model: modelConfigToServiceModel(configPlanAdj),
+      reasoningEffort: thinkingLevelToReasoningEffort(configPlanAdj.thinkingLevel),
       jsonSchema: adjustmentSchema,
       permissionMode: "read-only",
       oneShot: true,
@@ -4780,13 +5303,15 @@ export function createAiOrchestratorService(args: {
         required: ["autoResolvable", "confidence", "suggestedAction", "reasoning"]
       };
 
+      const configIntervention = resolveOrchestratorModelConfig(args.missionId, "intervention_handling");
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
         prompt,
         cwd: projectRoot,
-        provider: args.provider,
-        reasoningEffort: runtimeProfile.evaluation.interventionReasoningEffort,
+        provider: configIntervention.provider === "codex" ? "codex" : "claude",
+        model: modelConfigToServiceModel(configIntervention),
+        reasoningEffort: thinkingLevelToReasoningEffort(configIntervention.thinkingLevel),
         jsonSchema: interventionSchema,
         permissionMode: "read-only",
         oneShot: true,
@@ -4945,6 +5470,31 @@ export function createAiOrchestratorService(args: {
     } catch {
       return null;
     }
+  };
+
+  /** Resolve a per-call-type ModelConfig from mission metadata, with fallback to legacy model */
+  const resolveOrchestratorModelConfig = (missionId: string, callType: OrchestratorCallType): ModelConfig => {
+    // Try to load full MissionModelConfig from mission metadata
+    const metadata = getMissionMetadata(missionId);
+    const missionModelConfig = metadata?.modelConfig as MissionModelConfig | undefined;
+
+    if (missionModelConfig) {
+      return resolveCallTypeModel(
+        callType,
+        missionModelConfig.intelligenceConfig,
+        missionModelConfig.orchestratorModel
+      );
+    }
+
+    // Fallback: use legacy orchestratorModel from launch metadata
+    const legacyModel = resolveMissionLaunchPlannerModel(missionId);
+    return legacyToModelConfig(legacyModel);
+  };
+
+  /** Resolve the orchestrator model for AI decision calls — defaults to "sonnet" (backward compat wrapper) */
+  const resolveOrchestratorModel = (missionId: string): string => {
+    const config = resolveOrchestratorModelConfig(missionId, "coordinator");
+    return modelConfigToServiceModel(config);
   };
 
   const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) => {
@@ -6047,10 +6597,81 @@ export function createAiOrchestratorService(args: {
     const attemptedAiPlanner = runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex");
     if (attemptedAiPlanner) {
       transitionMissionStatus(missionId, "planning");
+
+      // ── Planning with smart retry (max 2 attempts) ────────────────
+      const resolveFallbackModel = (
+        originalModel: string | undefined,
+        reasonCode: string | null
+      ): string | undefined => {
+        if (provider !== "claude") return undefined;
+        // For timeouts, prefer a faster/cheaper model
+        if (reasonCode === "planner_timeout") {
+          if (originalModel === "opus") return "sonnet";
+          if (originalModel === "sonnet") return "haiku";
+          return "sonnet"; // haiku/undefined -> sonnet (unlikely to be slower)
+        }
+        // For parse errors, try a different model entirely (garbled output)
+        if (reasonCode === "planner_parse_error") {
+          if (originalModel === "opus") return "sonnet";
+          if (originalModel === "sonnet") return "opus";
+          return "sonnet";
+        }
+        // For validation errors, retry same model (almost succeeded)
+        if (reasonCode === "planner_validation_error" || reasonCode === "planner_schema_error") {
+          return originalModel;
+        }
+        // For execution errors, try a different model
+        if (originalModel === "opus") return "sonnet";
+        if (originalModel === "sonnet") return "opus";
+        return "sonnet";
+      };
+
+      const shouldRetry = (error: unknown): boolean => {
+        if (error instanceof MissionPlanningError) {
+          // planner_unavailable means no AI service at all — retrying won't help
+          return error.reasonCode !== "planner_unavailable";
+        }
+        // Unknown errors: allow one retry
+        return true;
+      };
+
+      let planningSucceeded = false;
+      let lastPlanError: unknown = null;
+
       try {
         await planWithAI({ missionId, provider, model: plannerModel, policy });
-      } catch (planError) {
-        const errorMessage = planError instanceof Error ? planError.message : String(planError);
+        planningSucceeded = true;
+      } catch (attempt1Error) {
+        lastPlanError = attempt1Error;
+        const errorMessage = attempt1Error instanceof Error ? attempt1Error.message : String(attempt1Error);
+        const reasonCode = attempt1Error instanceof MissionPlanningError ? attempt1Error.reasonCode : null;
+
+        if (shouldRetry(attempt1Error)) {
+          const fallbackModel = resolveFallbackModel(plannerModel, reasonCode);
+          const fallbackLabel = fallbackModel ?? "default";
+          emitOrchestratorMessage(
+            missionId,
+            `Planning attempt 1 failed: ${errorMessage}. Retrying with ${fallbackLabel}...`
+          );
+          logger.warn("ai_orchestrator.planning_retry", {
+            missionId,
+            attempt: 1,
+            reasonCode,
+            originalModel: plannerModel ?? "default",
+            fallbackModel: fallbackLabel
+          });
+
+          try {
+            await planWithAI({ missionId, provider, model: fallbackModel, policy });
+            planningSucceeded = true;
+          } catch (attempt2Error) {
+            lastPlanError = attempt2Error;
+          }
+        }
+      }
+
+      if (!planningSucceeded) {
+        const errorMessage = lastPlanError instanceof Error ? lastPlanError.message : String(lastPlanError);
         transitionMissionStatus(missionId, "planning");
         transitionMissionStatus(missionId, "failed", { lastError: errorMessage });
         emitOrchestratorMessage(missionId, `Mission planning failed: ${errorMessage}`);
@@ -6164,6 +6785,25 @@ export function createAiOrchestratorService(args: {
       `Starting mission with ${started.steps.length} steps. Execution profile: ${runtimeProfile.provenance.source}. ${plannerSummary}`
     );
 
+    // ── Start Persistent Coordinator Session ─────────────────────
+    // Fire-and-forget: the coordinator session initializes in the background
+    // so it doesn't block mission startup. Events will queue until init completes.
+    const coordinatorModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
+    void startCoordinatorSession(missionId, started.run.id, {
+      steps: started.steps.map((s) => ({
+        stepKey: s.stepKey,
+        title: s.title,
+        status: s.status,
+        dependencyStepIds: s.dependencyStepIds
+      }))
+    }, coordinatorModelConfig).catch((error) => {
+      logger.debug("ai_orchestrator.coordinator_session_launch_failed", {
+        missionId,
+        runId: started.run.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+
     transitionMissionStatus(missionId, "in_progress");
     void syncMissionFromRun(started.run.id, "mission_run_started");
 
@@ -6261,6 +6901,70 @@ export function createAiOrchestratorService(args: {
         missionId,
         error: error instanceof Error ? error.message : String(error)
       });
+    }
+
+    // ── Real-time steering injection ──
+    // If the directive targets a specific step with an active agent session,
+    // inject it directly into the running session for zero-latency delivery.
+    if (directive.targetStepKey && agentChatService) {
+      try {
+        const runs = orchestratorService.listRuns({ missionId });
+        const activeRun = runs.find(
+          (r) => r.status === "running" || r.status === "queued" || r.status === "paused"
+        );
+        if (activeRun) {
+          const graph = orchestratorService.getRunGraph({ runId: activeRun.id, timelineLimit: 0 });
+          const targetStep = graph.steps.find((s) => s.stepKey === directive.targetStepKey);
+          if (targetStep) {
+            const runningWorkers = [...workerStates.entries()].filter(
+              ([, ws]) =>
+                ws.state === "working" &&
+                ws.sessionId &&
+                ws.stepId === targetStep.id &&
+                ws.runId === activeRun.id
+            );
+            for (const [attemptId, ws] of runningWorkers) {
+              const sessionId = ws.sessionId!;
+              const steerContent = `[STEERING DIRECTIVE] ${directive.directive}`;
+              void sendWorkerMessageToSession(sessionId, steerContent)
+                .then(() => {
+                  updateMissionMetadata(missionId, (meta) => {
+                    const delivered = Array.isArray(meta._liveDeliveredDirectives)
+                      ? (meta._liveDeliveredDirectives as unknown[])
+                      : [];
+                    delivered.push({
+                      attemptId,
+                      sessionId,
+                      stepKey: directive.targetStepKey,
+                      deliveredAt: nowIso()
+                    });
+                    meta._liveDeliveredDirectives = delivered.slice(-20);
+                  });
+                  logger.info("ai_orchestrator.steering_live_injected", {
+                    missionId,
+                    targetStepKey: directive.targetStepKey,
+                    attemptId,
+                    sessionId
+                  });
+                })
+                .catch((injectError) => {
+                  logger.debug("ai_orchestrator.steering_live_inject_failed", {
+                    missionId,
+                    targetStepKey: directive.targetStepKey,
+                    attemptId,
+                    error: injectError instanceof Error ? injectError.message : String(injectError)
+                  });
+                });
+              break; // Only inject into one matching session
+            }
+          }
+        }
+      } catch (liveInjectError) {
+        logger.debug("ai_orchestrator.steering_live_inject_outer_failed", {
+          missionId,
+          error: liveInjectError instanceof Error ? liveInjectError.message : String(liveInjectError)
+        });
+      }
     }
 
     logger.info("ai_orchestrator.mission_steered", {
@@ -9022,6 +9726,7 @@ export function createAiOrchestratorService(args: {
     stepType: string;
     missionTitle: string;
     missionObjective: string;
+    missionId: string;
   }): Promise<{ passed: boolean; reason: string }> => {
     if (!aiIntegrationService) {
       return { passed: true, reason: "No AI integration service available — defaulting to pass" };
@@ -9041,12 +9746,15 @@ ${gateEvalArgs.stepOutput.slice(0, QUALITY_GATE_MAX_OUTPUT_CHARS)}
 
 Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explanation with citations" }`;
 
+      const configQualityGate = resolveOrchestratorModelConfig(gateEvalArgs.missionId, "quality_gate");
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator" as const,
         taskType: "review" as const,
         prompt,
         cwd: projectRoot ?? "",
-        reasoningEffort: "medium",
+        provider: configQualityGate.provider === "codex" ? "codex" : "claude",
+        model: modelConfigToServiceModel(configQualityGate),
+        reasoningEffort: thinkingLevelToReasoningEffort(configQualityGate.thinkingLevel),
         oneShot: true,
         timeoutMs: 30_000
       });
@@ -9111,7 +9819,8 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         stepTitle: step.title ?? step.id,
         stepType: phase,
         missionTitle,
-        missionObjective
+        missionObjective,
+        missionId: graph.run.missionId
       });
 
       if (!evaluation.passed) {
@@ -9275,10 +9984,11 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
 
   // ── Aggregated Usage Stats ──────────────────────────────────
   const USAGE_TOKEN_COST: Record<string, { input: number; output: number }> = {
-    "claude-opus": { input: 15 / 1_000_000, output: 75 / 1_000_000 },
+    "claude-opus": { input: 5 / 1_000_000, output: 25 / 1_000_000 },
     "claude-sonnet": { input: 3 / 1_000_000, output: 15 / 1_000_000 },
-    "claude-haiku": { input: 0.25 / 1_000_000, output: 1.25 / 1_000_000 },
-    "codex": { input: 0, output: 0 },
+    "claude-haiku": { input: 0.8 / 1_000_000, output: 4 / 1_000_000 },
+    "codex": { input: 2 / 1_000_000, output: 8 / 1_000_000 },
+    "codex-mini": { input: 0.3 / 1_000_000, output: 1.2 / 1_000_000 },
     "default": { input: 3 / 1_000_000, output: 15 / 1_000_000 }
   };
   function estimateTokenCost(model: string, inputTokens: number, outputTokens: number): number {
@@ -9287,7 +9997,8 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
     if (lower.includes("opus")) rate = USAGE_TOKEN_COST["claude-opus"];
     else if (lower.includes("sonnet")) rate = USAGE_TOKEN_COST["claude-sonnet"];
     else if (lower.includes("haiku")) rate = USAGE_TOKEN_COST["claude-haiku"];
-    else if (lower.includes("codex")) rate = USAGE_TOKEN_COST["codex"];
+    else if (lower.includes("codex") && lower.includes("mini")) rate = USAGE_TOKEN_COST["codex-mini"];
+    else if (lower.includes("codex") || lower.includes("gpt") || lower.includes("o3") || lower.includes("o4")) rate = USAGE_TOKEN_COST["codex"];
     return inputTokens * rate.input + outputTokens * rate.output;
   }
   const getAggregatedUsage = (usageArgs: GetAggregatedUsageArgs): AggregatedUsageStats => {
@@ -9399,6 +10110,237 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
     }
   })();
 
+  // ---------------------------------------------------------------------------
+  // Smart Agent Recovery: AI-diagnosed failure handling with tiered response
+  // ---------------------------------------------------------------------------
+
+  const diagnoseFailureWithAI = async (diagArgs: {
+    stepTitle: string;
+    stepKey: string;
+    stepInstructions: string;
+    missionTitle: string;
+    missionObjective: string;
+    errorClass: string;
+    errorMessage: string;
+    attemptSummary: string;
+    retryCount: number;
+    retryLimit: number;
+    tier: RecoveryDiagnosisTier;
+    missionId: string;
+  }): Promise<RecoveryDiagnosis> => {
+    const defaultDiagnosis: RecoveryDiagnosis = {
+      tier: diagArgs.tier,
+      classification: `${diagArgs.errorClass}: ${diagArgs.errorMessage.slice(0, 300)}`,
+      adjustedHint: null,
+      peerNotification: null,
+      suggestedModel: null,
+      diagnosedAt: nowIso()
+    };
+
+    if (!aiIntegrationService) return defaultDiagnosis;
+    if (diagArgs.tier === "transient") return defaultDiagnosis;
+
+    try {
+      const peerField = diagArgs.tier === "blocker"
+        ? `"peerNotification": "1-sentence alert for sibling agents about this blocker and how it might affect them"`
+        : `"peerNotification": null`;
+
+      const prompt = `You are the orchestrator's failure diagnosis engine. An agent working on a mission step has failed. Analyze the failure and provide recovery guidance.
+
+Step: "${diagArgs.stepTitle}" (key: ${diagArgs.stepKey})
+Mission: "${diagArgs.missionTitle}"
+Objective: "${diagArgs.missionObjective}"
+Step Instructions: ${diagArgs.stepInstructions.slice(0, 2000)}
+
+Failure Details:
+- Error class: ${diagArgs.errorClass}
+- Error message: ${diagArgs.errorMessage.slice(0, 1500)}
+- Attempt output: ${diagArgs.attemptSummary.slice(0, 2000)}
+- Retry: ${diagArgs.retryCount}/${diagArgs.retryLimit}
+- Tier: ${diagArgs.tier}
+
+Respond with JSON only:
+{
+  "classification": "1-sentence diagnosis of root cause",
+  "adjustedHint": "specific instruction for the retry agent on what to do differently (be concrete: which file, which approach, what to avoid)",
+  ${peerField},
+  "suggestedModel": null
+}`;
+
+      const configFailureDiag = resolveOrchestratorModelConfig(diagArgs.missionId, "failure_diagnosis");
+      const result = await aiIntegrationService.executeTask({
+        feature: "orchestrator" as const,
+        taskType: "review" as const,
+        prompt,
+        cwd: projectRoot ?? "",
+        provider: configFailureDiag.provider === "codex" ? "codex" : "claude",
+        model: modelConfigToServiceModel(configFailureDiag),
+        reasoningEffort: thinkingLevelToReasoningEffort(configFailureDiag.thinkingLevel),
+        oneShot: true,
+        timeoutMs: 20_000
+      });
+
+      const text = typeof result.text === "string" ? result.text.trim() : "";
+      if (!text.length) return defaultDiagnosis;
+
+      // Extract JSON from potential markdown wrapping
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return defaultDiagnosis;
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        tier: diagArgs.tier,
+        classification: typeof parsed.classification === "string" ? parsed.classification : defaultDiagnosis.classification,
+        adjustedHint: typeof parsed.adjustedHint === "string" && parsed.adjustedHint.trim().length > 0
+          ? parsed.adjustedHint.trim()
+          : null,
+        peerNotification: typeof parsed.peerNotification === "string" && parsed.peerNotification.trim().length > 0
+          ? parsed.peerNotification.trim()
+          : null,
+        suggestedModel: typeof parsed.suggestedModel === "string" ? parsed.suggestedModel : null,
+        diagnosedAt: nowIso()
+      };
+    } catch (error) {
+      logger.debug("ai_orchestrator.failure_diagnosis_ai_failed", {
+        stepKey: diagArgs.stepKey,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return defaultDiagnosis;
+    }
+  };
+
+  const handleFailedAttemptRecovery = async (recoveryArgs: {
+    runId: string;
+    stepId: string;
+    attemptId: string;
+  }): Promise<void> => {
+    const { runId, stepId, attemptId } = recoveryArgs;
+
+    try {
+      const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const step = graph.steps.find((s) => s.id === stepId);
+      if (!step) return;
+
+      const attempt = graph.attempts.find((a) => a.id === attemptId);
+      if (!attempt) return;
+
+      // Only process failed attempts
+      if (attempt.status !== "failed") return;
+
+      // Only process if the step is pending (meaning shouldRetry was true)
+      if (step.status !== "pending") return;
+
+      const missionId = graph.run.missionId;
+      const mission = missionService.get(missionId);
+      if (!mission) return;
+
+      const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+      const errorMessage = attempt.errorMessage ?? "Unknown error";
+      const attemptSummary = attempt.resultEnvelope?.summary ?? errorMessage;
+
+      // Classify the failure tier
+      const tier = classifyFailureTier({
+        errorClass: attempt.errorClass,
+        retryCount: step.retryCount,
+        errorMessage
+      });
+
+      // Tier 1: transient — existing backoff is sufficient
+      if (tier === "transient") {
+        logger.debug("ai_orchestrator.recovery_tier1_transient", {
+          runId, stepId, attemptId, errorClass: attempt.errorClass
+        });
+        return;
+      }
+
+      // Tier 2/3: diagnose with AI
+      const diagnosis = await diagnoseFailureWithAI({
+        stepTitle: step.title ?? step.stepKey,
+        stepKey: step.stepKey,
+        stepInstructions: typeof stepMeta.instructions === "string" ? stepMeta.instructions : "",
+        missionTitle: mission.title,
+        missionObjective: mission.prompt ?? mission.title,
+        errorClass: attempt.errorClass,
+        errorMessage,
+        attemptSummary,
+        retryCount: step.retryCount,
+        retryLimit: step.retryLimit,
+        tier,
+        missionId
+      });
+
+      // Inject adjusted hint as steering directive for the retry
+      if (diagnosis.adjustedHint) {
+        steerMission({
+          missionId,
+          directive: `[RECOVERY GUIDANCE - retry ${step.retryCount + 1}/${step.retryLimit}] ${diagnosis.adjustedHint}`,
+          priority: "instruction",
+          targetStepKey: step.stepKey
+        });
+      }
+
+      // Tier 3: notify peer agents about the blocker
+      if (tier === "blocker" && diagnosis.peerNotification) {
+        steerMission({
+          missionId,
+          directive: `[PEER ALERT from ${step.stepKey}] ${diagnosis.peerNotification}`,
+          priority: "suggestion",
+          targetStepKey: null
+        });
+      }
+
+      // Record diagnosis in step metadata for observability
+      const freshStepMeta = isRecord(step.metadata) ? { ...step.metadata } : {};
+      freshStepMeta.lastRecoveryDiagnosis = {
+        tier: diagnosis.tier,
+        classification: diagnosis.classification,
+        adjustedHint: diagnosis.adjustedHint,
+        peerNotification: diagnosis.peerNotification,
+        suggestedModel: diagnosis.suggestedModel,
+        diagnosedAt: diagnosis.diagnosedAt,
+        attemptId,
+        retryCount: step.retryCount
+      };
+      db.run(
+        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+        [JSON.stringify(freshStepMeta), nowIso(), stepId, runId]
+      );
+
+      // Emit timeline event for observability
+      recordRuntimeEvent({
+        runId,
+        stepId,
+        attemptId,
+        eventType: "progress",
+        eventKey: `recovery_diagnosis:${attemptId}:${tier}`,
+        payload: {
+          tier: diagnosis.tier,
+          classification: diagnosis.classification,
+          adjustedHint: diagnosis.adjustedHint ? diagnosis.adjustedHint.slice(0, 200) : null,
+          peerNotified: tier === "blocker" && !!diagnosis.peerNotification
+        }
+      });
+
+      // Emit orchestrator message for the mission chat
+      emitOrchestratorMessage(
+        missionId,
+        `Recovery diagnosis for ${step.stepKey} (${tier}): ${diagnosis.classification}${diagnosis.adjustedHint ? " — Adjusted guidance injected for retry." : ""}`
+      );
+
+      logger.info("ai_orchestrator.recovery_diagnosis_applied", {
+        runId, stepId, attemptId, tier,
+        classification: diagnosis.classification,
+        hasAdjustedHint: !!diagnosis.adjustedHint,
+        hasPeerNotification: !!diagnosis.peerNotification
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.recovery_diagnosis_handler_failed", {
+        runId, stepId: recoveryArgs.stepId, attemptId: recoveryArgs.attemptId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
   return {
     startMissionRun,
 
@@ -9419,6 +10361,21 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
           });
         });
       }
+      // Smart recovery diagnosis for failed attempts that will be retried
+      if (event.reason === "completed" && event.attemptId && event.stepId) {
+        void handleFailedAttemptRecovery({
+          runId: event.runId,
+          stepId: event.stepId,
+          attemptId: event.attemptId
+        }).catch((error) => {
+          logger.debug("ai_orchestrator.recovery_diagnosis_event_failed", {
+            runId: event.runId,
+            stepId: event.stepId,
+            attemptId: event.attemptId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
       const missionId = getMissionIdForRun(event.runId);
       if (!missionId) return;
       void replayQueuedWorkerMessages({
@@ -9431,6 +10388,56 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
           error: error instanceof Error ? error.message : String(error)
         });
       });
+
+      // ── Stream event to persistent coordinator session ──────────
+      // Only stream significant events to avoid flooding the coordinator with noise.
+      // "completed" on the run means the whole run is done — end the coordinator session.
+      if (
+        event.reason === "attempt_completed" ||
+        event.reason === "step_status_changed" ||
+        event.reason === "attempt_blocked" ||
+        event.reason === "completed" ||
+        event.reason === "step_started" ||
+        event.reason === "run_failed"
+      ) {
+        const coordSession = coordinatorSessions.get(event.runId);
+        if (coordSession && !coordSession.dead) {
+          // End session on terminal run events
+          if (event.reason === "completed" || event.reason === "run_failed") {
+            endCoordinatorSession(event.runId);
+          } else {
+            const graph = orchestratorService.getRunGraph({ runId: event.runId, timelineLimit: 0 });
+            if (graph) {
+              const completedCount = graph.steps.filter(
+                (s) => s.status === "succeeded" || s.status === "skipped"
+              ).length;
+              const failedCount = graph.steps.filter((s) => s.status === "failed").length;
+              const totalCount = graph.steps.length;
+              const pct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+              const stepKey = event.stepId
+                ? graph.steps.find((s) => s.id === event.stepId)?.stepKey ?? event.stepId
+                : null;
+              const readySteps = graph.steps
+                .filter((s) => s.status === "pending")
+                .map((s) => `"${s.stepKey}"`)
+                .slice(0, 5);
+
+              const eventMessage = [
+                `[EVENT] ${event.reason}${stepKey ? ` — step "${stepKey}"` : ""} (${completedCount}/${totalCount} steps done, ${pct}%${failedCount > 0 ? `, ${failedCount} failed` : ""})`,
+                readySteps.length ? `Next ready: ${readySteps.join(", ")}` : null
+              ].filter(Boolean).join("\n");
+
+              void sendCoordinatorEvent(event.runId, eventMessage).catch((error) => {
+                logger.debug("ai_orchestrator.coordinator_event_dispatch_failed", {
+                  runId: event.runId,
+                  reason: event.reason,
+                  error: error instanceof Error ? error.message : String(error)
+                });
+              });
+            }
+          }
+        }
+      }
     },
 
     onSessionRuntimeSignal,
@@ -9493,6 +10500,7 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
       workerDeliveryInterventionCooldowns.clear();
       runTeamManifests.clear();
       runRecoveryLoopStates.clear();
+      coordinatorSessions.clear();
     }
   };
 }

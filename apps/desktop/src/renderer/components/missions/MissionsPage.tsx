@@ -53,8 +53,13 @@ import type {
   StartOrchestratorRunFromMissionArgs,
   SteerMissionResult,
   ExecutionPlanPreview as ExecutionPlanPreviewType,
-  PrStrategy
+  PrStrategy,
+  MissionModelConfig,
+  OrchestratorIntelligenceConfig,
+  SmartBudgetConfig,
+  ModelConfig
 } from "../../../shared/types";
+import { BUILT_IN_PROFILES, getProfileById } from "../../../shared/modelProfiles";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { OrchestratorActivityFeed } from "./OrchestratorActivityFeed";
@@ -66,6 +71,11 @@ import { MissionPolicyBadge } from "./MissionPolicyBadge";
 import { ExecutionPlanPreview } from "./ExecutionPlanPreview";
 import { UsageDashboard } from "./UsageDashboard";
 import { AgentChannels } from "./AgentChannels";
+import { MissionControlPage } from "./MissionControlPage";
+import { ModelProfileSelector } from "./ModelProfileSelector";
+import { ModelSelector } from "./ModelSelector";
+import { OrchestratorIntelligencePanel } from "./OrchestratorIntelligencePanel";
+import { SmartBudgetPanel } from "./SmartBudgetPanel";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, primaryButton, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
 
 /* ════════════════════ STATUS HELPERS ════════════════════ */
@@ -135,7 +145,7 @@ const EXECUTOR_BADGE_HEX: Record<string, string> = {
   manual: "#3B82F6",
 };
 
-type WorkspaceTab = "board" | "dag" | "channels" | "activity" | "usage";
+type WorkspaceTab = "board" | "dag" | "channels" | "control" | "activity" | "usage";
 type MissionListViewMode = "list" | "board";
 
 const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: string }> = [
@@ -625,6 +635,95 @@ function formatMetricSample(sample: MissionMetricSample): string {
   const rounded = Number.isFinite(sample.value) ? sample.value.toFixed(sample.value >= 100 ? 0 : 2) : "0";
   if (sample.unit && sample.unit.trim().length) return `${rounded} ${sample.unit}`;
   return rounded;
+}
+
+function MissionControlWrapper({
+  missionId,
+  missionTitle,
+  graph
+}: {
+  missionId: string;
+  missionTitle: string;
+  graph: OrchestratorRunGraph;
+}) {
+  const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
+
+  const refreshThreads = useCallback(async () => {
+    try {
+      const nextThreads = await window.ade.orchestrator.listChatThreads({ missionId });
+      setThreads(nextThreads);
+    } catch {
+      // ignore
+    }
+  }, [missionId]);
+
+  useEffect(() => {
+    void refreshThreads();
+  }, [refreshThreads]);
+
+  // Listen for thread events to refresh thread list
+  useEffect(() => {
+    const unsub = window.ade.orchestrator.onThreadEvent((event) => {
+      if (event.missionId !== missionId) return;
+      if (event.type === "thread_updated") {
+        void refreshThreads();
+      }
+    });
+    return () => { unsub(); };
+  }, [missionId, refreshThreads]);
+
+  const handleSendMessage = useCallback(async (threadId: string, content: string) => {
+    try {
+      const thread = threads.find((t) => t.id === threadId);
+      const target: OrchestratorChatTarget = thread?.threadType === "worker"
+        ? {
+            kind: "worker",
+            runId: thread.runId ?? graph.run.id ?? null,
+            stepId: thread.stepId ?? null,
+            stepKey: thread.stepKey ?? null,
+            attemptId: thread.attemptId ?? null,
+            sessionId: thread.sessionId ?? null,
+            laneId: thread.laneId ?? null
+          }
+        : {
+            kind: "coordinator",
+            runId: graph.run.id ?? null
+          };
+      await window.ade.orchestrator.sendThreadMessage({
+        missionId,
+        threadId,
+        content,
+        target
+      });
+    } catch {
+      // ignore
+    }
+  }, [missionId, threads, graph.run.id]);
+
+  const handleSteerStep = useCallback(async (stepKey: string, message: string) => {
+    try {
+      await window.ade.orchestrator.steerMission({
+        missionId,
+        directive: message,
+        priority: "instruction",
+        targetStepKey: stepKey
+      });
+    } catch {
+      // ignore
+    }
+  }, [missionId]);
+
+  return (
+    <MissionControlPage
+      missionId={missionId}
+      missionTitle={missionTitle}
+      runId={graph.run.id}
+      graph={graph}
+      threads={threads}
+      onSendMessage={(threadId, content) => { void handleSendMessage(threadId, content); }}
+      onSteerStep={(stepKey, message) => { void handleSteerStep(stepKey, message); }}
+    />
+  );
 }
 
 function MissionChat({
@@ -1233,6 +1332,9 @@ type CreateDraft = {
   prStrategy: PrStrategy;
   prTargetBranch: string;
   prDraft: boolean;
+  /** New model configuration (takes precedence over orchestratorModel) */
+  modelConfig: MissionModelConfig;
+  selectedProfileId: string;
 };
 
 const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
@@ -1240,6 +1342,13 @@ const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
   "claude-opus": 32768,
   "claude-haiku": 4096,
   "codex": 16384
+};
+
+const DEFAULT_MODEL_CONFIG: MissionModelConfig = {
+  profileId: "standard",
+  orchestratorModel: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+  intelligenceConfig: BUILT_IN_PROFILES[0].intelligenceConfig,
+  smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
 };
 
 function CreateMissionDialog({
@@ -1267,7 +1376,9 @@ function CreateMissionDialog({
     thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
     prStrategy: { kind: "integration", targetBranch: "main", draft: true },
     prTargetBranch: "main",
-    prDraft: true
+    prDraft: true,
+    modelConfig: { ...DEFAULT_MODEL_CONFIG },
+    selectedProfileId: "standard"
   });
 
   useEffect(() => {
@@ -1282,7 +1393,9 @@ function CreateMissionDialog({
       thinkingBudgets: { ...DEFAULT_THINKING_BUDGETS },
       prStrategy: { kind: "integration", targetBranch: "main", draft: true },
       prTargetBranch: "main",
-      prDraft: true
+      prDraft: true,
+      modelConfig: { ...DEFAULT_MODEL_CONFIG },
+      selectedProfileId: "standard"
     });
   }, [open, defaultExecutionPolicy]);
 
@@ -1347,44 +1460,66 @@ function CreateMissionDialog({
             Missions automatically create dedicated lanes for each step.
           </div>
 
-          {/* Orchestrator Model */}
-          <label className="block space-y-1">
-            <span style={dlgLabelStyle}>ORCHESTRATOR MODEL</span>
-            <select
-              value={draft.orchestratorModel}
-              onChange={(e) => setDraft((p) => ({ ...p, orchestratorModel: e.target.value }))}
-              className="h-8 w-full px-2 text-xs outline-none"
-              style={dlgInputStyle}
-            >
-              <option value="sonnet">Claude Sonnet (default)</option>
-              <option value="opus">Claude Opus</option>
-              <option value="haiku">Claude Haiku</option>
-            </select>
-          </label>
-
-          {/* Thinking Budgets */}
+          {/* Model Profile */}
           <div className="space-y-1">
-            <span style={dlgLabelStyle}>THINKING BUDGETS</span>
-            <div className="grid grid-cols-2 gap-2">
-              {Object.entries(draft.thinkingBudgets).map(([model, budget]) => (
-                <label key={model} className="flex items-center gap-2 text-[10px]">
-                  <span className="w-[90px] shrink-0" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{model.replace("claude-", "Claude ").replace("codex", "Codex")}</span>
-                  <input
-                    type="number"
-                    step={1024}
-                    value={budget}
-                    onChange={(e) => setDraft((p) => ({
-                      ...p,
-                      thinkingBudgets: { ...p.thinkingBudgets, [model]: Number(e.target.value) || 0 }
-                    }))}
-                    className="h-7 w-full px-2 text-xs outline-none"
-                    style={dlgInputStyle}
-                  />
-                  <span className="text-[9px] shrink-0" style={{ color: COLORS.textDim }}>tokens</span>
-                </label>
-              ))}
-            </div>
+            <span style={dlgLabelStyle}>MODEL PROFILE</span>
+            <ModelProfileSelector
+              selectedProfileId={draft.selectedProfileId}
+              onSelect={(profile) => {
+                if (profile) {
+                  setDraft((p) => ({
+                    ...p,
+                    selectedProfileId: profile.id,
+                    modelConfig: {
+                      profileId: profile.id,
+                      orchestratorModel: profile.orchestratorModel,
+                      intelligenceConfig: profile.intelligenceConfig,
+                      smartBudget: profile.smartBudget ?? p.modelConfig.smartBudget,
+                    },
+                    orchestratorModel: profile.orchestratorModel.modelId.includes("opus") ? "opus"
+                      : profile.orchestratorModel.modelId.includes("haiku") ? "haiku" : "sonnet",
+                  }));
+                } else {
+                  setDraft((p) => ({ ...p, selectedProfileId: "custom" }));
+                }
+              }}
+            />
           </div>
+
+          {/* Orchestrator Model */}
+          <div className="space-y-1">
+            <span style={dlgLabelStyle}>ORCHESTRATOR MODEL</span>
+            <ModelSelector
+              value={draft.modelConfig.orchestratorModel}
+              onChange={(config) => setDraft((p) => ({
+                ...p,
+                selectedProfileId: "custom",
+                modelConfig: { ...p.modelConfig, profileId: undefined, orchestratorModel: config },
+                orchestratorModel: config.modelId.includes("opus") ? "opus"
+                  : config.modelId.includes("haiku") ? "haiku" : "sonnet",
+              }))}
+              showRecommendedBadge
+            />
+          </div>
+
+          {/* Orchestrator Intelligence (per-call-type config) */}
+          <OrchestratorIntelligencePanel
+            value={draft.modelConfig.intelligenceConfig ?? {}}
+            onChange={(config) => setDraft((p) => ({
+              ...p,
+              selectedProfileId: "custom",
+              modelConfig: { ...p.modelConfig, profileId: undefined, intelligenceConfig: config }
+            }))}
+          />
+
+          {/* Smart Token Budget */}
+          <SmartBudgetPanel
+            value={draft.modelConfig.smartBudget ?? { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 }}
+            onChange={(config) => setDraft((p) => ({
+              ...p,
+              modelConfig: { ...p.modelConfig, smartBudget: config }
+            }))}
+          />
 
           {/* PR Strategy */}
           <div className="space-y-1">
@@ -2041,6 +2176,7 @@ export default function MissionsPage() {
         executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
         orchestratorModel: draft.orchestratorModel || undefined,
         thinkingBudgets: draft.thinkingBudgets,
+        modelConfig: draft.modelConfig,
         autostart: true,
         launchMode: "autopilot",
         autopilotExecutor: "codex"
@@ -2518,8 +2654,9 @@ export default function MissionsPage() {
                   { key: "board" as WorkspaceTab, num: "01", label: "BOARD", icon: SquaresFour },
                   { key: "dag" as WorkspaceTab, num: "02", label: "DAG", icon: Graph },
                   { key: "channels" as WorkspaceTab, num: "03", label: "CHANNELS", icon: Hash },
-                  { key: "activity" as WorkspaceTab, num: "04", label: "ACTIVITY", icon: Pulse },
-                  { key: "usage" as WorkspaceTab, num: "05", label: "USAGE", icon: Lightning }
+                  { key: "control" as WorkspaceTab, num: "04", label: "CONTROL", icon: Rocket },
+                  { key: "activity" as WorkspaceTab, num: "05", label: "ACTIVITY", icon: Pulse },
+                  { key: "usage" as WorkspaceTab, num: "06", label: "USAGE", icon: Lightning }
                 ]).map((tab) => {
                   const isActive = activeTab === tab.key;
                   return (
@@ -2568,7 +2705,7 @@ export default function MissionsPage() {
               )}
 
               {/* ── Tab Content ── */}
-              <div className={cn("flex-1 min-h-0", activeTab === "channels" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
+              <div className={cn("flex-1 min-h-0", (activeTab === "channels" || activeTab === "control") ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
                 {activeTab === "board" && (
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -2636,13 +2773,30 @@ export default function MissionsPage() {
                   />
                 )}
 
+                {activeTab === "control" && selectedMission && (() => {
+                  if (!runGraph) {
+                    return (
+                      <div className="flex items-center justify-center h-64 text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        No active run. Start a mission to see Mission Control.
+                      </div>
+                    );
+                  }
+                  return (
+                    <MissionControlWrapper
+                      missionId={selectedMission.id}
+                      missionTitle={selectedMission.title}
+                      graph={runGraph}
+                    />
+                  );
+                })()}
+
                 {activeTab === "usage" && selectedMission && (
                   <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
                 )}
               </div>
 
               {/* ── Bottom Steering Bar (hidden on Channels tab since channels subsume steering) ── */}
-              {isActiveMission && activeTab !== "channels" && (
+              {isActiveMission && activeTab !== "channels" && activeTab !== "control" && (
                 <div className="px-4 py-2.5" style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                   {steerAck && (
                     <div className="mb-2 px-3 py-1.5 text-[10px] flex items-center justify-between" style={{ background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>

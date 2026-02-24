@@ -2,7 +2,7 @@
 
 > Roadmap reference: `docs/final-plan.md` is the canonical future plan and sequencing source.
 
-> Last updated: 2026-02-23
+> Last updated: 2026-02-24
 >
 > **Phase 3 Status: ~70% Complete**
 
@@ -102,8 +102,13 @@ Supported artifact types:
 - `link`
 - `note`
 - `patch`
+- `screenshot`: PNG/JPEG image captured from agent environment
+- `video`: Screen recording of agent work (MP4)
+- `test-result`: Structured test output (pass/fail counts, log)
 
 Artifacts support PR handoff, traceability, and post-mission review.
+
+**Lane artifact sharing**: When a mission step produces artifacts while working in a lane, the artifacts are attached to both the mission (for mission-level tracking) and the lane (for lane-level visibility and PR integration). This dual-attachment ensures artifacts are accessible from both the Missions tab and the Lanes tab.
 
 ### Mission Pack
 
@@ -152,6 +157,15 @@ An **AI Orchestrator Session** is the Claude session that plans and coordinates 
 
 The orchestrator session is the bridge between the user's intent and the local executor agents that carry out the work.
 
+### Computer Use in Mission Steps
+
+Mission steps can optionally use computer use capabilities for tasks that require visual interaction with running applications. The mission planner or user can specify a compute environment type per step:
+
+- Steps with `computeEnvironment: 'browser'` or `computeEnvironment: 'desktop'` gain access to computer use MCP tools (screenshot_environment, interact_gui, record_environment, launch_app)
+- The orchestrator selects the appropriate compute backend based on mission configuration and available infrastructure
+- Visual artifacts (screenshots, videos) produced during step execution are attached to both the mission and the target lane
+- Computer use is opt-in per step — most steps use terminal-only by default
+
 ---
 
 ## User Experience
@@ -180,6 +194,18 @@ Users launch a mission with:
 - optional target machine ID.
 
 The AI orchestrator receives the prompt and plans execution steps. Users can choose between autopilot mode (orchestrator drives execution end-to-end) or manual mode (user advances steps).
+
+### Chat-to-Mission Escalation
+
+When a task started in agent chat grows beyond single-agent scope, it can be escalated to a full mission:
+
+1. In agent chat, user says "this needs a full mission" or the agent suggests escalation when it recognizes multi-lane/multi-agent complexity
+2. Chat context (conversation history, files changed, current state) is packaged as mission input
+3. Mission launcher opens pre-filled with the chat context as the prompt
+4. User confirms → mission created with a reference link back to the originating chat session
+5. Mission results can be summarized back into the originating chat session for continuity
+
+**IPC**: `ade.agentChat.escalateToMission(sessionId)` packages the chat session context and opens the mission launcher.
 
 ### Mission Board
 

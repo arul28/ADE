@@ -18,7 +18,8 @@ import type {
   OrchestratorContextView,
   ExecutionPlanPreview,
   ExecutionPlanPhase,
-  ExecutionPlanStepPreview
+  ExecutionPlanStepPreview,
+  ModelConfig
 } from "../../../shared/types";
 
 import {
@@ -394,6 +395,12 @@ function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
 export function phaseModelToExecutorKind(model?: string | null): "claude" | "codex" {
   if (model === "claude") return "claude";
   return "codex";
+}
+
+/** Convert a ModelConfig to executor kind */
+export function modelConfigToExecutorKind(config?: ModelConfig | null): "claude" | "codex" {
+  if (!config) return "codex";
+  return config.provider;
 }
 
 // ─────────────────────────────────────────────────────

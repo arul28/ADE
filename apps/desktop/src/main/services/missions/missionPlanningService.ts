@@ -109,6 +109,7 @@ const TASK_TYPES: PlannerTaskType[] = ["analysis", "code", "integration", "test"
 const CONTEXT_PROFILES: PlannerContextProfileRequirement[] = ["deterministic", "deterministic_plus_narrative"];
 const CLAIM_LANES: PlannerClaimLane[] = ["analysis", "backend", "frontend", "integration", "conflict"];
 const DEFAULT_TIMEOUT_MS = 300_000;
+const MAX_PLANNER_VALIDATION_RETRIES = 2;
 const GENERIC_STEP_NAME_RE = /^(?:step|task|phase)\s*[-_#]?\s*\d+$/i;
 const GENERIC_STEP_DESCRIPTION_RE =
   /^(?:execute|do|perform)\s+(?:mission|this|the)\s+(?:work|step|task)(?:\s+for\s+this\s+step)?\.?$/i;
@@ -420,6 +421,17 @@ function buildPlannerPrompt(args: {
       );
     }
   }
+
+  lines.push(
+    "Before finalizing your plan, validate it:",
+    "1. Every dependency in every step must reference a stepId that exists in your plan.",
+    "2. Every stepId must be unique across all steps.",
+    "3. No circular dependency chains.",
+    "4. Step names must be descriptive, not generic (no \"Step 1\", \"Step 2\").",
+    "5. Verify the JSON is well-formed and matches the required schema.",
+    "If you find issues, fix them before outputting the final JSON.",
+    ""
+  );
 
   lines.push("Output: one JSON object only.");
   return lines.join("\n");
@@ -1004,7 +1016,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
   }
   for (const engine of order) {
     try {
-      const adapterResult = await runPlannerAdapter({
+      let adapterResult = await runPlannerAdapter({
         engine,
         cwd: args.projectRoot,
         prompt,
@@ -1013,7 +1025,7 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         aiIntegrationService: args.aiIntegrationService
       });
 
-      const rawJson = extractFirstJsonObject(adapterResult.rawResponse);
+      let rawJson = extractFirstJsonObject(adapterResult.rawResponse);
       if (!rawJson) {
         plannerAttempts.push({
           id: randomUUID(),
@@ -1061,28 +1073,131 @@ export async function planMissionOnce(args: MissionPlanningRequest): Promise<Mis
         continue;
       }
 
-      const { plan, validationErrors } = validateAndCanonicalizePlannerPlan(parsed);
+      let { plan, validationErrors } = validateAndCanonicalizePlannerPlan(parsed);
+
+      // Retry the same engine with feedback when validation fails
       if (validationErrors.length > 0) {
-        plannerAttempts.push({
-          id: randomUUID(),
-          engine,
-          status: "failed",
-          reasonCode: "planner_validation_error",
-          detail: validationErrors[0] ?? "Planner validation failed.",
-          commandPreview: adapterResult.commandPreview,
-          rawResponse: adapterResult.rawResponse,
-          validationErrors,
-          createdAt: new Date().toISOString()
-        });
-        runtimeErrors.push({
-          engine,
-          reasonCode: "planner_validation_error",
-          detail: validationErrors[0] ?? "Planner validation failed.",
-          validationErrors,
-          rawResponse: adapterResult.rawResponse,
-          commandPreview: adapterResult.commandPreview
-        });
-        continue;
+        let retrySucceeded = false;
+        for (let retryIdx = 0; retryIdx < MAX_PLANNER_VALIDATION_RETRIES; retryIdx++) {
+          args.logger?.warn?.("missions.planner.validation_retry", {
+            engine,
+            retry: retryIdx + 1,
+            maxRetries: MAX_PLANNER_VALIDATION_RETRIES,
+            validationErrors
+          });
+
+          const retryPrompt =
+            prompt +
+            "\n\n---\n\nYour previous plan output had validation errors:\n" +
+            validationErrors.map((e, i) => `${i + 1}. ${e}`).join("\n") +
+            "\n\nFix these issues and output a corrected plan. " +
+            "Keep all the same steps but fix the referenced problems.";
+
+          try {
+            const retryAdapterResult = await runPlannerAdapter({
+              engine,
+              cwd: args.projectRoot,
+              prompt: retryPrompt,
+              timeoutMs,
+              model: args.model,
+              aiIntegrationService: args.aiIntegrationService
+            });
+
+            const retryRawJson = extractFirstJsonObject(retryAdapterResult.rawResponse);
+            if (!retryRawJson) {
+              plannerAttempts.push({
+                id: randomUUID(),
+                engine,
+                status: "failed",
+                reasonCode: "planner_parse_error",
+                detail: `Validation retry ${retryIdx + 1}: output did not contain a JSON object.`,
+                commandPreview: retryAdapterResult.commandPreview,
+                rawResponse: retryAdapterResult.rawResponse,
+                validationErrors: [],
+                createdAt: new Date().toISOString()
+              });
+              continue;
+            }
+
+            let retryParsed: unknown;
+            try {
+              retryParsed = JSON.parse(retryRawJson);
+            } catch (parseErr) {
+              plannerAttempts.push({
+                id: randomUUID(),
+                engine,
+                status: "failed",
+                reasonCode: "planner_parse_error",
+                detail: `Validation retry ${retryIdx + 1}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+                commandPreview: retryAdapterResult.commandPreview,
+                rawResponse: retryAdapterResult.rawResponse,
+                validationErrors: [],
+                createdAt: new Date().toISOString()
+              });
+              continue;
+            }
+
+            const retryValidation = validateAndCanonicalizePlannerPlan(retryParsed);
+            if (retryValidation.validationErrors.length === 0) {
+              // Retry succeeded — use the corrected plan
+              plan = retryValidation.plan;
+              validationErrors = [];
+              adapterResult = retryAdapterResult;
+              rawJson = retryRawJson;
+              parsed = retryParsed;
+              retrySucceeded = true;
+              args.logger?.info?.("missions.planner.validation_retry_success", {
+                engine,
+                retry: retryIdx + 1
+              });
+              break;
+            }
+
+            // Update errors for next retry attempt
+            validationErrors = retryValidation.validationErrors;
+            plannerAttempts.push({
+              id: randomUUID(),
+              engine,
+              status: "failed",
+              reasonCode: "planner_validation_error",
+              detail: `Validation retry ${retryIdx + 1}: ${retryValidation.validationErrors[0] ?? "Planner validation failed."}`,
+              commandPreview: retryAdapterResult.commandPreview,
+              rawResponse: retryAdapterResult.rawResponse,
+              validationErrors: retryValidation.validationErrors,
+              createdAt: new Date().toISOString()
+            });
+          } catch (retryErr) {
+            args.logger?.warn?.("missions.planner.validation_retry_error", {
+              engine,
+              retry: retryIdx + 1,
+              error: retryErr instanceof Error ? retryErr.message : String(retryErr)
+            });
+            break;
+          }
+        }
+
+        if (!retrySucceeded) {
+          plannerAttempts.push({
+            id: randomUUID(),
+            engine,
+            status: "failed",
+            reasonCode: "planner_validation_error",
+            detail: validationErrors[0] ?? "Planner validation failed.",
+            commandPreview: adapterResult.commandPreview,
+            rawResponse: adapterResult.rawResponse,
+            validationErrors,
+            createdAt: new Date().toISOString()
+          });
+          runtimeErrors.push({
+            engine,
+            reasonCode: "planner_validation_error",
+            detail: validationErrors[0] ?? "Planner validation failed.",
+            validationErrors,
+            rawResponse: adapterResult.rawResponse,
+            commandPreview: adapterResult.commandPreview
+          });
+          continue;
+        }
       }
 
       const normalized = stableStringify(plan);

@@ -2804,6 +2804,8 @@ export type CreateMissionArgs = {
   executionPolicy?: Partial<MissionExecutionPolicy>;
   orchestratorModel?: string;
   thinkingBudgets?: Record<string, number>;
+  /** New granular model configuration (takes precedence over orchestratorModel) */
+  modelConfig?: MissionModelConfig;
 };
 
 export type PlanMissionArgs = {
@@ -2924,7 +2926,7 @@ export type OrchestratorAttemptStatus =
   | "blocked"
   | "canceled";
 
-export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum";
+export type OrchestratorJoinPolicy = "all_success" | "any_success" | "quorum" | "advisory";
 
 export type OrchestratorExecutorKind = "claude" | "codex" | "shell" | "manual";
 
@@ -4194,6 +4196,98 @@ export type IntegrationPhaseMode = "off" | "auto";
 export type MergePhaseMode = "off";
 export type PhaseModelChoice = "claude" | "codex";
 
+// ─────────────────────────────────────────────────────
+// Model Configuration (granular model selection)
+// ─────────────────────────────────────────────────────
+
+export type ModelProvider = "claude" | "codex";
+
+export type ThinkingLevel = "none" | "low" | "medium" | "high" | "max";
+
+export type ModelConfig = {
+  provider: ModelProvider;
+  modelId: string;
+  thinkingLevel?: ThinkingLevel;
+};
+
+/** The types of AI calls the orchestrator makes internally */
+export type OrchestratorCallType =
+  | "coordinator"
+  | "worker_evaluation"
+  | "quality_gate"
+  | "failure_diagnosis"
+  | "plan_adjustment"
+  | "intervention_handling"
+  | "chat_response";
+
+/** Per-call-type model configuration for orchestrator intelligence */
+export type OrchestratorIntelligenceConfig = {
+  [K in OrchestratorCallType]?: ModelConfig;
+};
+
+/** Smart token budget configuration */
+export type SmartBudgetConfig = {
+  enabled: boolean;
+  /** Cost threshold (USD) for 5-hour window before steering kicks in */
+  fiveHourThresholdUsd: number;
+  /** Cost threshold (USD) for weekly window before steering kicks in */
+  weeklyThresholdUsd: number;
+  /** Current 5-hour spend (populated at runtime, not persisted) */
+  currentFiveHourSpendUsd?: number;
+  /** Current weekly spend (populated at runtime, not persisted) */
+  currentWeeklySpendUsd?: number;
+};
+
+export type BudgetSteeringAction =
+  | "downgrade_models"
+  | "inject_conciseness"
+  | "skip_optional_phases"
+  | "reduce_parallelism"
+  | "warn_workers"
+  | "switch_provider";
+
+export type BudgetPressureLevel = "none" | "approaching" | "exceeded";
+
+export type BudgetPressureSnapshot = {
+  level: BudgetPressureLevel;
+  fiveHourSpendUsd: number;
+  weeklySpendUsd: number;
+  fiveHourThresholdUsd: number;
+  weeklyThresholdUsd: number;
+  fiveHourPct: number;
+  weeklyPct: number;
+  activeActions: BudgetSteeringAction[];
+  message: string;
+};
+
+/** Named model profile for quick mission configuration */
+export type MissionModelProfile = {
+  id: string;
+  name: string;
+  description: string;
+  isBuiltIn: boolean;
+  orchestratorModel: ModelConfig;
+  phaseDefaults: {
+    planning: ModelConfig;
+    implementation: ModelConfig;
+    testing: ModelConfig;
+    validation: ModelConfig;
+    codeReview: ModelConfig;
+    testReview: ModelConfig;
+    integration: ModelConfig;
+  };
+  intelligenceConfig: OrchestratorIntelligenceConfig;
+  smartBudget?: SmartBudgetConfig;
+};
+
+/** The full mission model configuration stored in launch metadata */
+export type MissionModelConfig = {
+  profileId?: string;
+  orchestratorModel: ModelConfig;
+  intelligenceConfig?: OrchestratorIntelligenceConfig;
+  smartBudget?: SmartBudgetConfig;
+};
+
 export type PrStrategy =
   | { kind: "integration"; targetBranch?: string; draft?: boolean }
   | { kind: "per-lane"; targetBranch?: string; draft?: boolean }
@@ -4699,6 +4793,27 @@ export type RecoveryLoopIteration = {
   confidence?: number;
   startedAt: string;
   completedAt: string | null;
+  diagnosis?: RecoveryDiagnosis | null;
+};
+
+/**
+ * Tiered failure classification for smart agent recovery.
+ * - transient: timeouts, rate limits — retry with backoff, no AI needed
+ * - semantic: logic/code errors — AI diagnoses and adjusts retry prompt
+ * - blocker: persistent failures or policy violations — AI diagnoses + notifies peer agents
+ */
+export type RecoveryDiagnosisTier = "transient" | "semantic" | "blocker";
+
+/**
+ * AI-generated failure diagnosis guiding smart retry behavior.
+ */
+export type RecoveryDiagnosis = {
+  tier: RecoveryDiagnosisTier;
+  classification: string;
+  adjustedHint: string | null;
+  peerNotification: string | null;
+  suggestedModel: string | null;
+  diagnosedAt: string;
 };
 
 /**

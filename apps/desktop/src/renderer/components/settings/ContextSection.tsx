@@ -10,7 +10,8 @@ import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { GenerateDocsModal } from "../context/GenerateDocsModal";
 import { useAppStore } from "../../state/appStore";
-import { ArrowsClockwise, CaretRight, FileText, FolderSimple, Crosshair, GitMerge, ClipboardText, Rocket, Clock, BookOpenText } from "@phosphor-icons/react";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton } from "../lanes/laneDesignTokens";
+import { ArrowsClockwise, CaretRight, FileText, FolderSimple, Crosshair, GitMerge, ClipboardText, Rocket, Clock, BookOpenText, Lightning } from "@phosphor-icons/react";
 
 // --- Helpers ---
 
@@ -74,6 +75,14 @@ function parsePackBody(rawBody: string): { header: Record<string, unknown> | nul
   return { header, sections };
 }
 
+// --- Keyframes for pulsing glow ---
+const glowKeyframes = `
+@keyframes generateGlow {
+  0%, 100% { box-shadow: 0 0 8px var(--glow-color), 0 0 16px var(--glow-color); }
+  50% { box-shadow: 0 0 16px var(--glow-color), 0 0 32px var(--glow-color); }
+}
+`;
+
 // --- Section Renderers ---
 
 function renderTable(lines: string[]) {
@@ -85,12 +94,20 @@ function renderTable(lines: string[]) {
   const dataLines = tableLines.filter((l) => !isSep(l)).slice(1);
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-border/30">
-      <table className="w-full text-[11px]">
+    <div style={{ overflowX: "auto", border: `1px solid ${COLORS.border}`, borderRadius: 0 }}>
+      <table style={{ width: "100%", fontSize: 11, fontFamily: MONO_FONT, borderCollapse: "collapse" }}>
         <thead>
-          <tr className="bg-card/60">
+          <tr style={{ background: COLORS.recessedBg }}>
             {headers.map((h, i) => (
-              <th key={i} className="px-2.5 py-1.5 text-left font-semibold text-muted-fg border-b border-border/30">{h}</th>
+              <th key={i} style={{
+                padding: "6px 10px",
+                textAlign: "left",
+                fontWeight: 600,
+                color: COLORS.textMuted,
+                borderBottom: `1px solid ${COLORS.border}`,
+                ...LABEL_STYLE,
+                fontSize: 10,
+              }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -98,9 +115,9 @@ function renderTable(lines: string[]) {
           {dataLines.map((line, i) => {
             const cells = parseRow(line);
             return (
-              <tr key={i} className="border-b border-border/15 hover:bg-muted/15 transition-colors">
+              <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}40` }}>
                 {cells.map((cell, j) => (
-                  <td key={j} className="px-2.5 py-1.5 text-fg/80">{cell}</td>
+                  <td key={j} style={{ padding: "6px 10px", color: COLORS.textSecondary, fontFamily: MONO_FONT, fontSize: 11 }}>{cell}</td>
                 ))}
               </tr>
             );
@@ -119,31 +136,35 @@ function SectionBlock({ section }: { section: PackSection }) {
   const hasList = trimmedLines.some((l) => /^\s*[-*]\s/.test(l));
 
   return (
-    <div className="space-y-1.5">
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {section.heading ? (
-        <h3 className={cn(
-          "font-semibold text-fg",
-          section.level <= 2 ? "text-sm" : "text-xs text-fg/90"
-        )}>
+        <h3 style={{
+          fontFamily: SANS_FONT,
+          fontWeight: 700,
+          color: COLORS.textPrimary,
+          fontSize: section.level <= 2 ? 13 : 11,
+          margin: 0,
+          ...(section.level > 2 ? { color: COLORS.textSecondary } : {}),
+        }}>
           {section.heading}
         </h3>
       ) : null}
       {hasTable ? renderTable(trimmedLines) : hasList ? (
-        <ul className="space-y-0.5 text-xs text-fg/80">
+        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 2 }}>
           {trimmedLines.map((line, i) => {
             const m = line.match(/^\s*[-*]\s+(.*)/);
             return m ? (
-              <li key={i} className="flex gap-1.5">
-                <span className="text-accent/50 shrink-0">-</span>
+              <li key={i} style={{ display: "flex", gap: 6, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>
+                <span style={{ color: COLORS.accent, opacity: 0.5, flexShrink: 0 }}>-</span>
                 <span>{m[1]}</span>
               </li>
             ) : (
-              <li key={i} className="pl-3.5">{line}</li>
+              <li key={i} style={{ paddingLeft: 14, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textSecondary }}>{line}</li>
             );
           })}
         </ul>
       ) : trimmedLines.length ? (
-        <div className="text-xs text-fg/80 whitespace-pre-wrap leading-relaxed">{section.content.trim()}</div>
+        <div style={{ fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textSecondary, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{section.content.trim()}</div>
       ) : null}
     </div>
   );
@@ -153,12 +174,15 @@ function HeaderCard({ header }: { header: Record<string, unknown> }) {
   const display = Object.entries(header).filter(([k]) => !["schema", "contractVersion"].includes(k));
   if (!display.length) return null;
   return (
-    <div className="rounded-lg border border-border/30 bg-card/40 p-3">
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+    <div style={{
+      ...cardStyle({ padding: 12 }),
+      borderRadius: 0,
+    }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px" }}>
         {display.slice(0, 14).map(([key, value]) => (
-          <div key={key} className="flex gap-1.5 overflow-hidden">
-            <span className="font-medium text-muted-fg shrink-0">{key}:</span>
-            <span className="text-fg/80 truncate">
+          <div key={key} style={{ display: "flex", gap: 6, overflow: "hidden", fontSize: 11, fontFamily: MONO_FONT }}>
+            <span style={{ fontWeight: 600, color: COLORS.textMuted, flexShrink: 0 }}>{key}:</span>
+            <span style={{ color: COLORS.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {typeof value === "object" && value !== null ? JSON.stringify(value) : String(value ?? "-")}
             </span>
           </div>
@@ -169,7 +193,7 @@ function HeaderCard({ header }: { header: Record<string, unknown> }) {
 }
 
 function PackContentView({ pack }: { pack: PackSummary | null }) {
-  if (!pack) return <div className="flex items-center justify-center py-12 text-xs text-muted-fg">Loading...</div>;
+  if (!pack) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "48px 0", fontSize: 12, fontFamily: MONO_FONT, color: COLORS.textMuted }}>Loading...</div>;
   if (!pack.exists || !pack.body.trim().length) {
     return <EmptyState title="No pack data" description="This pack hasn't been generated yet. Click Refresh to create it." />;
   }
@@ -177,7 +201,7 @@ function PackContentView({ pack }: { pack: PackSummary | null }) {
   const { header, sections } = parsePackBody(pack.body);
 
   return (
-    <div className="space-y-4">
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {header ? <HeaderCard header={header} /> : null}
       {sections.map((section, i) => (
         <SectionBlock key={i} section={section} />
@@ -190,14 +214,57 @@ function PackContentView({ pack }: { pack: PackSummary | null }) {
 
 type PackTab = "project" | "lanes" | "missions" | "conflicts" | "features" | "plans";
 
-const TABS: { id: PackTab; label: string; icon: React.ElementType }[] = [
-  { id: "project", label: "Project", icon: FolderSimple },
-  { id: "lanes", label: "Lanes", icon: FileText },
-  { id: "missions", label: "Missions", icon: Rocket },
-  { id: "conflicts", label: "Conflicts", icon: GitMerge },
-  { id: "features", label: "Features", icon: Crosshair },
-  { id: "plans", label: "Plans", icon: ClipboardText }
+const TABS: { id: PackTab; num: string; label: string; icon: React.ElementType }[] = [
+  { id: "project", num: "01", label: "PROJECT", icon: FolderSimple },
+  { id: "lanes", num: "02", label: "LANES", icon: FileText },
+  { id: "missions", num: "03", label: "MISSIONS", icon: Rocket },
+  { id: "conflicts", num: "04", label: "CONFLICTS", icon: GitMerge },
+  { id: "features", num: "05", label: "FEATURES", icon: Crosshair },
+  { id: "plans", num: "06", label: "PLANS", icon: ClipboardText }
 ];
+
+// --- Selector pill for lane/mission sub-tabs ---
+
+function SelectorPill({
+  items,
+  selectedId,
+  onSelect,
+}: {
+  items: { id: string; label: string }[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {items.map((item) => {
+        const active = item.id === selectedId;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSelect(item.id)}
+            style={{
+              padding: "4px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              fontFamily: MONO_FONT,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+              borderRadius: 0,
+              border: active ? `1px solid ${COLORS.accent}30` : `1px solid ${COLORS.border}`,
+              background: active ? `${COLORS.accent}18` : "transparent",
+              color: active ? COLORS.accent : COLORS.textMuted,
+              cursor: "pointer",
+              transition: "all 150ms ease",
+            }}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 // --- Individual Pack Panels ---
 
@@ -277,28 +344,16 @@ function LanesPanel() {
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {lanes.map((lane) => (
-          <button
-            key={lane.id}
-            type="button"
-            onClick={() => setSelectedLaneId(lane.id)}
-            className={cn(
-              "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-              selectedLaneId === lane.id
-                ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
-            )}
-          >
-            {lane.name}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <SelectorPill
+        items={lanes.map((l) => ({ id: l.id, label: l.name }))}
+        selectedId={selectedLaneId}
+        onSelect={setSelectedLaneId}
+      />
 
       {selectedLaneId ? (
         <PackPanel
-          title={`Lane Pack · ${lanes.find((l) => l.id === selectedLaneId)?.name ?? selectedLaneId}`}
+          title={`Lane Pack \u00B7 ${lanes.find((l) => l.id === selectedLaneId)?.name ?? selectedLaneId}`}
           subtitle="Full lane context: sessions, changes, tests, errors"
           pack={pack}
           busy={busy}
@@ -357,26 +412,14 @@ function MissionsPanel() {
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {missions.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => setSelectedId(m.id)}
-            className={cn(
-              "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-              selectedId === m.id
-                ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
-            )}
-          >
-            {m.title || shortId(m.id)}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <SelectorPill
+        items={missions.map((m) => ({ id: m.id, label: m.title || shortId(m.id) }))}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+      />
       <PackPanel
-        title={`Mission Pack · ${missions.find((m) => m.id === selectedId)?.title ?? ""}`}
+        title={`Mission Pack \u00B7 ${missions.find((m) => m.id === selectedId)?.title ?? ""}`}
         subtitle="Mission steps, handoffs, orchestrator runs"
         pack={pack}
         busy={busy}
@@ -422,27 +465,15 @@ function ConflictsPanel() {
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {lanes.map((lane) => (
-          <button
-            key={lane.id}
-            type="button"
-            onClick={() => setSelectedLaneId(lane.id)}
-            className={cn(
-              "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-              selectedLaneId === lane.id
-                ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
-            )}
-          >
-            {lane.name}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <SelectorPill
+        items={lanes.map((l) => ({ id: l.id, label: l.name }))}
+        selectedId={selectedLaneId}
+        onSelect={setSelectedLaneId}
+      />
       {selectedLaneId ? (
         <PackPanel
-          title={`Conflict Pack · ${lanes.find((l) => l.id === selectedLaneId)?.name ?? ""}`}
+          title={`Conflict Pack \u00B7 ${lanes.find((l) => l.id === selectedLaneId)?.name ?? ""}`}
           subtitle="Overlapping files, merge-tree conflicts, lane excerpts"
           pack={pack}
           busy={busy}
@@ -490,23 +521,43 @@ function FeaturesPanel() {
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex gap-2">
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 8 }}>
         <input
           type="text"
           value={featureKey}
           onChange={(e) => setFeatureKey(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") void load(); }}
-          placeholder="Enter feature key..."
-          className="flex-1 rounded-lg border border-border/40 bg-card/30 px-3 py-1.5 text-xs text-fg placeholder:text-muted-fg/50 focus:border-accent/50 focus:outline-none"
+          placeholder="ENTER FEATURE KEY..."
+          style={{
+            flex: 1,
+            padding: "6px 12px",
+            fontSize: 12,
+            fontFamily: MONO_FONT,
+            color: COLORS.textPrimary,
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 0,
+            outline: "none",
+            letterSpacing: "0.5px",
+          }}
         />
-        <Button size="sm" variant="outline" onClick={() => void load()} disabled={!featureKey.trim()}>
-          Load
-        </Button>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={!featureKey.trim()}
+          style={{
+            ...outlineButton(),
+            opacity: !featureKey.trim() ? 0.4 : 1,
+            cursor: !featureKey.trim() ? "not-allowed" : "pointer",
+          }}
+        >
+          LOAD
+        </button>
       </div>
       {searched && pack ? (
         <PackPanel
-          title={`Feature Pack · ${featureKey}`}
+          title={`Feature Pack \u00B7 ${featureKey}`}
           subtitle="Aggregated context across all feature lanes"
           pack={pack}
           busy={busy}
@@ -517,7 +568,7 @@ function FeaturesPanel() {
       ) : searched && !pack && !err ? (
         <EmptyState title="No feature pack" description="No pack found for this feature key." />
       ) : err ? (
-        <div className="rounded-lg bg-red-500/10 p-3 text-xs text-red-300">{err}</div>
+        <div style={{ background: `${COLORS.danger}18`, border: `1px solid ${COLORS.danger}30`, padding: 12, fontSize: 12, fontFamily: MONO_FONT, color: COLORS.danger, borderRadius: 0 }}>{err}</div>
       ) : (
         <EmptyState title="Feature Packs" description="Enter a feature key to view its aggregated context pack." />
       )}
@@ -559,27 +610,15 @@ function PlansPanel() {
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {lanes.map((lane) => (
-          <button
-            key={lane.id}
-            type="button"
-            onClick={() => setSelectedLaneId(lane.id)}
-            className={cn(
-              "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-              selectedLaneId === lane.id
-                ? "bg-accent/15 text-accent ring-1 ring-accent/20"
-                : "bg-card/40 text-muted-fg hover:bg-card/60 hover:text-fg"
-            )}
-          >
-            {lane.name}
-          </button>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <SelectorPill
+        items={lanes.map((l) => ({ id: l.id, label: l.name }))}
+        selectedId={selectedLaneId}
+        onSelect={setSelectedLaneId}
+      />
       {selectedLaneId ? (
         <PackPanel
-          title={`Plan Pack · ${lanes.find((l) => l.id === selectedLaneId)?.name ?? ""}`}
+          title={`Plan Pack \u00B7 ${lanes.find((l) => l.id === selectedLaneId)?.name ?? ""}`}
           subtitle="Mission plan, step breakdown, dependencies"
           pack={pack}
           busy={busy}
@@ -637,53 +676,114 @@ function PackPanel({
   };
 
   return (
-    <div className="rounded border border-border/40 bg-panel/50 overflow-hidden">
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border/30">
+    <div style={{
+      background: COLORS.cardBg,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 0,
+      overflow: "hidden",
+    }}>
+      {/* Panel header */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "12px 16px",
+        borderBottom: `1px solid ${COLORS.border}`,
+      }}>
         <div>
-          <h2 className="text-sm font-semibold text-fg">{title}</h2>
-          <div className="text-[11px] text-muted-fg">
+          <h2 style={{
+            margin: 0,
+            fontSize: 14,
+            fontWeight: 700,
+            fontFamily: SANS_FONT,
+            color: COLORS.textPrimary,
+          }}>{title}</h2>
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2 }}>
             {subtitle}
-            {updatedAt ? <span className="ml-2">· Updated {relativeTime(updatedAt)}</span> : null}
+            {updatedAt ? <span style={{ marginLeft: 8, color: COLORS.textDim }}>{"\u00B7"} Updated {relativeTime(updatedAt)}</span> : null}
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {pack?.packKey ? (
             <>
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void loadVersions()}>
-                <Clock size={12} weight="regular" /> History
-              </Button>
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void loadEvents()}>
-                Events
-              </Button>
+              <button
+                type="button"
+                onClick={() => void loadVersions()}
+                style={outlineButton({ height: 28, padding: "0 8px", fontSize: 10 })}
+              >
+                <Clock size={12} weight="regular" />
+                HISTORY
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadEvents()}
+                style={outlineButton({ height: 28, padding: "0 8px", fontSize: 10 })}
+              >
+                EVENTS
+              </button>
             </>
           ) : null}
-          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={onRefresh} disabled={busy}>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={busy}
+            style={{
+              ...outlineButton({ height: 28, width: 28, padding: 0 }),
+              opacity: busy ? 0.5 : 1,
+              cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
             <ArrowsClockwise size={14} weight="regular" className={cn(busy && "animate-spin")} />
-          </Button>
+          </button>
         </div>
       </div>
 
-      {error ? <div className="mx-4 mt-3 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{error}</div> : null}
+      {/* Error */}
+      {error ? (
+        <div style={{
+          margin: "12px 16px 0",
+          padding: 8,
+          background: `${COLORS.danger}18`,
+          border: `1px solid ${COLORS.danger}30`,
+          borderRadius: 0,
+          fontSize: 12,
+          fontFamily: MONO_FONT,
+          color: COLORS.danger,
+        }}>{error}</div>
+      ) : null}
 
-      <div className="px-4 py-3 max-h-[500px] overflow-auto">
+      {/* Pack content */}
+      <div style={{ padding: "12px 16px", maxHeight: 500, overflowY: "auto" }}>
         <PackContentView pack={pack} />
       </div>
 
+      {/* Version history panel */}
       {showVersions ? (
-        <div className="border-t border-border/30 px-4 py-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-fg">Version History</h3>
-            <button type="button" className="text-[11px] text-muted-fg hover:text-fg" onClick={() => setShowVersions(false)}>Close</button>
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "12px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <h3 style={{ margin: 0, ...LABEL_STYLE, color: COLORS.textPrimary }}>VERSION HISTORY</h3>
+            <button type="button" onClick={() => setShowVersions(false)} style={{ background: "none", border: "none", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, cursor: "pointer", textTransform: "uppercase" as const, letterSpacing: "1px" }}>CLOSE</button>
           </div>
           {!versions.length ? (
-            <div className="text-[11px] text-muted-fg">No versions recorded yet.</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>No versions recorded yet.</div>
           ) : (
-            <div className="space-y-1.5">
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {versions.map((v) => (
-                <div key={v.id} className="flex items-center gap-3 rounded-lg bg-card/30 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-medium text-accent">v{v.versionNumber}</span>
-                  <span className="text-muted-fg">{shortId(v.contentHash, 12)}</span>
-                  <span className="ml-auto text-muted-fg">{relativeTime(v.createdAt)}</span>
+                <div key={v.id} style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  background: COLORS.recessedBg,
+                  padding: "6px 10px",
+                  borderRadius: 0,
+                  fontSize: 11,
+                  fontFamily: MONO_FONT,
+                  borderLeft: `2px solid ${COLORS.accent}40`,
+                }}>
+                  <span style={{ fontWeight: 700, color: COLORS.accent }}>v{v.versionNumber}</span>
+                  <span style={{ color: COLORS.textMuted }}>{shortId(v.contentHash, 12)}</span>
+                  <span style={{ marginLeft: "auto", color: COLORS.textDim }}>{relativeTime(v.createdAt)}</span>
                 </div>
               ))}
             </div>
@@ -691,20 +791,31 @@ function PackPanel({
         </div>
       ) : null}
 
+      {/* Events panel */}
       {showEvents ? (
-        <div className="border-t border-border/30 px-4 py-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-fg">Recent Events</h3>
-            <button type="button" className="text-[11px] text-muted-fg hover:text-fg" onClick={() => setShowEvents(false)}>Close</button>
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "12px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <h3 style={{ margin: 0, ...LABEL_STYLE, color: COLORS.textPrimary }}>RECENT EVENTS</h3>
+            <button type="button" onClick={() => setShowEvents(false)} style={{ background: "none", border: "none", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, cursor: "pointer", textTransform: "uppercase" as const, letterSpacing: "1px" }}>CLOSE</button>
           </div>
           {!events.length ? (
-            <div className="text-[11px] text-muted-fg">No events recorded yet.</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>No events recorded yet.</div>
           ) : (
-            <div className="space-y-1.5">
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {events.map((ev) => (
-                <div key={ev.id} className="flex items-center gap-3 rounded-lg bg-card/30 px-2.5 py-1.5 text-[11px]">
-                  <span className="font-medium text-fg">{ev.eventType}</span>
-                  <span className="ml-auto text-muted-fg">{relativeTime(ev.createdAt)}</span>
+                <div key={ev.id} style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  background: COLORS.recessedBg,
+                  padding: "6px 10px",
+                  borderRadius: 0,
+                  fontSize: 11,
+                  fontFamily: MONO_FONT,
+                  borderLeft: `2px solid ${COLORS.border}`,
+                }}>
+                  <span style={{ fontWeight: 600, color: COLORS.textPrimary }}>{ev.eventType}</span>
+                  <span style={{ marginLeft: "auto", color: COLORS.textDim }}>{relativeTime(ev.createdAt)}</span>
                 </div>
               ))}
             </div>
@@ -712,9 +823,10 @@ function PackPanel({
         </div>
       ) : null}
 
+      {/* Pack file path */}
       {pack?.path ? (
-        <div className="border-t border-border/20 px-4 py-1.5">
-          <div className="truncate text-[11px] text-muted-fg/60">{pack.path}</div>
+        <div style={{ borderTop: `1px solid ${COLORS.border}40`, padding: "6px 16px" }}>
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pack.path}</div>
         </div>
       ) : null}
     </div>
@@ -727,21 +839,85 @@ function InventorySummary({ inventory }: { inventory: ContextInventorySnapshot |
   if (!inventory) return null;
 
   const stats = [
-    { label: "Packs", value: inventory.packs.total },
-    { label: "Checkpoints", value: inventory.checkpoints.total },
-    { label: "Sessions", value: inventory.sessionTracking.trackedSessions },
-    { label: "Missions", value: inventory.missions.total }
+    { label: "PACKS", value: inventory.packs.total },
+    { label: "CHECKPOINTS", value: inventory.checkpoints.total },
+    { label: "SESSIONS", value: inventory.sessionTracking.trackedSessions },
+    { label: "MISSIONS", value: inventory.missions.total }
   ];
 
   return (
-    <div className="flex gap-4">
+    <div style={{ display: "flex", gap: 8 }}>
       {stats.map((s) => (
-        <div key={s.label} className="text-center">
-          <div className="text-lg font-bold text-fg">{s.value}</div>
-          <div className="text-[11px] text-muted-fg">{s.label}</div>
+        <div key={s.label} style={{
+          background: COLORS.cardBg,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 0,
+          padding: "6px 12px",
+          textAlign: "center",
+          minWidth: 64,
+        }}>
+          <div style={{
+            fontSize: 20,
+            fontWeight: 700,
+            fontFamily: SANS_FONT,
+            color: COLORS.accent,
+            lineHeight: 1,
+          }}>{s.value}</div>
+          <div style={{
+            ...LABEL_STYLE,
+            marginTop: 2,
+          }}>{s.label}</div>
         </div>
       ))}
     </div>
+  );
+}
+
+// --- Generate Docs Button ---
+
+function GenerateDocsButton({
+  inventory,
+  onClick,
+}: {
+  inventory: ContextInventorySnapshot | null;
+  onClick: () => void;
+}) {
+  const isMissing = inventory !== null && inventory.packs.total === 0;
+
+  const btnColor = isMissing ? COLORS.danger : COLORS.warning;
+
+  return (
+    <>
+      <style>{glowKeyframes}</style>
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          height: 36,
+          padding: "0 18px",
+          fontSize: 12,
+          fontWeight: 700,
+          fontFamily: MONO_FONT,
+          textTransform: "uppercase",
+          letterSpacing: "1px",
+          color: COLORS.pageBg,
+          background: btnColor,
+          border: `1px solid ${btnColor}`,
+          borderRadius: 0,
+          cursor: "pointer",
+          animation: "generateGlow 2s ease-in-out infinite",
+          ["--glow-color" as string]: `${btnColor}60`,
+          transition: "background 200ms ease, border-color 200ms ease",
+        }}
+      >
+        <Lightning size={16} weight="fill" />
+        GENERATE DOCS
+      </button>
+    </>
   );
 }
 
@@ -764,50 +940,92 @@ export function ContextSection() {
   }, []);
 
   return (
-    <div className="space-y-5">
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-9 h-9 rounded bg-accent/10">
-            <BookOpenText size={20} weight="regular" className="text-accent" />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 36,
+            height: 36,
+            background: `${COLORS.accent}18`,
+            border: `1px solid ${COLORS.accent}30`,
+            borderRadius: 0,
+          }}>
+            <BookOpenText size={20} weight="regular" style={{ color: COLORS.accent }} />
           </div>
           <div>
-            <h2 className="text-base font-semibold text-fg">Context Packs</h2>
-            <div className="text-xs text-muted-fg">
+            <h2 style={{
+              margin: 0,
+              fontSize: 18,
+              fontWeight: 700,
+              fontFamily: SANS_FONT,
+              color: COLORS.textPrimary,
+            }}>CONTEXT PACKS</h2>
+            <div style={{
+              fontSize: 11,
+              fontFamily: MONO_FONT,
+              color: COLORS.textMuted,
+              marginTop: 2,
+            }}>
               Deterministic context snapshots for AI agents and developers
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <InventorySummary inventory={inventory} />
-          <Button size="sm" variant="outline" onClick={() => setGenerateOpen(true)}>
-            Generate Docs
-          </Button>
+          <GenerateDocsButton inventory={inventory} onClick={() => setGenerateOpen(true)} />
         </div>
       </div>
 
-      {/* Tab Navigation */}
-      <div className="flex items-center gap-1 rounded border border-border/30 bg-card/30 p-1 w-fit">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
-              activeTab === tab.id
-                ? "bg-accent/15 text-accent shadow-sm ring-1 ring-accent/20"
-                : "text-muted-fg hover:bg-muted/40 hover:text-fg"
-            )}
-          >
-            <tab.icon size={14} weight="regular" />
-            {tab.label}
-          </button>
-        ))}
+      {/* Divider */}
+      <div style={{ height: 1, background: COLORS.border }} />
+
+      {/* Tab Navigation - Numbered industrial tabs */}
+      <div style={{ display: "flex", alignItems: "stretch", gap: 0 }}>
+        {TABS.map((tab) => {
+          const active = activeTab === tab.id;
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 16px",
+                fontSize: 11,
+                fontWeight: 700,
+                fontFamily: MONO_FONT,
+                textTransform: "uppercase",
+                letterSpacing: "1px",
+                background: active ? `${COLORS.accent}18` : "transparent",
+                color: active ? COLORS.textPrimary : COLORS.textMuted,
+                border: "none",
+                borderLeft: active ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+                borderRadius: 0,
+                cursor: "pointer",
+                transition: "all 150ms ease",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Icon size={12} weight="regular" style={{ opacity: active ? 1 : 0.5 }} />
+              <span style={{ color: active ? COLORS.accent : COLORS.textDim, marginRight: 4 }}>{tab.num}</span>
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
+      {/* Divider under tabs */}
+      <div style={{ height: 1, background: COLORS.border, marginTop: -12 }} />
+
       {/* Tab Content */}
-      <div className="pb-4">
+      <div style={{ paddingBottom: 16 }}>
         {activeTab === "project" && <ProjectPanel />}
         {activeTab === "lanes" && <LanesPanel />}
         {activeTab === "missions" && <MissionsPanel />}

@@ -1,9 +1,19 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Folder, FolderOpen, Plus, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
+import { Folder, FolderOpen, Plus, Minus, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
 
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import type { RecentProjectSummary } from "../../../shared/types";
+
+const ZOOM_KEY = "ade:zoom-level";
+
+function getStoredZoom(): number {
+  try {
+    return parseInt(localStorage.getItem(ZOOM_KEY) || "100", 10);
+  } catch {
+    return 100;
+  }
+}
 
 export function TopBar({
   onOpenCommandPalette,
@@ -18,6 +28,17 @@ export function TopBar({
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(getStoredZoom);
+
+  const applyZoom = useCallback((level: number) => {
+    const clamped = Math.max(70, Math.min(150, level));
+    document.body.style.zoom = `${clamped}%`;
+    localStorage.setItem(ZOOM_KEY, String(clamped));
+    setZoom(clamped);
+  }, []);
+
+  const zoomIn = useCallback(() => applyZoom(zoom + 10), [applyZoom, zoom]);
+  const zoomOut = useCallback(() => applyZoom(zoom - 10), [applyZoom, zoom]);
 
   const fetchRecent = useCallback(() => {
     window.ade.project
@@ -92,7 +113,7 @@ export function TopBar({
           <button
             type="button"
             className={cn(
-              "flex items-center gap-1.5 rounded-full px-3 py-1",
+              "flex items-center gap-1.5 px-3 py-1",
               "text-[11px] font-mono text-muted-fg",
               "hover:bg-accent/10 hover:text-fg",
               "transition-all duration-150"
@@ -112,7 +133,7 @@ export function TopBar({
                 <div
                   key={rp.rootPath}
                   className={cn(
-                    "group inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-mono transition-all duration-150",
+                    "group inline-flex max-w-[160px] shrink-0 items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono transition-all duration-150",
                     isMissing
                       ? "bg-red-500/8 text-red-400/60 hover:bg-red-500/12"
                       : isCurrent
@@ -162,7 +183,7 @@ export function TopBar({
                   {isMissing ? (
                     <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                       <span
-                        className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-red-500/15 cursor-pointer transition-colors duration-100"
+                        className="inline-flex h-4 w-4 items-center justify-center hover:bg-red-500/15 cursor-pointer transition-colors duration-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRelocate(rp.rootPath);
@@ -172,7 +193,7 @@ export function TopBar({
                         <FolderOpen size={12} weight="regular" />
                       </span>
                       <span
-                        className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-red-500/20 cursor-pointer transition-colors duration-100"
+                        className="inline-flex h-4 w-4 items-center justify-center hover:bg-red-500/20 cursor-pointer transition-colors duration-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           handleRemoveTab(rp.rootPath);
@@ -185,7 +206,7 @@ export function TopBar({
                   ) : canClose ? (
                     <span
                       className={cn(
-                        "inline-flex h-4 w-4 items-center justify-center rounded-full",
+                        "inline-flex h-4 w-4 items-center justify-center",
                         "opacity-0 group-hover:opacity-100 transition-all duration-150",
                         isCurrent
                           ? "hover:bg-accent-fg/20"
@@ -210,7 +231,7 @@ export function TopBar({
         <button
           type="button"
           className={cn(
-            "inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center rounded-full",
+            "inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
             "text-muted-fg/40 hover:bg-accent/10 hover:text-accent",
             "transition-all duration-150"
           )}
@@ -221,27 +242,67 @@ export function TopBar({
         </button>
       </div>
 
-      {/* Command palette */}
+      {/* Zoom controls */}
+      <div className="shrink-0 inline-flex items-center gap-0">
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-[20px] w-[20px] items-center justify-center",
+            "border border-[#27272A] bg-[#0C0A10]",
+            "text-[#71717A] hover:text-[#FAFAFA] hover:border-[#A78BFA30]",
+            "transition-all duration-150"
+          )}
+          onClick={zoomOut}
+          title="Zoom out"
+        >
+          <Minus size={12} weight="bold" />
+        </button>
+        <span
+          className={cn(
+            "inline-flex h-[20px] items-center justify-center px-1.5",
+            "border-y border-[#27272A] bg-[#0C0A10]",
+            "text-[10px] font-mono text-[#71717A] select-none",
+            "min-w-[36px] text-center"
+          )}
+        >
+          {zoom}%
+        </span>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-[20px] w-[20px] items-center justify-center",
+            "border border-[#27272A] bg-[#0C0A10]",
+            "text-[#71717A] hover:text-[#FAFAFA] hover:border-[#A78BFA30]",
+            "transition-all duration-150"
+          )}
+          onClick={zoomIn}
+          title="Zoom in"
+        >
+          <Plus size={12} weight="bold" />
+        </button>
+      </div>
+
+      {/* Command palette / search */}
       <button
         type="button"
         className={cn(
-          "shrink-0 inline-flex items-center gap-1.5 rounded",
+          "shrink-0 inline-flex items-center gap-2",
           "h-[26px] px-2.5",
-          "border border-border/40 bg-transparent",
-          "text-muted-fg hover:text-fg hover:border-accent/30 hover:bg-muted/20",
+          "border border-[#27272A] bg-[#0C0A10]",
+          "text-[#71717A] hover:text-[#FAFAFA] hover:border-[#A78BFA30] hover:bg-[#0C0A10]",
           "transition-all duration-150"
         )}
         onClick={onOpenCommandPalette}
         title="Command palette"
       >
         <MagnifyingGlass size={13} weight="regular" className="shrink-0 opacity-50" />
-        <span className="hidden sm:inline text-xs">Commands</span>
+        <span className="hidden sm:inline text-[11px] font-mono text-[#71717A]">Search...</span>
         <span
           className={cn(
             "hidden md:inline font-mono text-[10px]",
-            "rounded px-1 py-px",
-            "bg-muted/40 text-muted-fg/60",
-            "border border-border/30"
+            "px-1.5 py-px",
+            "bg-[#13101A] text-[#71717A]",
+            "border border-[#27272A]"
           )}
         >
           {commandHint}

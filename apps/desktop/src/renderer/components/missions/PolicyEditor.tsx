@@ -8,6 +8,7 @@ import type {
   PhaseModelChoice,
   PrStrategy
 } from "../../../shared/types";
+import { CLAUDE_MODELS, CODEX_MODELS } from "../../../shared/modelProfiles";
 type PolicyEditorProps = {
   value: MissionExecutionPolicy;
   onChange: (policy: MissionExecutionPolicy) => void;
@@ -44,7 +45,7 @@ const PRESET_THOROUGH: MissionExecutionPolicy = {
   planning: { mode: "manual_review", model: "claude" },
   implementation: { model: "codex" },
   testing: { mode: "post_implementation", model: "codex" },
-  validation: { mode: "required", model: "codex" },
+  validation: { mode: "required", model: "claude" },
   codeReview: { mode: "required", model: "claude" },
   testReview: { mode: "required", model: "codex" },
   integration: { mode: "auto", model: "codex" },
@@ -111,11 +112,11 @@ const selectStyle: React.CSSProperties = {
   borderRadius: 0
 };
 
-const CODEX_MODELS = ["gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex-max", "codex-mini-latest", "o4-mini", "o3"];
+const CODEX_MODEL_IDS = CODEX_MODELS.map((m) => m.modelId);
 
 function isCodexModel(m?: string): boolean {
   if (!m) return false;
-  return m === "codex" || CODEX_MODELS.includes(m);
+  return m === "codex" || CODEX_MODEL_IDS.includes(m);
 }
 
 function PhaseRow({
@@ -187,18 +188,14 @@ function PhaseRow({
           onChange={(e) => onModelChange(e.target.value as PhaseModelChoice)}
         >
           <optgroup label="Claude">
-            <option value="opus-4-6">Claude Opus 4.6</option>
-            <option value="sonnet-4-6">Claude Sonnet 4.6</option>
-            <option value="sonnet-4-5">Claude Sonnet 4.5</option>
-            <option value="haiku-4-5">Claude Haiku 4.5</option>
+            {CLAUDE_MODELS.map((m) => (
+              <option key={m.modelId} value={m.modelId}>{m.displayName}{m.recommended ? " *" : ""}</option>
+            ))}
           </optgroup>
           <optgroup label="Codex">
-            <option value="gpt-5.3-codex">GPT 5.3 Codex</option>
-            <option value="gpt-5.2-codex">GPT 5.2 Codex</option>
-            <option value="gpt-5.1-codex-max">GPT 5.1 Codex Max</option>
-            <option value="codex-mini-latest">Codex Mini</option>
-            <option value="o4-mini">O4 Mini</option>
-            <option value="o3">O3</option>
+            {CODEX_MODELS.map((m) => (
+              <option key={m.modelId} value={m.modelId}>{m.displayName}{m.recommended ? " *" : ""}</option>
+            ))}
           </optgroup>
         </select>
       ) : (
