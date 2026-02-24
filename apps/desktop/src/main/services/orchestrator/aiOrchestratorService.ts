@@ -4155,12 +4155,24 @@ export function createAiOrchestratorService(args: {
             ...(planningReasoningEffort ? { reasoningEffort: planningReasoningEffort } : {})
           });
           const completion = await turn.promise;
-          if (completion.status !== "completed") {
-            throw new Error(completion.error ?? `Planner turn finished with status '${completion.status}'.`);
-          }
           const text = completion.rawOutput.trim();
+          // If the planner produced output, use it even if the turn status is
+          // "failed" due to an incidental tool error (e.g. a late Read failure).
+          // The plan is the valuable artifact — a stray error doesn't invalidate it.
           if (!text.length) {
+            if (completion.status !== "completed") {
+              throw new Error(completion.error ?? `Planner turn finished with status '${completion.status}'.`);
+            }
             throw new Error("Planner turn completed without returning text.");
+          }
+          if (completion.status !== "completed") {
+            logger.warn("ai_orchestrator.planner_turn_non_success_with_output", {
+              missionId: args.mission.id,
+              sessionId: session.id,
+              status: completion.status,
+              error: completion.error,
+              outputLength: text.length
+            });
           }
           appendPlannerWorkerMessage(
             plannerState,
