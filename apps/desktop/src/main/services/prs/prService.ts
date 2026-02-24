@@ -1161,7 +1161,17 @@ export function createPrService({
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
     if (upstreamCheck.exitCode === 0) {
-      await runGitOrThrow(["push"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+      const pushResult = await runGit(["push"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+      if (pushResult.exitCode !== 0) {
+        const stderr = pushResult.stderr ?? "";
+        if (stderr.includes("non-fast-forward") || stderr.includes("rejected")) {
+          // Branch was rebased locally — force-push safely
+          logger.info("prs.push_force_lease", { headBranch, reason: "non-fast-forward after rebase" });
+          await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        } else {
+          throw new Error(`Push failed: ${stderr}`);
+        }
+      }
     } else {
       await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
     }
