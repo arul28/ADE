@@ -1923,13 +1923,30 @@ describe("aiOrchestratorService", () => {
   });
 
   it("auto-creates lanes for independent parallel steps and assigns downstream lanes", async () => {
+    // laneService.createChild must insert the lane row into the DB so that
+    // foreign key constraints on mission_steps.lane_id -> lanes.id are satisfied.
+    let fixtureRef: Awaited<ReturnType<typeof createFixture>> | null = null;
     const laneService = {
-      createChild: vi.fn().mockResolvedValue({
-        id: "lane-child-1",
-        name: "m-auto-child-1"
+      createChild: vi.fn().mockImplementation(async () => {
+        const f = fixtureRef!;
+        const childNow = new Date().toISOString();
+        f.db.run(
+          `insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref,
+            worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+            color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            "lane-child-1", f.projectId, "m-auto-child-1", null, "worktree",
+            "main", "feature/lane-child-1", f.projectRoot, null, 0, f.laneId,
+            null, null, null, "active", childNow, null
+          ]
+        );
+        return { id: "lane-child-1", name: "m-auto-child-1" };
       })
     };
     const fixture = await createFixture({ laneService });
+    fixtureRef = fixture;
     try {
       const mission = fixture.missionService.create({
         prompt: "Implement two independent units in parallel, then integrate.",
@@ -3573,6 +3590,7 @@ describe("aiOrchestratorService", () => {
       );
       existingMeta.executionPolicy = {
         ...existingMeta.executionPolicy,
+        prStrategy: { kind: "integration" },
         integrationPr: { enabled: true, draft: true, autoResolveConflicts: false }
       };
       fixture.db.run(
@@ -3611,6 +3629,23 @@ describe("aiOrchestratorService", () => {
 
       fixture.orchestratorService.tick({ runId });
       const graph = fixture.orchestratorService.getRunGraph({ runId });
+
+      // Insert synthetic lane rows so FK constraints on orchestrator_steps.lane_id are satisfied
+      const laneNow = new Date().toISOString();
+      for (const lid of ["lane-a", "lane-b"]) {
+        fixture.db.run(
+          `insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref,
+            worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+            color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            lid, fixture.projectId, lid, null, "worktree", "main",
+            `feature/${lid}`, fixture.projectRoot, null, 0, fixture.laneId,
+            null, null, null, "active", laneNow, null
+          ]
+        );
+      }
 
       // Assign different laneIds to steps via DB to simulate multi-lane run
       for (const step of graph.steps) {
@@ -3739,6 +3774,23 @@ describe("aiOrchestratorService", () => {
 
       // Assign different laneIds and complete all steps sequentially
       {
+        // Insert synthetic lane rows so FK constraints on orchestrator_steps.lane_id are satisfied
+        const laneNow2 = new Date().toISOString();
+        for (const lid of ["lane-a", "lane-b"]) {
+          fixture.db.run(
+            `insert or ignore into lanes(
+              id, project_id, name, description, lane_type, base_ref, branch_ref,
+              worktree_path, attached_root_path, is_edit_protected, parent_lane_id,
+              color, icon, tags_json, status, created_at, archived_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              lid, fixture.projectId, lid, null, "worktree", "main",
+              `feature/${lid}`, fixture.projectRoot, null, 0, fixture.laneId,
+              null, null, null, "active", laneNow2, null
+            ]
+          );
+        }
+
         fixture.orchestratorService.tick({ runId });
         const initialGraph = fixture.orchestratorService.getRunGraph({ runId });
         for (const step of initialGraph.steps) {
@@ -3878,6 +3930,110 @@ describe("aiOrchestratorService", () => {
       expect(prServiceMock.createIntegrationPr).not.toHaveBeenCalled();
 
       aiOrchestratorWithPr.dispose();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("watchdog detects stalled attempt with no session output and emits warning event", async () => {
+    const fixture = await createFixture();
+    try {
+      // Register a codex adapter that returns "accepted" with a fake session
+      const sessionId = "session-stalled-1";
+      const transcriptPath = path.join(fixture.projectRoot, ".ade", "transcripts", `${sessionId}.log`);
+      fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+      fs.writeFileSync(transcriptPath, "", "utf8");
+
+      // Pre-create the terminal_sessions row so the accepted path doesn't fail
+      fixture.db.run(
+        `
+          insert into terminal_sessions(
+            id, lane_id, pty_id, tracked, title, started_at, ended_at,
+            exit_code, transcript_path, head_sha_start, head_sha_end,
+            status, last_output_preview, summary, tool_type,
+            resume_command, last_output_at
+          ) values (?, ?, null, 1, 'Stalled Worker', ?, null, null, ?,
+            null, null, 'running', null, null, 'codex-orchestrated', null, null)
+        `,
+        [sessionId, fixture.laneId, new Date().toISOString(), transcriptPath]
+      );
+
+      fixture.orchestratorService.registerExecutorAdapter({
+        kind: "codex",
+        start: async () => ({
+          status: "accepted" as const,
+          sessionId,
+          metadata: { adapterKind: "codex" }
+        })
+      });
+
+      const mission = fixture.missionService.create({
+        prompt: "Build a feature that may stall during execution.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "codex"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((s) => s.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "codex"
+      });
+
+      // Verify the attempt is running before we backdate
+      expect(attempt.status).toBe("running");
+      expect(attempt.executorSessionId).toBe(sessionId);
+
+      // Backdate the attempt so it appears to have been running for a very long time
+      // (well past any timeout). This simulates a stalled execution.
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set started_at = '2000-01-01T00:00:00.000Z',
+              created_at = '2000-01-01T00:00:00.000Z'
+          where id = ?
+        `,
+        [attempt.id]
+      );
+
+      // Also backdate the claims so heartbeat doesn't refresh the activity window
+      fixture.db.run(
+        `
+          update orchestrator_claims
+          set heartbeat_at = '2000-01-01T00:00:00.000Z'
+          where attempt_id = ?
+        `,
+        [attempt.id]
+      );
+
+      // Backdate the transcript file mtime so it doesn't look like recent activity
+      const pastTime = new Date("2000-01-01T00:00:00.000Z");
+      fs.utimesSync(transcriptPath, pastTime, pastTime);
+
+      // Run the health sweep — the stale attempt should be recovered
+      const sweep = await fixture.aiOrchestratorService.runHealthSweep("watchdog_test");
+
+      // Check the attempt state regardless of sweep count — the health sweep
+      // may recover via timeout detection OR via session state reconciliation.
+      const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
+      const refreshedAttempt = refreshedGraph.attempts.find((a) => a.id === attempt.id);
+
+      // The backdated attempt should have been detected as timed out and failed
+      expect(refreshedAttempt?.status).toBe("failed");
+      expect(refreshedAttempt?.errorClass).toBe("transient");
+      expect(refreshedAttempt?.errorMessage ?? "").toContain("stuck");
     } finally {
       fixture.dispose();
     }

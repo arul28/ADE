@@ -1,205 +1,134 @@
-# ADE Design System
-## Industrial Technical + Purple Theme
+# ADE Design Template
+## Industrial Technical Shell Theme (Contract v2)
 
-A dark, technical aesthetic inspired by industrial dashboards with a purple accent color scheme. Designed for developer tools, git workflows, and agentic development environments.
-
----
-
-## Color Palette
-
-### Backgrounds
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `bg-primary` | `#0F0D14` | Main screen background, modals |
-| `bg-secondary` | `#13101A` | Cards, elevated surfaces |
-| `bg-tertiary` | `#0C0A10` | Headers, footers, input backgrounds |
-| `bg-hover` | `#1A1720` | Hover states on dark backgrounds |
-
-### Borders & Dividers
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `border-default` | `#1E1B26` | Card borders, dividers |
-| `border-subtle` | `#27272A` | Input borders, inactive states |
-| `border-muted` | `#52525B` | Disabled elements |
-
-### Text Colors
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `text-primary` | `#FAFAFA` | Headings, important text |
-| `text-secondary` | `#A1A1AA` | Body text, descriptions |
-| `text-muted` | `#71717A` | Labels, placeholders, hints |
-| `text-disabled` | `#52525B` | Disabled text, inactive tabs |
-
-### Accent Colors
-| Token | Hex | Usage |
-|-------|-----|-------|
-| `accent-primary` | `#A78BFA` | Primary buttons, active states, links |
-| `accent-primary-subtle` | `#A78BFA18` | Accent backgrounds (badges, selected items) |
-| `accent-primary-border` | `#A78BFA30` | Accent borders |
-
-### Status Colors
-| Status | Solid | Subtle BG | Border |
-|--------|-------|-----------|--------|
-| Success | `#22C55E` | `#22C55E18` | `#22C55E30` |
-| Warning | `#F59E0B` | `#F59E0B18` | `#F59E0B30` |
-| Error | `#EF4444` | `#EF444418` | `#EF444430` |
-| Info | `#3B82F6` | `#3B82F615` | `#3B82F630` |
+A high-density, technical aesthetic for ADE shell surfaces (sidebar + top header/project selection) with sharp edges, mono-first UI text, and accent-led state styling.
 
 ---
 
-## Typography
+## Visual Direction
 
-### Font Families
-- **UI Text:** `JetBrains Mono` (monospace)
-- **Headlines:** `Space Grotesk` (sans-serif)
-
-### Type Scale
-| Style | Font | Size | Weight | Letter Spacing | Usage |
-|-------|------|------|--------|----------------|-------|
-| heading-lg | Space Grotesk | 20px | 700 | -0.5px | Page titles |
-| heading-md | Space Grotesk | 16px | 700 | -0.3px | Modal titles |
-| heading-sm | JetBrains Mono | 12px | 600 | 0px | Card titles |
-| label | JetBrains Mono | 10px | 700 | 1px | ALL-CAPS labels |
-| label-sm | JetBrains Mono | 9px | 500-600 | 1px | Badges |
-| body | JetBrains Mono | 11-12px | 400 | 0px | Body text |
-| stat-number | Space Grotesk | 28px | 700 | 0px | Large stats |
-
-### Text Rules
-- **ALL-CAPS** for labels, badges, button text, tab names
-- Monospace everywhere except large headlines
-- Line height: 1.4-1.6 for body text
+- Base mood: industrial, tool-like, high-contrast
+- Shape language: hard edges (`0px` radius)
+- Typography: monospace-first for controls/navigation, sans for larger headings
+- Interaction style: subtle tints + border-led affordances, never soft neumorphism
 
 ---
 
-## Components
+## Core Palette
 
-### Buttons
+### Dark (default)
 
-**Primary Button**
-- Background: `#A78BFA`
-- Text: `#0F0D14`, JetBrains Mono, 11px, 700, 1px spacing
-- Padding: `12px 24px`
-- Corner Radius: `0px`
-- Icon: 14x14px, `#0F0D14`, 8px gap
+| Primitive | Value | Notes |
+|---|---|---|
+| Background | `#0F0D14` | app canvas |
+| Surface | `#13101A` | elevated panes/cards |
+| Recessed | `#0C0A10` | control wells / inputs |
+| Border | `#1E1B26` | default separators |
+| Text primary | `#FAFAFA` | key labels |
+| Text muted | `#71717A` | secondary labels |
+| Accent | `#A78BFA` | active/focus/action |
+| Success | `#22C55E` | running/success states |
+| Warning | `#F59E0B` | attention needed |
+| Error | `#EF4444` | missing/failure |
 
-**Secondary Button**
-- Background: transparent
-- Border: `1px solid #27272A`
-- Text: `#71717A`
+### Light
 
-**Danger Button**
-- Background: `#EF444418`
-- Border: `1px solid #EF444430`
-- Text/Icon: `#EF4444`
-
-### Input Fields
-
-**Default**
-- Background: `#0C0A10`
-- Border: `1px solid #27272A`
-- Text: `#FAFAFA`, JetBrains Mono, 12px
-- Padding: `12px 16px`
-
-**Focused**
-- Border: `1px solid #A78BFA`
-
-### Badges
-
-| Status | Background | Text |
-|--------|------------|------|
-| Active | `#A78BFA18` | `#A78BFA` |
-| Success | `#22C55E18` | `#22C55E` |
-| Warning | `#F59E0B18` | `#F59E0B` |
-| Error | `#EF444418` | `#EF4444` |
-| Info | `#3B82F615` | `#3B82F6` |
-
-- Padding: `3-4px 8-10px`
-- Font: JetBrains Mono, 8-9px, 700, 1px spacing
-
-### Cards
-
-**Standard Card**
-- Background: `#13101A`
-- Border: `1px solid #1E1B26`
-- Padding: `16-20px`
-- Corner Radius: `0px`
-
-**Selected Card**
-- Background: `#A78BFA12`
-- Border-Left: `3px solid #A78BFA`
-
-### Tabs
-
-**Tab Item**
-- Padding: `10px 16px`
-- Gap: `8px` between number and label
-- Number format: `"01"`, `"02"` (zero-padded)
-
-| State | Number | Label | Background |
-|-------|--------|-------|------------|
-| Inactive | `#52525B` | `#71717A` | transparent |
-| Active | `#A78BFA` | `#FAFAFA` | `#A78BFA18` + 2px left border |
-
-### Icons (Lucide)
-- Small: 12x12px
-- Default: 14x14px
-- Medium: 16x16px
-- Large: 20x20px
-
-Common icons: `git-branch`, `git-pull-request`, `circle-check`, `loader`, `triangle-alert`, `plus`, `search`, `layers`, `sparkles`
+| Primitive | Value | Notes |
+|---|---|---|
+| Background | `#F5F3F0` | warm off-white canvas |
+| Surface | `#FAF8F5` | shell surfaces |
+| Recessed | `#EAE7E2` | controls |
+| Border | `#D6D3CE` | separators |
+| Text primary | `#1A1A1E` | key labels |
+| Text muted | `#636370` | secondary labels |
+| Accent | `#049068` | active/focus/action |
 
 ---
 
-## Layout Patterns
+## Typography Contract
 
-### Header
-- Height: `64px`
-- Padding: `0 24px`
-- Divider: `1px #1E1B26` below
-
-### Split Pane
-- Left Panel: `400px` fixed
-- Right Panel: `fill_container`
-- Divider: `1px #1E1B26`
-
-### Modal
-- Width: `560px`
-- Header: `56px`, `#0C0A10`
-- Body: `24px` padding
-- Footer: `72px`, `#0C0A10`
+- UI text: `JetBrains Mono` via `var(--font-mono)`
+- Headlines: `Space Grotesk` via `var(--font-sans)`
+- Shell controls and tabs:
+  - size: `11px`
+  - letter spacing: `0`
+  - casing: preserve component-specific casing (no forced uppercase in project tabs)
 
 ---
 
-## CSS Variables
+## Global Token Contract
 
-```css
-:root {
-  --bg-primary: #0F0D14;
-  --bg-secondary: #13101A;
-  --bg-tertiary: #0C0A10;
-  --border-default: #1E1B26;
-  --border-subtle: #27272A;
-  --text-primary: #FAFAFA;
-  --text-secondary: #A1A1AA;
-  --text-muted: #71717A;
-  --accent-primary: #A78BFA;
-  --success: #22C55E;
-  --warning: #F59E0B;
-  --error: #EF4444;
-  --info: #3B82F6;
-  --font-mono: "JetBrains Mono", monospace;
-  --font-sans: "Space Grotesk", sans-serif;
-}
-Quick Checklist
- Background: #0F0D14
- Cards: #13101A with 1px #1E1B26 border
- Corner radius: 0px (always sharp)
- ALL-CAPS for labels/buttons
- JetBrains Mono for UI, Space Grotesk for headlines
- Tabs numbered: "01", "02", etc.
- Active states: left border 3px #A78BFA
- Primary buttons: solid #A78BFA with dark text
- Header: 64px height, 24px horizontal padding
- Letter spacing: 1px for ALL-CAPS
+These tokens are source-of-truth in `apps/desktop/src/renderer/index.css`.
+
+### Base Tokens (`--color-*`)
+
+- Foundation surfaces, text, borders, accent, semantic statuses.
+- Consumers should treat these as generic cross-app tokens.
+
+### Shell Tokens (`--shell-*`)
+
+Use these for all `AppShell`, `TopBar`, and `TabNav` styling to avoid hardcoded values.
+
+| Group | Tokens |
+|---|---|
+| Header layout/surface | `--shell-header-height`, `--shell-header-padding-start`, `--shell-header-padding-end`, `--shell-header-bg`, `--shell-header-fg`, `--shell-header-border`, `--shell-header-divider` |
+| Sidebar layout/surface | `--shell-sidebar-collapsed-width`, `--shell-sidebar-expanded-width`, `--shell-sidebar-bg`, `--shell-sidebar-border` |
+| Sidebar item states | `--shell-sidebar-item-height`, `--shell-sidebar-item-fg`, `--shell-sidebar-item-hover-fg`, `--shell-sidebar-item-hover-bg`, `--shell-sidebar-item-active-fg`, `--shell-sidebar-item-active-bg`, `--shell-sidebar-item-active-rail`, `--shell-sidebar-separator` |
+| Project-tab states | `--shell-project-tab-bg`, `--shell-project-tab-fg`, `--shell-project-tab-hover-bg`, `--shell-project-tab-hover-fg`, `--shell-project-tab-hover-border`, `--shell-project-tab-active-bg`, `--shell-project-tab-active-fg`, `--shell-project-tab-active-border`, `--shell-project-tab-missing-bg`, `--shell-project-tab-missing-fg`, `--shell-project-tab-missing-border`, `--shell-project-tab-open-bg`, `--shell-project-tab-open-fg`, `--shell-project-tab-open-border`, `--shell-project-tab-focus-bg`, `--shell-project-tab-focus-fg`, `--shell-project-tab-focus-border`, `--shell-project-tab-focus-ring`, `--shell-project-tab-font-family`, `--shell-project-tab-font-size`, `--shell-project-tab-letter-spacing` |
+| Shell control states | `--shell-control-bg`, `--shell-control-fg`, `--shell-control-border`, `--shell-control-hover-bg`, `--shell-control-hover-fg`, `--shell-control-hover-border`, `--shell-control-open-bg`, `--shell-control-open-fg`, `--shell-control-open-border`, `--shell-control-focus-bg`, `--shell-control-focus-fg`, `--shell-control-focus-border`, `--shell-control-focus-ring`, `--shell-control-kbd-bg`, `--shell-control-kbd-fg` |
+| Attention dots | `--shell-status-running`, `--shell-status-attention` |
 
 ---
+
+## Shared Utility-Class Contract
+
+`index.css` provides reusable shell utility classes that consume the shell tokens:
+
+- `ade-shell-header`
+- `ade-shell-header-divider`
+- `ade-shell-project-tab`
+- `ade-shell-control`
+- `ade-shell-control-kbd`
+- `ade-shell-sidebar-item`
+- `ade-shell-sidebar-separator`
+- `ade-shell-sidebar-active-rail`
+- `ade-sidebar-clip` (width + border from shell tokens)
+- `ade-sidebar` (surface from shell tokens)
+
+---
+
+## Component Consumption Rules
+
+### Top header + project selection (`TopBar.tsx`)
+
+- Header root MUST use `ade-shell-header`.
+- Header dividers MUST use `ade-shell-header-divider`.
+- Project tabs MUST use `ade-shell-project-tab` and encode state via `data-state`:
+  - `active`
+  - `missing`
+  - `open`
+  - omit for default
+- Icon/search/zoom controls MUST use `ade-shell-control`.
+- Keyboard hint pills MUST use `ade-shell-control-kbd`.
+
+### Sidebar shell (`AppShell.tsx` + `TabNav.tsx`)
+
+- Sidebar container MUST keep `ade-sidebar-clip` + `ade-sidebar`.
+- Sidebar nav links SHOULD use `ade-shell-sidebar-item` and set `data-active="true"` for active route.
+- Active indicator rail SHOULD use `ade-shell-sidebar-active-rail`.
+- Group separators SHOULD use `ade-shell-sidebar-separator`.
+
+### Prohibited patterns
+
+- No new raw hex values in shell components.
+- No ad-hoc one-off state colors when a shell token exists.
+- No duplicated local constants for shell spacing/colors/typography.
+
+---
+
+## Quick Verification Checklist
+
+- Sidebar + header are fully theme-aware under both `dark` and `light`.
+- Active/hover/missing/focus/open/selected states resolve only through `--shell-*` tokens.
+- Shell components consume shared utility classes instead of hardcoded color strings.
+- Primitive names stay stable and non-overlapping with existing `--color-*` foundations.

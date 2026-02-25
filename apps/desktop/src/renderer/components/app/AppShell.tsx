@@ -233,14 +233,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [keybindings]
   );
 
-  // Initialize zoom from localStorage on mount
+  // Initialize zoom from localStorage on mount (uses Electron webFrame)
   useEffect(() => {
     try {
       const saved = localStorage.getItem("ade:zoom-level");
       if (saved) {
-        const level = parseInt(saved, 10);
-        if (level >= 70 && level <= 150) {
-          document.body.style.zoom = `${level}%`;
+        const pct = parseInt(saved, 10);
+        if (pct >= 70 && pct <= 150) {
+          const zoomLevel = Math.log(pct / 100) / Math.log(1.2);
+          window.ade.zoom.setLevel(zoomLevel);
         }
       }
     } catch {
@@ -312,6 +313,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="shrink-0 relative z-20">
         <TopBar
           onOpenCommandPalette={() => setCommandOpen(true)}
+          commandPaletteOpen={commandOpen}
           commandHint={
             <>
               <span className="font-mono">{commandHint}</span>
@@ -531,7 +533,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex min-h-0">
         <aside
-          className="ade-sidebar-clip shrink-0 z-10 border-r border-border/20"
+          className="ade-sidebar-clip shrink-0 z-10 border-r"
         >
           <div className="ade-sidebar flex flex-col py-2 h-full">
             <TabNav />

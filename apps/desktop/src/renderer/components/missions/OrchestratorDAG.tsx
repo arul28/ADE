@@ -1,11 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef, useCallback } from "react";
 import dagre from "dagre";
-import type { OrchestratorStep, OrchestratorAttempt } from "../../../shared/types";
+import type { OrchestratorStep, OrchestratorAttempt, OrchestratorClaim } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 type Props = {
   steps: OrchestratorStep[];
   attempts: OrchestratorAttempt[];
+  claims?: OrchestratorClaim[];
+  selectedStepId?: string | null;
   onStepClick?: (stepId: string) => void;
 };
 
@@ -110,8 +112,39 @@ function truncateTitle(title: string, maxLen = 18): string {
   return title.length > maxLen ? title.slice(0, maxLen - 1) + "\u2026" : title;
 }
 
-export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
+/** Returns a human-readable relative time for an ISO timestamp. */
+function relativeWhen(iso: string): string {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return iso;
+  const delta = Math.max(0, Date.now() - ts);
+  const mins = Math.floor(delta / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** Resolve the most recent heartbeat for a step from its claims. */
+function resolveHeartbeatForStep(stepId: string, stepAttemptIds: Set<string>, claims: OrchestratorClaim[]): string | null {
+  const relevant = claims.filter((c) => c.stepId === stepId || (c.attemptId ? stepAttemptIds.has(c.attemptId) : false));
+  if (!relevant.length) return null;
+  return [...relevant].sort((a, b) => Date.parse(b.heartbeatAt) - Date.parse(a.heartbeatAt))[0]?.heartbeatAt ?? null;
+}
+
+type TooltipInfo = {
+  title: string;
+  status: string;
+  heartbeat: string;
+  stepKey: string;
+  x: number;
+  y: number;
+};
+
+export function OrchestratorDAG({ steps, attempts, claims, selectedStepId, onStepClick }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, number>();
@@ -120,6 +153,38 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
     }
     return map;
   }, [attempts]);
+
+  /** Map of stepId -> Set of attemptIds for that step */
+  const attemptIdsByStep = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const attempt of attempts) {
+      if (!map.has(attempt.stepId)) map.set(attempt.stepId, new Set());
+      map.get(attempt.stepId)!.add(attempt.id);
+    }
+    return map;
+  }, [attempts]);
+
+  const handleNodeHover = useCallback((stepId: string | null, event?: React.MouseEvent) => {
+    setHoveredId(stepId);
+    if (!stepId || !event || !containerRef.current) {
+      setTooltip(null);
+      return;
+    }
+    const step = steps.find((s) => s.id === stepId);
+    if (!step) { setTooltip(null); return; }
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const hb = resolveHeartbeatForStep(stepId, attemptIdsByStep.get(stepId) ?? new Set(), claims ?? []);
+
+    setTooltip({
+      title: step.title,
+      status: step.status,
+      heartbeat: hb ? relativeWhen(hb) : "--",
+      stepKey: step.stepKey,
+      x: event.clientX - rect.left + 12,
+      y: event.clientY - rect.top - 8,
+    });
+  }, [steps, claims, attemptIdsByStep]);
 
   const maxDepthRef = useMemo(() => ({ value: 0 }), []);
   const nodes = useMemo(() => computeLayout(steps, attemptsByStep, maxDepthRef), [steps, attemptsByStep, maxDepthRef]);
@@ -186,7 +251,8 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
 
   return (
     <div
-      className="overflow-auto"
+      ref={containerRef}
+      className="overflow-auto relative"
       style={{ perspective: '1200px', perspectiveOrigin: '50% 40%', border: "1px solid #1E1B26", background: "#13101A" }}
     >
       {/* Inline style for flow animation */}
@@ -248,6 +314,7 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
           const statusColor = STATUS_COLORS[node.step.status] ?? "#6b7280";
           const isRunning = node.step.status === "running";
           const isHovered = hoveredId === node.step.id;
+          const isSelected = selectedStepId === node.step.id;
           const phaseKind = getPhaseKind(node.step);
           const phaseTint = PHASE_TINT[phaseKind] ?? "transparent";
           const isMergeNode = MERGE_NODE_KINDS.has(phaseKind);
@@ -262,15 +329,33 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
               key={node.step.id}
               transform={`translate(${node.x}, ${node.y})`}
               onClick={() => onStepClick?.(node.step.id)}
-              onMouseEnter={() => setHoveredId(node.step.id)}
-              onMouseLeave={() => setHoveredId(null)}
+              onMouseEnter={(e) => handleNodeHover(node.step.id, e)}
+              onMouseMove={(e) => { if (hoveredId === node.step.id && containerRef.current) { const rect = containerRef.current.getBoundingClientRect(); setTooltip((prev) => prev ? { ...prev, x: e.clientX - rect.left + 12, y: e.clientY - rect.top - 8 } : prev); } }}
+              onMouseLeave={() => handleNodeHover(null)}
               className={cn("cursor-pointer", isFailed && "ade-node-failed-pulse")}
-              style={{
-                transformStyle: 'preserve-3d',
-                transition: 'transform 200ms ease',
-                transform: isHovered ? 'translateZ(10px) scale(1.05)' : 'none'
-              }}
             >
+              {/* Selected node highlight ring */}
+              {isSelected && !isRunning && (
+                <rect
+                  x={-3}
+                  y={-3}
+                  width={nodeW + 6}
+                  height={NODE_H + 6}
+                  rx={0}
+                  fill="none"
+                  stroke="#A78BFA"
+                  strokeWidth={2}
+                  opacity={0.6}
+                />
+              )}
+              <g
+                style={{
+                  transformStyle: 'preserve-3d',
+                  transition: 'transform 200ms ease',
+                  transformOrigin: `${nodeW / 2}px ${NODE_H / 2}px`,
+                  transform: isHovered ? 'translateZ(10px) scale(1.05)' : 'scale(1)'
+                }}
+              >
               {/* Running: spinning ring (thin blue border, 4s rotation) */}
               {isRunning && (
                 <g className="ade-spin-4s" style={{ transformOrigin: `${nodeW / 2}px ${NODE_H / 2}px` }}>
@@ -460,10 +545,46 @@ export function OrchestratorDAG({ steps, attempts, onStepClick }: Props) {
                   </text>
                 </g>
               )}
+              </g>
             </g>
           );
         })}
       </svg>
+
+      {/* Tooltip overlay */}
+      {tooltip && (
+        <div
+          style={{
+            position: "absolute",
+            left: tooltip.x,
+            top: tooltip.y,
+            pointerEvents: "none",
+            zIndex: 50,
+            background: "#1A1720",
+            border: "1px solid #27272A",
+            padding: "6px 10px",
+            maxWidth: 260,
+            fontFamily: "JetBrains Mono, monospace",
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#FAFAFA", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {tooltip.title}
+          </div>
+          <div style={{ marginTop: 2, fontSize: 9, color: "#A1A1AA", display: "flex", gap: 8 }}>
+            <span>
+              <span style={{ color: "#71717A", textTransform: "uppercase", letterSpacing: "0.5px" }}>Status: </span>
+              <span style={{ color: STATUS_COLORS[tooltip.status] ?? "#6b7280" }}>{tooltip.status}</span>
+            </span>
+            <span>
+              <span style={{ color: "#71717A", textTransform: "uppercase", letterSpacing: "0.5px" }}>HB: </span>
+              <span>{tooltip.heartbeat}</span>
+            </span>
+          </div>
+          <div style={{ marginTop: 1, fontSize: 9, color: "#52525B" }}>
+            {tooltip.stepKey}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

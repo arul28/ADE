@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, nativeImage, shell } from "electron";
 import path from "node:path";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
@@ -57,9 +57,23 @@ function getRendererUrl(): string {
 }
 
 async function createWindow(logger?: Logger): Promise<BrowserWindow> {
+  // Load the app icon from the build directory.
+  const iconDir = path.join(__dirname, "../../build");
+  const pngPath = path.join(iconDir, "icon.png");
+  const icnsPath = path.join(iconDir, "icon.icns");
+  const icon = fs.existsSync(pngPath)
+    ? nativeImage.createFromPath(pngPath)
+    : fs.existsSync(icnsPath)
+      ? nativeImage.createFromPath(icnsPath)
+      : nativeImage.createEmpty();
+
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
+    icon,
+    // Hide the native title bar but keep macOS traffic lights.
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 12, y: 12 },
     // Match renderer theme to avoid a dark flash on load.
     backgroundColor: "#fbf8ee",
     webPreferences: {
@@ -68,6 +82,11 @@ async function createWindow(logger?: Logger): Promise<BrowserWindow> {
       nodeIntegration: false
     }
   });
+
+  // Set macOS Dock icon
+  if (process.platform === "darwin" && !icon.isEmpty()) {
+    app.dock?.setIcon(icon);
+  }
 
   win.setMenuBarVisibility(false);
 

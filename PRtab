@@ -13491,6 +13491,150 @@
           ]
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "hePYS",
+      "x": 4923,
+      "y": 3928,
+      "name": "Final Icon",
+      "clip": true,
+      "width": 1024,
+      "height": 1024,
+      "fill": "#7f41eeff",
+      "cornerRadius": 224,
+      "stroke": {
+        "align": "inside",
+        "thickness": 8,
+        "fill": "#1E1B26"
+      },
+      "effect": [
+        {
+          "type": "shadow",
+          "shadowType": "outer",
+          "color": "#00000050",
+          "offset": {
+            "x": 0,
+            "y": 48
+          },
+          "blur": 192
+        },
+        {
+          "type": "shadow",
+          "shadowType": "outer",
+          "color": "#A78BFA10",
+          "offset": {
+            "x": 0,
+            "y": 8
+          },
+          "blur": 32
+        }
+      ],
+      "layout": "none",
+      "children": [
+        {
+          "type": "text",
+          "id": "TpGX2",
+          "x": 130,
+          "y": 120,
+          "name": "promptLine",
+          "enabled": false,
+          "fill": "#71717A",
+          "content": "$_",
+          "fontFamily": "JetBrains Mono",
+          "fontSize": 80,
+          "fontWeight": "500"
+        },
+        {
+          "type": "group",
+          "id": "6PDEp",
+          "x": 80,
+          "y": 210,
+          "children": [
+            {
+              "type": "text",
+              "id": "2aWjV",
+              "x": 64,
+              "y": 64,
+              "name": "shadow",
+              "fill": "#27272A",
+              "content": "ADE",
+              "fontFamily": "Space Grotesk",
+              "fontSize": 430,
+              "fontWeight": "700",
+              "letterSpacing": 22
+            },
+            {
+              "type": "text",
+              "id": "CkIHr",
+              "x": 32,
+              "y": 32,
+              "name": "mid",
+              "fill": "#7C3AED",
+              "content": "ADE",
+              "fontFamily": "Space Grotesk",
+              "fontSize": 430,
+              "fontWeight": "700",
+              "letterSpacing": 22
+            },
+            {
+              "type": "text",
+              "id": "gJyZy",
+              "x": 0,
+              "y": 0,
+              "name": "top",
+              "fill": "#FAFAFA",
+              "effect": {
+                "type": "shadow",
+                "shadowType": "outer",
+                "color": "#A78BFA35",
+                "blur": 96
+              },
+              "content": "ADE",
+              "fontFamily": "Space Grotesk",
+              "fontSize": 430,
+              "fontWeight": "700",
+              "letterSpacing": 22
+            }
+          ]
+        },
+        {
+          "type": "path",
+          "id": "3TARJ",
+          "x": 50,
+          "y": 220,
+          "name": "braceL",
+          "enabled": false,
+          "geometry": "M120 0c-60 0-60 60-60 120l0 60c0 40-20 70-60 70 40 0 60 30 60 70l0 60c0 60 0 120 60 120",
+          "fill": "none",
+          "width": 120,
+          "height": 480,
+          "stroke": {
+            "thickness": 28,
+            "join": "round",
+            "cap": "round",
+            "fill": "#A78BFA"
+          }
+        },
+        {
+          "type": "path",
+          "id": "ipYZZ",
+          "x": 854,
+          "y": 220,
+          "name": "braceR",
+          "enabled": false,
+          "geometry": "M0 0c60 0 60 60 60 120l0 60c0 40 20 70 60 70-40 0-60 30-60 70l0 60c0 60 0 120-60 120",
+          "fill": "none",
+          "width": 120,
+          "height": 480,
+          "stroke": {
+            "thickness": 28,
+            "join": "round",
+            "cap": "round",
+            "fill": "#A78BFA"
+          }
+        }
+      ]
     }
   ]
 }

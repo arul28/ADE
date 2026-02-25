@@ -61,29 +61,28 @@ export function TabNav() {
       <NavLink
         key={it.to}
         to={it.to}
+        data-active={isActive ? "true" : undefined}
         className={cn(
-          "relative flex items-center w-full h-9 rounded-md transition-colors duration-100 group",
-          "text-muted-fg/70 hover:text-fg hover:bg-muted/30",
+          "ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100",
         )}
       >
         {/* Active indicator bar */}
         {isActive && (
           <motion.div
             layoutId="tab-indicator"
-            className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-accent"
+            className="ade-shell-sidebar-active-rail absolute bottom-1 left-0 top-1 w-[2px]"
             transition={layoutTransition}
           />
         )}
 
         {/* Fixed-width icon container - never moves during collapse */}
-        <span className="flex items-center justify-center w-[52px] shrink-0">
+        <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
           <span className="relative inline-flex items-center">
             <it.icon
               size={18}
               weight="regular"
               className={cn(
-                "transition-colors duration-150 shrink-0",
-                isActive ? "text-accent" : "group-hover:text-fg/70",
+                "ade-shell-sidebar-icon shrink-0 transition-colors duration-150",
               )}
             />
             {/* Terminal attention dot */}
@@ -108,8 +107,7 @@ export function TabNav() {
         {/* Label - opacity-animated separately from width transition */}
         <span
           className={cn(
-            "ade-tab-label text-xs font-medium whitespace-nowrap",
-            isActive && "text-fg font-medium",
+            "ade-tab-label whitespace-nowrap",
           )}
         >
           {it.label}
@@ -130,7 +128,7 @@ export function TabNav() {
         </div>
 
         {/* Group separator */}
-        <div className="mx-3 my-1 border-t border-border/20" />
+        <div className="ade-shell-sidebar-separator mx-3 my-1 border-t" />
 
         {/* Tool navigation items */}
         <div className="flex flex-col gap-px">
@@ -141,7 +139,7 @@ export function TabNav() {
         <div className="mt-auto" />
 
         {/* Divider line before settings */}
-        <div className="mx-2 mb-1 border-t border-border/20" />
+        <div className="ade-shell-sidebar-separator mx-2 mb-1 border-t" />
 
         {/* Settings pinned to bottom */}
         {renderItem(settingsItem)}
@@ -150,12 +148,12 @@ export function TabNav() {
       {/* Context menu */}
       {contextMenu && project?.rootPath ? (
         <div
-          className="fixed z-40 min-w-[170px] rounded bg-[--color-surface-overlay] border border-border/50 p-0.5 shadow-float"
+          className="ade-shell-sidebar-menu fixed z-40 min-w-[170px] rounded-none p-0.5 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button
-            className="block w-full rounded-sm px-2 py-1 text-left text-[11px] font-mono hover:bg-muted/40"
+            className="ade-shell-sidebar-menu-item block w-full rounded-none px-2 py-1 text-left"
             onClick={() => {
               setContextMenu(null);
               window.ade.app.revealPath(project.rootPath).catch(() => {});

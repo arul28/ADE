@@ -1586,7 +1586,8 @@ export function registerIpc({
         autopilotOwnerId: arg.autopilotOwnerId,
         defaultExecutorKind: arg.defaultExecutorKind,
         defaultRetryLimit: arg.defaultRetryLimit,
-        metadata: arg.metadata ?? null
+        metadata: arg.metadata ?? null,
+        plannerProvider: arg.plannerProvider ?? undefined
       });
       if (started.blockedByPlanReview || !started.started) {
         throw new Error("Mission run is blocked pending plan review approval.");
@@ -1605,7 +1606,8 @@ export function registerIpc({
         autopilotOwnerId: arg.autopilotOwnerId,
         defaultExecutorKind: arg.defaultExecutorKind,
         defaultRetryLimit: arg.defaultRetryLimit,
-        metadata: arg.metadata ?? null
+        metadata: arg.metadata ?? null,
+        plannerProvider: arg.plannerProvider ?? undefined
       });
       if (started.blockedByPlanReview || !started.started) {
         throw new Error("Mission plan approval did not produce a runnable mission execution.");

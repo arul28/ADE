@@ -212,8 +212,9 @@ const WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS = 180_000;
 const PLANNER_THREAD_ID_PREFIX = "planner";
 const PLANNER_THREAD_TITLE = "Planner Agent";
 const PLANNER_THREAD_STEP_KEY = "planner";
-const PLANNER_STREAM_FLUSH_CHARS = 1_200;
-const PLANNER_STREAM_FLUSH_INTERVAL_MS = 1_500;
+const PLANNER_STREAM_FLUSH_CHARS = 1_800;
+const PLANNER_STREAM_FLUSH_INTERVAL_MS = 2_500;
+const PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS = 480;
 const MAX_PLANNER_RAW_OUTPUT_CHARS = 4_000_000;
 
 type SessionRuntimeSignal = {
@@ -1184,6 +1185,7 @@ export function createAiOrchestratorService(args: {
     eventCount: number;
     lastEventAt: string | null;
     dead: boolean;
+    startupGreetingSent: boolean;
     systemPrompt: string;
     pendingInit: Promise<void> | null;  // guards against concurrent init
   }>();
@@ -2001,6 +2003,7 @@ export function createAiOrchestratorService(args: {
         eventCount: 0,
         lastEventAt: null,
         dead: false,
+        startupGreetingSent: false,
         systemPrompt: coordinatorSystemPrompt,
         pendingInit: null
       };
@@ -2027,6 +2030,11 @@ export function createAiOrchestratorService(args: {
             timeoutMs: 30_000
           });
 
+          const activeEntry = coordinatorSessions.get(runId);
+          if (activeEntry !== entry || entry.dead) {
+            return;
+          }
+
           if (typeof result.sessionId === "string" && result.sessionId.trim().length > 0) {
             entry.sessionId = result.sessionId.trim();
             logger.info("ai_orchestrator.coordinator_session_started", {
@@ -2043,6 +2051,20 @@ export function createAiOrchestratorService(args: {
               runId,
               reason: "executeTask did not return a sessionId — coordinator will operate in stateless mode"
             });
+          }
+          if (!entry.startupGreetingSent) {
+            emitOrchestratorMessage(
+              missionId,
+              "Coordinator online. Monitoring mission events and ready to intervene.",
+              null,
+              {
+                role: "coordinator",
+                runId,
+                sessionId: entry.sessionId,
+                plannerStepCount: plan.steps.length
+              }
+            );
+            entry.startupGreetingSent = true;
           }
         } catch (error) {
           entry.dead = true;
@@ -2278,9 +2300,13 @@ export function createAiOrchestratorService(args: {
     if (!state.streamBuffer.length) return;
     if (!force) {
       const hasParagraphBreak = /\n{2,}/.test(state.streamBuffer);
+      const trailingWindow = state.streamBuffer.slice(-200);
+      const hasSentenceBoundary = /[.!?](?:\s|\n|$)/.test(trailingWindow);
       const exceededChunkThreshold = state.streamBuffer.length >= PLANNER_STREAM_FLUSH_CHARS;
-      const exceededInterval = Date.now() - state.lastStreamFlushAtMs >= PLANNER_STREAM_FLUSH_INTERVAL_MS;
-      if (!hasParagraphBreak && !exceededChunkThreshold && !exceededInterval) {
+      const exceededInterval =
+        Date.now() - state.lastStreamFlushAtMs >= PLANNER_STREAM_FLUSH_INTERVAL_MS
+        && state.streamBuffer.length >= PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS;
+      if (!hasParagraphBreak && !hasSentenceBoundary && !exceededChunkThreshold && !exceededInterval) {
         return;
       }
     }
@@ -2288,9 +2314,25 @@ export function createAiOrchestratorService(args: {
     let chunk = state.streamBuffer;
     if (!force) {
       let boundary = Math.min(state.streamBuffer.length, PLANNER_STREAM_FLUSH_CHARS);
-      const lastNewline = state.streamBuffer.lastIndexOf("\n", boundary);
-      if (lastNewline >= 120) {
-        boundary = lastNewline + 1;
+      const paragraphBoundary = state.streamBuffer.lastIndexOf("\n\n", boundary);
+      if (paragraphBoundary >= 120) {
+        boundary = paragraphBoundary + 2;
+      } else {
+        const lastNewline = state.streamBuffer.lastIndexOf("\n", boundary);
+        if (lastNewline >= 120) {
+          boundary = lastNewline + 1;
+        } else {
+          const sentenceSlice = state.streamBuffer.slice(0, boundary);
+          const sentencePattern = /[.!?](?:\s|\n|$)/g;
+          let sentenceBoundary = -1;
+          let sentenceMatch: RegExpExecArray | null = null;
+          while ((sentenceMatch = sentencePattern.exec(sentenceSlice)) !== null) {
+            sentenceBoundary = sentenceMatch.index + sentenceMatch[0].length;
+          }
+          if (sentenceBoundary >= 160) {
+            boundary = sentenceBoundary;
+          }
+        }
       }
       chunk = state.streamBuffer.slice(0, boundary);
       state.streamBuffer = state.streamBuffer.slice(boundary);
@@ -4452,11 +4494,13 @@ export function createAiOrchestratorService(args: {
         });
         appendPlannerWorkerMessage(
           plannerState,
-          `Planner online (${args.provider}:${session.model}).`,
+          "Planner online. Prompt received — drafting the mission plan now.",
           {
             planner: {
               event: "session_started",
-              sessionId: session.id
+              sessionId: session.id,
+              provider: args.provider,
+              model: session.model
             }
           }
         );
@@ -4464,7 +4508,7 @@ export function createAiOrchestratorService(args: {
         const turn = beginPlannerTurn(plannerState);
         appendPlannerWorkerMessage(
           plannerState,
-          "Planning request received. Building structured mission plan...",
+          "Planning in progress. I will post the execution breakdown as soon as it is ready.",
           {
             planner: {
               event: "turn_enqueued",
@@ -6041,9 +6085,15 @@ export function createAiOrchestratorService(args: {
         activeHealthSweepRuns.delete(runId);
         for (const [attemptId, state] of workerStates.entries()) {
           if (state.runId !== runId) continue;
-          workerStates.delete(attemptId);
+          // Preserve terminal worker states (completed/failed) so that
+          // callers can still read them after the run finishes.  Only
+          // discard active (working/initializing) entries and always
+          // clean up the runtime tracker / persisted state.
           attemptRuntimeTrackers.delete(attemptId);
           deletePersistedAttemptRuntimeState(attemptId);
+          if (state.state !== "completed" && state.state !== "failed") {
+            workerStates.delete(attemptId);
+          }
         }
 
         // Clean up mission-keyed in-memory maps when mission reaches a terminal state.
@@ -6143,7 +6193,15 @@ export function createAiOrchestratorService(args: {
             .filter(Boolean)
         : [];
       const indexedDeps = parseNumericDependencyIndices(metadata).flatMap((depIdx) => stepKeysByIndex.get(depIdx) ?? []);
-      const hasExplicitDeps = Array.isArray(metadata.dependencyStepKeys) || Array.isArray(metadata.dependencyIndices);
+      // A step has explicit dependency info when the planner provided
+      // dependencyStepKeys or dependencyIndices arrays, OR when the planner
+      // assigned a stepKey (which means the step came from a structured
+      // planner and absent dependency fields means "zero dependencies", not
+      // "unknown — fall back to sequential").
+      const hasExplicitDeps =
+        Array.isArray(metadata.dependencyStepKeys) ||
+        Array.isArray(metadata.dependencyIndices) ||
+        (typeof metadata.stepKey === "string" && metadata.stepKey.trim().length > 0);
       const depSet = new Set([...explicitDeps, ...indexedDeps].filter((dep) => dep !== entry.stepKey));
       if (!depSet.size && !hasExplicitDeps && position > 0) {
         depSet.add(keyed[position - 1]!.stepKey);
@@ -6178,28 +6236,66 @@ export function createAiOrchestratorService(args: {
     const baseLaneId = mission.laneId ?? descriptors.find((step) => step.laneId)?.laneId ?? null;
     if (!baseLaneId) return { createdLaneIds: [], assignedSteps: 0 };
 
+    // ── Identify parallel candidates ──────────────────────────
+    // First, look for "root parallelism": multiple steps with zero
+    // dependencies that can all start immediately.
     const rootCandidates = descriptors
       .filter((step) => step.dependencyStepKeys.length === 0 && isParallelCandidateStepType(step.stepType))
       .sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
-    if (rootCandidates.length < 2) return { createdLaneIds: [], assignedSteps: 0 };
+
+    // If fewer than 2 roots, look for "sibling parallelism": groups of
+    // steps that share the exact same set of parent dependencies and can
+    // therefore run concurrently once those parents complete.
+    let parallelCandidates: ParallelMissionStepDescriptor[];
+    if (rootCandidates.length >= 2) {
+      parallelCandidates = rootCandidates;
+    } else {
+      const siblingGroups = new Map<string, ParallelMissionStepDescriptor[]>();
+      for (const step of descriptors) {
+        if (!isParallelCandidateStepType(step.stepType)) continue;
+        if (step.dependencyStepKeys.length === 0) continue; // already checked as root
+        const groupKey = [...step.dependencyStepKeys].sort().join(",");
+        const group = siblingGroups.get(groupKey) ?? [];
+        group.push(step);
+        siblingGroups.set(groupKey, group);
+      }
+      // Pick the largest sibling group with at least 2 members
+      let bestGroup: ParallelMissionStepDescriptor[] = [];
+      for (const group of siblingGroups.values()) {
+        if (group.length >= 2 && group.length > bestGroup.length) {
+          bestGroup = group;
+        }
+      }
+      parallelCandidates = bestGroup.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+    }
+
+    if (parallelCandidates.length < 2) {
+      logger.debug("ai_orchestrator.parallel_lane_provision_skipped", {
+        missionId: args.missionId,
+        rootCandidateCount: rootCandidates.length,
+        totalSteps: descriptors.length,
+        reason: `Only ${rootCandidates.length} root candidate(s) and no sibling groups with ≥2 members found (need ≥2 parallel candidates).`
+      });
+      return { createdLaneIds: [], assignedSteps: 0 };
+    }
 
     const laneByStepKey = new Map<string, string>();
     const createdLaneIds: string[] = [];
-    laneByStepKey.set(rootCandidates[0]!.stepKey, rootCandidates[0]!.laneId ?? baseLaneId);
+    laneByStepKey.set(parallelCandidates[0]!.stepKey, parallelCandidates[0]!.laneId ?? baseLaneId);
 
-    for (let i = 1; i < rootCandidates.length; i += 1) {
-      const root = rootCandidates[i]!;
-      if (root.laneId && root.laneId !== baseLaneId) {
-        laneByStepKey.set(root.stepKey, root.laneId);
+    for (let i = 1; i < parallelCandidates.length; i += 1) {
+      const candidate = parallelCandidates[i]!;
+      if (candidate.laneId && candidate.laneId !== baseLaneId) {
+        laneByStepKey.set(candidate.stepKey, candidate.laneId);
         continue;
       }
       let laneId = baseLaneId;
-      const requestedName = `m-${args.missionId.slice(0, 6)}-${slugify(root.title || root.stepKey)}-${i + 1}`;
+      const requestedName = `m-${args.missionId.slice(0, 6)}-${slugify(candidate.title || candidate.stepKey)}-${i + 1}`;
       try {
         const child = await laneService.createChild({
           parentLaneId: baseLaneId,
           name: requestedName,
-          description: `Auto-created by orchestrator for mission ${args.missionId} (${root.title || root.stepKey}).`,
+          description: `Auto-created by orchestrator for mission ${args.missionId} (${candidate.title || candidate.stepKey}).`,
           folder: `Mission: ${mission.title}`
         });
         laneId = child.id;
@@ -6207,24 +6303,36 @@ export function createAiOrchestratorService(args: {
       } catch (error) {
         logger.warn("ai_orchestrator.parallel_lane_create_failed", {
           missionId: args.missionId,
-          stepKey: root.stepKey,
+          stepKey: candidate.stepKey,
           requestedName,
           fallbackLaneId: baseLaneId,
           error: error instanceof Error ? error.message : String(error)
         });
       }
-      laneByStepKey.set(root.stepKey, laneId);
+      laneByStepKey.set(candidate.stepKey, laneId);
     }
 
     const laneByStepId = new Map<string, string>();
     const byStepKey = new Map(descriptors.map((step) => [step.stepKey, step] as const));
     const ordered = [...descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
 
+    // Build a set of step keys that were directly assigned as parallel
+    // candidates so the downstream loop doesn't overwrite their lane
+    // with inheritance from a parent dependency.
+    const parallelCandidateKeys = new Set(parallelCandidates.map((c) => c.stepKey));
+
     for (const step of ordered) {
       const explicitNonBaseLane = step.laneId && step.laneId !== baseLaneId ? step.laneId : null;
       if (explicitNonBaseLane) {
         laneByStepId.set(step.id, explicitNonBaseLane);
         laneByStepKey.set(step.stepKey, explicitNonBaseLane);
+        continue;
+      }
+      // If this step was a parallel candidate, honour its pre-assigned lane.
+      if (parallelCandidateKeys.has(step.stepKey)) {
+        const preAssigned = laneByStepKey.get(step.stepKey) ?? step.laneId ?? baseLaneId;
+        laneByStepId.set(step.id, preAssigned);
+        // laneByStepKey already set during candidate loop
         continue;
       }
       let laneId = step.laneId ?? baseLaneId;
@@ -6256,9 +6364,12 @@ export function createAiOrchestratorService(args: {
         [nextLaneId, nowIso(), step.id, args.missionId]
       );
       assignedSteps += 1;
+      // stepId is omitted because these are mission-step IDs, not
+      // orchestrator-step IDs — the orchestrator run hasn't been created
+      // yet, so inserting them would violate the FK constraint on
+      // orchestrator_lane_decisions.step_id -> orchestrator_steps.id.
       recordLaneDecision({
         missionId: args.missionId,
-        stepId: step.id,
         stepKey: step.stepKey,
         laneId: nextLaneId,
         decisionType: "validated",
@@ -6267,6 +6378,7 @@ export function createAiOrchestratorService(args: {
         rationale: `Assigned step ${step.stepKey} to lane ${nextLaneId} (from ${currentLaneId}).`,
         metadata: {
           previousLaneId: currentLaneId,
+          missionStepId: step.id,
           dependencyStepKeys: step.dependencyStepKeys
         }
       });
@@ -6279,6 +6391,7 @@ export function createAiOrchestratorService(args: {
           createdLaneIds,
           assignedSteps,
           rootStepCount: rootCandidates.length,
+          parallelCandidateCount: parallelCandidates.length,
           baseLaneId,
           updatedAt: nowIso()
         };
@@ -6355,7 +6468,19 @@ export function createAiOrchestratorService(args: {
     if (thoroughnessRequested && estimatedScope === "medium") estimatedScope = "large";
 
     const rootCandidates = descriptors.filter((d) => d.dependencyStepKeys.length === 0);
-    const parallelizable = rootCandidates.length >= 2;
+    // Parallelizable if 2+ roots, or if any sibling group (shared deps) has 2+ members
+    let parallelizable = rootCandidates.length >= 2;
+    if (!parallelizable) {
+      const sibGroupSizes = new Map<string, number>();
+      for (const d of descriptors) {
+        if (d.dependencyStepKeys.length === 0) continue;
+        const gk = [...d.dependencyStepKeys].sort().join(",");
+        sibGroupSizes.set(gk, (sibGroupSizes.get(gk) ?? 0) + 1);
+      }
+      for (const count of sibGroupSizes.values()) {
+        if (count >= 2) { parallelizable = true; break; }
+      }
+    }
     const requiresIntegration = policy.integration.mode === "auto" || laneCount > 1;
     const fileZoneCount = laneCount;
 
@@ -6583,6 +6708,15 @@ export function createAiOrchestratorService(args: {
     const provider: "claude" | "codex" | null = (() => {
       if (args.plannerProvider === "claude" || args.plannerProvider === "codex") return args.plannerProvider;
       if (args.plannerProvider === "deterministic") return null;
+      // Check mission metadata for stored model config provider
+      // Model config may be at root ($.modelConfig) or nested under launch ($.launch.modelConfig)
+      const missionMeta = getMissionMetadata(missionId);
+      const rootModelCfg = missionMeta?.modelConfig as { orchestratorModel?: { provider?: string } } | undefined;
+      const launchObj = missionMeta?.launch as Record<string, unknown> | undefined;
+      const launchModelCfg = launchObj?.modelConfig as { orchestratorModel?: { provider?: string } } | undefined;
+      const missionModelCfg = rootModelCfg?.orchestratorModel ?? launchModelCfg?.orchestratorModel;
+      const storedProvider = missionModelCfg?.provider;
+      if (storedProvider === "claude" || storedProvider === "codex") return storedProvider;
       if (runtimeProfile.planning.preferProvider) return runtimeProfile.planning.preferProvider;
       if (config.defaultPlannerProvider) return config.defaultPlannerProvider;
       const availability = aiIntegrationService?.getAvailability?.();
@@ -6595,6 +6729,13 @@ export function createAiOrchestratorService(args: {
       return resolveMissionLaunchPlannerModel(missionId) ?? undefined;
     })();
     const attemptedAiPlanner = runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex");
+    const planningModeLabel = attemptedAiPlanner
+      ? `AI planner${provider ? ` (${provider})` : ""}`
+      : "deterministic planner";
+    emitOrchestratorMessage(
+      missionId,
+      `Mission received. Routing your prompt to the ${planningModeLabel} now.`
+    );
     if (attemptedAiPlanner) {
       transitionMissionStatus(missionId, "planning");
 
@@ -6728,11 +6869,15 @@ export function createAiOrchestratorService(args: {
     const parallelismCap = teamManifest.parallelismCap
       ?? plannerParallelismCap
       ?? runtimeProfile.execution.maxParallelWorkers;
+    // Resolve default executor kind: explicit arg > model config provider > undefined
+    const resolvedExecutorKind: OrchestratorExecutorKind | undefined =
+      args.defaultExecutorKind
+      ?? (provider === "claude" || provider === "codex" ? provider : undefined);
     const started = orchestratorService.startRunFromMission({
       missionId,
       runMode: args.runMode,
       autopilotOwnerId: args.autopilotOwnerId,
-      defaultExecutorKind: args.defaultExecutorKind,
+      defaultExecutorKind: resolvedExecutorKind,
       defaultRetryLimit: args.defaultRetryLimit ?? runtimeProfile.execution.defaultRetryLimit,
       metadata: {
         ...(args.metadata ?? {}),
@@ -6807,12 +6952,79 @@ export function createAiOrchestratorService(args: {
     transitionMissionStatus(missionId, "in_progress");
     void syncMissionFromRun(started.run.id, "mission_run_started");
 
+    // Deferred ramp-up: ensure all initially-ready steps get started.
+    // The orchestratorService.startRunFromMission already fires one pass
+    // (reason: "run_started"), and each accepted step now triggers its own
+    // follow-up pass. This delayed call acts as a safety net in case the
+    // initial pass completes before all steps are marked ready.
     setTimeout(() => {
       void orchestratorService.startReadyAutopilotAttempts({
         runId: started.run.id,
         reason: "initial_ramp_up",
       }).catch(() => {});
     }, 500);
+
+    // ── Execution watchdog ──
+    // After 20 seconds, verify that all "running" attempts actually have
+    // active sessions with output. If any are stalled, emit explicit status
+    // events so the coordinator and UI can surface the problem.
+    const watchdogRunId = started.run.id;
+    const watchdogMissionId = missionId;
+    setTimeout(() => {
+      try {
+        const graph = orchestratorService.getRunGraph({ runId: watchdogRunId });
+        if (!graph) return;
+        const runningAttempts = graph.attempts.filter(
+          (a) => a.status === "running" && a.executorSessionId
+        );
+        if (runningAttempts.length === 0) return;
+
+        let stalledCount = 0;
+        for (const attempt of runningAttempts) {
+          const sessionCheck = db.get<{ last_output_at: string | null; status: string | null }>(
+            `
+              select last_output_at, status
+              from terminal_sessions
+              where id = ?
+              limit 1
+            `,
+            [attempt.executorSessionId]
+          );
+          const hasOutput = Boolean(sessionCheck?.last_output_at);
+          const sessionStatus = sessionCheck?.status ?? "unknown";
+          if (!hasOutput && sessionStatus !== "completed" && sessionStatus !== "exited") {
+            stalledCount++;
+            logger.info("ai_orchestrator.execution_watchdog_stalled_attempt", {
+              missionId: watchdogMissionId,
+              runId: watchdogRunId,
+              attemptId: attempt.id,
+              stepId: attempt.stepId,
+              sessionId: attempt.executorSessionId,
+              sessionStatus,
+              elapsedMs: 20_000
+            });
+          }
+        }
+
+        if (stalledCount > 0) {
+          emitOrchestratorMessage(
+            watchdogMissionId,
+            `Execution watchdog: ${stalledCount} of ${runningAttempts.length} running step${runningAttempts.length === 1 ? "" : "s"} ha${stalledCount === 1 ? "s" : "ve"} not produced output after 20s. The health sweep will attempt recovery if they remain stuck.`
+          );
+          // Trigger another autopilot pass in case steps need to be restarted
+          void orchestratorService.startReadyAutopilotAttempts({
+            runId: watchdogRunId,
+            reason: "execution_watchdog"
+          }).catch(() => {});
+        }
+      } catch (error) {
+        logger.debug("ai_orchestrator.execution_watchdog_failed", {
+          missionId: watchdogMissionId,
+          runId: watchdogRunId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }, 20_000);
 
     return {
       blockedByPlanReview: false,
@@ -8303,6 +8515,44 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const maybeEmitWorkerQueuedNotice = (message: OrchestratorChatMessage, workerLabel: string, stepKey: string | null): void => {
+    if (message.deliveryState !== "queued") return;
+    void (async () => {
+      if (disposed) return;
+      let canResolveImmediately = false;
+      if (agentChatService) {
+        try {
+          const latest = getChatMessageById(message.id) ?? message;
+          if (latest.deliveryState !== "queued") return;
+          const context = resolveWorkerDeliveryContext(latest);
+          const deliveryMeta = readWorkerDeliveryMetadata(latest);
+          const sessionResolution = await resolveWorkerDeliverySession({
+            message: latest,
+            context,
+            deliveryMeta
+          });
+          canResolveImmediately = !!toOptionalString(sessionResolution.sessionId);
+        } catch (error) {
+          logger.debug("ai_orchestrator.worker_delivery_queue_probe_failed", {
+            missionId: message.missionId,
+            messageId: message.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      const fresh = getChatMessageById(message.id);
+      if (!fresh || fresh.deliveryState !== "queued") return;
+      if (canResolveImmediately) return;
+
+      emitOrchestratorMessage(
+        fresh.missionId,
+        `Worker message queued for ${workerLabel}; delivery will resume once the worker session is available.`,
+        stepKey ?? fresh.stepKey ?? null
+      );
+    })();
+  };
+
   const routeMessageToWorker = (message: OrchestratorChatMessage) => {
     const target = message.target && message.target.kind === "worker" ? message.target : null;
     const workerLabel =
@@ -8328,11 +8578,7 @@ export function createAiOrchestratorService(args: {
       }
     );
     if (message.deliveryState === "queued") {
-      emitOrchestratorMessage(
-        message.missionId,
-        `Worker message queued for ${workerLabel}; delivery will resume once the worker session is available.`,
-        target?.stepKey ?? null
-      );
+      maybeEmitWorkerQueuedNotice(message, workerLabel, target?.stepKey ?? null);
     } else if (message.deliveryState === "failed") {
       emitOrchestratorMessage(
         message.missionId,

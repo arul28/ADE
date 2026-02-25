@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { PaperPlaneTilt, CaretDown, Robot, TerminalWindow, ChatCircle, Hash } from "@phosphor-icons/react";
+import { PaperPlaneTilt, CaretDown, Robot, TerminalWindow, ChatCircle, Hash, Crown, Wrench } from "@phosphor-icons/react";
 import type {
   OrchestratorChatThread,
   OrchestratorChatMessage
@@ -261,6 +261,26 @@ export function AgentChannels({ missionId, threads, onSendMessage }: AgentChanne
               style={{ backgroundColor: STATUS_DOT[selectedThread.status] ?? "#52525B" }}
             />
           )}
+          {/* Thread identity badge in header */}
+          {selectedThread && (
+            selectedThread.threadType === "mission" ? (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+                style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630", borderRadius: 0 }}
+              >
+                <Crown size={10} weight="fill" />
+                Planner
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.5px]"
+                style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630", borderRadius: 0 }}
+              >
+                <Wrench size={10} weight="fill" />
+                Worker{selectedThread.stepKey ? `: ${selectedThread.stepKey}` : ""}
+              </span>
+            )
+          )}
         </div>
 
         {/* Messages */}
@@ -358,11 +378,13 @@ function ChannelButton({
 }) {
   const displayName = label ?? thread.title;
   const statusColor = STATUS_DOT[thread.status] ?? "#52525B";
+  const isPlanner = thread.threadType === "mission";
+  const threadStepKey = thread.stepKey ?? null;
 
   return (
     <button
       onClick={onClick}
-      className="w-full px-2 py-1.5 text-left transition-colors flex items-center gap-1.5"
+      className="w-full px-2 py-1.5 text-left transition-colors flex flex-col gap-0.5"
       style={
         isSelected
           ? { background: "#A78BFA12", borderLeft: "3px solid #A78BFA", color: "#FAFAFA", borderRadius: 0 }
@@ -379,20 +401,42 @@ function ChannelButton({
         }
       }}
     >
-      <span
-        className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
-        style={{ backgroundColor: statusColor }}
-      />
-      <Hash size={12} weight="regular" className="shrink-0" style={{ color: "#71717A" }} />
-      <span className="truncate text-xs">{displayName}</span>
-      {thread.unreadCount > 0 && (
+      <div className="flex items-center gap-1.5 w-full">
         <span
-          className="ml-auto shrink-0 px-1 py-0.5 text-[9px] font-semibold"
-          style={{ background: "#A78BFA", color: "#0F0D14", borderRadius: 0 }}
-        >
-          {thread.unreadCount}
-        </span>
-      )}
+          className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
+          style={{ backgroundColor: statusColor }}
+        />
+        <Hash size={12} weight="regular" className="shrink-0" style={{ color: "#71717A" }} />
+        <span className="truncate text-xs">{displayName}</span>
+        {thread.unreadCount > 0 && (
+          <span
+            className="ml-auto shrink-0 px-1 py-0.5 text-[9px] font-semibold"
+            style={{ background: "#A78BFA", color: "#0F0D14", borderRadius: 0 }}
+          >
+            {thread.unreadCount}
+          </span>
+        )}
+      </div>
+      {/* Thread role badge */}
+      <div className="flex items-center gap-1 pl-5">
+        {isPlanner ? (
+          <span
+            className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
+            style={{ background: "#3B82F618", color: "#3B82F6", border: "1px solid #3B82F630", borderRadius: 0 }}
+          >
+            <Crown size={8} weight="fill" />
+            Planner
+          </span>
+        ) : (
+          <span
+            className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
+            style={{ background: "#8B5CF618", color: "#8B5CF6", border: "1px solid #8B5CF630", borderRadius: 0 }}
+          >
+            <Wrench size={8} weight="fill" />
+            Worker{threadStepKey ? `: ${threadStepKey}` : ""}
+          </span>
+        )}
+      </div>
     </button>
   );
 }

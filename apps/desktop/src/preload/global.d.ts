@@ -662,6 +662,11 @@ declare global {
         diffAgainstDisk: () => Promise<ProjectConfigDiff>;
         confirmTrust: (arg?: { sharedHash?: string }) => Promise<ProjectConfigTrust>;
       };
+      zoom: {
+        getLevel: () => number;
+        setLevel: (level: number) => void;
+        getFactor: () => number;
+      };
     };
   }
 }

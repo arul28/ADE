@@ -26,7 +26,9 @@ import {
   CaretDown,
   List,
   Kanban,
-  Trash
+  Trash,
+  Warning,
+  Eye
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence, LazyMotion, domAnimation } from "motion/react";
 import type {
@@ -145,7 +147,7 @@ const EXECUTOR_BADGE_HEX: Record<string, string> = {
   manual: "#3B82F6",
 };
 
-type WorkspaceTab = "board" | "dag" | "channels" | "control" | "activity" | "usage";
+type WorkspaceTab = "board" | "dag" | "channels" | "activity" | "usage";
 type MissionListViewMode = "list" | "board";
 
 const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: string }> = [
@@ -259,6 +261,7 @@ const NOISY_EVENT_TYPES = new Set([
   "tick",
   "dynamic_cap",
 ]);
+const PLANNER_STEP_KEY = "planner";
 
 function relativeWhen(iso: string): string {
   const ts = Date.parse(iso);
@@ -277,6 +280,55 @@ function compactText(value: string, maxChars = 140): string {
   if (!normalized.length) return "";
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 1)}...`;
+}
+
+function isPlannerStreamMessage(msg: OrchestratorChatMessage): boolean {
+  if (msg.role !== "worker") return false;
+  if (!isRecord(msg.metadata)) return false;
+  const planner = isRecord(msg.metadata.planner) ? msg.metadata.planner : null;
+  return Boolean(planner && planner.stream === true);
+}
+
+export function collapsePlannerStreamMessages(messages: OrchestratorChatMessage[]): OrchestratorChatMessage[] {
+  if (messages.length < 2) return messages;
+  const collapsed: OrchestratorChatMessage[] = [];
+  let activePlannerMessage: OrchestratorChatMessage | null = null;
+
+  for (const message of messages) {
+    if (!isPlannerStreamMessage(message)) {
+      if (activePlannerMessage) {
+        collapsed.push(activePlannerMessage);
+        activePlannerMessage = null;
+      }
+      collapsed.push(message);
+      continue;
+    }
+
+    if (
+      activePlannerMessage
+      && isPlannerStreamMessage(activePlannerMessage)
+      && activePlannerMessage.threadId === message.threadId
+      && activePlannerMessage.sourceSessionId === message.sourceSessionId
+    ) {
+      const sep: string =
+        activePlannerMessage.content.endsWith("\n") || message.content.startsWith("\n")
+          ? ""
+          : "\n";
+      const prev: OrchestratorChatMessage = activePlannerMessage;
+      activePlannerMessage = {
+        ...prev,
+        content: `${prev.content}${sep}${message.content}`,
+        timestamp: message.timestamp
+      };
+      continue;
+    }
+
+    if (activePlannerMessage) collapsed.push(activePlannerMessage);
+    activePlannerMessage = { ...message };
+  }
+
+  if (activePlannerMessage) collapsed.push(activePlannerMessage);
+  return collapsed;
 }
 
 function stepIntentSummary(step: OrchestratorStep): string {
@@ -329,6 +381,16 @@ export function resolveStepHeartbeatAt(args: {
     )
   );
 }
+
+/** Returns the age in minutes of a heartbeat ISO timestamp, or null if unparseable. */
+function heartbeatAgeMinutes(iso: string | null): number | null {
+  if (!iso) return null;
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return null;
+  return Math.max(0, (Date.now() - ts) / 60_000);
+}
+
+const STALE_HEARTBEAT_THRESHOLD_MINUTES = 3;
 
 /** Turn a raw orchestrator timeline event into a human-readable sentence. */
 function narrativeForEvent(ev: { eventType: string; reason: string; stepId?: string | null }): string {
@@ -534,12 +596,14 @@ function workerThreadMatchScore(thread: OrchestratorChatThread, target: Orchestr
   let score = 0;
   let matchedIdentity = false;
 
-  if (targetRunId && targetRunId === threadRunId) score += 8;
+  if (targetRunId && targetRunId === threadRunId) {
+    score += 24;
+    matchedIdentity = true;
+  }
 
   const targetAttemptId = asNonEmptyString(target.attemptId);
   const threadAttemptId = asNonEmptyString(thread.attemptId);
   if (targetAttemptId) {
-    if (threadAttemptId && targetAttemptId !== threadAttemptId) return -1;
     if (targetAttemptId === threadAttemptId) {
       score += 128;
       matchedIdentity = true;
@@ -549,7 +613,6 @@ function workerThreadMatchScore(thread: OrchestratorChatThread, target: Orchestr
   const targetSessionId = asNonEmptyString(target.sessionId);
   const threadSessionId = asNonEmptyString(thread.sessionId);
   if (targetSessionId) {
-    if (threadSessionId && targetSessionId !== threadSessionId) return -1;
     if (targetSessionId === threadSessionId) {
       score += 96;
       matchedIdentity = true;
@@ -559,7 +622,6 @@ function workerThreadMatchScore(thread: OrchestratorChatThread, target: Orchestr
   const targetStepId = asNonEmptyString(target.stepId);
   const threadStepId = asNonEmptyString(thread.stepId);
   if (targetStepId) {
-    if (threadStepId && targetStepId !== threadStepId) return -1;
     if (targetStepId === threadStepId) {
       score += 64;
       matchedIdentity = true;
@@ -569,7 +631,6 @@ function workerThreadMatchScore(thread: OrchestratorChatThread, target: Orchestr
   const targetStepKey = asNonEmptyString(target.stepKey);
   const threadStepKey = asNonEmptyString(thread.stepKey);
   if (targetStepKey) {
-    if (threadStepKey && targetStepKey !== threadStepKey && !targetStepId) return -1;
     if (targetStepKey === threadStepKey) {
       score += 32;
       matchedIdentity = true;
@@ -579,7 +640,6 @@ function workerThreadMatchScore(thread: OrchestratorChatThread, target: Orchestr
   const targetLaneId = asNonEmptyString(target.laneId);
   const threadLaneId = asNonEmptyString(thread.laneId);
   if (targetLaneId) {
-    if (threadLaneId && targetLaneId !== threadLaneId && !targetStepId && !targetStepKey) return -1;
     if (targetLaneId === threadLaneId) {
       score += 8;
       matchedIdentity = true;
@@ -997,6 +1057,11 @@ function MissionChat({
       .sort((a, b) => Date.parse(b.thread.updatedAt) - Date.parse(a.thread.updatedAt));
   }, [latestDigestByAttempt, threads, workerStateByAttempt]);
 
+  const displayMessages = useMemo(
+    () => collapsePlannerStreamMessages(messages),
+    [messages]
+  );
+
   const handleToggleMetric = useCallback(async (toggle: MissionMetricToggle) => {
     if (savingMetrics) return;
     const current = metricsConfig?.toggles?.length ? metricsConfig.toggles : METRIC_TOGGLE_ORDER;
@@ -1101,8 +1166,13 @@ function MissionChat({
                 </div>
                 <div className="mt-1 flex items-center gap-1.5 text-[9px]" style={{ color: COLORS.textMuted }}>
                   <span className="px-1 py-0.5 text-[9px] font-bold uppercase tracking-[1px]" style={inlineBadge(threadTypeBadgeHex(thread.threadType))}>
-                    {thread.threadType === "mission" ? "MISSION" : "WORKER"}
+                    {thread.threadType === "mission" ? "PLANNER" : "WORKER"}
                   </span>
+                  {thread.threadType === "worker" && thread.stepKey && (
+                    <span className="px-1 py-0.5 text-[8px] font-bold uppercase tracking-[0.5px]" style={{ background: `${COLORS.accent}12`, border: `1px solid ${COLORS.accent}25`, color: COLORS.accent }}>
+                      {thread.stepKey}
+                    </span>
+                  )}
                   <span>{relativeWhen(thread.updatedAt)}</span>
                 </div>
               </button>
@@ -1132,18 +1202,40 @@ function MissionChat({
               Pick a mission or worker thread to inspect and send guidance.
             </div>
           )}
-          {selectedThread && messages.length === 0 && (
+          {selectedThread && displayMessages.length === 0 && (
             <div className="px-3 py-6 text-center text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
-              No messages yet in this thread.
+              {selectedThread.threadType === "worker" && selectedThread.status === "active" && !selectedThread.sessionId ? (
+                <div className="flex flex-col items-center gap-2">
+                  <SpinnerGap size={20} weight="regular" className="animate-spin" style={{ color: COLORS.accent }} />
+                  <span>Initializing execution environment...</span>
+                  <span className="text-[9px]" style={{ color: COLORS.textDim }}>Worker is starting up. Output will appear once the session connects.</span>
+                </div>
+              ) : selectedThread.threadType === "worker" && selectedThread.status === "active" && selectedThread.sessionId ? (
+                <div className="flex flex-col items-center gap-2">
+                  <SpinnerGap size={20} weight="regular" className="animate-spin" style={{ color: COLORS.accent }} />
+                  <span>Worker connected, waiting for output...</span>
+                </div>
+              ) : (
+                <span>No messages yet in this thread.</span>
+              )}
             </div>
           )}
-          {messages.map((msg) => (
+          {displayMessages.map((msg) => {
+            const plannerMessage = msg.role === "worker" && (msg.stepKey === PLANNER_STEP_KEY || isPlannerStreamMessage(msg));
+            const roleLabel = msg.role === "orchestrator"
+              ? "Orchestrator"
+              : plannerMessage
+                ? "Planner"
+                : "Worker";
+            return (
             <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
               <div
                 className="max-w-[85%] px-2.5 py-2 text-[11px]"
                 style={msg.role === "user"
                   ? { border: `1px solid ${COLORS.accent}30`, background: `${COLORS.accent}12`, color: COLORS.textPrimary }
-                  : msg.role === "worker"
+                  : plannerMessage
+                    ? { border: "1px solid #22C55E30", background: "#22C55E10", color: COLORS.textPrimary }
+                    : msg.role === "worker"
                     ? { border: "1px solid #A78BFA30", background: "#A78BFA10", color: COLORS.textPrimary }
                     : { border: `1px solid ${COLORS.border}`, background: COLORS.cardBg, color: COLORS.textPrimary }
                 }
@@ -1151,7 +1243,7 @@ function MissionChat({
                 {msg.role !== "user" && (
                   <div className="mb-1 flex items-center gap-1 text-[9px]" style={{ color: COLORS.textMuted }}>
                     {msg.role === "orchestrator" ? <Robot className="h-3 w-3" /> : <TerminalWindow className="h-3 w-3" />}
-                    <span>{msg.role === "orchestrator" ? "Orchestrator" : "Worker"}</span>
+                    <span>{roleLabel}</span>
                     {msg.stepKey ? <span>{"\u2022"} {msg.stepKey}</span> : null}
                   </div>
                 )}
@@ -1169,7 +1261,8 @@ function MissionChat({
                 </div>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
 
         <div className="px-3 py-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
@@ -1366,6 +1459,10 @@ function CreateMissionDialog({
   lanes: Array<{ id: string; name: string }>;
   defaultExecutionPolicy: MissionExecutionPolicy;
 }) {
+  const sortedLanes = useMemo(
+    () => [...lanes].sort((a, b) => a.name.localeCompare(b.name)),
+    [lanes]
+  );
   const [draft, setDraft] = useState<CreateDraft>({
     title: "",
     prompt: "",
@@ -1408,6 +1505,7 @@ function CreateMissionDialog({
 
   const dlgInputStyle: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textPrimary, fontFamily: MONO_FONT, borderRadius: 0 };
   const dlgLabelStyle: React.CSSProperties = { fontSize: 10, fontWeight: 700, fontFamily: MONO_FONT, textTransform: "uppercase" as const, letterSpacing: "1px", color: COLORS.textMuted };
+  const selectedLane = sortedLanes.find((lane) => lane.id === draft.laneId);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1454,10 +1552,27 @@ function CreateMissionDialog({
             />
           </label>
 
-          {/* Lane info */}
+          {/* Base lane selector */}
+          <label className="block space-y-1">
+            <span style={dlgLabelStyle}>BASE LANE</span>
+            <select
+              value={draft.laneId}
+              onChange={(e) => setDraft((p) => ({ ...p, laneId: e.target.value }))}
+              className="h-8 w-full px-3 text-xs outline-none"
+              style={dlgInputStyle}
+            >
+              <option value="">Primary lane (auto)</option>
+              {sortedLanes.map((lane) => (
+                <option key={lane.id} value={lane.id}>{lane.name}</option>
+              ))}
+            </select>
+          </label>
+
           <div className="px-3 py-2 text-[11px]" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted }}>
             <GitBranch className="inline h-3 w-3 mr-1 -mt-0.5" />
-            Missions automatically create dedicated lanes for each step.
+            {selectedLane
+              ? `Base lane: ${selectedLane.name}. Mission lanes branch from this base lane, and each step still gets a dedicated lane.`
+              : "Base lane defaults to your primary lane. Mission lanes branch from this base lane, and each step still gets a dedicated lane."}
           </div>
 
           {/* Model Profile */}
@@ -2138,6 +2253,7 @@ export default function MissionsPage() {
       missionId: string;
       laneId?: string | null;
       executorKind: OrchestratorExecutorKind;
+      plannerProvider?: "claude" | "codex" | null;
       approveExistingPlan?: boolean;
     }) => {
       const missionId = args.missionId.trim();
@@ -2152,7 +2268,8 @@ export default function MissionsPage() {
         runMode: "autopilot",
         autopilotOwnerId: "missions-autopilot",
         defaultExecutorKind: args.executorKind,
-        defaultRetryLimit: 1
+        defaultRetryLimit: 1,
+        plannerProvider: args.plannerProvider ?? null
       } satisfies StartOrchestratorRunFromMissionArgs;
       return args.approveExistingPlan
         ? await window.ade.orchestrator.approveMissionPlan(startArgs)
@@ -2202,10 +2319,18 @@ export default function MissionsPage() {
         runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
           ? (runAutopilotState.executor as OrchestratorExecutorKind)
           : "codex";
+      // Derive planner provider from the executor selection — if user chose "claude" executor,
+      // they likely want Claude as the planner too. Pass it through so IPC carries it to the backend.
+      // The backend will also check the mission's stored modelConfig as a further fallback.
+      const plannerProvider: "claude" | "codex" | null =
+        runAutopilotState.executor === "claude" || runAutopilotState.executor === "codex"
+          ? (runAutopilotState.executor as "claude" | "codex")
+          : null;
       await startRunForMission({
         missionId: selectedMission.id,
         laneId: selectedMission.laneId,
         executorKind: fallbackExecutor,
+        plannerProvider,
         approveExistingPlan: selectedMission.status === "plan_review"
       });
       await loadOrchestratorGraph(selectedMission.id);
@@ -2654,9 +2779,8 @@ export default function MissionsPage() {
                   { key: "board" as WorkspaceTab, num: "01", label: "BOARD", icon: SquaresFour },
                   { key: "dag" as WorkspaceTab, num: "02", label: "DAG", icon: Graph },
                   { key: "channels" as WorkspaceTab, num: "03", label: "CHANNELS", icon: Hash },
-                  { key: "control" as WorkspaceTab, num: "04", label: "CONTROL", icon: Rocket },
-                  { key: "activity" as WorkspaceTab, num: "05", label: "ACTIVITY", icon: Pulse },
-                  { key: "usage" as WorkspaceTab, num: "06", label: "USAGE", icon: Lightning }
+                  { key: "activity" as WorkspaceTab, num: "04", label: "ACTIVITY", icon: Pulse },
+                  { key: "usage" as WorkspaceTab, num: "05", label: "USAGE", icon: Lightning }
                 ]).map((tab) => {
                   const isActive = activeTab === tab.key;
                   return (
@@ -2705,7 +2829,7 @@ export default function MissionsPage() {
               )}
 
               {/* ── Tab Content ── */}
-              <div className={cn("flex-1 min-h-0", (activeTab === "channels" || activeTab === "control") ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
+              <div className={cn("flex-1 min-h-0", activeTab === "channels" ? "flex flex-col overflow-hidden" : "overflow-auto p-4")}>
                 {activeTab === "board" && (
                   <div className="flex h-full min-h-0 flex-col gap-3 lg:flex-row">
                     <div className="min-h-0 min-w-0 flex-1 overflow-auto">
@@ -2735,6 +2859,8 @@ export default function MissionsPage() {
                     <OrchestratorDAG
                       steps={runGraph?.steps ?? []}
                       attempts={runGraph?.attempts ?? []}
+                      claims={runGraph?.claims ?? []}
+                      selectedStepId={selectedStepId}
                       onStepClick={setSelectedStepId}
                     />
                     </div>
@@ -2765,38 +2891,46 @@ export default function MissionsPage() {
                 )}
 
                 {activeTab === "channels" && selectedMissionId && (
-                  <MissionChat
-                    missionId={selectedMissionId}
-                    runId={runGraph?.run.id ?? null}
-                    jumpTarget={chatJumpTarget}
-                    onJumpHandled={() => setChatJumpTarget(null)}
-                  />
-                )}
+                  <div className="flex h-full min-h-0 flex-col overflow-hidden">
+                    <div className={cn("min-h-0", selectedMission ? "flex-1" : "h-full")}>
+                      <MissionChat
+                        missionId={selectedMissionId}
+                        runId={runGraph?.run.id ?? null}
+                        jumpTarget={chatJumpTarget}
+                        onJumpHandled={() => setChatJumpTarget(null)}
+                      />
+                    </div>
 
-                {activeTab === "control" && selectedMission && (() => {
-                  if (!runGraph) {
-                    return (
-                      <div className="flex items-center justify-center h-64 text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                        No active run. Start a mission to see Mission Control.
+                    {selectedMission && (
+                      <div className="shrink-0" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+                        <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-[1px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}>
+                          Mission Control Surface
+                        </div>
+                        <div className="h-[320px]">
+                          {runGraph ? (
+                            <MissionControlWrapper
+                              missionId={selectedMission.id}
+                              missionTitle={selectedMission.title}
+                              graph={runGraph}
+                            />
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-xs" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, background: COLORS.pageBg }}>
+                              No active run. Start a mission to see Mission Control.
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    );
-                  }
-                  return (
-                    <MissionControlWrapper
-                      missionId={selectedMission.id}
-                      missionTitle={selectedMission.title}
-                      graph={runGraph}
-                    />
-                  );
-                })()}
+                    )}
+                  </div>
+                )}
 
                 {activeTab === "usage" && selectedMission && (
                   <UsageDashboard missionId={selectedMission.id} missionTitle={selectedMission.title} />
                 )}
               </div>
 
-              {/* ── Bottom Steering Bar (hidden on Channels tab since channels subsume steering) ── */}
-              {isActiveMission && activeTab !== "channels" && activeTab !== "control" && (
+              {/* ── Bottom Steering Bar (hidden on Channels tab since channels include steering + control) ── */}
+              {isActiveMission && activeTab !== "channels" && (
                 <div className="px-4 py-2.5" style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
                   {steerAck && (
                     <div className="mb-2 px-3 py-1.5 text-[10px] flex items-center justify-between" style={{ background: `${COLORS.success}18`, border: `1px solid ${COLORS.success}30`, color: COLORS.success }}>
@@ -3065,6 +3199,18 @@ function StepDetailPanel({
   const stepHex = STEP_STATUS_HEX[step.status] ?? COLORS.textMuted;
   const detailCellStyle: React.CSSProperties = { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, padding: "4px 8px" };
 
+  // Heartbeat staleness detection
+  const hbAge = heartbeatAgeMinutes(latestHeartbeatAt);
+  const isHeartbeatStale = hbAge !== null && hbAge >= STALE_HEARTBEAT_THRESHOLD_MINUTES;
+
+  // Stuck-state detection: step is running but has no attempt or attempt lacks a session
+  const isRunning = step.status === "running";
+  const hasRunningAttemptWithSession = latestAttempt
+    && latestAttempt.status === "running"
+    && latestAttempt.executorSessionId;
+  const isWaitingForWorker = isRunning && (!latestAttempt || latestAttempt.status !== "running");
+  const isWorkerInitializing = isRunning && latestAttempt?.status === "running" && !latestAttempt.executorSessionId;
+
   return (
     <aside className="p-3 lg:w-[380px] lg:max-w-[40%] lg:shrink-0 overflow-y-auto max-h-full" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
       <div className="flex items-center justify-between">
@@ -3073,6 +3219,37 @@ function StepDetailPanel({
           {step.status}
         </span>
       </div>
+
+      {/* Stuck-state diagnostic banners */}
+      {isWaitingForWorker && (
+        <div
+          className="mt-2 flex items-center gap-2 px-2 py-1.5 text-[10px]"
+          style={{ background: `${COLORS.warning}12`, border: `1px solid ${COLORS.warning}30`, color: COLORS.warning }}
+        >
+          <SpinnerGap size={14} weight="regular" className="animate-spin shrink-0" />
+          <span>Waiting for worker allocation...</span>
+        </div>
+      )}
+      {isWorkerInitializing && (
+        <div
+          className="mt-2 flex items-center gap-2 px-2 py-1.5 text-[10px]"
+          style={{ background: `${COLORS.accent}12`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent }}
+        >
+          <SpinnerGap size={14} weight="regular" className="animate-spin shrink-0" />
+          <span>Initializing execution environment...</span>
+        </div>
+      )}
+
+      {/* Stale heartbeat warning */}
+      {isRunning && isHeartbeatStale && (
+        <div
+          className="mt-2 flex items-center gap-2 px-2 py-1.5 text-[10px]"
+          style={{ background: `${COLORS.warning}18`, border: `1px solid ${COLORS.warning}40`, color: COLORS.warning }}
+        >
+          <Warning size={14} weight="fill" className="shrink-0" />
+          <span>Heartbeat stale ({Math.round(hbAge!)}m) — worker may be stuck</span>
+        </div>
+      )}
 
       <div className="mt-2">
         <div className="text-xs font-medium" style={{ color: COLORS.textPrimary }}>{step.title}</div>
@@ -3145,7 +3322,13 @@ function StepDetailPanel({
             </div>
             <div className="flex items-center justify-between">
               <span style={{ color: COLORS.textMuted }}>Heartbeat age</span>
-              <span style={{ color: COLORS.textPrimary }}>{latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}</span>
+              <span
+                className="flex items-center gap-1"
+                style={{ color: isHeartbeatStale ? COLORS.warning : COLORS.textPrimary }}
+              >
+                {isHeartbeatStale && <Warning size={11} weight="fill" />}
+                {latestHeartbeatAt ? relativeWhen(latestHeartbeatAt) : "--"}
+              </span>
             </div>
             {latestAttempt.errorMessage && (
               <div className="px-1.5 py-1" style={{ border: `1px solid ${COLORS.danger}30`, background: `${COLORS.danger}18`, color: COLORS.danger }}>
@@ -3154,7 +3337,16 @@ function StepDetailPanel({
             )}
           </div>
         ) : (
-          <div className="mt-1" style={{ color: COLORS.textMuted }}>No attempt has started yet.</div>
+          <div className="mt-1 flex items-center gap-2" style={{ color: COLORS.textMuted }}>
+            {isRunning ? (
+              <>
+                <SpinnerGap size={12} weight="regular" className="animate-spin" />
+                <span>Waiting for worker allocation...</span>
+              </>
+            ) : (
+              <span>No attempt has started yet.</span>
+            )}
+          </div>
         )}
       </div>
 
@@ -3176,23 +3368,38 @@ function StepDetailPanel({
         </div>
       )}
 
-      {latestAttempt && (
-        <button
-          onClick={() => onOpenWorkerThread({
-            kind: "worker",
-            runId: step.runId,
-            stepId: step.id,
-            stepKey: step.stepKey,
-            attemptId: latestAttempt.id,
-            sessionId: latestAttempt.executorSessionId ?? null,
-            laneId: step.laneId ?? null
-          })}
-          className="mt-3 w-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
-          style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}
-        >
-          JUMP TO WORKER CHANNEL
-        </button>
-      )}
+      {/* Action buttons */}
+      <div className="mt-3 space-y-1.5">
+        {latestAttempt && (
+          <button
+            onClick={() => onOpenWorkerThread({
+              kind: "worker",
+              runId: step.runId,
+              stepId: step.id,
+              stepKey: step.stepKey,
+              attemptId: latestAttempt.id,
+              sessionId: latestAttempt.executorSessionId ?? null,
+              laneId: step.laneId ?? null
+            })}
+            className="w-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+            style={{ background: `${COLORS.accent}18`, border: `1px solid ${COLORS.accent}30`, color: COLORS.accent, fontFamily: MONO_FONT }}
+          >
+            JUMP TO WORKER CHANNEL
+          </button>
+        )}
+        {latestAttempt?.executorSessionId && (
+          <button
+            onClick={() => {
+              window.open(`/work?sessionId=${encodeURIComponent(latestAttempt.executorSessionId!)}`, "_self");
+            }}
+            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-[10px] font-bold uppercase tracking-[1px] transition-colors"
+            style={{ background: `${COLORS.textMuted}10`, border: `1px solid ${COLORS.border}`, color: COLORS.textMuted, fontFamily: MONO_FONT }}
+          >
+            <Eye size={12} weight="regular" />
+            VIEW IN WORK TAB
+          </button>
+        )}
+      </div>
     </aside>
   );
 }

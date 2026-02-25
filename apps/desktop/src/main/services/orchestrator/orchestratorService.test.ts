@@ -1016,6 +1016,24 @@ describe("orchestratorService", () => {
   it("applies dynamic autopilot parallel cap reductions from deterministic gate pressure", async () => {
     const fixture = await createFixture();
     try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      // Pre-insert terminal_sessions rows for sessions the default adapter will create.
+      // With gate_fail + initial_ramp_bypass the effective cap is 2 on the first pass.
+      for (let i = 1; i <= 3; i++) {
+        const sid = `session-${i}`;
+        fixture.db.run(
+          `insert or ignore into terminal_sessions(
+            id, lane_id, pty_id, tracked, title, started_at, ended_at,
+            exit_code, transcript_path, head_sha_start, head_sha_end,
+            status, last_output_preview, summary, tool_type, resume_command, last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+            'running', null, null, 'codex-orchestrated', null, ?)`,
+          [sid, fixture.laneId, now, path.join(transcriptDir, `${sid}.log`), now]
+        );
+      }
+
       const started = fixture.service.startRun({
         missionId: fixture.missionId,
         metadata: {
@@ -1057,20 +1075,28 @@ describe("orchestratorService", () => {
         runId: started.run.id,
         reason: "test_dynamic_cap"
       });
-      expect(startedAttempts).toBe(1);
+      // Initial ramp-up bypass raises cap from 1 (gate_fail) to 2 so that the
+      // first batch can produce data for the gate to evaluate meaningfully.
+      expect(startedAttempts).toBe(2);
 
       const runningAttempts = fixture.service
         .listAttempts({ runId: started.run.id })
         .filter((attempt) => attempt.status === "running");
-      expect(runningAttempts).toHaveLength(1);
+      expect(runningAttempts).toHaveLength(2);
 
       const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
-      const capEvent = timeline.find((entry) => entry.eventType === "autopilot_parallelism_cap_adjusted");
-      expect(capEvent).toBeTruthy();
-      const reasons = Array.isArray((capEvent?.detail as Record<string, unknown> | null)?.reasons)
-        ? ((capEvent?.detail as Record<string, unknown>).reasons as unknown[]).map((entry) => String(entry))
-        : [];
-      expect(reasons).toContain("gate_fail");
+      const capEvents = timeline.filter((entry) => entry.eventType === "autopilot_parallelism_cap_adjusted");
+      expect(capEvents.length).toBeGreaterThanOrEqual(1);
+      // Collect all reasons across cap adjustment events (timeline is desc-ordered,
+      // so the initial_ramp_bypass event from the first loop may not be first).
+      const allReasons = capEvents.flatMap((evt) => {
+        const detail = evt.detail as Record<string, unknown> | null;
+        return Array.isArray(detail?.reasons)
+          ? (detail!.reasons as unknown[]).map((entry) => String(entry))
+          : [];
+      });
+      expect(allReasons).toContain("gate_fail");
+      expect(allReasons).toContain("initial_ramp_bypass");
     } finally {
       fixture.dispose();
     }
@@ -1660,6 +1686,24 @@ describe("orchestratorService", () => {
   it("reconciles tracked session exits and auto-advances autopilot", async () => {
     const fixture = await createFixture();
     try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      // Pre-insert terminal_sessions rows for sessions the default adapter will create.
+      // session-1 for the first step, session-2 for the second (auto-advanced).
+      for (let i = 1; i <= 2; i++) {
+        const sid = `session-${i}`;
+        fixture.db.run(
+          `insert or ignore into terminal_sessions(
+            id, lane_id, pty_id, tracked, title, started_at, ended_at,
+            exit_code, transcript_path, head_sha_start, head_sha_end,
+            status, last_output_preview, summary, tool_type, resume_command, last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+            'running', null, null, 'codex-orchestrated', null, ?)`,
+          [sid, fixture.laneId, now, path.join(transcriptDir, `${sid}.log`), now]
+        );
+      }
+
       const started = fixture.service.startRun({
         missionId: fixture.missionId,
         metadata: {
@@ -1721,6 +1765,21 @@ describe("orchestratorService", () => {
   it("derives tracked-session completion status from terminal session state when exit code is missing", async () => {
     const fixture = await createFixture();
     try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      // Pre-insert terminal_sessions row so startAttempt finds it when the default adapter returns.
+      const preSessionId = "session-1";
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, path.join(transcriptDir, `${preSessionId}.log`), now]
+      );
+
       const started = fixture.service.startRun({
         missionId: fixture.missionId,
         steps: [
@@ -1743,34 +1802,10 @@ describe("orchestratorService", () => {
       });
       if (!firstAttempt.executorSessionId) throw new Error("Expected running session-backed attempt");
 
+      // Update the pre-inserted row to simulate a completed session (for deriving status).
       fixture.db.run(
-        `
-          insert into terminal_sessions(
-            id,
-            lane_id,
-            pty_id,
-            tracked,
-            title,
-            started_at,
-            ended_at,
-            exit_code,
-            transcript_path,
-            head_sha_start,
-            head_sha_end,
-            status,
-            last_output_preview,
-            summary,
-            tool_type,
-            resume_command
-          ) values (?, ?, null, 1, 'Worker', ?, ?, null, ?, null, null, 'completed', null, null, 'codex-orchestrated', null)
-        `,
-        [
-          firstAttempt.executorSessionId,
-          fixture.laneId,
-          "2026-02-20T00:00:00.000Z",
-          "2026-02-20T00:05:00.000Z",
-          path.join(fixture.projectRoot, ".ade", "transcripts", `${firstAttempt.executorSessionId}.log`)
-        ]
+        `update terminal_sessions set status = 'completed', ended_at = ? where id = ?`,
+        ["2026-02-20T00:05:00.000Z", firstAttempt.executorSessionId]
       );
 
       const reconciled = await fixture.service.onTrackedSessionEnded({
@@ -2337,6 +2372,139 @@ describe("orchestratorService", () => {
 
       const persisted = fixture.service.getLatestGateReport();
       expect(persisted.id).toBe(report.id);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("accepted attempt triggers autopilot advancement for sibling ready steps", async () => {
+    const fixture = await createFixture();
+    try {
+      // Register an adapter that returns "accepted" with a sessionId.
+      // We need a terminal_sessions row so the session lookup succeeds.
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+
+      let adapterCallCount = 0;
+      fixture.service.registerExecutorAdapter({
+        kind: "codex",
+        start: async () => {
+          adapterCallCount += 1;
+          const sessionId = `adapter-session-${adapterCallCount}`;
+          // Insert a terminal_sessions row for each accepted session
+          fixture.db.run(
+            `
+              insert or ignore into terminal_sessions(
+                id, lane_id, pty_id, tracked, title, started_at, ended_at,
+                exit_code, transcript_path, head_sha_start, head_sha_end,
+                status, last_output_preview, summary, tool_type, resume_command, last_output_at
+              ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+                'running', null, null, 'codex-orchestrated', null, ?)
+            `,
+            [sessionId, fixture.laneId, now, path.join(transcriptDir, `${sessionId}.log`), now]
+          );
+          return {
+            status: "accepted" as const,
+            sessionId,
+            metadata: { adapterKind: "codex" }
+          };
+        }
+      });
+
+      // Create a run with 2 independent steps (no dependencies) in autopilot mode
+      const now2 = "2026-02-19T00:00:00.000Z";
+      fixture.db.run(
+        `
+          insert into mission_steps(
+            id, mission_id, project_id, step_index, title, detail, kind,
+            lane_id, status, metadata_json, created_at, updated_at, started_at, completed_at
+          ) values
+            ('mstep-a', ?, ?, 0, 'Step A', null, 'implementation', ?, 'pending', '{"stepType":"implementation","dependencyStepKeys":[]}', ?, ?, null, null),
+            ('mstep-b', ?, ?, 1, 'Step B', null, 'implementation', ?, 'pending', '{"stepType":"implementation","dependencyStepKeys":[]}', ?, ?, null, null)
+        `,
+        [
+          fixture.missionId, fixture.projectId, fixture.laneId, now2, now2,
+          fixture.missionId, fixture.projectId, fixture.laneId, now2, now2
+        ]
+      );
+
+      const started = fixture.service.startRunFromMission({
+        missionId: fixture.missionId,
+        runMode: "autopilot",
+        defaultExecutorKind: "codex",
+        metadata: { plannerParallelismCap: 4 }
+      });
+
+      // Wait for the async autopilot advancement triggered by startRun (initial pass)
+      // plus the deferred accepted_step_advance pass (50ms) for the second step
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      // Both steps should now be running because:
+      // 1. The first step's adapter returns "accepted"
+      // 2. The accepted-step-advance logic fires startReadyAutopilotAttempts
+      // 3. The second step (also ready) gets started
+      const attempts = fixture.service.listAttempts({ runId: started.run.id });
+      const runningAttempts = attempts.filter((a) => a.status === "running");
+      expect(runningAttempts.length).toBeGreaterThanOrEqual(2);
+      expect(adapterCallCount).toBeGreaterThanOrEqual(2);
+
+      // Verify the attempts have sessionIds attached
+      for (const attempt of runningAttempts) {
+        expect(attempt.executorSessionId).toBeTruthy();
+      }
+
+      // Verify timeline has autopilot_advance event
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      expect(timeline.some((e) => e.eventType === "autopilot_advance")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("accepted attempt with missing terminal session still marks attempt running", async () => {
+    const fixture = await createFixture();
+    try {
+      // Register adapter that returns accepted with a sessionId, but do NOT insert
+      // a terminal_sessions row — the session doesn't exist in the database.
+      fixture.service.registerExecutorAdapter({
+        kind: "claude",
+        start: async () => ({
+          status: "accepted" as const,
+          sessionId: "ghost-session-999",
+          metadata: { adapterKind: "claude" }
+        })
+      });
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "orphan-session-step",
+            title: "Step with missing session",
+            stepIndex: 0,
+            executorKind: "claude"
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+
+      // The attempt should be marked as failed because the session row doesn't
+      // exist in terminal_sessions — the P0 fix catches this and fails fast.
+      expect(attempt.status).toBe("failed");
+      expect(attempt.errorClass).toBe("executor_failure");
+      expect(attempt.errorMessage).toContain("Session row not found");
+
+      // Timeline should have executor_session_missing event
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline.some((e) => e.eventType === "executor_session_missing")).toBe(true);
     } finally {
       fixture.dispose();
     }

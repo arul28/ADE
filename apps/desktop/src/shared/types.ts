@@ -3326,6 +3326,7 @@ export type StartOrchestratorRunFromMissionArgs = {
   autopilotOwnerId?: string;
   defaultExecutorKind?: OrchestratorExecutorKind;
   defaultRetryLimit?: number;
+  plannerProvider?: "claude" | "codex" | null;
 };
 
 export type StartOrchestratorAttemptArgs = {

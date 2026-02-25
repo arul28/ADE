@@ -4152,7 +4152,7 @@ export function createOrchestratorService({
         Number.isFinite(plannerParallelismRaw) && plannerParallelismRaw > 0 ? Math.floor(plannerParallelismRaw) : null;
       const autopilotParallelismCap = Math.max(
         1,
-        Math.min(32, plannerParallelismCap ?? runtimeConfig.maxParallelWorkers)
+        Math.min(runtimeConfig.maxParallelWorkers, plannerParallelismCap ?? runtimeConfig.maxParallelWorkers)
       );
 
       const descriptors = missionSteps.map((row, index) => {
@@ -4441,6 +4441,13 @@ export function createOrchestratorService({
             // Ignore gate-report lookup failures; base cap still applies.
           }
 
+          // Don't let gate pressure reduce below 2 during initial ramp-up
+          // (gate has no meaningful data before first attempts produce output)
+          if (startedAttempts === 0 && cap < Math.min(2, parallelismCap)) {
+            cap = Math.min(2, parallelismCap);
+            reasons.push("initial_ramp_bypass");
+          }
+
           const latestRunRow = getRunRow(runId);
           let activeClaimConflicts = 0;
           let contextPressure: number | null = null;
@@ -4475,7 +4482,8 @@ export function createOrchestratorService({
           }
 
           if (activeClaimConflicts > 0) {
-            cap = Math.min(cap, Math.max(1, parallelismCap - Math.min(parallelismCap - 1, activeClaimConflicts)));
+            const conflictReduction = Math.min(Math.floor(parallelismCap / 2), activeClaimConflicts);
+            cap = Math.min(cap, Math.max(2, parallelismCap - conflictReduction));
             reasons.push("claim_conflicts");
           }
           if (contextPressure != null && contextPressure >= 0.85) {
@@ -5419,6 +5427,55 @@ export function createOrchestratorService({
       const stepPolicy = resolveStepPolicy(step);
       const contextPolicy = resolveContextPolicy({ runProfileId: run.contextProfile, stepPolicy });
 
+      // Insert the attempt row early so that all downstream tables with
+      // foreign key(attempt_id) references orchestrator_attempts(id) —
+      // including orchestrator_claims, orchestrator_timeline_events,
+      // orchestrator_runtime_events, and mission_step_handoffs — can
+      // reference it without FK constraint violations.
+      // We start with status='running' and update to 'blocked' if claims fail,
+      // and backfill context_snapshot_id after snapshot creation.
+      db.run(
+        `
+          insert into orchestrator_attempts(
+            id,
+            run_id,
+            step_id,
+            project_id,
+            attempt_number,
+            status,
+            executor_kind,
+            executor_session_id,
+            tracked_session_enforced,
+            context_profile,
+            context_snapshot_id,
+            error_class,
+            error_message,
+            retry_backoff_ms,
+            result_envelope_json,
+            metadata_json,
+            created_at,
+            started_at,
+            completed_at
+          ) values (?, ?, ?, ?, ?, 'running', ?, null, 1, ?, null, 'none', null, 0, null, ?, ?, ?, null)
+        `,
+        [
+          attemptId,
+          run.id,
+          step.id,
+          projectId,
+          attemptNumber,
+          executorKind,
+          contextPolicy.id,
+          JSON.stringify({
+            ownerId: args.ownerId,
+            workerState: "initializing",
+            workerStartedAt: createdAt
+          }),
+          createdAt,
+          createdAt
+        ]
+      );
+
       // Claims are acquired before attempt state transitions so collisions are deterministic.
       const acquiredClaims: OrchestratorClaim[] = [];
       for (const scope of stepPolicy.claimScopes ?? []) {
@@ -5434,36 +5491,16 @@ export function createOrchestratorService({
           releaseClaimsForAttempt({ attemptId, state: "released" });
           db.run(
             `
-              insert into orchestrator_attempts(
-                id,
-                run_id,
-                step_id,
-                project_id,
-                attempt_number,
-                status,
-                executor_kind,
-                executor_session_id,
-                tracked_session_enforced,
-                context_profile,
-                context_snapshot_id,
-                error_class,
-                error_message,
-                retry_backoff_ms,
-                result_envelope_json,
-                metadata_json,
-                created_at,
-                started_at,
-                completed_at
-              ) values (?, ?, ?, ?, ?, 'blocked', ?, null, 1, ?, null, 'claim_conflict', ?, 0, null, ?, ?, ?, ?)
+              update orchestrator_attempts
+              set status = 'blocked',
+                  error_class = 'claim_conflict',
+                  error_message = ?,
+                  metadata_json = ?,
+                  completed_at = ?
+              where id = ?
+                and project_id = ?
             `,
             [
-              attemptId,
-              run.id,
-              step.id,
-              projectId,
-              attemptNumber,
-              executorKind,
-              contextPolicy.id,
               failure.errorMessage,
               JSON.stringify({
                 ownerId: args.ownerId,
@@ -5476,8 +5513,8 @@ export function createOrchestratorService({
                 claimConflict: failure.detail
               }),
               createdAt,
-              createdAt,
-              createdAt
+              attemptId,
+              projectId
             ]
           );
           db.run(
@@ -5632,38 +5669,17 @@ export function createOrchestratorService({
         throw new Error(`Total token budget exceeded: ${tokensConsumed} >= ${runtimeConfig.maxTotalTokenBudget}`);
       }
 
+      // Update the attempt row with the snapshot ID and full metadata now that
+      // the context snapshot has been created.
       db.run(
         `
-          insert into orchestrator_attempts(
-            id,
-            run_id,
-            step_id,
-            project_id,
-            attempt_number,
-            status,
-            executor_kind,
-            executor_session_id,
-            tracked_session_enforced,
-            context_profile,
-            context_snapshot_id,
-            error_class,
-            error_message,
-            retry_backoff_ms,
-            result_envelope_json,
-            metadata_json,
-            created_at,
-            started_at,
-            completed_at
-          ) values (?, ?, ?, ?, ?, 'running', ?, null, 1, ?, ?, 'none', null, 0, null, ?, ?, ?, null)
+          update orchestrator_attempts
+          set context_snapshot_id = ?,
+              metadata_json = ?
+          where id = ?
+            and project_id = ?
         `,
         [
-          attemptId,
-          run.id,
-          step.id,
-          projectId,
-          attemptNumber,
-          executorKind,
-          contextPolicy.id,
           snapshot.snapshotId,
           JSON.stringify({
             ownerId: args.ownerId,
@@ -5672,8 +5688,8 @@ export function createOrchestratorService({
             workerState: "initializing",
             workerStartedAt: createdAt
           }),
-          createdAt,
-          createdAt
+          attemptId,
+          projectId
         ]
       );
 
@@ -5921,6 +5937,26 @@ export function createOrchestratorService({
               `,
               [sessionId]
             );
+            if (!sessionRow) {
+              appendTimelineEvent({
+                runId: run.id,
+                stepId: step.id,
+                attemptId: attempt.id,
+                eventType: "executor_session_missing",
+                reason: "session_row_not_found",
+                detail: {
+                  executorKind,
+                  sessionId,
+                  workerState: "error"
+                }
+              });
+              return completeAndAdvance({
+                attemptId: attempt.id,
+                status: "failed",
+                errorClass: "executor_failure",
+                errorMessage: `Session row not found for accepted session: ${sessionId}`
+              });
+            }
             db.run(
               `
                 update orchestrator_attempts
@@ -5957,6 +5993,78 @@ export function createOrchestratorService({
               }
             });
           }
+
+          // ── Critical fix: trigger autopilot pass for OTHER ready steps ──
+          // The "accepted" status means this step is now running (not complete),
+          // so we must NOT call completeAndAdvance. But we DO need to kick off
+          // a new autopilot cycle so sibling steps that are ready can start.
+          const acceptedAttemptRunId = run.id;
+          const acceptedAttemptId = attempt.id;
+          const acceptedSessionId = sessionId;
+          // 200ms delay allows the current autopilot pass to finish and release
+          // `autopilotRunLocks`. The lock guards against re-entrance: if the
+          // current pass hasn't released yet, the deferred call returns 0
+          // immediately (reason "accepted_step_advance" does NOT wait on the
+          // lock, unlike "initial_ramp_up"). 200ms (up from 50ms) ensures the
+          // initial pass has time to complete even when spawning multiple PTY
+          // sessions, so the deferred call reliably picks up remaining siblings.
+          setTimeout(() => {
+            void this.startReadyAutopilotAttempts({
+              runId: acceptedAttemptRunId,
+              reason: "accepted_step_advance"
+            }).catch(() => {});
+          }, 200);
+
+          // ── Startup verification watchdog ──
+          // After 15 seconds, verify the accepted session has produced output.
+          // If not, emit a warning event so the coordinator/health sweep can act.
+          // Trade-off: 15s (up from 10s) avoids false positives on slow machines
+          // or heavy shell environments (nvm, conda, etc.) where shell init alone
+          // can take 8-12s. The downside is a genuinely stalled worker won't be
+          // flagged until 15s, but the periodic health sweep (30s) catches it soon after.
+          if (acceptedSessionId) {
+            setTimeout(() => {
+              try {
+                const verifyRow = db.get<{ last_output_at: string | null; status: string | null }>(
+                  `
+                    select last_output_at, status
+                    from terminal_sessions
+                    where id = ?
+                    limit 1
+                  `,
+                  [acceptedSessionId]
+                );
+                const hasOutput = Boolean(verifyRow?.last_output_at);
+                const sessionStatus = verifyRow?.status ?? "unknown";
+                if (!hasOutput && sessionStatus !== "completed" && sessionStatus !== "exited") {
+                  appendTimelineEvent({
+                    runId: acceptedAttemptRunId,
+                    stepId: step.id,
+                    attemptId: acceptedAttemptId,
+                    eventType: "startup_verification_warning",
+                    reason: "no_output_after_startup",
+                    detail: {
+                      executorKind,
+                      sessionId: acceptedSessionId,
+                      sessionStatus,
+                      elapsedMs: 15_000,
+                      workerState: "stalled"
+                    }
+                  });
+                  emit({
+                    type: "orchestrator-attempt-updated",
+                    runId: acceptedAttemptRunId,
+                    stepId: step.id,
+                    attemptId: acceptedAttemptId,
+                    reason: "startup_verification_warning"
+                  });
+                }
+              } catch {
+                // Ignore verification errors — health sweep will catch persistent issues
+              }
+            }, 15_000);
+          }
+
           return toAttempt(getAttemptRow(attempt.id) ?? attemptRow);
         }
         if (result.status === "completed") {

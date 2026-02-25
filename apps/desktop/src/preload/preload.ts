@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webFrame } from "electron";
 import { IPC } from "../shared/ipc";
 import type {
   BatchAssessmentResult,
@@ -902,5 +902,10 @@ contextBridge.exposeInMainWorld("ade", {
     diffAgainstDisk: async (): Promise<ProjectConfigDiff> => ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk),
     confirmTrust: async (arg: { sharedHash?: string } = {}): Promise<ProjectConfigTrust> =>
       ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg)
+  },
+  zoom: {
+    getLevel: (): number => webFrame.getZoomLevel(),
+    setLevel: (level: number): void => webFrame.setZoomLevel(level),
+    getFactor: (): number => webFrame.getZoomFactor()
   }
 });
