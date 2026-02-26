@@ -238,6 +238,8 @@ import type {
   GetPlannerAttemptArgs,
   DeleteMissionArgs,
   CancelOrchestratorRunArgs,
+  CleanupOrchestratorTeamResourcesArgs,
+  CleanupOrchestratorTeamResourcesResult,
   CompleteOrchestratorAttemptArgs,
   GetOrchestratorGateReportArgs,
   GetOrchestratorRunGraphArgs,
@@ -1644,11 +1646,27 @@ export function registerIpc({
 
   ipcMain.handle(IPC.orchestratorCancelRun, async (_event, arg: CancelOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    ctx.orchestratorService.cancelRun(arg);
+    try {
+      await ctx.aiOrchestratorService.cancelRunGracefully(arg);
+    } catch (error) {
+      ctx.logger.warn("ipc.orchestrator_cancel_graceful_failed", {
+        runId: arg?.runId ?? null,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      ctx.orchestratorService.cancelRun(arg);
+    }
     const run = ctx.orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === arg.runId);
     if (!run) throw new Error(`Run not found after cancellation: ${arg.runId}`);
     return run;
   });
+
+  ipcMain.handle(
+    IPC.orchestratorCleanupTeamResources,
+    async (_event, arg: CleanupOrchestratorTeamResourcesArgs): Promise<CleanupOrchestratorTeamResourcesResult> => {
+      const ctx = getCtx();
+      return await ctx.aiOrchestratorService.cleanupTeamResources(arg);
+    }
+  );
 
   ipcMain.handle(
     IPC.orchestratorHeartbeatClaims,

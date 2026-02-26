@@ -34,7 +34,9 @@ describe("kvDb orchestrator migration", () => {
       "orchestrator_context_snapshots",
       "mission_step_handoffs",
       "orchestrator_timeline_events",
-      "orchestrator_gate_reports"
+      "orchestrator_gate_reports",
+      "orchestrator_lane_decisions",
+      "orchestrator_ai_decisions"
     ];
 
     for (const table of expectedTables) {
@@ -197,6 +199,49 @@ describe("kvDb orchestrator migration", () => {
       ])
     );
 
+    expect(listColumnNames(db, "orchestrator_lane_decisions")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "step_id",
+        "step_key",
+        "lane_id",
+        "decision_type",
+        "validator_outcome",
+        "rule_hits_json",
+        "rationale",
+        "metadata_json",
+        "created_at"
+      ])
+    );
+
+    expect(listColumnNames(db, "orchestrator_ai_decisions")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "call_type",
+        "provider",
+        "model",
+        "timeout_cap_ms",
+        "decision_json",
+        "action_trace_json",
+        "validation_json",
+        "rationale",
+        "fallback_used",
+        "failure_reason",
+        "duration_ms",
+        "prompt_tokens",
+        "completion_tokens",
+        "created_at"
+      ])
+    );
+
     const expectedIndexes = [
       "idx_orchestrator_runs_project_status",
       "idx_orchestrator_runs_mission",
@@ -225,7 +270,16 @@ describe("kvDb orchestrator migration", () => {
       "idx_orchestrator_timeline_run_created",
       "idx_orchestrator_timeline_attempt",
       "idx_orchestrator_timeline_project_created",
-      "idx_orchestrator_gate_reports_project_generated"
+      "idx_orchestrator_gate_reports_project_generated",
+      "idx_orchestrator_lane_decisions_mission_created",
+      "idx_orchestrator_lane_decisions_run_created",
+      "idx_orchestrator_lane_decisions_step_created",
+      "idx_orchestrator_lane_decisions_lane_created",
+      "idx_orchestrator_ai_decisions_mission_created",
+      "idx_orchestrator_ai_decisions_run_created",
+      "idx_orchestrator_ai_decisions_step_created",
+      "idx_orchestrator_ai_decisions_project_category_created",
+      "idx_orchestrator_ai_decisions_created"
     ];
 
     for (const indexName of expectedIndexes) {
@@ -240,6 +294,123 @@ describe("kvDb orchestrator migration", () => {
       "select sql from sqlite_master where type = 'index' and name = 'idx_orchestrator_claims_active_scope' limit 1"
     );
     expect((activeScopeSql?.sql ?? "").toLowerCase()).toContain("where state = 'active'");
+
+    db.close();
+  });
+
+  it("backfills orchestrator_lane_decisions legacy schema and indexes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-orchestrator-legacy-lane-decisions-"));
+    const dbPath = path.join(root, "ade.db");
+    let db = await openKvDb(dbPath, createLogger());
+
+    db.run("drop table if exists orchestrator_lane_decisions");
+    db.run(`
+      create table orchestrator_lane_decisions (
+        id text primary key,
+        project_id text not null,
+        mission_id text not null,
+        decision_type text not null,
+        validator_outcome text not null,
+        rule_hits_json text not null,
+        rationale text not null,
+        created_at text not null
+      )
+    `);
+    db.close();
+
+    db = await openKvDb(dbPath, createLogger());
+
+    expect(listColumnNames(db, "orchestrator_lane_decisions")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "step_id",
+        "step_key",
+        "lane_id",
+        "decision_type",
+        "validator_outcome",
+        "rule_hits_json",
+        "rationale",
+        "metadata_json",
+        "created_at"
+      ])
+    );
+
+    const expectedIndexes = [
+      "idx_orchestrator_lane_decisions_mission_created"
+    ];
+
+    for (const indexName of expectedIndexes) {
+      const hit = db.get<{ name: string }>(
+        "select name from sqlite_master where type = 'index' and name = ? limit 1",
+        [indexName]
+      );
+      expect(hit?.name).toBe(indexName);
+    }
+
+    db.close();
+  });
+
+  it("backfills orchestrator_ai_decisions legacy schema and indexes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-orchestrator-legacy-ai-decisions-"));
+    const dbPath = path.join(root, "ade.db");
+    let db = await openKvDb(dbPath, createLogger());
+
+    db.run("drop table if exists orchestrator_ai_decisions");
+    db.run(`
+      create table orchestrator_ai_decisions (
+        id text primary key,
+        project_id text not null,
+        mission_id text not null,
+        created_at text not null
+      )
+    `);
+    db.close();
+
+    db = await openKvDb(dbPath, createLogger());
+
+    expect(listColumnNames(db, "orchestrator_ai_decisions")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "project_id",
+        "mission_id",
+        "run_id",
+        "step_id",
+        "attempt_id",
+        "call_type",
+        "provider",
+        "model",
+        "timeout_cap_ms",
+        "decision_json",
+        "action_trace_json",
+        "validation_json",
+        "rationale",
+        "fallback_used",
+        "failure_reason",
+        "duration_ms",
+        "prompt_tokens",
+        "completion_tokens",
+        "created_at"
+      ])
+    );
+
+    const expectedIndexes = [
+      "idx_orchestrator_ai_decisions_mission_created",
+      "idx_orchestrator_ai_decisions_run_created",
+      "idx_orchestrator_ai_decisions_step_created",
+      "idx_orchestrator_ai_decisions_project_category_created",
+      "idx_orchestrator_ai_decisions_created"
+    ];
+
+    for (const indexName of expectedIndexes) {
+      const hit = db.get<{ name: string }>(
+        "select name from sqlite_master where type = 'index' and name = ? limit 1",
+        [indexName]
+      );
+      expect(hit?.name).toBe(indexName);
+    }
 
     db.close();
   });

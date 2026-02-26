@@ -1736,7 +1736,19 @@ export type AiConflictResolutionConfig = {
   auto_apply_threshold?: number;
 };
 
+export type AiOrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
+
+export type AiOrchestratorHookConfig = {
+  command: string;
+  timeoutMs?: number;
+  /** @deprecated Use timeoutMs */
+  timeout_ms?: number;
+};
+
 export type AiOrchestratorConfig = {
+  teammatePlanMode?: "off" | "auto" | "required";
+  /** @deprecated Use teammatePlanMode */
+  teammate_plan_mode?: "off" | "auto" | "required";
   requirePlanReview?: boolean;
   /** @deprecated Use requirePlanReview */
   require_plan_review?: boolean;
@@ -1791,6 +1803,7 @@ export type AiOrchestratorConfig = {
   interventionConfidenceThreshold?: number;
   /** @deprecated Use interventionConfidenceThreshold */
   intervention_confidence_threshold?: number;
+  hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;
 };
 
 export type AiChatConfig = {
@@ -3359,6 +3372,24 @@ export type CancelOrchestratorRunArgs = {
   reason?: string;
 };
 
+export type CleanupOrchestratorTeamResourcesArgs = {
+  missionId: string;
+  runId?: string;
+  cleanupLanes?: boolean;
+};
+
+export type CleanupOrchestratorTeamResourcesResult = {
+  missionId: string;
+  runId: string | null;
+  laneIds: string[];
+  lanesArchived: string[];
+  lanesSkipped: string[];
+  laneErrors: Array<{
+    laneId: string;
+    error: string;
+  }>;
+};
+
 export type HeartbeatOrchestratorClaimsArgs = {
   attemptId: string;
   ownerId: string;
@@ -4219,7 +4250,18 @@ export type OrchestratorCallType =
   | "failure_diagnosis"
   | "plan_adjustment"
   | "intervention_handling"
-  | "chat_response";
+  | "chat_response"
+  | "lane_strategy"
+  | "step_transition"
+  | "retry_decision"
+  | "timeout_estimation"
+  | "step_priority"
+  | "parallelism_decision"
+  | "stagnation_evaluation"
+  | "recovery_decision";
+
+/** Mission-level timeout cap for orchestrator internal AI decision calls. */
+export type OrchestratorDecisionTimeoutCapHours = 6 | 12 | 24 | 48;
 
 /** Per-call-type model configuration for orchestrator intelligence */
 export type OrchestratorIntelligenceConfig = {
@@ -4268,6 +4310,7 @@ export type MissionModelProfile = {
   description: string;
   isBuiltIn: boolean;
   orchestratorModel: ModelConfig;
+  decisionTimeoutCapHours?: OrchestratorDecisionTimeoutCapHours;
   phaseDefaults: {
     planning: ModelConfig;
     implementation: ModelConfig;
@@ -4285,6 +4328,7 @@ export type MissionModelProfile = {
 export type MissionModelConfig = {
   profileId?: string;
   orchestratorModel: ModelConfig;
+  decisionTimeoutCapHours?: OrchestratorDecisionTimeoutCapHours;
   intelligenceConfig?: OrchestratorIntelligenceConfig;
   smartBudget?: SmartBudgetConfig;
 };

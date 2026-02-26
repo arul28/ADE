@@ -8,29 +8,37 @@ import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 type OrchestratorIntelligencePanelProps = {
   value: OrchestratorIntelligenceConfig;
+  orchestratorModel: ModelConfig;
   onChange: (config: OrchestratorIntelligenceConfig) => void;
   defaultExpanded?: boolean;
 };
 
+function formatModelSummary(config: ModelConfig): string {
+  const model = findModel(config.modelId);
+  const modelLabel = model?.displayName ?? config.modelId;
+  const providerLabel = config.provider === "claude" ? "Claude" : "Codex";
+  return `${providerLabel} | ${modelLabel} | ${(config.thinkingLevel ?? "medium").toUpperCase()}`;
+}
+
 function CallTypeRow({
   info,
-  config,
-  onChange,
+  overrideConfig,
+  inheritedConfig,
+  onToggleOverride,
+  onChangeOverride,
 }: {
   info: CallTypeInfo;
-  config: ModelConfig | undefined;
-  onChange: (config: ModelConfig) => void;
+  overrideConfig: ModelConfig | undefined;
+  inheritedConfig: ModelConfig;
+  onToggleOverride: (enabled: boolean) => void;
+  onChangeOverride: (config: ModelConfig) => void;
 }) {
   const recommendedModel = findModel(info.recommended);
   const recommendedLabel = recommendedModel
     ? recommendedModel.displayName
     : info.recommended;
-
-  const defaultConfig: ModelConfig = config ?? {
-    provider: info.defaultProvider,
-    modelId: info.recommended,
-    thinkingLevel: "medium",
-  };
+  const hasOverride = Boolean(overrideConfig);
+  const effectiveConfig = overrideConfig ?? inheritedConfig;
 
   return (
     <div className="flex items-start gap-2 py-1.5">
@@ -67,12 +75,39 @@ function CallTypeRow({
 
       {/* Model selector */}
       <div className="flex-1">
-        <ModelSelector
-          value={defaultConfig}
-          onChange={onChange}
-          compact
-          showRecommendedBadge
-        />
+        <div className="space-y-1.5">
+          <label
+            className="flex items-center gap-1.5 text-[10px]"
+            style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+          >
+            <input
+              type="checkbox"
+              checked={hasOverride}
+              onChange={(e) => onToggleOverride(e.target.checked)}
+            />
+            OVERRIDE MODEL
+          </label>
+          {hasOverride ? (
+            <ModelSelector
+              value={effectiveConfig}
+              onChange={onChangeOverride}
+              compact
+              showRecommendedBadge
+            />
+          ) : (
+            <div
+              className="text-[10px] px-2 py-1"
+              style={{
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.border}`,
+                color: COLORS.textMuted,
+                fontFamily: MONO_FONT,
+              }}
+            >
+              INHERITING ORCHESTRATOR: {formatModelSummary(effectiveConfig)}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -80,6 +115,7 @@ function CallTypeRow({
 
 export function OrchestratorIntelligencePanel({
   value,
+  orchestratorModel,
   onChange,
   defaultExpanded = false,
 }: OrchestratorIntelligencePanelProps) {
@@ -90,6 +126,22 @@ export function OrchestratorIntelligencePanel({
       onChange({ ...value, [callType]: config });
     },
     [value, onChange]
+  );
+
+  const handleToggleOverride = useCallback(
+    (callType: OrchestratorCallType, enabled: boolean) => {
+      if (enabled) {
+        onChange({
+          ...value,
+          [callType]: value[callType] ?? { ...orchestratorModel }
+        });
+        return;
+      }
+      const next: OrchestratorIntelligenceConfig = { ...value };
+      delete next[callType];
+      onChange(next);
+    },
+    [value, onChange, orchestratorModel]
   );
 
   return (
@@ -155,8 +207,10 @@ export function OrchestratorIntelligencePanel({
             <CallTypeRow
               key={info.key}
               info={info}
-              config={value[info.key]}
-              onChange={(config) => handleCallTypeChange(info.key, config)}
+              overrideConfig={value[info.key]}
+              inheritedConfig={orchestratorModel}
+              onToggleOverride={(enabled) => handleToggleOverride(info.key, enabled)}
+              onChangeOverride={(config) => handleCallTypeChange(info.key, config)}
             />
           ))}
         </div>

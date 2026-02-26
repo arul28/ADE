@@ -219,6 +219,7 @@ type CreateSnapshotResult = {
 };
 
 type ResolvedOrchestratorRuntimeConfig = {
+  teammatePlanMode: "off" | "auto" | "required";
   requirePlanReview: boolean;
   maxParallelWorkers: number;
   defaultMergePolicy: "sequential" | "batch-at-end" | "per-step";
@@ -335,7 +336,6 @@ const RETRYABLE_ERROR_CLASSES = new Set<OrchestratorErrorClass>([
   "claim_conflict",
   "resume_recovered"
 ]);
-const DEFAULT_RETRY_BACKOFF_MS = 5_000;
 const MAX_TIMELINE_LIMIT = 1_000;
 const GATE_THRESHOLDS = {
   maxTrackedPipelineLatencyMs: 300_000,
@@ -353,6 +353,7 @@ const GATE_THRESHOLDS = {
 } as const;
 
 const DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG: ResolvedOrchestratorRuntimeConfig = {
+  teammatePlanMode: "auto",
   requirePlanReview: false,
   maxParallelWorkers: 4,
   defaultMergePolicy: "sequential",
@@ -1132,67 +1133,23 @@ function parseStepPolicyFromMetadata(metadata: Record<string, unknown>): StartOr
   };
 }
 
-function parseStepPriority(step: OrchestratorStep): number {
-  const raw = step.metadata?.priority;
-  if (typeof raw === "number" && Number.isFinite(raw)) return Math.floor(raw);
-  if (typeof raw === "string") {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "urgent") return 1;
-    if (normalized === "high") return 2;
-    if (normalized === "normal") return 3;
-    if (normalized === "low") return 4;
-    const asNumber = Number(normalized);
-    if (Number.isFinite(asNumber)) return Math.floor(asNumber);
+function parseStepAIPriority(step: OrchestratorStep): number | null {
+  const numeric = Number(step.metadata?.aiPriority ?? Number.NaN);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function readyStepOrderComparator(a: OrchestratorStep, b: OrchestratorStep) {
+  const aiPriorityA = parseStepAIPriority(a);
+  const aiPriorityB = parseStepAIPriority(b);
+  if (aiPriorityA != null || aiPriorityB != null) {
+    if (aiPriorityA == null) return 1;
+    if (aiPriorityB == null) return -1;
+    const aiPriorityDiff = aiPriorityB - aiPriorityA;
+    if (aiPriorityDiff !== 0) return aiPriorityDiff;
   }
-  return 50;
-}
-
-function buildStepDepthMap(steps: OrchestratorStep[]): Map<string, number> {
-  const byId = new Map<string, OrchestratorStep>();
-  for (const step of steps) byId.set(step.id, step);
-  const memo = new Map<string, number>();
-  const visiting = new Set<string>();
-  const visit = (stepId: string): number => {
-    const cached = memo.get(stepId);
-    if (typeof cached === "number") return cached;
-    if (visiting.has(stepId)) return 0;
-    visiting.add(stepId);
-    const step = byId.get(stepId);
-    if (!step || step.dependencyStepIds.length === 0) {
-      memo.set(stepId, 0);
-      visiting.delete(stepId);
-      return 0;
-    }
-    let maxDepth = 0;
-    for (const depId of step.dependencyStepIds) {
-      const depDepth = visit(depId);
-      maxDepth = Math.max(maxDepth, depDepth + 1);
-    }
-    memo.set(stepId, maxDepth);
-    visiting.delete(stepId);
-    return maxDepth;
-  };
-  for (const step of steps) visit(step.id);
-  return memo;
-}
-
-function stableStepOrderComparator(args: { depthById: Map<string, number>; hashByStepId: Map<string, string> }) {
-  return (a: OrchestratorStep, b: OrchestratorStep) => {
-    const depthDiff = (args.depthById.get(a.id) ?? 0) - (args.depthById.get(b.id) ?? 0);
-    if (depthDiff !== 0) return depthDiff;
-
-    const priorityDiff = parseStepPriority(a) - parseStepPriority(b);
-    if (priorityDiff !== 0) return priorityDiff;
-
-    const planOrderDiff = a.stepIndex - b.stepIndex;
-    if (planOrderDiff !== 0) return planOrderDiff;
-
-    const hashA = args.hashByStepId.get(a.id) ?? "";
-    const hashB = args.hashByStepId.get(b.id) ?? "";
-    if (hashA !== hashB) return hashA.localeCompare(hashB);
-
-    return a.stepKey.localeCompare(b.stepKey);
-  };
+  const createdOrderDiff = a.createdAt.localeCompare(b.createdAt);
+  if (createdOrderDiff !== 0) return createdOrderDiff;
+  return a.id.localeCompare(b.id);
 }
 
 export function createOrchestratorService({
@@ -1225,6 +1182,10 @@ export function createOrchestratorService({
     const orchestrator = asRecord(ai?.orchestrator);
     if (!orchestrator) return DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG;
     const out: ResolvedOrchestratorRuntimeConfig = { ...DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG };
+    const teammatePlanMode = String(orchestrator.teammatePlanMode ?? orchestrator.teammate_plan_mode ?? "").trim();
+    if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
+      out.teammatePlanMode = teammatePlanMode;
+    }
     out.requirePlanReview = asBool(orchestrator.requirePlanReview, asBool(orchestrator.require_plan_review, out.requirePlanReview));
     out.maxParallelWorkers = asIntInRange(
       orchestrator.maxParallelWorkers ?? orchestrator.max_parallel_workers,
@@ -4269,15 +4230,24 @@ export function createOrchestratorService({
             : typeof row.detail === "string" && row.detail.trim().length
               ? row.detail.trim()
               : "";
-        const requiresPlanApproval =
-          metadata.requiresPlanApproval === true
-          || inferredPattern === "plan_then_implement"
-          || stepType === "analysis";
+        const explicitRequiresPlanApproval =
+          typeof metadata.requiresPlanApproval === "boolean" ? metadata.requiresPlanApproval : null;
+        const inferredRequiresPlanApproval =
+          inferredPattern === "plan_then_implement" || stepType === "analysis";
+        const isAiTeammate = explicitExecutor === "claude" || explicitExecutor === "codex";
+        const requiresPlanApproval = explicitRequiresPlanApproval != null
+          ? explicitRequiresPlanApproval
+          : runtimeConfig.teammatePlanMode === "required" && isAiTeammate
+            ? true
+            : runtimeConfig.teammatePlanMode === "off"
+              ? false
+              : inferredRequiresPlanApproval;
         const mergedMetadata: Record<string, unknown> = {
           ...metadata,
           instructions: stepInstructions,
           stepType,
           requiresPlanApproval,
+          teammatePlanMode: runtimeConfig.teammatePlanMode,
           coordinationPattern: metadata.coordinationPattern ?? inferredPattern
         };
         if (
@@ -4361,6 +4331,7 @@ export function createOrchestratorService({
             patterns: coordinationPatterns
           },
 	          orchestratorConfig: {
+	            teammatePlanMode: runtimeConfig.teammatePlanMode,
 	            maxParallelWorkers: runtimeConfig.maxParallelWorkers,
 	            contextPressureThreshold: runtimeConfig.contextPressureThreshold,
 	            progressiveLoading: runtimeConfig.progressiveLoading,
@@ -4413,97 +4384,20 @@ export function createOrchestratorService({
 
         const autopilot = parseAutopilotConfig(run.metadata);
         if (!autopilot.enabled) return 0;
-        const parallelismCap = Math.max(1, autopilot.parallelismCap);
+        const parallelismCap = Math.max(1, Math.min(32, autopilot.parallelismCap));
         const computeEffectiveParallelismCap = (): {
           cap: number;
           reasons: string[];
-          pressure: {
-            gateStatus: "pass" | "warn" | "fail" | "unknown";
-            activeClaimConflicts: number;
-            contextPressure: number | null;
-            resourcePressure: number | null;
-          };
         } => {
-          let cap = parallelismCap;
-          const reasons: string[] = [];
-          let gateStatus: "pass" | "warn" | "fail" | "unknown" = "unknown";
-          try {
-            const gateReport = this.getLatestGateReport();
-            gateStatus = gateReport.overallStatus;
-            if (gateReport.overallStatus === "fail") {
-              cap = Math.min(cap, 1);
-              reasons.push("gate_fail");
-            } else if (gateReport.overallStatus === "warn") {
-              cap = Math.min(cap, 2);
-              reasons.push("gate_warn");
-            }
-          } catch {
-            // Ignore gate-report lookup failures; base cap still applies.
-          }
-
-          // Don't let gate pressure reduce below 2 during initial ramp-up
-          // (gate has no meaningful data before first attempts produce output)
-          if (startedAttempts === 0 && cap < Math.min(2, parallelismCap)) {
-            cap = Math.min(2, parallelismCap);
-            reasons.push("initial_ramp_bypass");
-          }
-
           const latestRunRow = getRunRow(runId);
-          let activeClaimConflicts = 0;
-          let contextPressure: number | null = null;
-          let resourcePressure: number | null = null;
-          if (latestRunRow) {
-            const runtimeCursor = (() => {
-              if (!latestRunRow.runtime_cursor_json) return null;
-              try {
-                const parsed = JSON.parse(latestRunRow.runtime_cursor_json) as Record<string, unknown>;
-                return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-              } catch {
-                return null;
-              }
-            })();
-            const controlPack = runtimeCursor?.controlPackV2;
-            if (controlPack && typeof controlPack === "object" && !Array.isArray(controlPack)) {
-              const rawConflicts = Number((controlPack as Record<string, unknown>).activeClaimConflicts);
-              if (Number.isFinite(rawConflicts) && rawConflicts > 0) {
-                activeClaimConflicts = Math.floor(rawConflicts);
-              }
-            }
-            const docsConsumed = Number(runtimeCursor?.docsConsumedBytes ?? Number.NaN);
-            const docsBudget = Number(runtimeCursor?.docsBudgetBytes ?? Number.NaN);
-            if (Number.isFinite(docsConsumed) && Number.isFinite(docsBudget) && docsBudget > 0) {
-              contextPressure = docsConsumed / docsBudget;
-            }
-            const runMeta = parseRecord(latestRunRow.metadata_json);
-            const rawResourcePressure = Number(runMeta?.resourcePressure ?? Number.NaN);
-            if (Number.isFinite(rawResourcePressure)) {
-              resourcePressure = Math.max(0, Math.min(1, rawResourcePressure));
-            }
-          }
-
-          if (activeClaimConflicts > 0) {
-            const conflictReduction = Math.min(Math.floor(parallelismCap / 2), activeClaimConflicts);
-            cap = Math.min(cap, Math.max(2, parallelismCap - conflictReduction));
-            reasons.push("claim_conflicts");
-          }
-          if (contextPressure != null && contextPressure >= 0.85) {
-            cap = Math.min(cap, 2);
-            reasons.push("context_pressure");
-          }
-          if (resourcePressure != null && resourcePressure >= 0.7) {
-            cap = Math.min(cap, 2);
-            reasons.push("resource_pressure");
-          }
-          return {
-            cap: Math.max(1, cap),
-            reasons,
-            pressure: {
-              gateStatus,
-              activeClaimConflicts,
-              contextPressure,
-              resourcePressure
-            }
-          };
+          const latestRunMetadata = latestRunRow ? parseRecord(latestRunRow.metadata_json) : null;
+          const aiDecisions = asRecord(latestRunMetadata?.aiDecisions);
+          const aiParallelismRaw = Number(aiDecisions?.parallelismCap ?? Number.NaN);
+          const aiParallelismCap = Number.isFinite(aiParallelismRaw)
+            ? Math.max(1, Math.min(32, Math.floor(aiParallelismRaw)))
+            : null;
+          if (aiParallelismCap != null) return { cap: aiParallelismCap, reasons: ["ai_decision_cap"] };
+          return { cap: parallelismCap, reasons: ["configured_cap"] };
         };
         let lastCapSignature = "";
 
@@ -4521,12 +4415,11 @@ export function createOrchestratorService({
             appendTimelineEvent({
               runId,
               eventType: "autopilot_parallelism_cap_adjusted",
-              reason: "dynamic_cap",
+              reason: effectiveCapState.reasons[0] ?? "configured_cap",
               detail: {
                 configuredCap: parallelismCap,
                 effectiveCap,
-                reasons: effectiveCapState.reasons,
-                pressure: effectiveCapState.pressure
+                reasons: effectiveCapState.reasons
               }
             });
           }
@@ -4535,16 +4428,10 @@ export function createOrchestratorService({
             .filter((attempt) => attempt.status === "running").length;
           if (runningAttemptCount >= effectiveCap) break;
 
-          const runSteps = listStepRows(runId).map(toStep);
-          const depthById = buildStepDepthMap(runSteps);
-          const hashByStepId = new Map<string, string>();
-          for (const step of runSteps) {
-            hashByStepId.set(step.id, createHash("sha256").update(step.stepKey).digest("hex"));
-          }
           const readySteps = listStepRows(runId)
             .map(toStep)
             .filter((step) => step.status === "ready")
-            .sort(stableStepOrderComparator({ depthById, hashByStepId }));
+            .sort(readyStepOrderComparator);
           if (!readySteps.length) break;
 
           // Phase 1 (sequential): pre-validate steps and collect spawn descriptors
@@ -6152,16 +6039,14 @@ export function createOrchestratorService({
 	      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
 	      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
 	      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
-	      const computedBackoff =
-	        shouldRetry
-	          ? Math.max(
-              0,
-              Math.floor(
-                args.retryBackoffMs
-                  ?? Math.min(10 * 60_000, DEFAULT_RETRY_BACKOFF_MS * Math.pow(2, Math.max(0, step.retryCount)))
-              )
-	            )
-	          : Math.max(0, Math.floor(args.retryBackoffMs ?? 0));
+	      const aiRetryBackoffRaw = Number(
+	        step.metadata?.aiRetryBackoffMs ?? step.metadata?.ai_retry_backoff_ms ?? Number.NaN
+	      );
+	      const aiRetryBackoffMs =
+	        Number.isFinite(aiRetryBackoffRaw) && aiRetryBackoffRaw >= 0
+	          ? Math.min(10 * 60_000, Math.floor(aiRetryBackoffRaw))
+	          : null;
+	      const computedBackoff = shouldRetry ? (aiRetryBackoffMs ?? 0) : 0;
 	      const defaultSummary =
 	        status === "succeeded"
 	          ? "Step completed."
@@ -6705,6 +6590,29 @@ export function createOrchestratorService({
         }
       });
       return resumed;
+    },
+
+    pauseRun(args: { runId: string; reason?: string; metadata?: Record<string, unknown> | null }): OrchestratorRun {
+      const runRow = getRunRow(args.runId);
+      if (!runRow) throw new Error(`Run not found: ${args.runId}`);
+      const run = toRun(runRow);
+      if (TERMINAL_RUN_STATUSES.has(run.status) || run.status === "paused") return run;
+
+      const patch: Record<string, SqlValue> = {};
+      if (typeof args.reason === "string" && args.reason.trim().length > 0) {
+        patch.last_error = args.reason.trim();
+      }
+      if (args.metadata && typeof args.metadata === "object" && !Array.isArray(args.metadata)) {
+        patch.metadata_json = JSON.stringify({
+          ...(parseRecord(runRow.metadata_json) ?? {}),
+          ...args.metadata
+        });
+      }
+
+      updateRunStatus(run.id, "paused", patch);
+      const updated = getRunRow(run.id);
+      if (!updated) throw new Error(`Run not found after pause: ${run.id}`);
+      return toRun(updated);
     },
 
     cancelRun(args: { runId: string; reason?: string }) {

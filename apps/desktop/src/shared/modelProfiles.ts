@@ -132,6 +132,62 @@ export const ORCHESTRATOR_CALL_TYPES: CallTypeInfo[] = [
     description: "Responds to user messages in the mission thread. Conversational and context-aware.",
     defaultProvider: "claude",
     recommended: "claude-sonnet-4-6"
+  },
+  {
+    key: "lane_strategy",
+    label: "Lane Strategy",
+    description: "Chooses lane-level execution strategy for new work and integration sequencing.",
+    defaultProvider: "claude",
+    recommended: "claude-sonnet-4-6"
+  },
+  {
+    key: "step_transition",
+    label: "Step Transition",
+    description: "Determines when a step should advance, pause, or wait for additional signals.",
+    defaultProvider: "claude",
+    recommended: "claude-haiku-4-5-20251001"
+  },
+  {
+    key: "retry_decision",
+    label: "Retry Decision",
+    description: "Decides whether to retry a failed attempt and with what retry posture.",
+    defaultProvider: "claude",
+    recommended: "claude-haiku-4-5-20251001"
+  },
+  {
+    key: "timeout_estimation",
+    label: "Timeout Estimation",
+    description: "Estimates expected duration and timeout posture for upcoming work.",
+    defaultProvider: "claude",
+    recommended: "claude-haiku-4-5-20251001"
+  },
+  {
+    key: "step_priority",
+    label: "Step Priority",
+    description: "Ranks runnable steps to choose which work should execute next.",
+    defaultProvider: "claude",
+    recommended: "claude-haiku-4-5-20251001"
+  },
+  {
+    key: "parallelism_decision",
+    label: "Parallelism Decision",
+    description: "Adjusts worker parallelism based on risk, dependencies, and resource pressure.",
+    defaultProvider: "claude",
+    recommended: "claude-sonnet-4-6"
+  },
+  {
+    key: "stagnation_evaluation",
+    label: "Stagnation Evaluation",
+    description: "Detects stalled progress patterns and decides when escalation is needed.",
+    defaultProvider: "claude",
+    recommended: "claude-haiku-4-5-20251001"
+  },
+  {
+    key: "recovery_decision",
+    label: "Recovery Decision",
+    description: "Selects recovery strategy after repeated failures or stuck states.",
+    defaultProvider: "claude",
+    recommended: "claude-sonnet-4-6"
   }
 ];
 
@@ -152,6 +208,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     description: "Balanced setup: Codex for implementation/review/verification, Claude for orchestration and planning.",
     isBuiltIn: true,
     orchestratorModel: CLAUDE_SONNET,
+    decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_SONNET,
       implementation: CODEX_53,
@@ -169,6 +226,14 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       plan_adjustment: CLAUDE_SONNET,
       intervention_handling: CLAUDE_SONNET,
       chat_response: CLAUDE_SONNET,
+      lane_strategy: CLAUDE_SONNET,
+      step_transition: CLAUDE_HAIKU,
+      retry_decision: CLAUDE_HAIKU,
+      timeout_estimation: CLAUDE_HAIKU,
+      step_priority: CLAUDE_HAIKU,
+      parallelism_decision: CLAUDE_SONNET,
+      stagnation_evaluation: CLAUDE_HAIKU,
+      recovery_decision: CLAUDE_SONNET,
     }
   },
   {
@@ -177,6 +242,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     description: "Minimizes cost and latency. Uses lightweight models everywhere. Good for simple tasks.",
     isBuiltIn: true,
     orchestratorModel: CLAUDE_HAIKU,
+    decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_HAIKU,
       implementation: CODEX_MINI,
@@ -194,6 +260,14 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       plan_adjustment: CLAUDE_HAIKU,
       intervention_handling: CLAUDE_HAIKU,
       chat_response: CLAUDE_HAIKU,
+      lane_strategy: CLAUDE_HAIKU,
+      step_transition: CLAUDE_HAIKU,
+      retry_decision: CLAUDE_HAIKU,
+      timeout_estimation: CLAUDE_HAIKU,
+      step_priority: CLAUDE_HAIKU,
+      parallelism_decision: CLAUDE_HAIKU,
+      stagnation_evaluation: CLAUDE_HAIKU,
+      recovery_decision: CLAUDE_HAIKU,
     },
     smartBudget: {
       enabled: true,
@@ -207,6 +281,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     description: "Uses the most capable models for every task. Higher cost, best results for complex projects.",
     isBuiltIn: true,
     orchestratorModel: CLAUDE_OPUS,
+    decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_OPUS,
       implementation: { provider: "codex", modelId: "gpt-5.1-codex-max", thinkingLevel: "high" },
@@ -224,6 +299,14 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       plan_adjustment: CLAUDE_OPUS,
       intervention_handling: CLAUDE_OPUS,
       chat_response: CLAUDE_SONNET,
+      lane_strategy: CLAUDE_OPUS,
+      step_transition: CLAUDE_SONNET,
+      retry_decision: CLAUDE_SONNET,
+      timeout_estimation: CLAUDE_SONNET,
+      step_priority: CLAUDE_SONNET,
+      parallelism_decision: CLAUDE_OPUS,
+      stagnation_evaluation: CLAUDE_SONNET,
+      recovery_decision: CLAUDE_OPUS,
     }
   },
   {
@@ -232,6 +315,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     description: "Uses Codex (OpenAI) for everything. No Claude API calls. Good if you only have OpenAI access.",
     isBuiltIn: true,
     orchestratorModel: CODEX_53,
+    decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CODEX_53,
       implementation: CODEX_53,
@@ -249,6 +333,14 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       plan_adjustment: CODEX_53,
       intervention_handling: CODEX_53,
       chat_response: CODEX_53,
+      lane_strategy: CODEX_53,
+      step_transition: CODEX_MINI,
+      retry_decision: CODEX_MINI,
+      timeout_estimation: CODEX_MINI,
+      step_priority: CODEX_MINI,
+      parallelism_decision: CODEX_53,
+      stagnation_evaluation: CODEX_MINI,
+      recovery_decision: CODEX_53,
     }
   },
   {
@@ -257,6 +349,7 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
     description: "Uses Claude for everything. No Codex/OpenAI API calls. Good if you only have Anthropic access.",
     isBuiltIn: true,
     orchestratorModel: CLAUDE_SONNET,
+    decisionTimeoutCapHours: 24,
     phaseDefaults: {
       planning: CLAUDE_SONNET,
       implementation: CLAUDE_SONNET,
@@ -274,6 +367,14 @@ export const BUILT_IN_PROFILES: MissionModelProfile[] = [
       plan_adjustment: CLAUDE_SONNET,
       intervention_handling: CLAUDE_SONNET,
       chat_response: CLAUDE_SONNET,
+      lane_strategy: CLAUDE_SONNET,
+      step_transition: CLAUDE_HAIKU,
+      retry_decision: CLAUDE_HAIKU,
+      timeout_estimation: CLAUDE_HAIKU,
+      step_priority: CLAUDE_HAIKU,
+      parallelism_decision: CLAUDE_SONNET,
+      stagnation_evaluation: CLAUDE_HAIKU,
+      recovery_decision: CLAUDE_SONNET,
     }
   }
 ];

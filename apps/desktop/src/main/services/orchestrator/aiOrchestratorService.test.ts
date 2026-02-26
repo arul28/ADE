@@ -65,6 +65,135 @@ const VALID_PLANNER_PLAN = JSON.stringify({
   handoffPolicy: { externalConflictDefault: "intervention" }
 });
 
+function buildDefaultDecisionStructuredOutput(prompt: string): Record<string, unknown> | null {
+  const normalized = prompt.toLowerCase();
+  if (normalized.includes("decision: lane strategy")) {
+    const stepKeys = [...prompt.matchAll(/"stepKey"\s*:\s*"([^"]+)"/g)]
+      .map((match) => match[1]?.trim())
+      .filter((value): value is string => Boolean(value));
+    const uniqueStepKeys = [...new Set(stepKeys)];
+    const stepAssignments = uniqueStepKeys.map((stepKey, index) => ({
+      stepKey,
+      laneLabel: index === 1 ? "parallel-1" : "base",
+      rationale: index === 1 ? "Run an independent branch in a child lane." : "Keep on the base lane."
+    }));
+    return {
+      strategy: "dependency_parallel",
+      maxParallelLanes: 3,
+      rationale: "Independent steps can run in parallel lanes.",
+      confidence: 0.9,
+      stepAssignments
+    };
+  }
+  if (normalized.includes("decision: state transition")) {
+    return {
+      actionType: "continue",
+      reason: "No blockers detected.",
+      rationale: "The completed step can transition forward safely.",
+      nextStatus: null,
+      retryDelayMs: null,
+      timeoutBudgetMs: null,
+      confidence: 0.86
+    };
+  }
+  if (normalized.includes("decision: parallelism cap")) {
+    return {
+      parallelismCap: 2,
+      rationale: "Use conservative mission-start parallelism.",
+      confidence: 0.78
+    };
+  }
+  if (normalized.includes("decision: retry policy")) {
+    return {
+      shouldRetry: true,
+      delayMs: 5000,
+      reason: "Transient failure pattern detected.",
+      adjustedHint: null,
+      confidence: 0.75
+    };
+  }
+  if (normalized.includes("decision: timeout budget")) {
+    return {
+      timeoutMs: 120000,
+      rationale: "Default timeout budget for this step category.",
+      confidence: 0.72
+    };
+  }
+  if (normalized.includes("decision: step priority")) {
+    return {
+      priority: 50,
+      laneHint: null,
+      rationale: "Balanced default priority.",
+      confidence: 0.7
+    };
+  }
+  if (normalized.includes("decision: stagnation evaluation")) {
+    return {
+      isStagnating: false,
+      severity: "low",
+      recommendedAction: "continue",
+      rationale: "Recent activity indicates forward progress.",
+      confidence: 0.7
+    };
+  }
+  if (normalized.includes("decision: quality gate")) {
+    return {
+      verdict: "pass",
+      reason: "No blocking findings.",
+      blockingFindings: [],
+      confidence: 0.82
+    };
+  }
+  if (normalized.includes("decision: recovery action")) {
+    return {
+      action: "retry_with_hint",
+      reason: "Retrying with explicit guidance is safest.",
+      retryHint: "Retry once with focused diagnostics.",
+      confidence: 0.68
+    };
+  }
+  if (normalized.includes("decision: mission replan")) {
+    return {
+      shouldReplan: false,
+      summary: "Current mission plan remains valid.",
+      planDelta: [],
+      confidence: 0.74
+    };
+  }
+  return null;
+}
+
+function createAiTaskResult(structuredOutput: Record<string, unknown> | null, textFallback = "{}") {
+  return {
+    text: structuredOutput ? JSON.stringify(structuredOutput) : textFallback,
+    structuredOutput,
+    provider: "claude",
+    model: "sonnet",
+    sessionId: null,
+    inputTokens: 100,
+    outputTokens: 50,
+    durationMs: 1000
+  };
+}
+
+function createStagnationRecoveryAiIntegrationService() {
+  return createMockAiIntegrationService({
+    executeTask: vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      const structuredOutput = prompt.includes("Decision: stagnation evaluation")
+        ? {
+            isStagnating: true,
+            severity: "high",
+            recommendedAction: "continue",
+            rationale: "Attempt has exceeded timeout with no meaningful progress.",
+            confidence: 0.93
+          }
+        : buildDefaultDecisionStructuredOutput(prompt);
+      return createAiTaskResult(structuredOutput);
+    })
+  });
+}
+
 function createMockAiIntegrationService(overrides: {
   executeTask?: (...args: any[]) => Promise<any>;
   planMission?: (...args: any[]) => Promise<any>;
@@ -75,15 +204,10 @@ function createMockAiIntegrationService(overrides: {
     getFeatureFlag: () => true,
     getDailyBudgetLimit: () => null,
     getDailyUsage: () => 0,
-    executeTask: overrides.executeTask ?? vi.fn().mockResolvedValue({
-      text: "{}",
-      structuredOutput: null,
-      provider: "claude",
-      model: "sonnet",
-      sessionId: null,
-      inputTokens: 100,
-      outputTokens: 50,
-      durationMs: 1000
+    executeTask: overrides.executeTask ?? vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      const structuredOutput = buildDefaultDecisionStructuredOutput(prompt);
+      return createAiTaskResult(structuredOutput);
     }),
     planMission: overrides.planMission ?? vi.fn().mockResolvedValue({
       text: VALID_PLANNER_PLAN,
@@ -103,8 +227,10 @@ function createMockAgentChatService(overrides: {
   createSession?: (...args: any[]) => Promise<any>;
   sendMessage?: (...args: any[]) => Promise<void>;
   steer?: (...args: any[]) => Promise<void>;
+  interrupt?: (...args: any[]) => Promise<void>;
   resumeSession?: (...args: any[]) => Promise<any>;
   listSessions?: (...args: any[]) => Promise<any[]>;
+  dispose?: (...args: any[]) => Promise<void>;
 } = {}) {
   return {
     createSession: overrides.createSession ?? vi.fn().mockResolvedValue({
@@ -119,8 +245,10 @@ function createMockAgentChatService(overrides: {
     }),
     sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue(undefined),
     steer: overrides.steer ?? vi.fn().mockResolvedValue(undefined),
+    interrupt: overrides.interrupt ?? vi.fn().mockResolvedValue(undefined),
     resumeSession: overrides.resumeSession ?? vi.fn().mockResolvedValue({}),
-    listSessions: overrides.listSessions ?? vi.fn().mockResolvedValue([])
+    listSessions: overrides.listSessions ?? vi.fn().mockResolvedValue([]),
+    dispose: overrides.dispose ?? vi.fn().mockResolvedValue(undefined)
   } as any;
 }
 
@@ -184,6 +312,33 @@ function patchWorkerDeliveryMetadata(
   );
 }
 
+function setMissionPlanningMode(
+  db: Awaited<ReturnType<typeof openKvDb>>,
+  missionId: string,
+  mode: "off" | "auto" | "manual_review"
+): void {
+  const row = db.get<{ metadata_json: string | null }>(
+    `select metadata_json from missions where id = ? limit 1`,
+    [missionId]
+  );
+  const metadata = row?.metadata_json ? JSON.parse(row.metadata_json) : {};
+  const executionPolicy =
+    metadata && typeof metadata.executionPolicy === "object" && !Array.isArray(metadata.executionPolicy)
+      ? metadata.executionPolicy
+      : {};
+  const planning =
+    executionPolicy && typeof executionPolicy.planning === "object" && !Array.isArray(executionPolicy.planning)
+      ? executionPolicy.planning
+      : {};
+  executionPolicy.planning = {
+    ...planning,
+    mode,
+    ...(mode === "off" ? {} : { model: "codex" })
+  };
+  metadata.executionPolicy = executionPolicy;
+  db.run(`update missions set metadata_json = ? where id = ?`, [JSON.stringify(metadata), missionId]);
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
@@ -199,6 +354,9 @@ async function createFixture(args: {
   aiIntegrationService?: any;
   laneService?: any;
   agentChatService?: any;
+  orchestratorConfig?: Record<string, unknown>;
+  logger?: any;
+  hookCommandRunner?: any;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ai-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -268,7 +426,8 @@ async function createFixture(args: {
       effective: {
         ai: {
           orchestrator: {
-            requirePlanReview: args.requirePlanReview === true
+            requirePlanReview: args.requirePlanReview === true,
+            ...(args.orchestratorConfig ?? {})
           }
         }
       }
@@ -342,14 +501,15 @@ async function createFixture(args: {
   });
   const aiOrchestratorService = createAiOrchestratorService({
     db,
-    logger: createLogger(),
+    logger: args.logger ?? createLogger(),
     missionService,
     orchestratorService,
     agentChatService: args.agentChatService ?? null,
     laneService,
     projectConfigService,
     aiIntegrationService,
-    projectRoot
+    projectRoot,
+    hookCommandRunner: args.hookCommandRunner
   });
 
   return {
@@ -499,7 +659,7 @@ describe("aiOrchestratorService", () => {
       expect(completedStates[0].state).toBe("completed");
       expect(completedStates[0].completedAt).toBeTruthy();
     } finally {
-      fixture.dispose();
+      fixture.aiOrchestratorService.dispose();
     }
   });
 
@@ -549,12 +709,507 @@ describe("aiOrchestratorService", () => {
       expect(states.length).toBe(1);
       expect(states[0].state).toBe("failed");
     } finally {
+      fixture.aiOrchestratorService.dispose();
+    }
+  });
+
+  it("gracefully cancels runs by notifying and shutting down active worker sessions before hard cancel", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const interrupt = vi.fn().mockResolvedValue(undefined);
+    const disposeSession = vi.fn().mockResolvedValue(undefined);
+    const fixture = await createFixture({
+      agentChatService: createMockAgentChatService({
+        sendMessage,
+        interrupt,
+        dispose: disposeSession
+      })
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Cancel the run after worker startup.",
+        laneId: fixture.laneId
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [{ stepKey: "implement", title: "Implement", stepIndex: 0 }]
+      });
+      const runId = started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        ["worker-session-cancel-1", attempt.id]
+      );
+
+      const canceled = await fixture.aiOrchestratorService.cancelRunGracefully({
+        runId,
+        reason: "Canceled from test."
+      });
+      expect(canceled.status).toBe("canceled");
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "worker-session-cancel-1",
+          text: expect.stringContaining("Run cancellation requested")
+        })
+      );
+      expect(interrupt).toHaveBeenCalledWith({ sessionId: "worker-session-cancel-1" });
+      expect(disposeSession).toHaveBeenCalledWith({ sessionId: "worker-session-cancel-1" });
+
+      const refreshed = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const refreshedAttempt = refreshed.attempts.find((entry) => entry.id === attempt.id);
+      expect(refreshedAttempt?.status).toBe("canceled");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("still force-cancels runs when graceful shutdown worker calls fail", async () => {
+    const sendMessage = vi.fn().mockRejectedValue(new Error("send failed"));
+    const interrupt = vi.fn().mockRejectedValue(new Error("interrupt failed"));
+    const disposeSession = vi.fn().mockRejectedValue(new Error("dispose failed"));
+    const fixture = await createFixture({
+      agentChatService: createMockAgentChatService({
+        sendMessage,
+        interrupt,
+        dispose: disposeSession
+      })
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Cancel run even if worker shutdown errors.",
+        laneId: fixture.laneId
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [{ stepKey: "implement", title: "Implement", stepIndex: 0 }]
+      });
+      const runId = started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_kind = 'codex',
+              executor_session_id = ?
+          where id = ?
+        `,
+        ["worker-session-cancel-2", attempt.id]
+      );
+
+      const canceled = await fixture.aiOrchestratorService.cancelRunGracefully({
+        runId,
+        reason: "Cancel with failures."
+      });
+      expect(canceled.status).toBe("canceled");
+      expect(sendMessage).toHaveBeenCalled();
+      expect(interrupt).toHaveBeenCalled();
+      expect(disposeSession).toHaveBeenCalled();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("cleans up mission lanes through explicit team resource cleanup API", async () => {
+    const archiveLane = vi.fn().mockImplementation(({ laneId }: { laneId: string }) => {
+      if (laneId === "lane-cleanup-b") {
+        throw new Error("Lane not found");
+      }
+    });
+    const fixture = await createFixture({
+      laneService: {
+        archive: archiveLane
+      } as any
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Archive lanes after mission cancellation.",
+        laneId: fixture.laneId
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          { stepKey: "lane-a", title: "Lane A", stepIndex: 0 },
+          { stepKey: "lane-b", title: "Lane B", stepIndex: 1 }
+        ]
+      });
+      const runId = started.run.id;
+      const laneInsertTime = new Date().toISOString();
+
+      fixture.db.run(
+        `
+          insert into lanes(
+            id,
+            project_id,
+            name,
+            description,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            is_edit_protected,
+            parent_lane_id,
+            color,
+            icon,
+            tags_json,
+            status,
+            created_at,
+            archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "lane-cleanup-a",
+          fixture.projectId,
+          "Cleanup A",
+          null,
+          "worktree",
+          "main",
+          "feature/cleanup-a",
+          fixture.projectRoot,
+          null,
+          0,
+          null,
+          null,
+          null,
+          null,
+          "active",
+          laneInsertTime,
+          null
+        ]
+      );
+      fixture.db.run(
+        `
+          insert into lanes(
+            id,
+            project_id,
+            name,
+            description,
+            lane_type,
+            base_ref,
+            branch_ref,
+            worktree_path,
+            attached_root_path,
+            is_edit_protected,
+            parent_lane_id,
+            color,
+            icon,
+            tags_json,
+            status,
+            created_at,
+            archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "lane-cleanup-b",
+          fixture.projectId,
+          "Cleanup B",
+          null,
+          "worktree",
+          "main",
+          "feature/cleanup-b",
+          fixture.projectRoot,
+          null,
+          0,
+          null,
+          null,
+          null,
+          null,
+          "active",
+          laneInsertTime,
+          null
+        ]
+      );
+
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const stepA = graph.steps.find((step) => step.stepKey === "lane-a");
+      const stepB = graph.steps.find((step) => step.stepKey === "lane-b");
+      if (!stepA || !stepB) throw new Error("Expected lane steps");
+
+      fixture.db.run(`update orchestrator_steps set lane_id = ? where id = ?`, ["lane-cleanup-a", stepA.id]);
+      fixture.db.run(`update orchestrator_steps set lane_id = ? where id = ?`, ["lane-cleanup-b", stepB.id]);
+
+      const result = await fixture.aiOrchestratorService.cleanupTeamResources({
+        missionId: mission.id,
+        runId,
+        cleanupLanes: true
+      });
+
+      expect(result.runId).toBe(runId);
+      expect(result.laneIds).toEqual(expect.arrayContaining(["lane-cleanup-a", "lane-cleanup-b"]));
+      expect(result.lanesArchived).toEqual(expect.arrayContaining(["lane-cleanup-a"]));
+      expect(result.lanesSkipped).toEqual(expect.arrayContaining(["lane-cleanup-b"]));
+      expect(result.laneErrors).toHaveLength(0);
+      expect(archiveLane).toHaveBeenCalledWith({ laneId: "lane-cleanup-a" });
+      expect(archiveLane).toHaveBeenCalledWith({ laneId: "lane-cleanup-b" });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("dispatches TaskCompleted hooks on step completion runtime events", async () => {
+    const hookCommandRunner = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      durationMs: 7,
+      stdout: "task done",
+      stderr: "",
+      spawnError: null
+    });
+    const fixture = await createFixture({
+      orchestratorConfig: {
+        hooks: {
+          TaskCompleted: {
+            command: "echo task-completed",
+            timeoutMs: 2500
+          }
+        }
+      },
+      hookCommandRunner
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Dispatch completion hooks for finished steps.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded"
+      });
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-step-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed"
+      });
+
+      await waitFor(() => hookCommandRunner.mock.calls.length === 1);
+      const [hookCall] = hookCommandRunner.mock.calls[0] as [Record<string, string | number | Record<string, string>>];
+      expect(hookCall.command).toBe("echo task-completed");
+      expect(hookCall.timeoutMs).toBe(2500);
+      expect((hookCall.env as Record<string, string>).ADE_HOOK_EVENT).toBe("TaskCompleted");
+      expect((hookCall.env as Record<string, string>).ADE_HOOK_RUN_ID).toBe(runId);
+      expect((hookCall.env as Record<string, string>).ADE_HOOK_STEP_ID).toBe(readyStep.id);
+
+      await waitFor(() => {
+        const events = fixture.orchestratorService
+          .listRuntimeEvents({ runId, eventTypes: ["progress"], limit: 200 })
+          .filter((event) => {
+            const payload = event.payload as Record<string, unknown> | null;
+            return payload?.source === "orchestrator_hook" && payload?.hookEvent === "TaskCompleted";
+          });
+        const phases = events.map((event) => (event.payload as Record<string, unknown> | null)?.phase);
+        return phases.includes("started") && phases.includes("succeeded");
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("dispatches TeammateIdle hook only on transition into waiting input", async () => {
+    const hookCommandRunner = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      durationMs: 5,
+      stdout: "idle",
+      stderr: "",
+      spawnError: null
+    });
+    const fixture = await createFixture({
+      orchestratorConfig: {
+        hooks: {
+          TeammateIdle: {
+            command: "echo teammate-idle",
+            timeoutMs: 2200
+          }
+        }
+      },
+      hookCommandRunner
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Track worker waiting-input transitions.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      const sessionId = "session-idle-hook-1";
+      fixture.db.run(
+        `update orchestrator_attempts set executor_kind = 'codex', executor_session_id = ? where id = ?`,
+        [sessionId, attempt.id]
+      );
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: readyStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "started"
+      });
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "waiting-input",
+        lastOutputPreview: "Need approval to continue.",
+        at: new Date().toISOString()
+      });
+      await waitFor(() => hookCommandRunner.mock.calls.length === 1);
+      const [hookCall] = hookCommandRunner.mock.calls[0] as [Record<string, string | number | Record<string, string>>];
+      expect(hookCall.command).toBe("echo teammate-idle");
+      expect((hookCall.env as Record<string, string>).ADE_HOOK_EVENT).toBe("TeammateIdle");
+      expect((hookCall.env as Record<string, string>).ADE_HOOK_ATTEMPT_ID).toBe(attempt.id);
+      expect((hookCall.env as Record<string, string>).ADE_HOOK_SESSION_ID).toBe(sessionId);
+
+      fixture.aiOrchestratorService.onSessionRuntimeSignal({
+        laneId: fixture.laneId,
+        sessionId,
+        runtimeState: "waiting-input",
+        lastOutputPreview: "Need approval to continue.",
+        at: new Date(Date.now() + 1000).toISOString()
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(hookCommandRunner).toHaveBeenCalledTimes(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps runtime handling alive when hook execution fails", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const hookCommandRunner = vi.fn().mockRejectedValue(new Error("hook transport unavailable"));
+    const fixture = await createFixture({
+      orchestratorConfig: {
+        hooks: {
+          TaskCompleted: {
+            command: "echo task-hook-fails"
+          }
+        }
+      },
+      hookCommandRunner,
+      logger
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Do not crash if runtime hooks fail.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.status === "ready");
+      if (!readyStep) throw new Error("Expected a ready step");
+
+      expect(() => {
+        fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+          type: "orchestrator-step-updated",
+          runId,
+          stepId: readyStep.id,
+          at: new Date().toISOString(),
+          reason: "attempt_completed"
+        });
+      }).not.toThrow();
+
+      await waitFor(() =>
+        logger.warn.mock.calls.some((entry) => entry[0] === "ai_orchestrator.hook_execution_failed")
+      );
+      expect(() => fixture.aiOrchestratorService.getWorkerStates({ runId })).not.toThrow();
+
+      const hookEvents = fixture.orchestratorService
+        .listRuntimeEvents({ runId, eventTypes: ["progress"], limit: 200 })
+        .filter((event) => {
+          const payload = event.payload as Record<string, unknown> | null;
+          return payload?.source === "orchestrator_hook" && payload?.hookEvent === "TaskCompleted";
+        });
+      expect(hookEvents.some((event) => (event.payload as Record<string, unknown> | null)?.phase === "failed")).toBe(true);
+    } finally {
       fixture.dispose();
     }
   });
 
   it("recovers stale non-manual attempts during health sweep", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      aiIntegrationService: createStagnationRecoveryAiIntegrationService()
+    });
     try {
       const mission = fixture.missionService.create({
         prompt: "Implement and validate orchestrator health checks.",
@@ -599,7 +1254,7 @@ describe("aiOrchestratorService", () => {
       const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
       const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
       expect(refreshedAttempt?.status).toBe("failed");
-      expect(refreshedAttempt?.errorMessage ?? "").toContain("Marking as stuck");
+      expect(refreshedAttempt?.errorMessage ?? "").toContain("stagnating");
     } finally {
       fixture.dispose();
     }
@@ -693,7 +1348,9 @@ describe("aiOrchestratorService", () => {
   });
 
   it("recovers running attempts with tracked sessions that go silent", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      aiIntegrationService: createStagnationRecoveryAiIntegrationService()
+    });
     try {
       const mission = fixture.missionService.create({
         prompt: "Recover no-output workers before they block the mission forever.",
@@ -776,7 +1433,7 @@ describe("aiOrchestratorService", () => {
       const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId });
       const refreshedAttempt = refreshedGraph.attempts.find((entry) => entry.id === attempt.id);
       expect(refreshedAttempt?.status).toBe("failed");
-      expect(refreshedAttempt?.errorMessage ?? "").toContain("Marking as stuck");
+      expect(refreshedAttempt?.errorMessage ?? "").toContain("stagnating");
     } finally {
       fixture.dispose();
     }
@@ -1618,14 +2275,15 @@ describe("aiOrchestratorService", () => {
         runMode: "manual",
         defaultExecutorKind: "manual"
       });
-      // Planning failure should fail the mission and not start a run
+      // Planning failure should pause startup for intervention and not start a run
       expect(launch.started).toBeNull();
       const refreshed = fixture.missionService.get(mission.id);
-      expect(refreshed?.status).toBe("failed");
+      expect(refreshed?.status).toBe("intervention_required");
       expect(refreshed?.lastError).toBeTruthy();
+      expect(refreshed?.openInterventions ?? 0).toBeGreaterThan(0);
 
       const chat = fixture.aiOrchestratorService.getChat({ missionId: mission.id });
-      expect(chat.some((entry) => entry.content.includes("Mission planning failed"))).toBe(true);
+      expect(chat.some((entry) => entry.content.includes("AI mission planning failed"))).toBe(true);
     } finally {
       fixture.dispose();
     }
@@ -1905,7 +2563,7 @@ describe("aiOrchestratorService", () => {
         laneId: fixture.laneId
       });
 
-      // Without aiIntegrationService, planWithAI throws and mission fails
+      // Without aiIntegrationService, planning must pause for intervention.
       const result = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "manual",
@@ -1916,7 +2574,8 @@ describe("aiOrchestratorService", () => {
       expect(result.blockedByPlanReview).toBe(false);
       expect(result.started).toBeNull();
       const refreshed = fixture.missionService.get(mission.id);
-      expect(refreshed?.status).toBe("failed");
+      expect(refreshed?.status).toBe("intervention_required");
+      expect(refreshed?.openInterventions ?? 0).toBeGreaterThan(0);
     } finally {
       fixture.dispose();
     }
@@ -1994,14 +2653,14 @@ describe("aiOrchestratorService", () => {
           now,
           now
         ]
-      );
+	      );
 
-      const started = await fixture.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        runMode: "autopilot",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
-      });
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const started = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "autopilot",
+	        defaultExecutorKind: "manual",
+	      });
       expect(started.blockedByPlanReview).toBe(false);
       expect(laneService.createChild).toHaveBeenCalledTimes(1);
 
@@ -2122,14 +2781,14 @@ describe("aiOrchestratorService", () => {
           now,
           now
         ]
-      );
+	      );
 
-      const started = await fixture.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        runMode: "autopilot",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
-      });
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const started = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "autopilot",
+	        defaultExecutorKind: "manual",
+	      });
       expect(started.blockedByPlanReview).toBe(false);
       expect(laneService.createChild).toHaveBeenCalledTimes(0);
 
@@ -2142,7 +2801,118 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("adjustPlanFromResults runs deterministic checks and logs progress", async () => {
+  it("pauses mission start when AI lane assignments omit required steps", async () => {
+    const executeTask = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: lane strategy")) {
+        const laneDecision = {
+          strategy: "dependency_parallel",
+          maxParallelLanes: 2,
+          rationale: "Attempt parallel split.",
+          confidence: 0.9,
+          stepAssignments: [
+            { stepKey: "step-a", laneLabel: "base", rationale: "Primary stream." }
+          ]
+        };
+        return createAiTaskResult(laneDecision);
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
+    });
+    const laneService = {
+      createChild: vi.fn().mockResolvedValue({ id: "lane-unused", name: "lane-unused" })
+    };
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({ executeTask }),
+      laneService
+    });
+    try {
+	      const mission = fixture.missionService.create({
+	        prompt: "Run in parallel and then integrate.",
+	        laneId: fixture.laneId,
+	        plannedSteps: [
+          { index: 0, title: "Step A", detail: "A", kind: "implementation", metadata: { stepType: "implementation", stepKey: "step-a", dependencyStepKeys: [] } },
+          { index: 1, title: "Step B", detail: "B", kind: "implementation", metadata: { stepType: "implementation", stepKey: "step-b", dependencyStepKeys: [] } },
+          { index: 2, title: "Integrate", detail: "Join", kind: "integration", metadata: { stepType: "integration", stepKey: "step-c", dependencyStepKeys: ["step-a", "step-b"] } }
+	        ]
+	      });
+
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const started = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "autopilot",
+	        defaultExecutorKind: "manual",
+      });
+      expect(started.started).toBeNull();
+      expect(started.blockedByPlanReview).toBe(false);
+
+      const refreshed = fixture.missionService.get(mission.id);
+      const intervention = refreshed?.interventions.find(
+        (entry) =>
+          entry.status === "open"
+          && entry.interventionType === "failed_step"
+          && entry.title === "AI lane assignments are incomplete"
+      );
+      expect(intervention).toBeTruthy();
+      expect(refreshed?.openInterventions ?? 0).toBeGreaterThan(0);
+      expect(String(intervention?.body ?? "")).toContain("step-b");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("pauses mission start when AI parallelism decision fails instead of applying a fallback cap", async () => {
+    const executeTask = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.toLowerCase().includes("decision: parallelism cap")) {
+        return createAiTaskResult(null, "not-json");
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
+    });
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({ executeTask })
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Run a simple mission with deterministic guardrails only.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Single step",
+            detail: "Implement a scoped change",
+            kind: "implementation",
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "off");
+
+      const started = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+
+      expect(started.started).toBeNull();
+      expect(started.blockedByPlanReview).toBe(false);
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(refreshedMission?.status).toBe("intervention_required");
+      expect(
+        refreshedMission?.interventions.some(
+          (entry) =>
+            entry.status === "open"
+            && entry.interventionType === "failed_step"
+            && entry.title === "AI parallelism decision failed"
+            && String(entry.metadata?.source ?? "") === "planning_decision"
+        )
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("handles completed shadow events without invoking legacy deterministic plan adjustment", async () => {
     const fixture = await createFixture();
     try {
       const mission = fixture.missionService.create({
@@ -2174,8 +2944,7 @@ describe("aiOrchestratorService", () => {
         status: "succeeded"
       });
 
-      // adjustPlanFromResults is called internally via onOrchestratorRuntimeEvent
-      // This should not throw even without AI
+      // Completed shadow event should be tolerated and should not throw.
       expect(() => {
         fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
           type: "orchestrator-attempt-updated",
@@ -3273,35 +4042,517 @@ describe("aiOrchestratorService", () => {
     }
   });
 
-  it("evaluates quality gate on attempt_completed for gate-phase step and triggers recovery on failure", async () => {
-    const executeTaskMock = vi.fn().mockResolvedValue({
-      text: JSON.stringify({ verdict: "fail", reason: "Tests have 3 failures" }),
-      structuredOutput: null,
-      provider: "claude",
-      model: "sonnet",
-      sessionId: null,
-      inputTokens: 100,
-      outputTokens: 50,
-      durationMs: 500
+  it("invokes AI transition handling on step completion and pauses when decision fails", async () => {
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: state transition")) {
+        return createAiTaskResult(null, "not-json");
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
+    });
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
+    });
+    try {
+	      const mission = fixture.missionService.create({
+	        prompt: "Implement feature and verify behavior.",
+	        laneId: fixture.laneId,
+	        plannedSteps: [
+          { index: 0, title: "Implement feature", detail: "Write code", kind: "implementation", metadata: { stepType: "implementation" } },
+          { index: 1, title: "Verify behavior", detail: "Validate results", kind: "implementation", metadata: { stepType: "implementation" } }
+	        ]
+	      });
+
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const firstStep = graph.steps.find((step) => step.title === "Implement feature");
+      if (!firstStep) throw new Error("Expected first step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: firstStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implementation complete",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: firstStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed"
+      });
+
+      await waitFor(() => {
+        const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        const refreshedMission = fixture.missionService.get(mission.id);
+        return refreshedGraph.run.status === "paused"
+          && Boolean(
+            refreshedMission?.interventions.some(
+              (entry) =>
+                entry.status === "open"
+                && entry.interventionType === "failed_step"
+                && String(entry.metadata?.source ?? "") === "transition_decision"
+                && String(entry.metadata?.reasonCode ?? "") === "decision_failure"
+            )
+          );
+      });
+
+      const transitionCall = executeTaskMock.mock.calls.find(
+        (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: state transition")
+      );
+      expect(transitionCall).toBeTruthy();
+
+      const refreshedMission = fixture.missionService.get(mission.id);
+      expect(refreshedMission?.status).toBe("intervention_required");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("applies AI step priority directives to ready steps after transition decisions", async () => {
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
     });
     const fixture = await createFixture({
       aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
     });
     try {
       const mission = fixture.missionService.create({
-        prompt: "Build and test feature.",
+        prompt: "Implement feature and verify behavior.",
         laneId: fixture.laneId,
         plannedSteps: [
           { index: 0, title: "Implement feature", detail: "Write code", kind: "implementation", metadata: { stepType: "implementation" } },
-          { index: 1, title: "Run tests", detail: "Execute tests", kind: "test", metadata: { stepType: "test" } }
+          { index: 1, title: "Verify behavior", detail: "Validate results", kind: "implementation", metadata: { stepType: "implementation" } }
         ]
       });
+      setMissionPlanningMode(fixture.db, mission.id, "off");
 
       const launch = await fixture.aiOrchestratorService.startMissionRun({
         missionId: mission.id,
         runMode: "manual",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const firstStep = graph.steps.find((step) => step.title === "Implement feature");
+      if (!firstStep) throw new Error("Expected first step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: firstStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implementation complete",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: firstStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed"
+      });
+
+      await waitFor(() =>
+        executeTaskMock.mock.calls.some(
+          (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: step priority")
+        )
+      );
+
+      await waitFor(() => {
+        const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        const verifyStep = refreshedGraph.steps.find((entry) => entry.title === "Verify behavior");
+        const metadata = (verifyStep?.metadata ?? null) as Record<string, unknown> | null;
+        return Number(metadata?.aiPriority ?? Number.NaN) === 50;
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("runs mission replan decision when transition requests replan and stores the summary", async () => {
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: state transition")) {
+        const transitionDecision = {
+          actionType: "replan",
+          reason: "Current ordering is unsafe for downstream work.",
+          rationale: "Replanning is required before continuing execution.",
+          nextStatus: "intervention_required",
+          retryDelayMs: null,
+          timeoutBudgetMs: null,
+          confidence: 0.9
+        };
+        return createAiTaskResult(transitionDecision);
+      }
+      if (prompt.includes("Decision: mission replan")) {
+        const replanDecision = {
+          shouldReplan: true,
+          summary: "Split implementation into isolated lane work and merge after tests.",
+          planDelta: ["Add integration test gate", "Insert merge validation checkpoint"],
+          confidence: 0.82
+        };
+        return createAiTaskResult(replanDecision);
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
+    });
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
+    });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Implement feature and verify behavior.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          { index: 0, title: "Implement feature", detail: "Write code", kind: "implementation", metadata: { stepType: "implementation" } },
+          { index: 1, title: "Verify behavior", detail: "Validate results", kind: "implementation", metadata: { stepType: "implementation" } }
+        ]
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "off");
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const firstStep = graph.steps.find((step) => step.title === "Implement feature");
+      if (!firstStep) throw new Error("Expected first step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: firstStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implementation complete",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: firstStep.id,
+        attemptId: attempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed"
+      });
+
+      await waitFor(() => {
+        const refreshedMission = fixture.missionService.get(mission.id);
+        const intervention = refreshedMission?.interventions.find(
+          (entry) =>
+            entry.status === "open"
+            && entry.interventionType === "failed_step"
+            && String(entry.metadata?.reasonCode ?? "") === "ai_requested_replan"
+        );
+        return Boolean(intervention && String(intervention.body).includes("Replan summary:"));
+      });
+
+      expect(
+        executeTaskMock.mock.calls.some(
+          (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: mission replan")
+        )
+      ).toBe(true);
+
+      const runMetadataRow = fixture.db.get<{ metadata_json: string | null }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [runId]
+      );
+      const runMetadata = runMetadataRow?.metadata_json ? JSON.parse(runMetadataRow.metadata_json) : {};
+      const aiDecisions = runMetadata && typeof runMetadata.aiDecisions === "object" ? runMetadata.aiDecisions : {};
+      const lastReplan = aiDecisions && typeof aiDecisions.lastReplanRequest === "object"
+        ? aiDecisions.lastReplanRequest
+        : null;
+      expect(lastReplan).toBeTruthy();
+      expect(String((lastReplan as any)?.summary ?? "")).toContain("Split implementation");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("pauses with intervention when quality gate AI decision fails instead of silently passing", async () => {
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: state transition")) {
+        const transitionDecision = {
+          actionType: "continue",
+          reason: "Transition can continue.",
+          rationale: "No blockers found for downstream scheduling.",
+          nextStatus: null,
+          retryDelayMs: null,
+          timeoutBudgetMs: null,
+          confidence: 0.84
+        };
+        return {
+          text: JSON.stringify(transitionDecision),
+          structuredOutput: transitionDecision,
+          provider: "claude",
+          model: "sonnet",
+          sessionId: null,
+          inputTokens: 100,
+          outputTokens: 50,
+          durationMs: 500
+        };
+      }
+      if (prompt.includes("Decision: quality gate")) {
+        return {
+          text: "not-json",
+          structuredOutput: null,
+          provider: "claude",
+          model: "sonnet",
+          sessionId: null,
+          inputTokens: 100,
+          outputTokens: 50,
+          durationMs: 500
+        };
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
+    });
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
+    });
+    try {
+	      const mission = fixture.missionService.create({
+	        prompt: "Build and validate feature quality.",
+	        laneId: fixture.laneId,
+	        plannedSteps: [
+          { index: 0, title: "Implement feature", detail: "Write code", kind: "implementation", metadata: { stepType: "implementation" } },
+          { index: 1, title: "Run tests", detail: "Execute tests", kind: "test", metadata: { stepType: "test" } },
+          { index: 2, title: "Ship changes", detail: "Finalize rollout", kind: "implementation", metadata: { stepType: "implementation" } }
+	        ]
+	      });
+
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const firstGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const implementationStep = firstGraph.steps.find((step) => step.title === "Implement feature");
+      if (!implementationStep) throw new Error("Expected implementation step");
+
+      const implAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: implementationStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: implAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implementation complete",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      fixture.orchestratorService.tick({ runId });
+      const secondGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const testStep = secondGraph.steps.find((step) => step.title === "Run tests");
+      if (!testStep) throw new Error("Expected test step");
+
+      const testAttempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: testStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+      fixture.orchestratorService.completeAttempt({
+        attemptId: testAttempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Tests completed with unresolved failures.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false
+        }
+      });
+
+      fixture.aiOrchestratorService.onOrchestratorRuntimeEvent({
+        type: "orchestrator-attempt-updated",
+        runId,
+        stepId: testStep.id,
+        attemptId: testAttempt.id,
+        at: new Date().toISOString(),
+        reason: "attempt_completed"
+      });
+
+      await waitFor(() => {
+        const refreshedGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        const refreshedMission = fixture.missionService.get(mission.id);
+        return refreshedGraph.run.status === "paused"
+          && Boolean(
+            refreshedMission?.interventions.some(
+              (entry) =>
+                entry.status === "open"
+                && entry.interventionType === "failed_step"
+                && String(entry.metadata?.source ?? "") === "quality_gate_decision"
+                && String(entry.metadata?.reasonCode ?? "") === "decision_failure"
+            )
+          );
+      });
+
+      const qualityGateCall = executeTaskMock.mock.calls.find(
+        (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: quality gate")
+      );
+      expect(qualityGateCall).toBeTruthy();
+
+      const recoveryState = fixture.aiOrchestratorService.getRecoveryLoopState({ runId });
+      expect(recoveryState).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("evaluates quality gate on attempt_completed for gate-phase step and triggers recovery on failure", async () => {
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: state transition")) {
+        const transitionDecision = {
+          actionType: "continue",
+          reason: "Proceed to post-step processing.",
+          rationale: "Step completion allows transition continuation.",
+          nextStatus: null,
+          retryDelayMs: null,
+          timeoutBudgetMs: null,
+          confidence: 0.81
+        };
+        return {
+          text: JSON.stringify(transitionDecision),
+          structuredOutput: transitionDecision,
+          provider: "claude",
+          model: "sonnet",
+          sessionId: null,
+          inputTokens: 100,
+          outputTokens: 50,
+          durationMs: 500
+        };
+      }
+      if (prompt.includes("Decision: quality gate")) {
+        const qualityGateDecision = {
+          verdict: "fail",
+          reason: "Tests have 3 failures",
+          blockingFindings: ["3 tests failed"],
+          confidence: 0.9
+        };
+        return {
+          text: JSON.stringify(qualityGateDecision),
+          structuredOutput: qualityGateDecision,
+          provider: "claude",
+          model: "sonnet",
+          sessionId: null,
+          inputTokens: 100,
+          outputTokens: 50,
+          durationMs: 500
+        };
+      }
+      if (prompt.includes("Decision: recovery action")) {
+        const recoveryDecision = {
+          action: "retry_with_hint",
+          reason: "Run one focused retry before escalating.",
+          retryHint: "Collect failing assertion output and rerun tests once.",
+          confidence: 0.87
+        };
+        return {
+          text: JSON.stringify(recoveryDecision),
+          structuredOutput: recoveryDecision,
+          provider: "claude",
+          model: "sonnet",
+          sessionId: null,
+          inputTokens: 100,
+          outputTokens: 50,
+          durationMs: 500
+        };
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
+    });
+    const fixture = await createFixture({
+      aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
+    });
+    try {
+	      const mission = fixture.missionService.create({
+	        prompt: "Build and test feature.",
+	        laneId: fixture.laneId,
+	        plannedSteps: [
+          { index: 0, title: "Implement feature", detail: "Write code", kind: "implementation", metadata: { stepType: "implementation" } },
+          { index: 1, title: "Run tests", detail: "Execute tests", kind: "test", metadata: { stepType: "test" } }
+	        ]
+	      });
+
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -3366,53 +4617,70 @@ describe("aiOrchestratorService", () => {
         reason: "attempt_completed"
       });
 
-      // Wait for async quality gate evaluation
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      // The AI evaluator was called
-      expect(executeTaskMock).toHaveBeenCalled();
-      const callArgs = executeTaskMock.mock.calls.find(
-        (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("quality gate evaluator")
+      await waitFor(() =>
+        executeTaskMock.mock.calls.some(
+          (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: quality gate")
+        )
       );
-      expect(callArgs).toBeTruthy();
 
-      // Recovery loop should have been triggered
-      const recoveryState = fixture.aiOrchestratorService.getRecoveryLoopState({ runId });
-      expect(recoveryState).not.toBeNull();
-      expect(recoveryState!.currentIteration).toBeGreaterThanOrEqual(1);
+      await waitFor(() =>
+        executeTaskMock.mock.calls.some(
+          (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: recovery action")
+        )
+      );
+
+      await waitFor(() => {
+        const latestGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+        const latestStep = latestGraph.steps.find((s) => s.id === testStep.id);
+        const stepMeta = latestStep && latestStep.metadata && typeof latestStep.metadata === "object" ? latestStep.metadata : null;
+        return Boolean(stepMeta && "aiRecoveryDecision" in stepMeta);
+      });
+
+      const latestGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const latestStep = latestGraph.steps.find((s) => s.id === testStep.id);
+      const stepMeta =
+        latestStep && latestStep.metadata && typeof latestStep.metadata === "object" ? latestStep.metadata : null;
+      expect(stepMeta).not.toBeNull();
+      expect((stepMeta as Record<string, unknown>).aiRecoveryHint).toBeTruthy();
+      expect((stepMeta as Record<string, unknown>).aiRecoveryDecision).toMatchObject({
+        action: "retry_with_hint"
+      });
     } finally {
       fixture.dispose();
     }
   });
 
   it("passes quality gate for gate-phase step when AI evaluator returns pass verdict", async () => {
-    const executeTaskMock = vi.fn().mockResolvedValue({
-      text: JSON.stringify({ verdict: "pass", reason: "All tests passing" }),
-      structuredOutput: null,
-      provider: "claude",
-      model: "sonnet",
-      sessionId: null,
-      inputTokens: 100,
-      outputTokens: 50,
-      durationMs: 500
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: quality gate")) {
+        const qualityGateDecision = {
+          verdict: "pass",
+          reason: "All tests passing",
+          blockingFindings: [],
+          confidence: 0.93
+        };
+        return createAiTaskResult(qualityGateDecision);
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
     });
     const fixture = await createFixture({
       aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
     });
     try {
-      const mission = fixture.missionService.create({
-        prompt: "Build and test feature.",
-        laneId: fixture.laneId,
-        plannedSteps: [
+	      const mission = fixture.missionService.create({
+	        prompt: "Build and test feature.",
+	        laneId: fixture.laneId,
+	        plannedSteps: [
           { index: 0, title: "Run tests", detail: "Execute tests", kind: "test", metadata: { stepType: "test" } }
-        ]
-      });
+	        ]
+	      });
 
-      const launch = await fixture.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -3451,44 +4719,60 @@ describe("aiOrchestratorService", () => {
         reason: "attempt_completed"
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await waitFor(() =>
+        executeTaskMock.mock.calls.some(
+          (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: quality gate")
+        )
+      );
+
+      fixture.orchestratorService.tick({ runId });
+      const completedGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      expect(completedGraph.run.status).toBe("succeeded_with_risk");
+
+      const recoveryCalls = executeTaskMock.mock.calls.filter(
+        (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: recovery action")
+      );
+      expect(recoveryCalls).toHaveLength(0);
 
       // Recovery loop should NOT have been triggered
       const recoveryState = fixture.aiOrchestratorService.getRecoveryLoopState({ runId });
       expect(recoveryState).toBeNull();
     } finally {
-      fixture.dispose();
+      fixture.aiOrchestratorService.dispose();
     }
   });
 
   it("skips quality gate evaluation for non-gate-phase steps", async () => {
-    const executeTaskMock = vi.fn().mockResolvedValue({
-      text: JSON.stringify({ verdict: "fail", reason: "Should not be called" }),
-      structuredOutput: null,
-      provider: "claude",
-      model: "sonnet",
-      sessionId: null,
-      inputTokens: 100,
-      outputTokens: 50,
-      durationMs: 500
+    const executeTaskMock = vi.fn().mockImplementation(async (request: { prompt?: string }) => {
+      const prompt = String(request?.prompt ?? "");
+      if (prompt.includes("Decision: quality gate")) {
+        const unexpectedQualityGateDecision = {
+          verdict: "fail",
+          reason: "Should not be called",
+          blockingFindings: ["unexpected-quality-gate-call"],
+          confidence: 0.9
+        };
+        return createAiTaskResult(unexpectedQualityGateDecision);
+      }
+      return createAiTaskResult(buildDefaultDecisionStructuredOutput(prompt));
     });
     const fixture = await createFixture({
       aiIntegrationService: createMockAiIntegrationService({ executeTask: executeTaskMock })
     });
     try {
-      const mission = fixture.missionService.create({
-        prompt: "Build feature.",
-        laneId: fixture.laneId,
-        plannedSteps: [
+	      const mission = fixture.missionService.create({
+	        prompt: "Build feature.",
+	        laneId: fixture.laneId,
+	        plannedSteps: [
           { index: 0, title: "Write code", detail: "Implement", kind: "implementation", metadata: { stepType: "implementation" } }
-        ]
-      });
+	        ]
+	      });
 
-      const launch = await fixture.aiOrchestratorService.startMissionRun({
-        missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await fixture.aiOrchestratorService.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -3527,15 +4811,23 @@ describe("aiOrchestratorService", () => {
         reason: "attempt_completed"
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await waitFor(() =>
+        executeTaskMock.mock.calls.some(
+          (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: state transition")
+        )
+      );
+
+      fixture.orchestratorService.tick({ runId });
+      const completedGraph = fixture.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      expect(completedGraph.run.status).toBe("succeeded_with_risk");
 
       // The quality gate evaluator should NOT have been called for implementation steps
       const qualityGateCalls = executeTaskMock.mock.calls.filter(
-        (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("quality gate evaluator")
+        (call: any[]) => typeof call[0]?.prompt === "string" && call[0].prompt.includes("Decision: quality gate")
       );
       expect(qualityGateCalls).toHaveLength(0);
     } finally {
-      fixture.dispose();
+      fixture.aiOrchestratorService.dispose();
     }
   });
 
@@ -3606,23 +4898,23 @@ describe("aiOrchestratorService", () => {
         warn: (msg: string, ...rest: any[]) => logMessages.push(`warn: ${msg}`),
         error: (msg: string, ...rest: any[]) => logMessages.push(`error: ${msg}`)
       } as any;
-      const aiOrchestratorWithPr = createAiOrchestratorService({
-        db: fixture.db,
-        logger: captureLogger,
+	      const aiOrchestratorWithPr = createAiOrchestratorService({
+	        db: fixture.db,
+	        logger: captureLogger,
         missionService: fixture.missionService,
         orchestratorService: fixture.orchestratorService,
         laneService: fixture.laneService,
         projectConfigService: fixture.projectConfigService,
         aiIntegrationService: fixture.aiIntegrationService,
         prService: prServiceMock,
-        projectRoot: fixture.projectRoot
-      });
+	        projectRoot: fixture.projectRoot
+	      });
 
-      const launch = await aiOrchestratorWithPr.startMissionRun({
-        missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await aiOrchestratorWithPr.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -3751,23 +5043,23 @@ describe("aiOrchestratorService", () => {
         [JSON.stringify(existingMeta2), mission.id]
       );
 
-      const aiOrchestratorWithPr = createAiOrchestratorService({
-        db: fixture.db,
-        logger: createLogger(),
+	      const aiOrchestratorWithPr = createAiOrchestratorService({
+	        db: fixture.db,
+	        logger: createLogger(),
         missionService: fixture.missionService,
         orchestratorService: fixture.orchestratorService,
         laneService: fixture.laneService,
         projectConfigService: fixture.projectConfigService,
         aiIntegrationService: fixture.aiIntegrationService,
         prService: prServiceMock,
-        projectRoot: fixture.projectRoot
-      });
+	        projectRoot: fixture.projectRoot
+	      });
 
-      const launch = await aiOrchestratorWithPr.startMissionRun({
-        missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await aiOrchestratorWithPr.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -3874,23 +5166,23 @@ describe("aiOrchestratorService", () => {
         [JSON.stringify(existingMeta3), mission.id]
       );
 
-      const aiOrchestratorWithPr = createAiOrchestratorService({
-        db: fixture.db,
-        logger: createLogger(),
+	      const aiOrchestratorWithPr = createAiOrchestratorService({
+	        db: fixture.db,
+	        logger: createLogger(),
         missionService: fixture.missionService,
         orchestratorService: fixture.orchestratorService,
         laneService: fixture.laneService,
         projectConfigService: fixture.projectConfigService,
         aiIntegrationService: fixture.aiIntegrationService,
         prService: prServiceMock,
-        projectRoot: fixture.projectRoot
-      });
+	        projectRoot: fixture.projectRoot
+	      });
 
-      const launch = await aiOrchestratorWithPr.startMissionRun({
-        missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual",
-        plannerProvider: "deterministic"
+	      setMissionPlanningMode(fixture.db, mission.id, "off");
+	      const launch = await aiOrchestratorWithPr.startMissionRun({
+	        missionId: mission.id,
+	        runMode: "manual",
+	        defaultExecutorKind: "manual",
       });
       if (!launch.started) throw new Error("Expected mission run to start");
       const runId = launch.started.run.id;
@@ -3936,7 +5228,9 @@ describe("aiOrchestratorService", () => {
   });
 
   it("watchdog detects stalled attempt with no session output and emits warning event", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      aiIntegrationService: createStagnationRecoveryAiIntegrationService()
+    });
     try {
       // Register a codex adapter that returns "accepted" with a fake session
       const sessionId = "session-stalled-1";
@@ -4033,7 +5327,7 @@ describe("aiOrchestratorService", () => {
       // The backdated attempt should have been detected as timed out and failed
       expect(refreshedAttempt?.status).toBe("failed");
       expect(refreshedAttempt?.errorClass).toBe("transient");
-      expect(refreshedAttempt?.errorMessage ?? "").toContain("stuck");
+      expect(refreshedAttempt?.errorMessage ?? "").toContain("stagnating");
     } finally {
       fixture.dispose();
     }

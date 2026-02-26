@@ -78,6 +78,21 @@ function asBool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function coerceOrchestratorHookConfig(value: unknown): { command: string; timeoutMs?: number } | null {
+  if (typeof value === "string") {
+    const command = value.trim();
+    return command.length ? { command } : null;
+  }
+  if (!isRecord(value)) return null;
+  const command = asString(value.command)?.trim() ?? "";
+  if (!command.length) return null;
+  const timeoutMs = asNumber(value.timeoutMs) ?? asNumber(value.timeout_ms);
+  return {
+    command,
+    ...(timeoutMs != null ? { timeoutMs: Math.max(1_000, Math.floor(timeoutMs)) } : {})
+  };
+}
+
 function asStringMap(value: unknown): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined;
   const out: Record<string, string> = {};
@@ -482,6 +497,11 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const orchestratorRaw = isRecord(value.orchestrator) ? value.orchestrator : null;
   if (orchestratorRaw) {
     const orchestrator: NonNullable<AiConfig["orchestrator"]> = {};
+    const teammatePlanMode = (asString(orchestratorRaw.teammatePlanMode) ?? asString(orchestratorRaw.teammate_plan_mode))?.trim();
+    if (teammatePlanMode === "off" || teammatePlanMode === "auto" || teammatePlanMode === "required") {
+      orchestrator.teammatePlanMode = teammatePlanMode;
+    }
+
     const requirePlanReview = asBool(orchestratorRaw.requirePlanReview) ?? asBool(orchestratorRaw.require_plan_review);
     if (requirePlanReview != null) orchestrator.requirePlanReview = requirePlanReview;
 
@@ -562,6 +582,20 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
       asNumber(orchestratorRaw.interventionConfidenceThreshold) ?? asNumber(orchestratorRaw.intervention_confidence_threshold);
     if (interventionConfidenceThreshold != null) {
       orchestrator.interventionConfidenceThreshold = Math.max(0, Math.min(1, interventionConfidenceThreshold));
+    }
+
+    const hooksRaw = isRecord(orchestratorRaw.hooks) ? orchestratorRaw.hooks : null;
+    if (hooksRaw) {
+      const hooks: NonNullable<NonNullable<AiConfig["orchestrator"]>["hooks"]> = {};
+      const teammateIdle = coerceOrchestratorHookConfig(
+        hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle ?? hooksRaw.teammate_idle
+      );
+      if (teammateIdle) hooks.TeammateIdle = teammateIdle;
+      const taskCompleted = coerceOrchestratorHookConfig(
+        hooksRaw.TaskCompleted ?? hooksRaw.taskCompleted ?? hooksRaw.task_completed
+      );
+      if (taskCompleted) hooks.TaskCompleted = taskCompleted;
+      if (Object.keys(hooks).length) orchestrator.hooks = hooks;
     }
 
     if (Object.keys(orchestrator).length) out.orchestrator = orchestrator;

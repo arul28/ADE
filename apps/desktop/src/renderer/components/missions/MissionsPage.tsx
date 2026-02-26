@@ -59,7 +59,8 @@ import type {
   MissionModelConfig,
   OrchestratorIntelligenceConfig,
   SmartBudgetConfig,
-  ModelConfig
+  ModelConfig,
+  OrchestratorDecisionTimeoutCapHours
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES, getProfileById } from "../../../shared/modelProfiles";
 import { useAppStore } from "../../state/appStore";
@@ -159,11 +160,13 @@ const MISSION_BOARD_COLUMNS: Array<{ key: MissionStatus; label: string; hex: str
   { key: "failed", label: "FAILED", hex: "#EF4444" },
 ];
 type PlannerProvider = "auto" | "claude" | "codex";
+type TeammatePlanMode = "auto" | "off" | "required";
 
 type MissionSettingsDraft = {
   defaultExecutionPolicy: MissionExecutionPolicy;
   defaultPrStrategy: PrStrategy;
   defaultPlannerProvider: PlannerProvider;
+  teammatePlanMode: TeammatePlanMode;
   requirePlanReview: boolean;
   claudePermissionMode: string;
   claudeDangerouslySkip: boolean;
@@ -176,6 +179,7 @@ const DEFAULT_MISSION_SETTINGS_DRAFT: MissionSettingsDraft = {
   defaultExecutionPolicy: PRESET_STANDARD,
   defaultPrStrategy: { kind: "integration", targetBranch: "main", draft: true },
   defaultPlannerProvider: "auto",
+  teammatePlanMode: "auto",
   requirePlanReview: false,
   claudePermissionMode: "acceptEdits",
   claudeDangerouslySkip: false,
@@ -222,6 +226,10 @@ function mergeExecutionPolicyWithDefaults(source: unknown, defaults: MissionExec
 
 function toPlannerProvider(value: string): PlannerProvider {
   return value === "claude" || value === "codex" || value === "auto" ? value : "auto";
+}
+
+function toTeammatePlanMode(value: string): TeammatePlanMode {
+  return value === "off" || value === "required" || value === "auto" ? value : "auto";
 }
 
 function toClaudePermissionMode(value: string): "plan" | "acceptEdits" | "bypassPermissions" {
@@ -1437,9 +1445,12 @@ const DEFAULT_THINKING_BUDGETS: Record<string, number> = {
   "codex": 16384
 };
 
+const DECISION_TIMEOUT_CAP_OPTIONS: OrchestratorDecisionTimeoutCapHours[] = [6, 12, 24, 48];
+
 const DEFAULT_MODEL_CONFIG: MissionModelConfig = {
   profileId: "standard",
   orchestratorModel: { provider: "claude", modelId: "claude-sonnet-4-6", thinkingLevel: "medium" },
+  decisionTimeoutCapHours: 24,
   intelligenceConfig: BUILT_IN_PROFILES[0].intelligenceConfig,
   smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
 };
@@ -1588,6 +1599,7 @@ function CreateMissionDialog({
                     modelConfig: {
                       profileId: profile.id,
                       orchestratorModel: profile.orchestratorModel,
+                      decisionTimeoutCapHours: profile.decisionTimeoutCapHours ?? 24,
                       intelligenceConfig: profile.intelligenceConfig,
                       smartBudget: profile.smartBudget ?? p.modelConfig.smartBudget,
                     },
@@ -1617,9 +1629,35 @@ function CreateMissionDialog({
             />
           </div>
 
+          {/* Decision Timeout Cap */}
+          <label className="block space-y-1">
+            <span style={dlgLabelStyle}>DECISION TIMEOUT CAP</span>
+            <select
+              value={draft.modelConfig.decisionTimeoutCapHours ?? 24}
+              onChange={(e) => setDraft((p) => ({
+                ...p,
+                selectedProfileId: "custom",
+                modelConfig: {
+                  ...p.modelConfig,
+                  profileId: undefined,
+                  decisionTimeoutCapHours: Number(e.target.value) as OrchestratorDecisionTimeoutCapHours
+                }
+              }))}
+              className="h-8 w-full px-3 text-xs outline-none"
+              style={dlgInputStyle}
+            >
+              {DECISION_TIMEOUT_CAP_OPTIONS.map((hours) => (
+                <option key={hours} value={hours}>
+                  {hours}h
+                </option>
+              ))}
+            </select>
+          </label>
+
           {/* Orchestrator Intelligence (per-call-type config) */}
           <OrchestratorIntelligencePanel
             value={draft.modelConfig.intelligenceConfig ?? {}}
+            orchestratorModel={draft.modelConfig.orchestratorModel}
             onChange={(config) => setDraft((p) => ({
               ...p,
               selectedProfileId: "custom",
@@ -1782,7 +1820,7 @@ function MissionSettingsDialog({
                 />
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
               <label className="text-xs">
                 <div style={settingsLabelStyle}>DEFAULT PLANNER PROVIDER</div>
                 <select
@@ -1793,6 +1831,18 @@ function MissionSettingsDialog({
                   <option value="auto">Auto</option>
                   <option value="claude">Claude</option>
                   <option value="codex">Codex</option>
+                </select>
+              </label>
+              <label className="text-xs">
+                <div style={settingsLabelStyle}>TEAMMATE PLAN MODE</div>
+                <select
+                  style={settingsInputStyle}
+                  value={draft.teammatePlanMode}
+                  onChange={(e) => onDraftChange({ teammatePlanMode: toTeammatePlanMode(e.target.value) })}
+                >
+                  <option value="auto">Auto</option>
+                  <option value="off">Off</option>
+                  <option value="required">Required</option>
                 </select>
               </label>
               <label className="flex items-center gap-2 text-xs pt-5" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
@@ -2004,6 +2054,13 @@ export default function MissionsPage() {
       defaultPlannerProvider: toPlannerProvider(
         readString(localOrchestrator.defaultPlannerProvider, effectiveOrchestrator.defaultPlannerProvider, "auto")
       ),
+      teammatePlanMode: toTeammatePlanMode(
+        readString(
+          localOrchestrator.teammatePlanMode ?? localOrchestrator.teammate_plan_mode,
+          effectiveOrchestrator.teammatePlanMode ?? effectiveOrchestrator.teammate_plan_mode,
+          "auto"
+        )
+      ),
       requirePlanReview: readBool(localOrchestrator.requirePlanReview, effectiveOrchestrator.requirePlanReview, false),
       claudePermissionMode: toClaudePermissionMode(
         readString(localClaude.permissionMode, effectiveClaude.permissionMode, "acceptEdits")
@@ -2051,6 +2108,7 @@ export default function MissionsPage() {
         defaultExecutionPolicy: missionSettingsDraft.defaultExecutionPolicy,
         defaultPrStrategy: missionSettingsDraft.defaultPrStrategy,
         defaultPlannerProvider: normalizedPlannerProvider,
+        teammatePlanMode: toTeammatePlanMode(missionSettingsDraft.teammatePlanMode),
         requirePlanReview: missionSettingsDraft.requirePlanReview
       };
       delete nextOrchestrator.defaultDepthTier;
@@ -2293,7 +2351,10 @@ export default function MissionsPage() {
         executionPolicy: { ...draft.executionPolicy, prStrategy: draft.prStrategy },
         orchestratorModel: draft.orchestratorModel || undefined,
         thinkingBudgets: draft.thinkingBudgets,
-        modelConfig: draft.modelConfig,
+        modelConfig: {
+          ...draft.modelConfig,
+          decisionTimeoutCapHours: draft.modelConfig.decisionTimeoutCapHours ?? 24,
+        },
         autostart: true,
         launchMode: "autopilot",
         autopilotExecutor: "codex"
@@ -2375,20 +2436,32 @@ export default function MissionsPage() {
   /* ── Lane cleanup for failed/canceled missions ── */
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const handleCleanupLanes = useCallback(async () => {
-    if (!runGraph?.steps) return;
+    if (!selectedMission || !runGraph?.steps) return;
     const laneIds = [...new Set(runGraph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
     if (!laneIds.length) return;
     if (!window.confirm(`Archive ${laneIds.length} lane(s) created by this mission?`)) return;
     setCleanupBusy(true);
     try {
-      for (const laneId of laneIds) {
-        try { await window.ade.lanes.archive({ laneId }); } catch { /* lane may already be archived */ }
-      }
+      const result = await window.ade.orchestrator.cleanupTeamResources({
+        missionId: selectedMission.id,
+        runId: runGraph.run.id,
+        cleanupLanes: true
+      });
       await refreshLanes();
+      if (result.laneErrors.length > 0) {
+        setError(
+          `Lane cleanup archived ${result.lanesArchived.length}/${result.laneIds.length}. `
+          + `${result.laneErrors.length} lane(s) failed to archive.`
+        );
+      } else {
+        setError(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCleanupBusy(false);
     }
-  }, [runGraph, refreshLanes]);
+  }, [runGraph, selectedMission, refreshLanes]);
 
   const handleSteer = useCallback(async () => {
     if (!selectedMission || !steerInput.trim()) return;

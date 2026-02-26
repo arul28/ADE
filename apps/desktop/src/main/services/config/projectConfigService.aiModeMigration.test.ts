@@ -112,10 +112,20 @@ describe("projectConfigService legacy AI mode migration", () => {
         automations: [],
         ai: {
           orchestrator: {
+            teammate_plan_mode: "required",
             require_plan_review: true,
             max_parallel_workers: 9,
             context_pressure_threshold: 0.82,
-            progressive_loading: false
+            progressive_loading: false,
+            hooks: {
+              teammate_idle: {
+                command: "echo teammate-idle",
+                timeout_ms: 4500
+              },
+              TaskCompleted: {
+                command: "echo task-completed"
+              }
+            }
           }
         }
       }),
@@ -131,9 +141,13 @@ describe("projectConfigService legacy AI mode migration", () => {
     });
 
     const orchestrator = service.get().effective.ai?.orchestrator;
+    expect(orchestrator?.teammatePlanMode).toBe("required");
     expect(orchestrator?.requirePlanReview).toBe(true);
     expect(orchestrator?.maxParallelWorkers).toBe(9);
     expect(orchestrator?.contextPressureThreshold).toBe(0.82);
     expect(orchestrator?.progressiveLoading).toBe(false);
+    expect(orchestrator?.hooks?.TeammateIdle?.command).toBe("echo teammate-idle");
+    expect(orchestrator?.hooks?.TeammateIdle?.timeoutMs).toBe(4500);
+    expect(orchestrator?.hooks?.TaskCompleted?.command).toBe("echo task-completed");
   });
 });

@@ -1680,6 +1680,66 @@ function migrate(db: Database) {
   );
 
   db.run(`
+    create table if not exists orchestrator_ai_decisions (
+      id text primary key,
+      project_id text not null,
+      mission_id text not null,
+      run_id text,
+      step_id text,
+      attempt_id text,
+      call_type text not null,
+      provider text,
+      model text,
+      timeout_cap_ms integer,
+      decision_json text not null,
+      action_trace_json text,
+      validation_json text,
+      rationale text,
+      fallback_used integer not null default 0,
+      failure_reason text,
+      duration_ms integer,
+      prompt_tokens integer,
+      completion_tokens integer,
+      created_at text not null,
+      foreign key(project_id) references projects(id),
+      foreign key(mission_id) references missions(id),
+      foreign key(run_id) references orchestrator_runs(id),
+      foreign key(step_id) references orchestrator_steps(id),
+      foreign key(attempt_id) references orchestrator_attempts(id)
+    )
+  `);
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)",
+    "orchestrator_ai_decisions",
+    ["project_id", "call_type", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)",
+    "orchestrator_ai_decisions",
+    ["created_at"]
+  );
+
+  db.run(`
     create table if not exists mission_metrics_config (
       mission_id text primary key,
       project_id text not null,
@@ -1843,6 +1903,57 @@ function migrate(db: Database) {
   addColumnIfMissing(db, "orchestrator_lane_decisions", "step_key text", "step_key");
   addColumnIfMissing(db, "orchestrator_lane_decisions", "lane_id text", "lane_id");
   addColumnIfMissing(db, "orchestrator_lane_decisions", "metadata_json text", "metadata_json");
+
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "project_id text not null default ''", "project_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "mission_id text not null default ''", "mission_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "run_id text", "run_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "step_id text", "step_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "attempt_id text", "attempt_id");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "call_type text not null default 'unknown'", "call_type");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "provider text", "provider");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "model text", "model");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "timeout_cap_ms integer", "timeout_cap_ms");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "decision_json text not null default '{}'", "decision_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "action_trace_json text", "action_trace_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "validation_json text", "validation_json");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "rationale text", "rationale");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "fallback_used integer not null default 0", "fallback_used");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "failure_reason text", "failure_reason");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "duration_ms integer", "duration_ms");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "prompt_tokens integer", "prompt_tokens");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "completion_tokens integer", "completion_tokens");
+  addColumnIfMissing(db, "orchestrator_ai_decisions", "created_at text not null default ''", "created_at");
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_mission_created on orchestrator_ai_decisions(mission_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["mission_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_run_created on orchestrator_ai_decisions(run_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["run_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_step_created on orchestrator_ai_decisions(step_id, created_at)",
+    "orchestrator_ai_decisions",
+    ["step_id", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_project_category_created on orchestrator_ai_decisions(project_id, call_type, created_at)",
+    "orchestrator_ai_decisions",
+    ["project_id", "call_type", "created_at"]
+  );
+  createIndexIfColumnsExist(
+    db,
+    "create index if not exists idx_orchestrator_ai_decisions_created on orchestrator_ai_decisions(created_at)",
+    "orchestrator_ai_decisions",
+    ["created_at"]
+  );
+
   addColumnIfMissing(db, "mission_metrics_config", "project_id text", "project_id");
   addColumnIfMissing(db, "orchestrator_metrics_samples", "run_id text", "run_id");
   addColumnIfMissing(db, "orchestrator_metrics_samples", "attempt_id text", "attempt_id");

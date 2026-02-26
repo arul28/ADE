@@ -194,6 +194,7 @@ export const IPC = {
   orchestratorTickRun: "ade.orchestrator.tickRun",
   orchestratorResumeRun: "ade.orchestrator.resumeRun",
   orchestratorCancelRun: "ade.orchestrator.cancelRun",
+  orchestratorCleanupTeamResources: "ade.orchestrator.cleanupTeamResources",
   orchestratorHeartbeatClaims: "ade.orchestrator.heartbeatClaims",
   orchestratorListTimeline: "ade.orchestrator.listTimeline",
   orchestratorGetGateReport: "ade.orchestrator.getGateReport",

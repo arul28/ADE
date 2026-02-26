@@ -544,6 +544,14 @@ if (typeof window !== "undefined" && !(window as any).ade) {
       tickRun: resolvedArg({}),
       resumeRun: resolvedArg({}),
       cancelRun: resolvedArg({}),
+      cleanupTeamResources: resolvedArg({
+        missionId: "mock",
+        runId: null,
+        laneIds: [],
+        lanesArchived: [],
+        lanesSkipped: [],
+        laneErrors: []
+      }),
       heartbeatClaims: resolvedArg(0),
       listTimeline: resolvedArg([]),
       getGateReport: resolved({}),

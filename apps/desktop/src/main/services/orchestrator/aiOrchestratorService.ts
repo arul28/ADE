@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import type {
   MissionDetail,
   MissionStep,
@@ -10,8 +11,11 @@ import type {
   MissionStepStatus,
   MissionStatus,
   ModelCapabilityProfile,
+  CancelOrchestratorRunArgs,
   OrchestratorExecutorKind,
+  OrchestratorRun,
   OrchestratorRunGraph,
+  OrchestratorStep,
   OrchestratorRuntimeEvent,
   OrchestratorStepStatus,
   OrchestratorWorkerState,
@@ -21,6 +25,8 @@ import type {
   TerminalRuntimeState,
   SteerMissionArgs,
   SteerMissionResult,
+  CleanupOrchestratorTeamResourcesArgs,
+  CleanupOrchestratorTeamResourcesResult,
   GetMissionDepthConfigArgs,
   GetModelCapabilitiesResult,
   UserSteeringDirective,
@@ -80,7 +86,7 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "../../../shared/types";
 import { resolveCallTypeModel, modelConfigToServiceModel, thinkingLevelToReasoningEffort, legacyToModelConfig } from "../../../shared/modelProfiles";
-import { resolveExecutionPolicy, depthTierToPolicy, DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview } from "./executionPolicy";
+import { resolveExecutionPolicy, DEFAULT_EXECUTION_POLICY, buildExecutionPlanPreview } from "./executionPolicy";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
@@ -91,13 +97,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createPrService } from "../prs/prService";
 import { planMissionOnce, plannerPlanToMissionSteps, MissionPlanningError } from "../missions/missionPlanningService";
-
-function inferPrStrategy(args: { laneCount: number; lanesAreCoupled: boolean; userOverride?: PrStrategy }): PrStrategy {
-  if (args.userOverride) return args.userOverride;
-  if (args.laneCount === 1) return { kind: "per-lane" };
-  if (args.lanesAreCoupled) return { kind: "integration" };
-  return { kind: "queue" };
-}
+import { createAiDecisionService, DecisionFailure } from "./aiDecisionService";
 
 type MissionRunStartArgs = {
   missionId: string;
@@ -116,11 +116,38 @@ type MissionRunStartResult = {
   mission: MissionDetail | null;
 };
 
+type OrchestratorHookEvent = "TeammateIdle" | "TaskCompleted";
+
+type ResolvedOrchestratorHook = {
+  command: string;
+  timeoutMs: number;
+};
+
+type ResolvedOrchestratorHooks = Partial<Record<OrchestratorHookEvent, ResolvedOrchestratorHook>>;
+
+type OrchestratorHookExecutionResult = {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  spawnError: string | null;
+};
+
+type OrchestratorHookCommandRunner = (args: {
+  command: string;
+  cwd: string;
+  timeoutMs: number;
+  env: Record<string, string>;
+}) => Promise<OrchestratorHookExecutionResult>;
+
 type ResolvedOrchestratorConfig = {
   requirePlanReview: boolean;
   defaultDepthTier: MissionDepthTier;
   defaultPlannerProvider: "claude" | "codex" | null;
   defaultExecutionPolicy: Partial<MissionExecutionPolicy> | null;
+  hooks: ResolvedOrchestratorHooks;
 };
 
 type RuntimeReasoningEffort = "low" | "medium" | "high";
@@ -150,8 +177,7 @@ type MissionRuntimeProfile = {
     docsMode: "digest_refs" | "full_docs";
   };
   provenance: {
-    source: "policy" | "legacy_depth_fallback";
-    legacyDepthTier: MissionDepthTier | null;
+    source: "policy";
   };
 };
 
@@ -165,14 +191,17 @@ const HEALTH_SWEEP_INTERVAL_MS = 5_000;
 const HEALTH_SWEEP_ACTIVE_RUN_SCAN_LIMIT = 200;
 const STALE_ATTEMPT_GRACE_MS = 10_000;
 const WORKER_WAITING_INPUT_INTERVENTION_COOLDOWN_MS = 120_000;
-const WORKER_STAGNATION_MIN_MS = 120_000;
-const WORKER_STAGNATION_REPEAT_THRESHOLD = 6;
 const WORKER_EVENT_HEARTBEAT_INTERVAL_MS = 10_000;
 const MAX_CHAT_CONTEXT_CHARS = 4_000;
 const MAX_CHAT_CONTEXT_MESSAGES = 8;
 const MAX_CHAT_LINE_CHARS = 420;
 const MAX_LATEST_CHAT_MESSAGE_CHARS = 1_500;
 const SESSION_SIGNAL_RETENTION_MS = 20 * 60_000;
+const GRACEFUL_CANCEL_NOTIFY_TIMEOUT_MS = 1_200;
+const GRACEFUL_CANCEL_INTERRUPT_TIMEOUT_MS = 1_500;
+const GRACEFUL_CANCEL_DISPOSE_TIMEOUT_MS = 2_500;
+const GRACEFUL_CANCEL_DRAIN_WAIT_MS = 2_000;
+const GRACEFUL_CANCEL_DRAIN_POLL_MS = 100;
 const MAX_STEERING_CONTEXT_DIRECTIVES = 8;
 const MAX_STEERING_CONTEXT_CHARS = 1_600;
 const MAX_STEERING_DIRECTIVES_PER_STEP = 24;
@@ -209,6 +238,7 @@ const WORKER_MESSAGE_RETRY_BACKOFF_MAX_MS = 90_000;
 const WORKER_MESSAGE_RETRY_INTERVENTION_COOLDOWN_MS = 90_000;
 const WORKER_MESSAGE_INFLIGHT_LEASE_MS = 45_000;
 const WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS = 180_000;
+const ACTIVE_ATTEMPT_STATUSES = new Set(["queued", "running", "blocked"]);
 const PLANNER_THREAD_ID_PREFIX = "planner";
 const PLANNER_THREAD_TITLE = "Planner Agent";
 const PLANNER_THREAD_STEP_KEY = "planner";
@@ -216,6 +246,16 @@ const PLANNER_STREAM_FLUSH_CHARS = 1_800;
 const PLANNER_STREAM_FLUSH_INTERVAL_MS = 2_500;
 const PLANNER_STREAM_MIN_INTERVAL_FLUSH_CHARS = 480;
 const MAX_PLANNER_RAW_OUTPUT_CHARS = 4_000_000;
+const ORCHESTRATOR_HOOK_DEFAULT_TIMEOUT_MS = 10_000;
+const ORCHESTRATOR_HOOK_MAX_TIMEOUT_MS = 300_000;
+const ORCHESTRATOR_HOOK_MAX_CAPTURE_CHARS = 8_000;
+const ORCHESTRATOR_HOOK_LOG_PREVIEW_CHARS = 480;
+const DECISION_TIMEOUT_CAP_MS_BY_HOURS: Record<number, number> = {
+  6: 6 * 60 * 60 * 1_000,
+  12: 12 * 60 * 60 * 1_000,
+  24: 24 * 60 * 60 * 1_000,
+  48: 48 * 60 * 60 * 1_000
+};
 
 type SessionRuntimeSignal = {
   laneId: string;
@@ -330,6 +370,39 @@ function createDeferred<T>(): Deferred<T> {
   return deferred;
 }
 
+async function runBestEffortWithTimeout(args: {
+  timeoutMs: number;
+  work: () => Promise<unknown>;
+}): Promise<{ ok: boolean; timedOut: boolean; error: string | null }> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve()
+        .then(() => args.work())
+        .then(() => ({ kind: "ok" as const }))
+        .catch((error) => ({ kind: "error" as const, error })),
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timeout" }), Math.max(1, Math.floor(args.timeoutMs)));
+      })
+    ]);
+    if (outcome.kind === "ok") {
+      return { ok: true, timedOut: false, error: null };
+    }
+    if (outcome.kind === "timeout") {
+      return { ok: false, timedOut: true, error: "timed_out" };
+    }
+    return {
+      ok: false,
+      timedOut: false,
+      error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+    };
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -364,12 +437,9 @@ const TRANSIENT_ERROR_CLASSES = new Set(["transient", "claim_conflict", "resume_
 
 function classifyFailureTier(args: {
   errorClass: string;
-  retryCount: number;
-  errorMessage: string | null;
 }): RecoveryDiagnosisTier {
   if (TRANSIENT_ERROR_CLASSES.has(args.errorClass)) return "transient";
   if (args.errorClass === "policy") return "blocker";
-  if (args.retryCount >= 2) return "blocker";
   return "semantic";
 }
 
@@ -562,6 +632,126 @@ function parseTerminalRuntimeState(raw: unknown): TerminalRuntimeState | null {
   return null;
 }
 
+function clipHookLogText(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").replace(/\u0000/g, "").trim();
+  if (!normalized.length) return null;
+  return clipTextForContext(normalized, ORCHESTRATOR_HOOK_LOG_PREVIEW_CHARS).replace(/\s+/g, " ").trim();
+}
+
+function parseOrchestratorHookConfig(raw: unknown): ResolvedOrchestratorHook | null {
+  if (!isRecord(raw)) return null;
+  const command = String(raw.command ?? "").trim();
+  if (!command.length) return null;
+  const timeoutRaw = Number(raw.timeoutMs ?? raw.timeout_ms);
+  const timeoutMs = Number.isFinite(timeoutRaw)
+    ? Math.max(1_000, Math.min(ORCHESTRATOR_HOOK_MAX_TIMEOUT_MS, Math.floor(timeoutRaw)))
+    : ORCHESTRATOR_HOOK_DEFAULT_TIMEOUT_MS;
+  return {
+    command,
+    timeoutMs
+  };
+}
+
+function readOrchestratorHooksConfig(orchestrator: Record<string, unknown>): ResolvedOrchestratorHooks {
+  const hooksRaw = isRecord(orchestrator.hooks) ? orchestrator.hooks : null;
+  if (!hooksRaw) return {};
+  const hooks: ResolvedOrchestratorHooks = {};
+  const teammateIdle = parseOrchestratorHookConfig(hooksRaw.TeammateIdle ?? hooksRaw.teammateIdle ?? hooksRaw.teammate_idle);
+  if (teammateIdle) hooks.TeammateIdle = teammateIdle;
+  const taskCompleted = parseOrchestratorHookConfig(hooksRaw.TaskCompleted ?? hooksRaw.taskCompleted ?? hooksRaw.task_completed);
+  if (taskCompleted) hooks.TaskCompleted = taskCompleted;
+  return hooks;
+}
+
+const runOrchestratorHookCommand: OrchestratorHookCommandRunner = async (args) => {
+  const startedAt = Date.now();
+  return await new Promise<OrchestratorHookExecutionResult>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | null = null;
+
+    const finish = (result: Partial<OrchestratorHookExecutionResult>) => {
+      if (settled) return;
+      settled = true;
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killTimer = null;
+      }
+      resolve({
+        exitCode: result.exitCode ?? null,
+        signal: result.signal ?? null,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        stdout,
+        stderr,
+        spawnError: result.spawnError ?? null
+      });
+    };
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(args.command, {
+        cwd: args.cwd,
+        env: args.env,
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (error) {
+      finish({
+        spawnError: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    const appendOutput = (target: "stdout" | "stderr", chunk: unknown) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+      if (!text.length) return;
+      if (target === "stdout") {
+        stdout = (stdout + text).slice(-ORCHESTRATOR_HOOK_MAX_CAPTURE_CHARS);
+      } else {
+        stderr = (stderr + text).slice(-ORCHESTRATOR_HOOK_MAX_CAPTURE_CHARS);
+      }
+    };
+
+    if (args.timeoutMs > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // Best-effort only.
+        }
+        setTimeout(() => {
+          if (child.exitCode == null && !child.killed) {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // Best-effort only.
+            }
+          }
+        }, 1_000).unref();
+      }, args.timeoutMs);
+    }
+
+    child.stdout?.on("data", (chunk) => appendOutput("stdout", chunk));
+    child.stderr?.on("data", (chunk) => appendOutput("stderr", chunk));
+    child.on("error", (error) => {
+      finish({
+        spawnError: error instanceof Error ? error.message : String(error)
+      });
+    });
+    child.on("close", (exitCode, signal) => {
+      finish({
+        exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+        signal: typeof signal === "string" ? signal : null
+      });
+    });
+  });
+};
+
 function parseJsonRecord(raw: string | null | undefined): Record<string, unknown> | null {
   if (!raw) return null;
   try {
@@ -709,11 +899,13 @@ function readConfig(projectConfigService: ReturnType<typeof createProjectConfigS
     : isRecord(orchestrator.default_execution_policy)
       ? (orchestrator.default_execution_policy as Partial<MissionExecutionPolicy>)
       : null;
+  const hooks = readOrchestratorHooksConfig(orchestrator);
   return {
     requirePlanReview,
     defaultDepthTier,
     defaultPlannerProvider,
-    defaultExecutionPolicy
+    defaultExecutionPolicy,
+    hooks
   };
 }
 
@@ -916,48 +1108,7 @@ function deriveRuntimeProfileFromPolicy(
       docsMode: includeNarrative ? "full_docs" : "digest_refs"
     },
     provenance: {
-      source: "policy",
-      legacyDepthTier: null
-    }
-  };
-}
-
-function deriveRuntimeProfileFromDepthConfig(
-  depthConfig: MissionDepthConfig,
-  config: ResolvedOrchestratorConfig
-): MissionRuntimeProfile {
-  const preferProvider = depthConfig.planning.plannerModel?.toLowerCase().includes("claude")
-    ? "claude"
-    : depthConfig.planning.plannerModel?.toLowerCase().includes("codex")
-      ? "codex"
-      : config.defaultPlannerProvider;
-  return {
-    planning: {
-      useAiPlanner: depthConfig.planning.useAiPlanner,
-      requirePlanReview: depthConfig.planning.requirePlanReview,
-      preferProvider: preferProvider ?? null
-    },
-    execution: {
-      maxParallelWorkers: depthConfig.execution.maxParallelWorkers,
-      defaultRetryLimit: depthConfig.execution.defaultRetryLimit,
-      stepTimeoutMs: depthConfig.execution.stepTimeoutMs
-    },
-    evaluation: {
-      evaluateEveryStep: depthConfig.evaluation.evaluateEveryStep,
-      autoAdjustPlan: depthConfig.evaluation.autoAdjustPlan,
-      autoResolveInterventions: depthConfig.evaluation.autoResolveInterventions,
-      interventionConfidenceThreshold: depthConfig.evaluation.interventionConfidenceThreshold,
-      evaluationReasoningEffort: depthConfig.tier === "deep" ? "high" : "medium",
-      interventionReasoningEffort: depthConfig.tier === "deep" ? "high" : "medium"
-    },
-    context: {
-      contextProfile: depthConfig.context.contextProfile,
-      includeNarrative: depthConfig.context.includeNarrative,
-      docsMode: depthConfig.context.docsMode
-    },
-    provenance: {
-      source: "legacy_depth_fallback",
-      legacyDepthTier: depthConfig.tier
+      source: "policy"
     }
   };
 }
@@ -1120,6 +1271,107 @@ const PM_SYSTEM_PREAMBLE = [
   ""
 ].join("\n");
 
+function buildCoordinatorSystemPrompt(args: { planSummary: string }): string {
+  return [
+    PM_SYSTEM_PREAMBLE,
+    "",
+    "You are the persistent coordinator for this mission run. You observe events and intervene when needed.",
+    "",
+    "MISSION PLAN:",
+    args.planSummary,
+    "",
+    "AVAILABLE ACTIONS (use these as commands on their own line):",
+    "  steer <stepKey> <message> - send guidance to a specific worker",
+    "  skip <stepKey> <reason> - skip a step that's unnecessary",
+    "  add_step <after_stepKey> <title> | <instructions> - add a new step after an existing one",
+    "  broadcast <message> - send a message to all active workers",
+    "  escalate <reason> - flag something for the human operator",
+    "",
+    "BEHAVIOR:",
+    "- Most events need no action - just acknowledge and track internally.",
+    "- Only intervene when something is wrong or an opportunity is spotted.",
+    "- Respond in concise, casual English. No formal reports.",
+    "- Keep responses to 1-3 sentences unless a complex situation requires more.",
+    "- If you take an action, state what you're doing and why in one line before the command."
+  ].join("\n");
+}
+
+function buildCoordinatorInitPrompt(stepCount: number): string {
+  return [
+    "Mission run started. You are the persistent coordinator for this run.",
+    `${stepCount} steps in the plan.`,
+    "Acknowledge and stand by for events. Keep this response very brief."
+  ].join(" ");
+}
+
+function buildInterventionResolverPrompt(args: {
+  missionTitle: string;
+  missionPrompt: string;
+  interventionDescription: string;
+  runContext: string;
+  steeringContext: string;
+  confidenceThreshold: number;
+}): string {
+  return [
+    PM_SYSTEM_PREAMBLE,
+    "Your current role: INTERVENTION RESOLVER. An intervention has been raised during mission execution.",
+    "Determine how to resolve this intervention. Think like a PM triaging an incident:",
+    "- RETRY: If the failure looks transient (timeout, rate limit, flaky test), retry with added context about the failure so the worker avoids repeating it.",
+    "- WORKAROUND: If the failure is real but a different approach could work, add a workaround step.",
+    "- SKIP: If the step is non-critical and its failure doesn't affect core deliverables, skip it and note why.",
+    "- ESCALATE: Only when the failure is ambiguous, affects core deliverables, or requires information you don't have. Escalation pauses the mission - use sparingly.",
+    "Explain your reasoning clearly so the user can review the decision later.",
+    "",
+    `Mission: ${args.missionTitle}`,
+    `Mission prompt: ${args.missionPrompt.slice(0, 500)}`,
+    "",
+    `Intervention: ${args.interventionDescription}`,
+    "",
+    `Run context: ${args.runContext}`,
+    args.steeringContext,
+    "Available actions: retry (retry the failed step), skip (skip the step), add_workaround (add a workaround step), escalate (require user input).",
+    `Only suggest auto-resolution if you are highly confident (>=${args.confidenceThreshold}).`,
+    "Return a JSON object with your assessment."
+  ].join("\n");
+}
+
+function buildFailureDiagnosisPrompt(args: {
+  stepTitle: string;
+  stepKey: string;
+  missionTitle: string;
+  missionObjective: string;
+  stepInstructions: string;
+  errorClass: string;
+  errorMessage: string;
+  attemptSummary: string;
+  retryCount: number;
+  retryLimit: number;
+  tier: RecoveryDiagnosisTier;
+  peerField: string;
+}): string {
+  return `You are the orchestrator's failure diagnosis engine. An agent working on a mission step has failed. Analyze the failure and provide recovery guidance.
+
+Step: "${args.stepTitle}" (key: ${args.stepKey})
+Mission: "${args.missionTitle}"
+Objective: "${args.missionObjective}"
+Step Instructions: ${args.stepInstructions.slice(0, 2000)}
+
+Failure Details:
+- Error class: ${args.errorClass}
+- Error message: ${args.errorMessage.slice(0, 1500)}
+- Attempt output: ${args.attemptSummary.slice(0, 2000)}
+- Retry: ${args.retryCount}/${args.retryLimit}
+- Tier: ${args.tier}
+
+Respond with JSON only:
+{
+  "classification": "1-sentence diagnosis of root cause",
+  "adjustedHint": "specific instruction for the retry agent on what to do differently (be concrete: which file, which approach, what to avoid)",
+  ${args.peerField},
+  "suggestedModel": null
+}`;
+}
+
 function extractRunFailureMessage(graph: OrchestratorRunGraph): string | null {
   const latestFailure = [...graph.attempts]
     .filter((attempt) => attempt.status === "failed")
@@ -1140,6 +1392,7 @@ export function createAiOrchestratorService(args: {
   prService?: ReturnType<typeof createPrService> | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
+  hookCommandRunner?: OrchestratorHookCommandRunner;
 }) {
   const {
     db,
@@ -1152,7 +1405,8 @@ export function createAiOrchestratorService(args: {
     aiIntegrationService,
     prService,
     projectRoot,
-    onThreadEvent
+    onThreadEvent,
+    hookCommandRunner = runOrchestratorHookCommand
   } = args;
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
@@ -1171,6 +1425,9 @@ export function createAiOrchestratorService(args: {
   const workerDeliveryInterventionCooldowns = new Map<string, number>();
   const runTeamManifests = new Map<string, TeamManifest>();
   const runRecoveryLoopStates = new Map<string, RecoveryLoopState>();
+  const aiTimeoutBudgetStepLocks = new Set<string>();
+  const aiTimeoutBudgetRunLocks = new Set<string>();
+  const aiRetryDecisionLocks = new Set<string>();
 
   // ── Persistent Coordinator Sessions ──
   // A long-running AI session per mission run that accumulates understanding
@@ -1251,6 +1508,43 @@ export function createAiOrchestratorService(args: {
       [runId]
     );
     return toOptionalString(row?.mission_id);
+  };
+
+  const getRunMetadata = (runId: string): Record<string, unknown> => {
+    const row = db.get<{ metadata_json: string | null }>(
+      `select metadata_json from orchestrator_runs where id = ? limit 1`,
+      [runId]
+    );
+    if (!row?.metadata_json) return {};
+    try {
+      const parsed = JSON.parse(row.metadata_json);
+      return isRecord(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const updateRunMetadata = (runId: string, mutate: (metadata: Record<string, unknown>) => void): boolean => {
+    const row = db.get<{ id: string; metadata_json: string | null }>(
+      `select id, metadata_json from orchestrator_runs where id = ? limit 1`,
+      [runId]
+    );
+    if (!row?.id) return false;
+    const metadata = (() => {
+      if (!row.metadata_json) return {} as Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(row.metadata_json);
+        return isRecord(parsed) ? parsed : {};
+      } catch {
+        return {} as Record<string, unknown>;
+      }
+    })();
+    mutate(metadata);
+    db.run(
+      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ?`,
+      [JSON.stringify(metadata), nowIso(), runId]
+    );
+    return true;
   };
 
   const parseThreadRow = (row: {
@@ -1968,29 +2262,8 @@ export function createAiOrchestratorService(args: {
       const planSummary = plan.steps
         .map((s) => `- ${s.stepKey}: "${s.title}" [${s.status}]${s.dependencyStepIds.length ? ` (deps: ${s.dependencyStepIds.length})` : ""}`)
         .join("\n");
-
-      const coordinatorSystemPrompt = [
-        PM_SYSTEM_PREAMBLE,
-        "",
-        "You are the persistent coordinator for this mission run. You observe events and intervene when needed.",
-        "",
-        "MISSION PLAN:",
-        planSummary,
-        "",
-        "AVAILABLE ACTIONS (use these as commands on their own line):",
-        "  steer <stepKey> <message> — send guidance to a specific worker",
-        "  skip <stepKey> <reason> — skip a step that's unnecessary",
-        "  add_step <after_stepKey> <title> | <instructions> — add a new step after an existing one",
-        "  broadcast <message> — send a message to all active workers",
-        "  escalate <reason> — flag something for the human operator",
-        "",
-        "BEHAVIOR:",
-        "- Most events need no action — just acknowledge and track internally.",
-        "- Only intervene when something is wrong or an opportunity is spotted.",
-        "- Respond in concise, casual English. No formal reports.",
-        "- Keep responses to 1-3 sentences unless a complex situation requires more.",
-        "- If you take an action, state what you're doing and why in one line before the command."
-      ].join("\n");
+      const coordinatorSystemPrompt = buildCoordinatorSystemPrompt({ planSummary });
+      const timeoutMs = resolveAiDecisionLikeTimeoutMs(missionId);
 
       // Register the session entry immediately so events don't race ahead of init
       const resolvedConfig = coordinatorModelConfig ?? resolveOrchestratorModelConfig(missionId, "coordinator");
@@ -2015,11 +2288,7 @@ export function createAiOrchestratorService(args: {
           const result = await aiIntegrationService.executeTask({
             feature: "orchestrator" as const,
             taskType: "review" as const,
-            prompt: [
-              "Mission run started. You are the persistent coordinator for this run.",
-              `${plan.steps.length} steps in the plan.`,
-              "Acknowledge and stand by for events. Keep this response very brief."
-            ].join(" "),
+            prompt: buildCoordinatorInitPrompt(plan.steps.length),
             cwd: projectRoot,
             provider: resolvedConfig.provider === "codex" ? "codex" : "claude",
             model: modelConfigToServiceModel(resolvedConfig),
@@ -2027,7 +2296,7 @@ export function createAiOrchestratorService(args: {
             reasoningEffort: thinkingLevelToReasoningEffort(resolvedConfig.thinkingLevel),
             permissionMode: "read-only" as const,
             oneShot: true,
-            timeoutMs: 30_000
+            ...(timeoutMs != null ? { timeoutMs } : {})
           });
 
           const activeEntry = coordinatorSessions.get(runId);
@@ -2110,6 +2379,7 @@ export function createAiOrchestratorService(args: {
     try {
       session.eventCount++;
       session.lastEventAt = nowIso();
+      const timeoutMs = resolveAiDecisionLikeTimeoutMs(session.missionId);
 
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator" as const,
@@ -2122,7 +2392,7 @@ export function createAiOrchestratorService(args: {
         reasoningEffort: thinkingLevelToReasoningEffort(session.modelConfig.thinkingLevel),
         permissionMode: "read-only" as const,
         oneShot: true,
-        timeoutMs: 20_000,
+        ...(timeoutMs != null ? { timeoutMs } : {}),
         // Resume the existing session if we have a sessionId
         ...(session.sessionId ? { sessionId: session.sessionId } : {})
       });
@@ -2476,6 +2746,191 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const dispatchOrchestratorHook = (hookArgs: {
+    event: OrchestratorHookEvent;
+    runId: string;
+    stepId?: string | null;
+    attemptId?: string | null;
+    sessionId?: string | null;
+    reason: string;
+    triggerSource: string;
+    eventAt?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): void => {
+    const config = readConfig(projectConfigService);
+    const hook = config.hooks[hookArgs.event];
+    if (!hook?.command) return;
+    const missionId = getMissionIdForRun(hookArgs.runId);
+    const commandPreview = clipHookLogText(hook.command);
+    const commandDigest = createHash("sha256").update(hook.command).digest("hex").slice(0, 16);
+    const occurredAt = hookArgs.eventAt && hookArgs.eventAt.trim().length > 0 ? hookArgs.eventAt : nowIso();
+    const runtimeEventBase = {
+      source: "orchestrator_hook",
+      hookEvent: hookArgs.event,
+      missionId,
+      reason: hookArgs.reason,
+      triggerSource: hookArgs.triggerSource,
+      commandDigest,
+      commandPreview,
+      timeoutMs: hook.timeoutMs
+    };
+    recordRuntimeEvent({
+      runId: hookArgs.runId,
+      stepId: hookArgs.stepId ?? null,
+      attemptId: hookArgs.attemptId ?? null,
+      sessionId: hookArgs.sessionId ?? null,
+      eventType: "progress",
+      eventKey: `hook_dispatch:${hookArgs.event}:${hookArgs.attemptId ?? hookArgs.stepId ?? "none"}:${Date.now()}`,
+      occurredAt,
+      payload: {
+        ...runtimeEventBase,
+        phase: "started",
+        ...(hookArgs.metadata ?? {})
+      }
+    });
+    logger.info("ai_orchestrator.hook_dispatch_started", {
+      runId: hookArgs.runId,
+      stepId: hookArgs.stepId ?? null,
+      attemptId: hookArgs.attemptId ?? null,
+      sessionId: hookArgs.sessionId ?? null,
+      ...runtimeEventBase
+    });
+
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (typeof value === "string") env[key] = value;
+    }
+    env.ADE_HOOK_EVENT = hookArgs.event;
+    env.ADE_HOOK_RUN_ID = hookArgs.runId;
+    env.ADE_HOOK_STEP_ID = hookArgs.stepId ?? "";
+    env.ADE_HOOK_ATTEMPT_ID = hookArgs.attemptId ?? "";
+    env.ADE_HOOK_SESSION_ID = hookArgs.sessionId ?? "";
+    env.ADE_HOOK_REASON = hookArgs.reason;
+    env.ADE_HOOK_TRIGGER = hookArgs.triggerSource;
+    env.ADE_HOOK_MISSION_ID = missionId ?? "";
+    env.ADE_HOOK_METADATA_JSON = JSON.stringify({
+      event: hookArgs.event,
+      runId: hookArgs.runId,
+      stepId: hookArgs.stepId ?? null,
+      attemptId: hookArgs.attemptId ?? null,
+      sessionId: hookArgs.sessionId ?? null,
+      missionId,
+      reason: hookArgs.reason,
+      triggerSource: hookArgs.triggerSource,
+      occurredAt,
+      ...(hookArgs.metadata ?? {})
+    });
+
+    void hookCommandRunner({
+      command: hook.command,
+      cwd: projectRoot ?? process.cwd(),
+      timeoutMs: hook.timeoutMs,
+      env
+    }).then((result) => {
+      const stdoutPreview = clipHookLogText(result.stdout);
+      const stderrPreview = clipHookLogText(result.stderr);
+      const success = result.spawnError == null && !result.timedOut && result.exitCode === 0;
+      const logPayload = {
+        runId: hookArgs.runId,
+        stepId: hookArgs.stepId ?? null,
+        attemptId: hookArgs.attemptId ?? null,
+        sessionId: hookArgs.sessionId ?? null,
+        ...runtimeEventBase,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        stdoutPreview,
+        stderrPreview,
+        spawnError: result.spawnError
+      };
+      if (success) {
+        logger.info("ai_orchestrator.hook_execution_succeeded", logPayload);
+      } else {
+        logger.warn("ai_orchestrator.hook_execution_failed", logPayload);
+      }
+      recordRuntimeEvent({
+        runId: hookArgs.runId,
+        stepId: hookArgs.stepId ?? null,
+        attemptId: hookArgs.attemptId ?? null,
+        sessionId: hookArgs.sessionId ?? null,
+        eventType: "progress",
+        eventKey: `hook_result:${hookArgs.event}:${hookArgs.attemptId ?? hookArgs.stepId ?? "none"}:${Date.now()}`,
+        payload: {
+          ...runtimeEventBase,
+          phase: success ? "succeeded" : "failed",
+          success,
+          exitCode: result.exitCode,
+          signal: result.signal,
+          timedOut: result.timedOut,
+          durationMs: result.durationMs,
+          stdoutPreview,
+          stderrPreview,
+          spawnError: result.spawnError,
+          ...(hookArgs.metadata ?? {})
+        }
+      });
+    }).catch((error) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.warn("ai_orchestrator.hook_execution_failed", {
+        runId: hookArgs.runId,
+        stepId: hookArgs.stepId ?? null,
+        attemptId: hookArgs.attemptId ?? null,
+        sessionId: hookArgs.sessionId ?? null,
+        ...runtimeEventBase,
+        error: errorMessage
+      });
+      recordRuntimeEvent({
+        runId: hookArgs.runId,
+        stepId: hookArgs.stepId ?? null,
+        attemptId: hookArgs.attemptId ?? null,
+        sessionId: hookArgs.sessionId ?? null,
+        eventType: "progress",
+        eventKey: `hook_result:${hookArgs.event}:${hookArgs.attemptId ?? hookArgs.stepId ?? "none"}:${Date.now()}`,
+        payload: {
+          ...runtimeEventBase,
+          phase: "failed",
+          success: false,
+          error: errorMessage,
+          ...(hookArgs.metadata ?? {})
+        }
+      });
+    });
+  };
+
+  const maybeDispatchTeammateIdleHook = (idleArgs: {
+    runId: string;
+    stepId: string;
+    attemptId: string;
+    sessionId?: string | null;
+    previousState: OrchestratorWorkerStatus | null;
+    nextState: OrchestratorWorkerStatus;
+    reason: string;
+    triggerSource: "runtime_signal" | "health_sweep";
+    runtimeState?: TerminalRuntimeState | null;
+    preview?: string | null;
+    laneId?: string | null;
+  }): void => {
+    if (idleArgs.nextState !== "idle" && idleArgs.nextState !== "waiting_input") return;
+    if (idleArgs.previousState === idleArgs.nextState) return;
+    dispatchOrchestratorHook({
+      event: "TeammateIdle",
+      runId: idleArgs.runId,
+      stepId: idleArgs.stepId,
+      attemptId: idleArgs.attemptId,
+      sessionId: idleArgs.sessionId ?? null,
+      reason: idleArgs.reason,
+      triggerSource: idleArgs.triggerSource,
+      metadata: {
+        previousState: idleArgs.previousState,
+        nextState: idleArgs.nextState,
+        runtimeState: idleArgs.runtimeState ?? null,
+        laneId: idleArgs.laneId ?? null,
+        preview: clipHookLogText(idleArgs.preview)
+      }
+    });
+  };
+
   const resolveActivePolicy = (missionId: string): MissionExecutionPolicy => {
     const metadata = getMissionMetadata(missionId);
     const config = readConfig(projectConfigService);
@@ -2487,60 +2942,21 @@ export function createAiOrchestratorService(args: {
       });
     }
 
-    // 2) Mission legacy depth (mission-local backward compatibility)
-    if (typeof metadata.missionDepth === "string") {
-      const tier = metadata.missionDepth as MissionDepthTier;
-      if (tier === "light" || tier === "standard" || tier === "deep") {
-        return depthTierToPolicy(tier);
-      }
-    }
-
-    // 3) Project default execution policy
+    // 2) Project default execution policy
     if (config.defaultExecutionPolicy) {
       return resolveExecutionPolicy({
         projectConfig: config.defaultExecutionPolicy
       });
     }
 
-    // 4) Project legacy depth default
-    if (config.defaultDepthTier !== "standard") {
-      return depthTierToPolicy(config.defaultDepthTier);
-    }
-
-    // 5) Built-in default policy
+    // 3) Built-in default policy
     return DEFAULT_EXECUTION_POLICY;
   };
 
   const resolveActiveRuntimeProfile = (missionId: string): MissionRuntimeProfile => {
-    const metadata = getMissionMetadata(missionId);
     const config = readConfig(projectConfigService);
-
-    if (isRecord(metadata.executionPolicy)) {
-      const policy = resolveExecutionPolicy({
-        missionMetadata: metadata.executionPolicy as Partial<MissionExecutionPolicy>
-      });
-      return deriveRuntimeProfileFromPolicy(policy, config);
-    }
-
-    if (typeof metadata.missionDepth === "string") {
-      const tier = metadata.missionDepth as MissionDepthTier;
-      if (tier === "light" || tier === "standard" || tier === "deep") {
-        return deriveRuntimeProfileFromDepthConfig(resolveMissionDepthConfig(tier), config);
-      }
-    }
-
-    if (config.defaultExecutionPolicy) {
-      const policy = resolveExecutionPolicy({
-        projectConfig: config.defaultExecutionPolicy
-      });
-      return deriveRuntimeProfileFromPolicy(policy, config);
-    }
-
-    if (config.defaultDepthTier !== "standard") {
-      return deriveRuntimeProfileFromDepthConfig(resolveMissionDepthConfig(config.defaultDepthTier), config);
-    }
-
-    return deriveRuntimeProfileFromPolicy(DEFAULT_EXECUTION_POLICY, config);
+    const policy = resolveActivePolicy(missionId);
+    return deriveRuntimeProfileFromPolicy(policy, config);
   };
 
   const getSteeringContext = (missionId: string): string => {
@@ -3055,16 +3471,6 @@ export function createAiOrchestratorService(args: {
     return { digest, stagnantMs: Math.max(0, now - tracker.digestSinceMs) };
   };
 
-  const shouldTreatAsStagnating = (attemptId: string, stagnantMs: number, stepTimeoutMs: number): boolean => {
-    const tracker = ensureAttemptRuntimeTracker(attemptId);
-    if (tracker.repeatCount < WORKER_STAGNATION_REPEAT_THRESHOLD) return false;
-    const threshold = Math.max(
-      WORKER_STAGNATION_MIN_MS,
-      Math.min(12 * 60_000, Math.floor(stepTimeoutMs * 0.4))
-    );
-    return stagnantMs >= threshold;
-  };
-
   const resolveAttemptOwnerIdFromRows = (attemptMetadataJson: string | null, runMetadataJson: string | null): string => {
     const attemptMeta = parseJsonRecord(attemptMetadataJson);
     const explicitOwner = typeof attemptMeta?.ownerId === "string" ? attemptMeta.ownerId.trim() : "";
@@ -3197,17 +3603,192 @@ export function createAiOrchestratorService(args: {
   }): number => {
     const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
     const planStep = isRecord(stepMeta.planStep) ? stepMeta.planStep : null;
+    const aiStepTimeout = Number(stepMeta.aiTimeoutMs ?? stepMeta.ai_timeout_ms);
     const explicitStepTimeout = Number(stepMeta.timeoutMs);
     const planStepTimeout = Number(planStep?.timeoutMs ?? NaN);
     const runtimeProfile = runRuntimeProfiles.get(args.runId) ?? resolveActiveRuntimeProfile(args.missionId);
     const fallback = runtimeProfile.execution.stepTimeoutMs;
     const raw =
-      Number.isFinite(explicitStepTimeout) && explicitStepTimeout > 0
+      Number.isFinite(aiStepTimeout) && aiStepTimeout > 0
+        ? aiStepTimeout
+        : Number.isFinite(explicitStepTimeout) && explicitStepTimeout > 0
         ? explicitStepTimeout
         : Number.isFinite(planStepTimeout) && planStepTimeout > 0
           ? planStepTimeout
           : fallback;
-    return Math.max(30_000, Math.floor(raw));
+    const floorMs = Math.max(30_000, Math.floor(raw));
+    const capMs = resolveMissionDecisionTimeoutCapMs(args.missionId);
+    return Math.max(30_000, Math.min(floorMs, capMs));
+  };
+
+  const computeStepComplexityScore = (step: OrchestratorRunGraph["steps"][number]): number => {
+    const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+    const rawStepType = typeof stepMeta.stepType === "string" ? stepMeta.stepType.trim().toLowerCase() : "";
+    const rawTaskType = typeof stepMeta.taskType === "string" ? stepMeta.taskType.trim().toLowerCase() : "";
+    const type = rawStepType || rawTaskType || step.stepKey.toLowerCase();
+    let score = 3;
+    if (type.includes("integration") || type.includes("merge")) score += 4;
+    else if (type.includes("review") || type.includes("test")) score += 2;
+    else if (type.includes("plan")) score += 1;
+    score += Math.min(5, Math.max(0, step.dependencyStepIds.length));
+    score += Math.min(2, Math.max(0, step.retryCount));
+    return Math.max(1, Math.min(10, score));
+  };
+
+  const resolveStepHistoricalDurationMs = (args: {
+    graph: OrchestratorRunGraph;
+    stepId: string;
+  }): number | null => {
+    const durations = args.graph.attempts
+      .filter((attempt) => attempt.stepId === args.stepId)
+      .map((attempt) => {
+        if (!attempt.startedAt || !attempt.completedAt) return Number.NaN;
+        return Date.parse(attempt.completedAt) - Date.parse(attempt.startedAt);
+      })
+      .filter((duration) => Number.isFinite(duration) && duration > 0);
+    if (!durations.length) return null;
+    return Math.floor(durations.reduce((sum, duration) => sum + duration, 0) / durations.length);
+  };
+
+  const applyAiTimeoutBudgetToStep = async (args: {
+    graph: OrchestratorRunGraph;
+    step: OrchestratorRunGraph["steps"][number];
+  }): Promise<void> => {
+    const stepLockKey = args.step.id;
+    if (aiTimeoutBudgetStepLocks.has(stepLockKey)) return;
+    aiTimeoutBudgetStepLocks.add(stepLockKey);
+    try {
+      const stepMeta = isRecord(args.step.metadata) ? args.step.metadata : {};
+      const existingAiTimeout = Number(stepMeta.aiTimeoutMs ?? stepMeta.ai_timeout_ms);
+      if (Number.isFinite(existingAiTimeout) && existingAiTimeout > 0) return;
+
+      const missionId = args.graph.run.missionId;
+      const decisionService = getAiDecisionServiceForCategory(missionId, "timeout_estimation");
+      if (!decisionService) {
+        throw new DecisionFailure({
+          decisionName: "decideTimeoutBudget",
+          context: {
+            missionId,
+            runId: args.graph.run.id,
+            stepId: args.step.id,
+            laneId: args.step.laneId ?? null
+          },
+          message: "Timeout estimation AI decision service unavailable.",
+          input: {
+            runId: args.graph.run.id,
+            stepId: args.step.id
+          }
+        });
+      }
+
+      const stepType = typeof stepMeta.stepType === "string" && stepMeta.stepType.trim().length > 0
+        ? stepMeta.stepType.trim()
+        : typeof stepMeta.taskType === "string" && stepMeta.taskType.trim().length > 0
+          ? stepMeta.taskType.trim()
+          : args.step.stepKey;
+      const timeoutDecision = await decisionService.decideTimeoutBudget({
+        context: {
+          missionId,
+          runId: args.graph.run.id,
+          stepId: args.step.id,
+          laneId: args.step.laneId ?? null
+        },
+        missionModelConfig: resolveMissionModelConfig(missionId),
+        stepKind: stepType,
+        complexityScore: computeStepComplexityScore(args.step),
+        historicalDurationMs: resolveStepHistoricalDurationMs({
+          graph: args.graph,
+          stepId: args.step.id
+        })
+      });
+
+      const nextMeta = { ...stepMeta };
+      nextMeta.aiTimeoutMs = timeoutDecision.timeoutMs;
+      nextMeta.ai_timeout_ms = timeoutDecision.timeoutMs;
+      nextMeta.aiTimeoutDecision = {
+        timeoutMs: timeoutDecision.timeoutMs,
+        capMs: timeoutDecision.capMs,
+        capped: timeoutDecision.capped,
+        rationale: timeoutDecision.rationale,
+        confidence: timeoutDecision.confidence,
+        decidedAt: nowIso()
+      };
+      db.run(
+        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+        [JSON.stringify(nextMeta), nowIso(), args.step.id, args.graph.run.id]
+      );
+    } catch (error) {
+      if (error instanceof DecisionFailure) throw error;
+      throw new DecisionFailure({
+        decisionName: "decideTimeoutBudget",
+        context: {
+          missionId: args.graph.run.missionId,
+          runId: args.graph.run.id,
+          stepId: args.step.id,
+          laneId: args.step.laneId ?? null
+        },
+        message: `Timeout budget decision failed: ${error instanceof Error ? error.message : String(error)}`,
+        input: {
+          runId: args.graph.run.id,
+          stepId: args.step.id
+        },
+        cause: error
+      });
+    } finally {
+      aiTimeoutBudgetStepLocks.delete(stepLockKey);
+    }
+  };
+
+  const applyAiTimeoutBudgetsForRun = async (args: {
+    runId: string;
+    reason: string;
+  }): Promise<void> => {
+    if (aiTimeoutBudgetRunLocks.has(args.runId)) return;
+    aiTimeoutBudgetRunLocks.add(args.runId);
+    try {
+      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+      const candidates = graph.steps.filter((step) => step.status === "pending" || step.status === "ready");
+      for (const step of candidates) {
+        await applyAiTimeoutBudgetToStep({ graph, step });
+      }
+    } catch (error) {
+      const missionId =
+        error instanceof DecisionFailure
+          ? error.context.missionId
+          : getMissionIdForRun(args.runId);
+      const stepId =
+        error instanceof DecisionFailure
+          ? (error.context.stepId ?? undefined)
+          : undefined;
+      if (missionId) {
+        pauseRunWithIntervention({
+          runId: args.runId,
+          missionId,
+          stepId,
+          source: "timeout_decision",
+          reasonCode: error instanceof DecisionFailure ? "decision_failure" : "timeout_budget_decision_failed",
+          title: "AI timeout budget decision failed",
+          body: error instanceof Error ? error.message : String(error),
+          requestedAction: "Review timeout guidance and resume when ready.",
+          metadata: error instanceof DecisionFailure
+            ? {
+                decisionName: error.decisionName,
+                decisionContext: error.context
+              }
+            : undefined
+        });
+        await syncMissionFromRun(args.runId, "ai_timeout_budget_decision_failed", {
+          nextMissionStatus: "intervention_required"
+        });
+      }
+      logger.debug("ai_orchestrator.timeout_budget_run_apply_failed", {
+        runId: args.runId,
+        reason: args.reason,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      aiTimeoutBudgetRunLocks.delete(args.runId);
+    }
   };
 
   const stepTitleForMessage = (step: OrchestratorRunGraph["steps"][number]): string => {
@@ -3391,6 +3972,7 @@ export function createAiOrchestratorService(args: {
       if (!step) continue;
 
       updateAttemptStagnationTracker(attempt.attemptId, signal.lastOutputPreview);
+      const previousWorkerState = workerStates.get(attempt.attemptId)?.state ?? null;
       upsertWorkerState(attempt.attemptId, {
         runId: attempt.runId,
         stepId: attempt.stepId,
@@ -3398,6 +3980,21 @@ export function createAiOrchestratorService(args: {
         executorKind: attempt.executorKind,
         state: runtimeWorkerState
       });
+      if (attempt.executorKind !== "manual") {
+        maybeDispatchTeammateIdleHook({
+          runId: attempt.runId,
+          stepId: attempt.stepId,
+          attemptId: attempt.attemptId,
+          sessionId,
+          previousState: previousWorkerState,
+          nextState: runtimeWorkerState,
+          reason: waitingForInput ? "waiting_input_signal" : "runtime_idle_signal",
+          triggerSource: "runtime_signal",
+          runtimeState: signal.runtimeState,
+          preview: signal.lastOutputPreview,
+          laneId: signal.laneId || step.laneId || null
+        });
+      }
 
       if (waitingForInput) {
         const questionLink = buildQuestionThreadLink({
@@ -3664,14 +4261,41 @@ export function createAiOrchestratorService(args: {
           const runtimeWaiting = sessionSignal?.runtimeState === "waiting-input";
           const textWaiting = detectWaitingInputSignal(effectivePreview);
           const waitingForInput = runtimeWaiting || textWaiting;
+          const idleLikeState =
+            sessionSignal?.runtimeState === "idle"
+            || sessionState?.status === "idle"
+            || sessionState?.status === "waiting-input";
+          const runtimeStateForWorker: TerminalRuntimeState = waitingForInput
+            ? "waiting-input"
+            : idleLikeState
+              ? "idle"
+              : "running";
+          const nextWorkerState = workerStateFromRuntimeSignal({
+            runtimeState: runtimeStateForWorker,
+            waitingForInput
+          });
           const stagnationSnapshot = updateAttemptStagnationTracker(attempt.id, effectivePreview);
 
+          const previousWorkerState = workerStates.get(attempt.id)?.state ?? null;
           upsertWorkerState(attempt.id, {
             runId: run.id,
             stepId: step.id,
             sessionId: attempt.executorSessionId,
             executorKind: attempt.executorKind,
-            state: waitingForInput ? "waiting_input" : "working"
+            state: nextWorkerState
+          });
+          maybeDispatchTeammateIdleHook({
+            runId: run.id,
+            stepId: step.id,
+            attemptId: attempt.id,
+            sessionId: attempt.executorSessionId ?? null,
+            previousState: previousWorkerState,
+            nextState: nextWorkerState,
+            reason: waitingForInput ? "waiting_input_sweep" : "idle_like_sweep",
+            triggerSource: "health_sweep",
+            runtimeState: sessionSignal?.runtimeState ?? runtimeStateForWorker,
+            preview: effectivePreview,
+            laneId: step.laneId ?? null
           });
 
           if (waitingForInput && sessionId.length > 0) {
@@ -3751,30 +4375,115 @@ export function createAiOrchestratorService(args: {
           });
           if (elapsedMs <= timeoutMs + STALE_ATTEMPT_GRACE_MS) continue;
 
-          if (sessionId.length > 0) {
-            const eventActivityAtMs = getRecentAttemptEventActivityAt(attempt.id);
-            const sessionActivityAtMs = getRecentSessionActivityAt(sessionState);
-            const activityAtMs =
-              Number.isFinite(eventActivityAtMs) && Number.isFinite(sessionActivityAtMs)
-                ? Math.max(eventActivityAtMs, sessionActivityAtMs)
-                : Number.isFinite(eventActivityAtMs)
-                  ? eventActivityAtMs
-                  : sessionActivityAtMs;
-            const activeOutputWindowMs = Math.max(90_000, Math.min(15 * 60_000, Math.floor(timeoutMs * 0.5)));
-            if (Number.isFinite(activityAtMs) && Date.now() - activityAtMs <= activeOutputWindowMs) {
-              if (!shouldTreatAsStagnating(attempt.id, stagnationSnapshot.stagnantMs, timeoutMs)) {
-                continue;
+          const eventActivityAtMs = getRecentAttemptEventActivityAt(attempt.id);
+          const sessionActivityAtMs = getRecentSessionActivityAt(sessionState);
+          const activityAtMs =
+            Number.isFinite(eventActivityAtMs) && Number.isFinite(sessionActivityAtMs)
+              ? Math.max(eventActivityAtMs, sessionActivityAtMs)
+              : Number.isFinite(eventActivityAtMs)
+                ? eventActivityAtMs
+                : sessionActivityAtMs;
+          const recentActivityMs = Number.isFinite(activityAtMs) ? Math.max(0, Date.now() - activityAtMs) : null;
+          const stepMetaForDecision = isRecord(step.metadata) ? step.metadata : {};
+          let stagnationEvaluation:
+            | {
+                isStagnating: boolean;
+                recommendedAction: "continue" | "nudge" | "replan" | "pause";
+                rationale: string;
+                confidence: number;
               }
+            | null = null;
+          try {
+            const decisionService = getAiDecisionServiceForCategory(graph.run.missionId, "stagnation_evaluation");
+            if (!decisionService) {
+              throw new DecisionFailure({
+                decisionName: "evaluateStagnation",
+                context: {
+                  missionId: graph.run.missionId,
+                  runId: run.id,
+                  stepId: step.id,
+                  laneId: step.laneId ?? null,
+                  attemptId: attempt.id
+                },
+                message: "Stagnation AI decision service unavailable.",
+                input: {
+                  runId: run.id,
+                  stepId: step.id,
+                  attemptId: attempt.id
+                }
+              });
             }
+            const runtimeDigest = [
+              `Step: ${step.stepKey}`,
+              `ElapsedMs: ${elapsedMs}`,
+              `TimeoutMs: ${timeoutMs}`,
+              `NoProgressMs: ${stagnationSnapshot.stagnantMs}`,
+              `RecentActivityMs: ${recentActivityMs ?? "unknown"}`,
+              `Retry: ${step.retryCount}/${step.retryLimit}`,
+              `RuntimePreview: ${(effectivePreview ?? "").slice(0, 1200) || "none"}`,
+              `StepMeta: ${JSON.stringify(stepMetaForDecision).slice(0, 1200)}`
+            ].join("\n");
+            stagnationEvaluation = await decisionService.evaluateStagnation({
+              context: {
+                missionId: graph.run.missionId,
+                runId: run.id,
+                stepId: step.id,
+                laneId: step.laneId ?? null,
+                attemptId: attempt.id
+              },
+              noProgressMs: Math.max(stagnationSnapshot.stagnantMs, 0),
+              retryCount: step.retryCount,
+              runtimeDigest
+            });
+          } catch (error) {
+            const reasonCode = error instanceof DecisionFailure ? "decision_failure" : "stagnation_ai_decision_failed";
+            pauseRunWithIntervention({
+              runId: run.id,
+              missionId: graph.run.missionId,
+              stepId: step.id,
+              stepKey: step.stepKey,
+              source: "stagnation_decision",
+              reasonCode,
+              title: `Stagnation decision failed for "${stepTitleForMessage(step)}"`,
+              body: `AI stagnation evaluation failed while sweeping stale attempts. ${error instanceof Error ? error.message : String(error)}`,
+              requestedAction: "Review worker runtime output and decide whether to retry, replan, or intervene manually.",
+              metadata: error instanceof DecisionFailure
+                ? {
+                    decisionName: error.decisionName,
+                    decisionContext: error.context
+                  }
+                : undefined
+            });
+            await syncMissionFromRun(run.id, "ai_stagnation_decision_failed", {
+              nextMissionStatus: "intervention_required"
+            });
+            continue;
+          }
+
+          if (!stagnationEvaluation.isStagnating) {
+            if (stagnationEvaluation.recommendedAction === "pause" || stagnationEvaluation.recommendedAction === "replan") {
+              pauseRunWithIntervention({
+                runId: run.id,
+                missionId: graph.run.missionId,
+                stepId: step.id,
+                stepKey: step.stepKey,
+                source: "stagnation_decision",
+                reasonCode: "stagnation_pause_requested",
+                title: `AI requested intervention for "${stepTitleForMessage(step)}"`,
+                body: stagnationEvaluation.rationale,
+                requestedAction: "Review the stagnation analysis and decide whether to replan or resume."
+              });
+              await syncMissionFromRun(run.id, "ai_stagnation_pause_requested", {
+                nextMissionStatus: "intervention_required"
+              });
+            }
+            continue;
           }
 
           const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
           const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60_000));
           const stagnantMs = stagnationSnapshot.stagnantMs;
-          const stagnating = shouldTreatAsStagnating(attempt.id, stagnantMs, timeoutMs);
-          const errorMessage = stagnating
-            ? `Attempt appears stagnant despite output (${Math.max(1, Math.round(stagnantMs / 60_000))}m repeated state). Marking as stuck.`
-            : `Attempt exceeded timeout (${elapsedMinutes}m > ${timeoutMinutes}m). Marking as stuck.`;
+          const errorMessage = `Attempt exceeded timeout (${elapsedMinutes}m > ${timeoutMinutes}m) and AI marked it as stagnating (${Math.max(1, Math.round(stagnantMs / 60_000))}m no progress).`;
           try {
             orchestratorService.completeAttempt({
               attemptId: attempt.id,
@@ -3786,7 +4495,12 @@ export function createAiOrchestratorService(args: {
                 watchdogRecoveredAt: nowIso(),
                 watchdogTimeoutMs: timeoutMs,
                 watchdogElapsedMs: elapsedMs,
-                watchdogStagnantMs: stagnating ? stagnantMs : undefined,
+                watchdogStagnantMs: stagnantMs,
+                watchdogAiStagnation: {
+                  rationale: stagnationEvaluation.rationale,
+                  recommendedAction: stagnationEvaluation.recommendedAction,
+                  confidence: stagnationEvaluation.confidence
+                },
                 ownerId
               }
             });
@@ -3839,6 +4553,120 @@ export function createAiOrchestratorService(args: {
     });
 
     return { sweeps, staleRecovered };
+  };
+
+  const applyAiRetryDecisionForFailedAttempt = async (args: {
+    runId: string;
+    stepId: string;
+    attemptId: string;
+  }): Promise<void> => {
+    const lockKey = args.attemptId;
+    if (aiRetryDecisionLocks.has(lockKey)) return;
+    aiRetryDecisionLocks.add(lockKey);
+    try {
+      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
+      const step = graph.steps.find((entry) => entry.id === args.stepId);
+      const attempt = graph.attempts.find((entry) => entry.id === args.attemptId);
+      if (!step || !attempt || attempt.status !== "failed") return;
+
+      const decisionService = getAiDecisionServiceForCategory(graph.run.missionId, "retry_decision");
+      if (!decisionService) {
+        throw new DecisionFailure({
+          decisionName: "decideRetry",
+          context: {
+            missionId: graph.run.missionId,
+            runId: args.runId,
+            stepId: args.stepId,
+            laneId: step.laneId ?? null,
+            attemptId: args.attemptId
+          },
+          message: "Retry AI decision service unavailable.",
+          input: {
+            runId: args.runId,
+            stepId: args.stepId,
+            attemptId: args.attemptId
+          }
+        });
+      }
+
+      const retryDecision = await decisionService.decideRetry({
+        context: {
+          missionId: graph.run.missionId,
+          runId: args.runId,
+          stepId: args.stepId,
+          laneId: step.laneId ?? null,
+          attemptId: args.attemptId
+        },
+        errorClass: attempt.errorClass,
+        errorMessage: attempt.errorMessage ?? "Unknown attempt failure",
+        retryCount: step.retryCount,
+        retryLimit: step.retryLimit,
+        lastAttemptSummary: attempt.resultEnvelope?.summary ?? null
+      });
+
+      const retryBackoffMs = Math.max(0, Math.floor(retryDecision.delayMs));
+      const metadata = isRecord(step.metadata) ? { ...step.metadata } : {};
+      metadata.aiRetryBackoffMs = retryBackoffMs;
+      metadata.ai_retry_backoff_ms = retryBackoffMs;
+      metadata.aiRetryDecision = {
+        shouldRetry: retryDecision.shouldRetry,
+        reason: retryDecision.reason,
+        adjustedHint: retryDecision.adjustedHint,
+        confidence: retryDecision.confidence,
+        decidedAt: nowIso(),
+        attemptId: args.attemptId
+      };
+      if (retryDecision.shouldRetry && (step.status === "pending" || step.status === "ready")) {
+        metadata.lastRetryBackoffMs = retryBackoffMs;
+        metadata.nextRetryAt = new Date(Date.now() + retryBackoffMs).toISOString();
+      }
+      db.run(
+        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+        [JSON.stringify(metadata), nowIso(), step.id, args.runId]
+      );
+
+      if (!retryDecision.shouldRetry && (step.status === "pending" || step.status === "ready")) {
+        pauseRunWithIntervention({
+          runId: args.runId,
+          missionId: graph.run.missionId,
+          stepId: step.id,
+          stepKey: step.stepKey,
+          source: "retry_decision",
+          reasonCode: "retry_declined",
+          title: `AI declined retry for "${stepTitleForMessage(step)}"`,
+          body: retryDecision.reason,
+          requestedAction: "Review failure details and choose retry, workaround, or skip."
+        });
+        await syncMissionFromRun(args.runId, "ai_retry_declined", {
+          nextMissionStatus: "intervention_required"
+        });
+      }
+    } catch (error) {
+      const missionId = getMissionIdForRun(args.runId);
+      if (missionId) {
+        pauseRunWithIntervention({
+          runId: args.runId,
+          missionId,
+          stepId: args.stepId,
+          source: "retry_decision",
+          reasonCode: error instanceof DecisionFailure ? "decision_failure" : "retry_decision_failed",
+          title: "AI retry decision failed",
+          body: `Retry scheduling decision failed for attempt ${args.attemptId}. ${error instanceof Error ? error.message : String(error)}`,
+          requestedAction: "Review retry settings and resume once a retry strategy is set.",
+          metadata: error instanceof DecisionFailure
+            ? {
+                decisionName: error.decisionName,
+                decisionContext: error.context
+              }
+            : undefined
+        });
+        await syncMissionFromRun(args.runId, "ai_retry_decision_failed", {
+          nextMissionStatus: "intervention_required"
+        });
+      }
+    } finally {
+      aiRetryDecisionLocks.delete(lockKey);
+    }
   };
 
   const buildWorkerDigestFromAttempt = (args: {
@@ -4075,11 +4903,7 @@ export function createAiOrchestratorService(args: {
           digest
         });
 
-        adjustPlanFromResults({
-          runId: attempt.runId,
-          completedStepId: attempt.stepId,
-          outcomeTags
-        });
+        // Transition handling is AI-driven via runtime attempt_completed events.
       } else if (attempt.status === "failed") {
         attemptRuntimeTrackers.delete(attempt.id);
         deletePersistedAttemptRuntimeState(attempt.id);
@@ -4920,354 +5744,6 @@ export function createAiOrchestratorService(args: {
     }
   };
 
-  // ---------------------------------------------------------------------------
-  // Structured situation report: assembles a comprehensive, standardized context
-  // for coordinator AI calls. Any model performs better with structured input.
-  // ---------------------------------------------------------------------------
-
-  const buildSituationReport = (args: {
-    runId: string;
-    trigger: string;
-    triggerStepId?: string;
-  }): string => {
-    try {
-      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
-      const missionId = graph.run.missionId;
-      const mission = missionService.get(missionId);
-
-      const succeeded = graph.steps.filter((s) => s.status === "succeeded");
-      const failed = graph.steps.filter((s) => s.status === "failed");
-      const running = graph.steps.filter((s) => s.status === "running");
-      const blocked = graph.steps.filter((s) => s.status === "blocked");
-      const pending = graph.steps.filter((s) => s.status === "pending" || s.status === "ready");
-      const total = graph.steps.length;
-      const pct = total > 0 ? Math.round((succeeded.length / total) * 100) : 0;
-
-      const lines: string[] = [];
-      lines.push("=== SITUATION REPORT ===");
-      lines.push(`Mission: "${mission?.title ?? missionId}"`);
-      lines.push(`Progress: ${succeeded.length}/${total} steps complete (${pct}%)`);
-      lines.push(`Status: ${succeeded.length} succeeded, ${failed.length} failed, ${running.length} running, ${blocked.length} blocked, ${pending.length} pending`);
-      lines.push(`Trigger: ${args.trigger}`);
-
-      if (running.length > 0) {
-        lines.push("");
-        lines.push("Running now:");
-        for (const s of running.slice(0, 5)) {
-          const activeAttempt = graph.attempts
-            .filter((a) => a.stepId === s.id && a.status === "running")
-            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-          const elapsed = activeAttempt ? `${Math.round((Date.now() - Date.parse(activeAttempt.createdAt)) / 1000)}s` : "?";
-          lines.push(`  - ${s.stepKey}: "${s.title}" (${elapsed} elapsed)`);
-        }
-      }
-
-      if (failed.length > 0) {
-        lines.push("");
-        lines.push("Failed steps:");
-        for (const s of failed.slice(0, 5)) {
-          const lastAttempt = graph.attempts
-            .filter((a) => a.stepId === s.id)
-            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-          const errMsg = lastAttempt?.errorMessage?.slice(0, 150) ?? "unknown error";
-          lines.push(`  - ${s.stepKey}: ${errMsg} (retries: ${s.retryCount}/${s.retryLimit})`);
-        }
-      }
-
-      if (blocked.length > 0) {
-        lines.push("");
-        lines.push("Blocked steps:");
-        for (const s of blocked.slice(0, 5)) {
-          const blockMeta = isRecord(s.metadata) ? s.metadata : {};
-          const blockReason = typeof blockMeta.blockedErrorMessage === "string" ? blockMeta.blockedErrorMessage.slice(0, 100) : "unknown";
-          lines.push(`  - ${s.stepKey}: ${blockReason}`);
-        }
-      }
-
-      // Recently completed — show last 3 for context
-      const recentlyDone = succeeded
-        .filter((s) => s.completedAt)
-        .sort((a, b) => Date.parse(b.completedAt!) - Date.parse(a.completedAt!))
-        .slice(0, 3);
-      if (recentlyDone.length > 0) {
-        lines.push("");
-        lines.push("Recently completed:");
-        for (const s of recentlyDone) {
-          const lastAttempt = graph.attempts
-            .filter((a) => a.stepId === s.id && a.status === "succeeded")
-            .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-          const summary = lastAttempt?.resultEnvelope?.summary?.slice(0, 120) ?? "completed";
-          lines.push(`  - ${s.stepKey}: ${summary}`);
-        }
-      }
-
-      // Next up — what's ready to run
-      const ready = graph.steps.filter((s) => s.status === "ready");
-      if (ready.length > 0) {
-        lines.push("");
-        lines.push("Ready to start:");
-        for (const s of ready.slice(0, 5)) {
-          const deps = s.dependencyStepIds
-            .map((depId) => graph.steps.find((d) => d.id === depId)?.stepKey ?? depId.slice(0, 8))
-            .join(", ");
-          lines.push(`  - ${s.stepKey}: "${s.title}"${deps ? ` (depends on: ${deps})` : ""}`);
-        }
-      }
-
-      lines.push("=== END REPORT ===");
-      return lines.join("\n");
-    } catch (error) {
-      return `[Situation report unavailable: ${error instanceof Error ? error.message : String(error)}]`;
-    }
-  };
-
-  // Internal async helper for Tier 2 AI-driven plan adjustment
-  const adjustPlanWithAI = async (adjustArgs: {
-    runId: string;
-    completedStepId: string;
-    graph: OrchestratorRunGraph;
-  }): Promise<void> => {
-    if (!aiIntegrationService || !projectRoot) return;
-
-    const { graph } = adjustArgs;
-    const completed = graph.steps.filter((s) => s.status === "succeeded" || s.status === "failed" || s.status === "skipped");
-    const remaining = graph.steps.filter((s) => s.status === "pending" || s.status === "ready" || s.status === "blocked");
-    const targetStep = graph.steps.find((s) => s.id === adjustArgs.completedStepId);
-
-    const steeringContext = getSteeringContext(graph.run.missionId);
-    const situationReport = buildSituationReport({
-      runId: adjustArgs.runId,
-      trigger: `step_completed:${targetStep?.stepKey ?? adjustArgs.completedStepId}`,
-      triggerStepId: adjustArgs.completedStepId
-    });
-
-    // Last completed step's output for detailed analysis
-    const lastAttempt = graph.attempts
-      .filter((a) => a.stepId === adjustArgs.completedStepId && (a.status === "succeeded" || a.status === "failed"))
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-    const lastOutput = lastAttempt?.resultEnvelope?.summary?.slice(0, 1000) ?? "";
-    const lastWarnings = lastAttempt?.resultEnvelope?.warnings?.slice(0, 5).join("; ") ?? "";
-
-    const prompt = [
-      PM_SYSTEM_PREAMBLE,
-      "Your current role: PLAN ADJUSTER. Based on completed step results, proactively evaluate the remaining plan.",
-      "",
-      situationReport,
-      "",
-      `Last completed step output: ${lastOutput}`,
-      lastWarnings ? `Warnings from last step: ${lastWarnings}` : "",
-      "",
-      steeringContext,
-      "",
-      "DECISION FRAMEWORK (choose the best action):",
-      "1. no_change — plan is on track, no adjustment needed (most common)",
-      "2. skip_step — a remaining step is now redundant based on what was just completed",
-      "3. add_step — a gap was discovered that needs a new step to address",
-      "",
-      "Rules:",
-      "- Only skip if you have specific evidence from the completed step that makes a downstream step unnecessary",
-      "- Only add if the completed step revealed a concrete gap (not hypothetical)",
-      "- Reference specific outputs, files, or errors in your reasoning",
-      "Return a JSON object with your adjustments."
-    ].filter(Boolean).join("\n");
-
-    const adjustmentSchema = {
-      type: "object",
-      properties: {
-        reasoning: { type: "string" },
-        adjustments: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              action: { type: "string", enum: ["add_step", "skip_step", "no_change"] },
-              targetStepKey: { type: "string" },
-              reason: { type: "string" },
-              newStep: {
-                type: "object",
-                properties: {
-                  stepKey: { type: "string" },
-                  title: { type: "string" },
-                  instructions: { type: "string" },
-                  dependencyStepKeys: { type: "array", items: { type: "string" } },
-                  executorKind: { type: "string", enum: ["claude", "codex", "manual"] }
-                }
-              }
-            },
-            required: ["action", "reason"]
-          }
-        }
-      },
-      required: ["reasoning", "adjustments"]
-    };
-
-    const missionId = graph.run.missionId;
-    const runtimeProfile = runRuntimeProfiles.get(adjustArgs.runId) ?? resolveActiveRuntimeProfile(missionId);
-    const configPlanAdj = resolveOrchestratorModelConfig(missionId, "plan_adjustment");
-
-    const result = await aiIntegrationService.executeTask({
-      feature: "orchestrator",
-      taskType: "planning",
-      prompt,
-      cwd: projectRoot,
-      provider: configPlanAdj.provider === "codex" ? "codex" : "claude",
-      model: modelConfigToServiceModel(configPlanAdj),
-      reasoningEffort: thinkingLevelToReasoningEffort(configPlanAdj.thinkingLevel),
-      jsonSchema: adjustmentSchema,
-      permissionMode: "read-only",
-      oneShot: true,
-      timeoutMs: 30_000
-    });
-
-    const parsed = isRecord(result.structuredOutput) ? result.structuredOutput : null;
-    if (!parsed || !Array.isArray(parsed.adjustments)) return;
-
-    for (const adj of parsed.adjustments) {
-      if (!isRecord(adj)) continue;
-      const action = String(adj.action ?? "");
-      const reason = String(adj.reason ?? "AI-suggested adjustment");
-
-      if (action === "skip_step" && typeof adj.targetStepKey === "string") {
-        const target = graph.steps.find((s) => s.stepKey === adj.targetStepKey);
-        if (target && target.status !== "succeeded" && target.status !== "failed") {
-          try {
-            orchestratorService.skipStep({ runId: adjustArgs.runId, stepId: target.id, reason });
-            logger.info("ai_orchestrator.ai_skip_step", { runId: adjustArgs.runId, stepKey: adj.targetStepKey, reason });
-          } catch (e) {
-            logger.debug("ai_orchestrator.ai_skip_step_failed", {
-              runId: adjustArgs.runId,
-              stepKey: adj.targetStepKey,
-              error: e instanceof Error ? e.message : String(e)
-            });
-          }
-        }
-      } else if (action === "add_step" && isRecord(adj.newStep)) {
-        const newStep = adj.newStep;
-        const stepKey = typeof newStep.stepKey === "string" ? newStep.stepKey : `ai-corrective-${Date.now()}`;
-        const title = typeof newStep.title === "string" ? newStep.title : "AI-suggested corrective step";
-        const depKeys = Array.isArray(newStep.dependencyStepKeys) ? newStep.dependencyStepKeys.map(String) : [];
-        const executorKind = typeof newStep.executorKind === "string" &&
-          ["claude", "codex", "manual"].includes(newStep.executorKind)
-          ? (newStep.executorKind as OrchestratorExecutorKind)
-          : ("manual" as OrchestratorExecutorKind);
-        try {
-          orchestratorService.addSteps({
-            runId: adjustArgs.runId,
-            steps: [{
-              stepKey,
-              title,
-              stepIndex: graph.steps.length,
-              dependencyStepKeys: depKeys,
-              executorKind,
-              retryLimit: 1,
-              metadata: {
-                instructions: typeof newStep.instructions === "string" ? newStep.instructions : "",
-                aiGenerated: true,
-                generationReason: reason
-              }
-            }]
-          });
-          logger.info("ai_orchestrator.ai_add_step", { runId: adjustArgs.runId, stepKey, reason });
-        } catch (e) {
-          logger.debug("ai_orchestrator.ai_add_step_failed", {
-            runId: adjustArgs.runId,
-            stepKey,
-            error: e instanceof Error ? e.message : String(e)
-          });
-        }
-      }
-    }
-  };
-
-  const adjustPlanFromResults = (args: {
-    runId: string;
-    completedStepId: string;
-    outcomeTags: string[];
-  }): void => {
-    // Tier 1 — Deterministic checks (always run, no AI call)
-    try {
-      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 0 });
-      const step = graph.steps.find((s) => s.id === args.completedStepId);
-      if (!step) return;
-
-      const attempt = graph.attempts
-        .filter((a) => a.stepId === args.completedStepId)
-        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-
-      // Log policy failures for debugging
-      if (step.status === "failed" && attempt?.errorClass === "policy") {
-        logger.debug("ai_orchestrator.adjust_plan_policy_failure", {
-          runId: args.runId,
-          stepId: args.completedStepId,
-          errorClass: attempt.errorClass
-        });
-      }
-
-      // Track progress
-      const completedCount = graph.steps.filter(
-        (s) => s.status === "succeeded" || s.status === "failed" || s.status === "skipped"
-      ).length;
-      logger.debug("ai_orchestrator.plan_progress", {
-        runId: args.runId,
-        completedStepId: args.completedStepId,
-        progress: `${completedCount}/${graph.steps.length}`,
-        outcomeTags: args.outcomeTags
-      });
-
-      // Tier 2 — AI evaluation for complex scenarios
-      const stepMeta = isRecord(step.metadata) ? step.metadata : {};
-      const runtimeProfile = runRuntimeProfiles.get(args.runId) ?? resolveActiveRuntimeProfile(graph.run.missionId);
-      const outputText = attempt?.resultEnvelope?.summary ?? "";
-      const mentionsConcerns = /\b(warning|risk|concern|TODO|FIXME|hack|workaround|breaking)\b/i.test(outputText);
-
-      const shouldTriggerAiAdjustment =
-        runtimeProfile.evaluation.autoAdjustPlan &&
-        aiIntegrationService &&
-        projectRoot &&
-        (
-          (step.status === "failed" && step.retryCount >= step.retryLimit) ||
-          stepMeta.stepType === "integration" ||
-          (step.status === "succeeded" && args.outcomeTags.includes("has_warnings")) ||
-          (step.status === "succeeded" && mentionsConcerns)
-        );
-
-      const pct = Math.round((completedCount / graph.steps.length) * 100);
-      const activeWorkerCount = [...workerStates.values()].filter(ws => ws.runId === args.runId && ws.state === "working").length;
-      const blockedCount = graph.steps.filter(s => s.status === "blocked").length;
-      const nextReady = graph.steps.filter(s => s.status === "ready").map(s => `"${stepTitleForMessage(s)}"`);
-
-      const progressParts = [`${completedCount}/${graph.steps.length} steps (${pct}%)`];
-      if (activeWorkerCount > 0) progressParts.push(`${activeWorkerCount} active`);
-      if (blockedCount > 0) progressParts.push(`${blockedCount} blocked`);
-      if (nextReady.length > 0) progressParts.push(`next: ${nextReady.slice(0, 2).join(", ")}`);
-
-      emitOrchestratorMessage(
-        graph.run.missionId,
-        `Progress: ${progressParts.join(" | ")}${shouldTriggerAiAdjustment ? " — triggering plan adjustment" : ""}`,
-        step.stepKey
-      );
-
-      if (shouldTriggerAiAdjustment) {
-        adjustPlanWithAI({
-          runId: args.runId,
-          completedStepId: args.completedStepId,
-          graph
-        }).catch((error) => {
-          logger.debug("ai_orchestrator.ai_adjustment_failed", {
-            runId: args.runId,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        });
-      }
-    } catch (error) {
-      logger.debug("ai_orchestrator.adjust_plan_from_results_failed", {
-        runId: args.runId,
-        completedStepId: args.completedStepId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  };
-
   const handleInterventionWithAI = async (args: {
     missionId: string;
     interventionId: string;
@@ -5306,27 +5782,14 @@ export function createAiOrchestratorService(args: {
       const runtimeProfile = resolveActiveRuntimeProfile(args.missionId);
       const confidenceThreshold = runtimeProfile.evaluation.interventionConfidenceThreshold;
       const steeringContext = getSteeringContext(args.missionId);
-      const prompt = [
-        PM_SYSTEM_PREAMBLE,
-        "Your current role: INTERVENTION RESOLVER. An intervention has been raised during mission execution.",
-        "Determine how to resolve this intervention. Think like a PM triaging an incident:",
-        "- RETRY: If the failure looks transient (timeout, rate limit, flaky test), retry with added context about the failure so the worker avoids repeating it.",
-        "- WORKAROUND: If the failure is real but a different approach could work, add a workaround step.",
-        "- SKIP: If the step is non-critical and its failure doesn't affect core deliverables, skip it and note why.",
-        "- ESCALATE: Only when the failure is ambiguous, affects core deliverables, or requires information you don't have. Escalation pauses the mission — use sparingly.",
-        "Explain your reasoning clearly so the user can review the decision later.",
-        "",
-        `Mission: ${mission.title}`,
-        `Mission prompt: ${mission.prompt.slice(0, 500)}`,
-        "",
-        `Intervention: ${interventionDesc}`,
-        "",
-        `Run context: ${runContext}`,
+      const prompt = buildInterventionResolverPrompt({
+        missionTitle: mission.title,
+        missionPrompt: mission.prompt,
+        interventionDescription: interventionDesc,
+        runContext,
         steeringContext,
-        "Available actions: retry (retry the failed step), skip (skip the step), add_workaround (add a workaround step), escalate (require user input).",
-        `Only suggest auto-resolution if you are highly confident (>=${confidenceThreshold}).`,
-        "Return a JSON object with your assessment."
-      ].join("\n");
+        confidenceThreshold
+      });
 
       const interventionSchema = {
         type: "object",
@@ -5348,6 +5811,7 @@ export function createAiOrchestratorService(args: {
       };
 
       const configIntervention = resolveOrchestratorModelConfig(args.missionId, "intervention_handling");
+      const timeoutMs = resolveAiDecisionLikeTimeoutMs(args.missionId);
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator",
         taskType: "review",
@@ -5359,7 +5823,7 @@ export function createAiOrchestratorService(args: {
         jsonSchema: interventionSchema,
         permissionMode: "read-only",
         oneShot: true,
-        timeoutMs: 30_000
+        ...(timeoutMs != null ? { timeoutMs } : {})
       });
 
       const parsed = isRecord(result.structuredOutput) ? result.structuredOutput : null;
@@ -5470,28 +5934,11 @@ export function createAiOrchestratorService(args: {
     }
   };
 
-  const resolveMissionPlannerRationale = (missionId: string): string | null => {
-    const row = db.get<{ metadata_json: string | null }>(
-      `
-        select metadata_json
-        from missions
-        where id = ?
-        limit 1
-      `,
-      [missionId]
-    );
-    if (!row?.metadata_json) return null;
-    try {
-      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-      const plannerPlan = isRecord(metadata.plannerPlan) ? (metadata.plannerPlan as Record<string, unknown>) : null;
-      const missionSummary = plannerPlan && isRecord(plannerPlan.missionSummary)
-        ? (plannerPlan.missionSummary as Record<string, unknown>)
-        : null;
-      const rationale = missionSummary?.parallelismRationale;
-      return typeof rationale === "string" && rationale.length > 0 ? rationale : null;
-    } catch {
-      return null;
-    }
+  const resolveMissionLaneStrategyParallelismCap = (missionId: string): number | null => {
+    const metadata = getMissionMetadata(missionId);
+    const parallelLanes = isRecord(metadata.parallelLanes) ? metadata.parallelLanes : null;
+    const cap = Number(parallelLanes?.maxParallelLanes ?? Number.NaN);
+    return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : null;
   };
 
   const resolveMissionLaunchPlannerModel = (missionId: string): "opus" | "sonnet" | "haiku" | null => {
@@ -5514,6 +5961,19 @@ export function createAiOrchestratorService(args: {
     } catch {
       return null;
     }
+  };
+
+  const resolveMissionDecisionTimeoutCapMs = (missionId: string): number => {
+    const metadata = getMissionMetadata(missionId);
+    const modelConfig = isRecord(metadata.modelConfig) ? metadata.modelConfig : null;
+    const rawHours = Number(modelConfig?.decisionTimeoutCapHours ?? Number.NaN);
+    const normalizedHours = Number.isFinite(rawHours) ? Math.floor(rawHours) : 24;
+    return DECISION_TIMEOUT_CAP_MS_BY_HOURS[normalizedHours] ?? DECISION_TIMEOUT_CAP_MS_BY_HOURS[24];
+  };
+
+  const resolveAiDecisionLikeTimeoutMs = (missionId: string): number | null => {
+    void missionId;
+    return null;
   };
 
   /** Resolve a per-call-type ModelConfig from mission metadata, with fallback to legacy model */
@@ -5541,6 +6001,27 @@ export function createAiOrchestratorService(args: {
     return modelConfigToServiceModel(config);
   };
 
+  const resolveMissionModelConfig = (missionId: string): MissionModelConfig | null => {
+    const metadata = getMissionMetadata(missionId);
+    const modelConfig = metadata?.modelConfig;
+    return isRecord(modelConfig) ? (modelConfig as MissionModelConfig) : null;
+  };
+
+  const getAiDecisionServiceForCategory = (missionId: string, callType: OrchestratorCallType) => {
+    if (!aiIntegrationService || !projectRoot) return null;
+    const modelConfig = resolveOrchestratorModelConfig(missionId, callType);
+    return createAiDecisionService({
+      aiIntegrationService,
+      projectRoot,
+      db,
+      logger,
+      defaultProvider: modelConfig.provider === "codex" ? "codex" : "claude",
+      defaultModel: modelConfigToServiceModel(modelConfig),
+      defaultReasoningEffort: thinkingLevelToReasoningEffort(modelConfig.thinkingLevel),
+      defaultTimeoutMs: null
+    });
+  };
+
   const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) => {
     const mission = missionService.get(missionId);
     if (!mission) return;
@@ -5559,6 +6040,730 @@ export function createAiOrchestratorService(args: {
         to: next,
         reason: error instanceof Error ? error.message : String(error)
       });
+    }
+  };
+
+  const pauseRunWithIntervention = (args: {
+    runId: string;
+    missionId: string;
+    stepId?: string | null;
+    stepKey?: string | null;
+    source:
+      | "transition_decision"
+      | "quality_gate_decision"
+      | "stagnation_decision"
+      | "retry_decision"
+      | "timeout_decision";
+    reasonCode: string;
+    title: string;
+    body: string;
+    requestedAction: string;
+    metadata?: Record<string, unknown>;
+  }): string | null => {
+    const dedupeKey = `${args.source}:${args.reasonCode}:${args.runId}:${args.stepId ?? "run"}`;
+    const runMetadata = getRunMetadata(args.runId);
+    const existingAiDecisionMeta = isRecord(runMetadata.aiDecisions) ? runMetadata.aiDecisions : {};
+    const mission = missionService.get(args.missionId);
+    let existingInterventionId: string | null = null;
+    if (mission) {
+      for (const entry of mission.interventions) {
+        if (entry.status !== "open" || entry.interventionType !== "failed_step") continue;
+        const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+        if (metadata?.aiDecisionFailureKey === dedupeKey) {
+          existingInterventionId = entry.id;
+          break;
+        }
+      }
+    }
+
+    try {
+      orchestratorService.pauseRun({
+        runId: args.runId,
+        reason: `${args.title}: ${args.body}`.slice(0, 400),
+        metadata: {
+          aiDecisions: {
+            ...existingAiDecisionMeta,
+            lastFailureAt: nowIso(),
+            lastFailureSource: args.source,
+            lastFailureReason: args.reasonCode
+          }
+        }
+      });
+    } catch (error) {
+      logger.debug("ai_orchestrator.pause_run_failed", {
+        runId: args.runId,
+        source: args.source,
+        reasonCode: args.reasonCode,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    let interventionId: string | null = existingInterventionId;
+    if (!interventionId) {
+      try {
+        const intervention = missionService.addIntervention({
+          missionId: args.missionId,
+          interventionType: "failed_step",
+          title: args.title,
+          body: args.body,
+          requestedAction: args.requestedAction,
+          metadata: {
+            aiDecisionFailureKey: dedupeKey,
+            runId: args.runId,
+            stepId: args.stepId ?? null,
+            stepKey: args.stepKey ?? null,
+            source: args.source,
+            reasonCode: args.reasonCode,
+            ...(args.metadata ?? {})
+          }
+        });
+        interventionId = intervention.id;
+      } catch (error) {
+        logger.debug("ai_orchestrator.pause_intervention_create_failed", {
+          runId: args.runId,
+          missionId: args.missionId,
+          source: args.source,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    transitionMissionStatus(args.missionId, "intervention_required", {
+      lastError: args.body
+    });
+    emitOrchestratorMessage(
+      args.missionId,
+      `${args.title}. I paused execution and opened an intervention${interventionId ? ` (${interventionId.slice(0, 8)})` : ""}.`,
+      args.stepKey ?? null
+    );
+
+    if (interventionId) {
+      recordRuntimeEvent({
+        runId: args.runId,
+        stepId: args.stepId ?? null,
+        eventType: "intervention_opened",
+        eventKey: `intervention_opened:${interventionId}`,
+        payload: {
+          interventionId,
+          interventionType: "failed_step",
+          source: args.source,
+          reasonCode: args.reasonCode
+        }
+      });
+    }
+
+    return interventionId;
+  };
+
+  const isAllowedStepCompletionMissionStatus = (value: string): value is MissionStatus =>
+    value === "in_progress" ||
+    value === "intervention_required" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "canceled";
+
+  const validateTransitionDecisionSafety = (graph: OrchestratorRunGraph, missionStatus: MissionStatus): { ok: boolean; reason: string } => {
+    const runStatus = graph.run.status;
+    const allTerminal = graph.steps.every((step) =>
+      step.status === "succeeded" || step.status === "failed" || step.status === "skipped" || step.status === "canceled"
+    );
+    const hasFailures = graph.steps.some((step) => step.status === "failed" || step.status === "blocked");
+
+    if (runStatus === "succeeded" || runStatus === "succeeded_with_risk") {
+      return missionStatus === "completed"
+        ? { ok: true, reason: "terminal_success" }
+        : { ok: false, reason: `Run is ${runStatus}; mission status must be completed.` };
+    }
+    if (runStatus === "failed") {
+      return missionStatus === "failed" || missionStatus === "intervention_required"
+        ? { ok: true, reason: "terminal_failure" }
+        : { ok: false, reason: "Run is failed; mission status must be failed or intervention_required." };
+    }
+    if (runStatus === "canceled") {
+      return missionStatus === "canceled"
+        ? { ok: true, reason: "terminal_canceled" }
+        : { ok: false, reason: "Run is canceled; mission status must be canceled." };
+    }
+    if (runStatus === "paused") {
+      return missionStatus === "intervention_required"
+        ? { ok: true, reason: "paused_requires_intervention" }
+        : { ok: false, reason: "Run is paused; mission status must be intervention_required." };
+    }
+
+    if (missionStatus === "completed") {
+      return allTerminal && !hasFailures
+        ? { ok: true, reason: "all_steps_terminal_success" }
+        : { ok: false, reason: "Mission cannot be completed while run is still active or contains failures." };
+    }
+    if (missionStatus === "failed") {
+      return allTerminal && hasFailures
+        ? { ok: true, reason: "all_steps_terminal_failure" }
+        : { ok: false, reason: "Mission cannot be failed while run is active without terminal failures." };
+    }
+    if (missionStatus === "canceled") {
+      return { ok: false, reason: "Mission cannot be canceled from active run status without explicit cancel." };
+    }
+
+    return { ok: true, reason: "active_run_status_ok" };
+  };
+
+  type AiTransitionDirectives = {
+    parallelismCap: number | null;
+    disableHeuristicParallelism: boolean;
+    retryBackoffMs: number | null;
+    timeoutBudgetMs: number | null;
+    stagnationThresholdMs: number | null;
+    stepPriorities: Array<{ stepKey: string; priority: number; reason: string | null; laneHint: string | null }>;
+  };
+
+  type AiTransitionDecision = {
+    actionType: "continue" | "retry" | "pause" | "replan" | "abort";
+    missionStatus: MissionStatus;
+    pauseRun: boolean;
+    rationale: string;
+    interventionTitle: string | null;
+    interventionBody: string | null;
+    directives: AiTransitionDirectives;
+  };
+
+  const deriveTransitionMissionStatus = (args: {
+    graph: OrchestratorRunGraph;
+    mission: MissionDetail;
+    actionType: "continue" | "retry" | "pause" | "replan" | "abort";
+    nextStatus: string | null;
+  }): MissionStatus => {
+    const requested = typeof args.nextStatus === "string" ? args.nextStatus.trim() : "";
+    if (requested && isAllowedStepCompletionMissionStatus(requested)) return requested;
+    if (args.actionType === "pause" || args.actionType === "replan") return "intervention_required";
+    if (args.actionType === "abort") return "failed";
+    if (args.actionType === "retry") return "in_progress";
+    return deriveMissionStatusFromRun(args.graph, args.mission);
+  };
+
+  type MissionReplanAnalysis = {
+    shouldReplan: boolean;
+    summary: string;
+    planDelta: string[];
+    confidence: number | null;
+    error: string | null;
+  };
+
+  const summarizeCurrentPlanForReplan = (graph: OrchestratorRunGraph): string => {
+    const preview = graph.steps
+      .slice(0, 12)
+      .map((step) => `${step.stepKey}:${step.status}`)
+      .join(", ");
+    const summary = `Run status=${graph.run.status}; stepCount=${graph.steps.length}; preview=[${preview}]`;
+    return summary.slice(0, 4_000);
+  };
+
+  const resolveMissionObjectiveForReplan = (missionId: string, mission: MissionDetail | null): string => {
+    const metadata = getMissionMetadata(missionId);
+    const plannerPlan = isRecord(metadata.plannerPlan) ? metadata.plannerPlan : null;
+    const missionSummary = plannerPlan && isRecord(plannerPlan.missionSummary)
+      ? plannerPlan.missionSummary
+      : null;
+    const objective = typeof missionSummary?.objective === "string" ? missionSummary.objective.trim() : "";
+    if (objective.length > 0) return objective;
+    const prompt = typeof mission?.prompt === "string" ? mission.prompt.trim() : "";
+    if (prompt.length > 0) return prompt;
+    const title = typeof mission?.title === "string" ? mission.title.trim() : "";
+    return title.length > 0 ? title : "Mission objective unavailable.";
+  };
+
+  const requestMissionReplanAnalysis = async (args: {
+    missionId: string;
+    runId: string;
+    stepId?: string | null;
+    stepKey?: string | null;
+    reason: string;
+    failureDigest: string;
+    graph: OrchestratorRunGraph;
+  }): Promise<MissionReplanAnalysis> => {
+    const mission = missionService.get(args.missionId);
+    const decisionService = getAiDecisionServiceForCategory(args.missionId, "plan_adjustment");
+    const failureDigest = args.failureDigest.slice(0, 4_000);
+    const missionObjective = resolveMissionObjectiveForReplan(args.missionId, mission);
+    const currentPlanSummary = summarizeCurrentPlanForReplan(args.graph);
+
+    let analysis: MissionReplanAnalysis;
+    if (!decisionService) {
+      analysis = {
+        shouldReplan: true,
+        summary: args.reason,
+        planDelta: [],
+        confidence: null,
+        error: "Mission replan AI decision service unavailable."
+      };
+    } else {
+      try {
+        const decision = await decisionService.replanMission({
+          context: {
+            missionId: args.missionId,
+            runId: args.runId,
+            stepId: args.stepId ?? null
+          },
+          missionObjective,
+          currentPlanSummary,
+          failureDigest
+        });
+        analysis = {
+          shouldReplan: decision.shouldReplan,
+          summary: decision.summary,
+          planDelta: decision.planDelta,
+          confidence: decision.confidence,
+          error: null
+        };
+      } catch (error) {
+        analysis = {
+          shouldReplan: true,
+          summary: args.reason,
+          planDelta: [],
+          confidence: null,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+
+    updateRunMetadata(args.runId, (metadata) => {
+      const aiDecisions = isRecord(metadata.aiDecisions) ? { ...metadata.aiDecisions } : {};
+      aiDecisions.lastReplanRequest = {
+        requestedAt: nowIso(),
+        missionId: args.missionId,
+        stepId: args.stepId ?? null,
+        stepKey: args.stepKey ?? null,
+        reason: args.reason,
+        failureDigest,
+        shouldReplan: analysis.shouldReplan,
+        summary: analysis.summary,
+        planDelta: analysis.planDelta,
+        confidence: analysis.confidence,
+        error: analysis.error
+      };
+      metadata.aiDecisions = aiDecisions;
+    });
+
+    return analysis;
+  };
+
+  const formatReplanInterventionBody = (args: {
+    reason: string;
+    analysis: MissionReplanAnalysis;
+  }): string => {
+    const lines = [
+      args.reason,
+      `Replan summary: ${args.analysis.summary}`,
+      args.analysis.planDelta.length > 0
+        ? `Proposed plan deltas:\n- ${args.analysis.planDelta.join("\n- ")}`
+        : null,
+      args.analysis.error ? `Replan analysis warning: ${args.analysis.error}` : null
+    ];
+    return lines.filter((line): line is string => typeof line === "string" && line.trim().length > 0).join("\n\n");
+  };
+
+  const buildTransitionStepPriorityDirectives = async (args: {
+    missionId: string;
+    runId: string;
+    graph: OrchestratorRunGraph;
+  }): Promise<AiTransitionDirectives["stepPriorities"]> => {
+    const decisionService = getAiDecisionServiceForCategory(args.missionId, "step_priority");
+    if (!decisionService) {
+      throw new DecisionFailure({
+        decisionName: "decideStepPriority",
+        context: {
+          missionId: args.missionId,
+          runId: args.runId
+        },
+        message: "Step priority AI decision service unavailable.",
+        input: {
+          runId: args.runId
+        }
+      });
+    }
+
+    const stepById = new Map(args.graph.steps.map((step) => [step.id, step] as const));
+    const dependencyDepthMemo = new Map<string, number>();
+    const dependentCountByStepId = new Map<string, number>();
+    for (const step of args.graph.steps) {
+      for (const dependencyId of step.dependencyStepIds ?? []) {
+        dependentCountByStepId.set(dependencyId, (dependentCountByStepId.get(dependencyId) ?? 0) + 1);
+      }
+    }
+
+    const computeDependencyDepth = (stepId: string, visiting: Set<string>): number => {
+      if (dependencyDepthMemo.has(stepId)) return dependencyDepthMemo.get(stepId)!;
+      if (visiting.has(stepId)) return 0;
+      visiting.add(stepId);
+      const step = stepById.get(stepId);
+      const dependencies = step?.dependencyStepIds ?? [];
+      const depth = dependencies.length === 0
+        ? 0
+        : Math.max(...dependencies.map((dependencyId) => computeDependencyDepth(dependencyId, visiting))) + 1;
+      dependencyDepthMemo.set(stepId, depth);
+      visiting.delete(stepId);
+      return depth;
+    };
+
+    const deriveUrgency = (step: OrchestratorRunGraph["steps"][number], blockedByCount: number): "low" | "medium" | "high" | "critical" => {
+      const dependentCount = dependentCountByStepId.get(step.id) ?? 0;
+      if (dependentCount >= 3) return "critical";
+      if (step.retryCount > 0 || dependentCount >= 1) return "high";
+      if (blockedByCount > 0) return "medium";
+      return "low";
+    };
+
+    const readySteps = args.graph.steps
+      .filter((step) => step.status === "ready")
+      .sort((a, b) => a.stepIndex - b.stepIndex || a.id.localeCompare(b.id))
+      .slice(0, 6);
+
+    const directives: AiTransitionDirectives["stepPriorities"] = [];
+    for (const step of readySteps) {
+      const blockedByCount = (step.dependencyStepIds ?? [])
+        .map((dependencyId) => stepById.get(dependencyId))
+        .filter((dependency): dependency is OrchestratorRunGraph["steps"][number] => dependency != null)
+        .filter((dependency) => dependency.status !== "succeeded" && dependency.status !== "skipped")
+        .length;
+      const dependencyDepth = computeDependencyDepth(step.id, new Set());
+      const stepMeta = isRecord(step.metadata) ? step.metadata : {};
+      const stepType =
+        typeof stepMeta.stepType === "string" && stepMeta.stepType.trim().length > 0
+          ? stepMeta.stepType.trim()
+          : typeof stepMeta.taskType === "string" && stepMeta.taskType.trim().length > 0
+            ? stepMeta.taskType.trim()
+            : step.stepKey;
+      try {
+        const priorityDecision = await decisionService.decideStepPriority({
+          context: {
+            missionId: args.missionId,
+            runId: args.runId,
+            stepId: step.id,
+            laneId: step.laneId ?? null
+          },
+          stepKey: step.stepKey,
+          stepType,
+          urgency: deriveUrgency(step, blockedByCount),
+          blockedByCount,
+          dependencyDepth
+        });
+        directives.push({
+          stepKey: step.stepKey,
+          priority: Math.max(0, Math.min(100, Math.round(priorityDecision.priority))),
+          reason: priorityDecision.rationale,
+          laneHint: priorityDecision.laneHint
+        });
+      } catch (error) {
+        if (error instanceof DecisionFailure) throw error;
+        throw new DecisionFailure({
+          decisionName: "decideStepPriority",
+          context: {
+            missionId: args.missionId,
+            runId: args.runId,
+            stepId: step.id,
+            laneId: step.laneId ?? null
+          },
+          message: `Step priority decision failed for ${step.stepKey}: ${error instanceof Error ? error.message : String(error)}`,
+          input: {
+            stepKey: step.stepKey,
+            stepId: step.id
+          },
+          cause: error
+        });
+      }
+    }
+    return directives;
+  };
+
+  const decideStepTransitionViaAiDecisionService = async (args: {
+    runId: string;
+    stepId: string;
+  }): Promise<
+    | { ok: true; graph: OrchestratorRunGraph; missionId: string; stepKey: string | null; decision: AiTransitionDecision }
+    | { ok: false; missionId: string | null; stepKey: string | null; reason: string; decisionFailure?: DecisionFailure }
+  > => {
+    try {
+      const graph = orchestratorService.getRunGraph({ runId: args.runId, timelineLimit: 40 });
+      const missionId = graph.run.missionId;
+      const mission = missionService.get(missionId);
+      const step = graph.steps.find((entry) => entry.id === args.stepId);
+      const stepKey = step?.stepKey ?? null;
+      if (!mission) {
+        return { ok: false, missionId, stepKey, reason: "Mission not found for run." };
+      }
+      if (!step) {
+        return { ok: false, missionId, stepKey, reason: "Completed step not found in run graph." };
+      }
+
+      const latestAttempt = [...graph.attempts]
+        .filter((attempt) => attempt.stepId === step.id)
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
+
+      const decisionService = getAiDecisionServiceForCategory(missionId, "step_transition");
+      if (!decisionService) {
+        throw new DecisionFailure({
+          decisionName: "decideTransition",
+          context: {
+            missionId,
+            runId: args.runId,
+            stepId: step.id,
+            laneId: step.laneId ?? null,
+            attemptId: latestAttempt?.id ?? null
+          },
+          message: "AI transition decision service unavailable.",
+          input: { runId: args.runId, stepId: args.stepId }
+        });
+      }
+
+      const unresolvedDependencies = (step.dependencyStepIds ?? [])
+        .map((dependencyId) => graph.steps.find((candidate) => candidate.id === dependencyId))
+        .filter((dependency): dependency is OrchestratorRunGraph["steps"][number] => dependency != null)
+        .filter((dependency) => dependency.status !== "succeeded" && dependency.status !== "skipped")
+        .map((dependency) => dependency.stepKey);
+
+      const transition = await decisionService.decideTransition({
+        context: {
+          missionId,
+          runId: args.runId,
+          stepId: step.id,
+          laneId: step.laneId ?? null,
+          attemptId: latestAttempt?.id ?? null
+        },
+        currentStatus: graph.run.status,
+        unresolvedDependencies,
+        retryCount: step.retryCount,
+        retryLimit: step.retryLimit,
+        missionModelConfig: resolveMissionModelConfig(missionId),
+        requestedTimeoutMs: resolveStepTimeoutMs({
+          runId: args.runId,
+          missionId,
+          step
+        }),
+        recentFailureSummary: latestAttempt?.errorMessage ?? latestAttempt?.resultEnvelope?.summary ?? null
+      });
+
+      const parallelismDecisionService = getAiDecisionServiceForCategory(missionId, "parallelism_decision");
+      if (!parallelismDecisionService) {
+        throw new DecisionFailure({
+          decisionName: "decideParallelism",
+          context: {
+            missionId,
+            runId: args.runId,
+            stepId: step.id,
+            laneId: step.laneId ?? null,
+            attemptId: latestAttempt?.id ?? null
+          },
+          message: "AI parallelism decision service unavailable during transition.",
+          input: {
+            runId: args.runId,
+            stepId: step.id
+          }
+        });
+      }
+      const runMetadata = isRecord(graph.run.metadata) ? graph.run.metadata : {};
+      const runModeForDecision: "autopilot" | "manual" = runMetadata.runMode === "manual" ? "manual" : "autopilot";
+      const transitionParallelism = await parallelismDecisionService.decideParallelism({
+        context: {
+          missionId,
+          runId: args.runId,
+          stepId: step.id,
+          laneId: step.laneId ?? null,
+          attemptId: latestAttempt?.id ?? null
+        },
+        missionObjective: mission.prompt ?? mission.title,
+        plannerParallelismCap: resolveMissionParallelismCap(missionId),
+        laneStrategyParallelismCap: resolveMissionLaneStrategyParallelismCap(missionId),
+        runMode: runModeForDecision,
+        stepCount: graph.steps.length,
+        laneCount: new Set(graph.steps.map((entry) => entry.laneId).filter(Boolean)).size
+      });
+      const transitionParallelismCapRaw = Number(transitionParallelism.parallelismCap);
+      if (!Number.isFinite(transitionParallelismCapRaw) || transitionParallelismCapRaw <= 0) {
+        throw new DecisionFailure({
+          decisionName: "decideParallelism",
+          context: {
+            missionId,
+            runId: args.runId,
+            stepId: step.id,
+            laneId: step.laneId ?? null,
+            attemptId: latestAttempt?.id ?? null
+          },
+          message: "AI transition parallelism decision returned an invalid parallelismCap.",
+          input: {
+            parallelismCap: transitionParallelism.parallelismCap,
+            rationale: transitionParallelism.rationale
+          }
+        });
+      }
+      const transitionParallelismCap = Math.max(1, Math.min(32, Math.floor(transitionParallelismCapRaw)));
+
+      const missionStatus = deriveTransitionMissionStatus({
+        graph,
+        mission,
+        actionType: transition.action.type,
+        nextStatus: transition.action.nextStatus
+      });
+      const safetyCheck = validateTransitionDecisionSafety(graph, missionStatus);
+      if (!safetyCheck.ok) {
+        return { ok: false, missionId, stepKey, reason: `Unsafe transition decision rejected: ${safetyCheck.reason}` };
+      }
+
+      const timeoutBudgetRaw = Number(transition.action.timeoutBudgetMs ?? Number.NaN);
+      const timeoutBudgetMs = Number.isFinite(timeoutBudgetRaw)
+        ? Math.max(30_000, Math.floor(timeoutBudgetRaw))
+        : null;
+      const retryBackoffRaw = Number(transition.action.retryDelayMs ?? Number.NaN);
+      const retryBackoffMs = Number.isFinite(retryBackoffRaw)
+        ? Math.max(0, Math.min(600_000, Math.floor(retryBackoffRaw)))
+        : null;
+      const stepPriorities = await buildTransitionStepPriorityDirectives({
+        missionId,
+        runId: args.runId,
+        graph
+      });
+
+      const decision: AiTransitionDecision = {
+        actionType: transition.action.type,
+        missionStatus,
+        pauseRun: transition.action.type === "pause" || transition.action.type === "replan",
+        rationale: transition.rationale,
+        interventionTitle:
+          transition.action.type === "pause"
+            ? "AI requested operator intervention"
+            : transition.action.type === "replan"
+              ? "AI requested replanning intervention"
+              : null,
+        interventionBody:
+          transition.action.type === "pause" || transition.action.type === "replan"
+            ? transition.action.reason
+            : null,
+        directives: {
+          parallelismCap: transitionParallelismCap,
+          disableHeuristicParallelism: false,
+          retryBackoffMs,
+          timeoutBudgetMs,
+          stagnationThresholdMs: null,
+          stepPriorities
+        }
+      };
+
+      return {
+        ok: true,
+        graph,
+        missionId,
+        stepKey,
+        decision
+      };
+    } catch (error) {
+      if (error instanceof DecisionFailure) {
+        return {
+          ok: false,
+          missionId: error.context.missionId ?? null,
+          stepKey: null,
+          reason: error.message,
+          decisionFailure: error
+        };
+      }
+      return {
+        ok: false,
+        missionId: getMissionIdForRun(args.runId),
+        stepKey: null,
+        reason: error instanceof Error ? error.message : String(error)
+      };
+    }
+  };
+
+  const applyAIDecisionDirectives = (args: {
+    runId: string;
+    graph: OrchestratorRunGraph;
+    completedStepId: string;
+    decision: AiTransitionDecision;
+  }) => {
+    const directives = args.decision.directives;
+    const disableHeuristicParallelism = directives.disableHeuristicParallelism || directives.parallelismCap != null;
+    if (
+      directives.parallelismCap == null &&
+      directives.retryBackoffMs == null &&
+      directives.timeoutBudgetMs == null &&
+      directives.stagnationThresholdMs == null &&
+      directives.stepPriorities.length === 0 &&
+      !disableHeuristicParallelism
+    ) {
+      return;
+    }
+
+    updateRunMetadata(args.runId, (metadata) => {
+      const aiDecisionMeta = isRecord(metadata.aiDecisions) ? { ...metadata.aiDecisions } : {};
+      if (directives.parallelismCap != null) {
+        aiDecisionMeta.parallelismCap = directives.parallelismCap;
+      }
+      if (directives.stagnationThresholdMs != null) {
+        aiDecisionMeta.stagnationThresholdMs = directives.stagnationThresholdMs;
+      }
+      if (disableHeuristicParallelism) {
+        aiDecisionMeta.disableHeuristicParallelism = true;
+      }
+      aiDecisionMeta.lastDecisionAt = nowIso();
+      aiDecisionMeta.source = "ai_decision_service";
+      metadata.aiDecisions = aiDecisionMeta;
+
+      if (directives.parallelismCap != null) {
+        const autopilot = isRecord(metadata.autopilot) ? { ...metadata.autopilot } : null;
+        if (autopilot) {
+          autopilot.parallelismCap = directives.parallelismCap;
+          metadata.autopilot = autopilot;
+        }
+      }
+    });
+
+    if (directives.stepPriorities.length > 0) {
+      for (const entry of directives.stepPriorities) {
+        const step = args.graph.steps.find((candidate) => candidate.stepKey === entry.stepKey);
+        if (!step) continue;
+        const meta = isRecord(step.metadata) ? { ...step.metadata } : {};
+        meta.priority = entry.priority;
+        meta.aiPriority = entry.priority;
+        if (entry.reason) {
+          meta.aiPriorityReason = entry.reason;
+        }
+        if (entry.laneHint) {
+          meta.aiPriorityLaneHint = entry.laneHint;
+        } else if ("aiPriorityLaneHint" in meta) {
+          delete meta.aiPriorityLaneHint;
+        }
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+          [JSON.stringify(meta), nowIso(), step.id, args.runId]
+        );
+      }
+    }
+
+    if (directives.retryBackoffMs != null) {
+      const completedStep = args.graph.steps.find((step) => step.id === args.completedStepId);
+      if (completedStep) {
+        const meta = isRecord(completedStep.metadata) ? { ...completedStep.metadata } : {};
+        meta.aiRetryBackoffMs = directives.retryBackoffMs;
+        if (completedStep.status === "pending" || completedStep.status === "ready") {
+          meta.lastRetryBackoffMs = directives.retryBackoffMs;
+          meta.nextRetryAt = new Date(Date.now() + directives.retryBackoffMs).toISOString();
+        }
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+          [JSON.stringify(meta), nowIso(), completedStep.id, args.runId]
+        );
+      }
+    }
+
+    if (directives.timeoutBudgetMs != null) {
+      const completedStep = args.graph.steps.find((step) => step.id === args.completedStepId);
+      if (completedStep) {
+        const meta = isRecord(completedStep.metadata) ? { ...completedStep.metadata } : {};
+        meta.aiTimeoutMs = directives.timeoutBudgetMs;
+        meta.ai_timeout_ms = directives.timeoutBudgetMs;
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+          [JSON.stringify(meta), nowIso(), completedStep.id, args.runId]
+        );
+      }
     }
   };
 
@@ -5603,7 +6808,11 @@ export function createAiOrchestratorService(args: {
     }
   };
 
-  const syncMissionFromRun = async (runId: string, reason: string) => {
+  const syncMissionFromRun = async (
+    runId: string,
+    reason: string,
+    options?: { nextMissionStatus?: MissionStatus | null }
+  ) => {
     if (!runId || syncLocks.has(runId)) return;
     syncLocks.add(runId);
     try {
@@ -5613,7 +6822,7 @@ export function createAiOrchestratorService(args: {
 
       syncMissionStepsFromRun(graph);
       const refreshed = missionService.get(mission.id) ?? mission;
-      const nextMissionStatus = deriveMissionStatusFromRun(graph, refreshed);
+      const nextMissionStatus = options?.nextMissionStatus ?? deriveMissionStatusFromRun(graph, refreshed);
       if (nextMissionStatus === "completed") {
         transitionMissionStatus(mission.id, "completed", {
           outcomeSummary: refreshed.outcomeSummary ?? buildOutcomeSummary(graph),
@@ -5627,10 +6836,10 @@ export function createAiOrchestratorService(args: {
           const teamManifest = runTeamManifests.get(runId);
           const graphLaneCount = new Set(graph.steps.map((s) => s.laneId).filter(Boolean)).size;
           const usedMultipleLanes = (teamManifest && teamManifest.parallelLanes.length > 1) || graphLaneCount > 1;
-          const prStrategy = runPolicy.prStrategy ?? inferPrStrategy({
-            laneCount: graphLaneCount,
-            lanesAreCoupled: false
-          });
+          const prStrategy: PrStrategy =
+            runPolicy.prStrategy
+            ?? DEFAULT_EXECUTION_POLICY.prStrategy
+            ?? { kind: "manual" };
 
           if (prStrategy.kind === "manual") {
             logger.debug("ai_orchestrator.pr_strategy_manual", { missionId: mission.id, runId });
@@ -6129,6 +7338,139 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const handleStepCompletionTransition = async (args: { runId: string; stepId: string }) => {
+    const decisionResult = await decideStepTransitionViaAiDecisionService({
+      runId: args.runId,
+      stepId: args.stepId
+    });
+
+    if (!decisionResult.ok) {
+      const missionId = decisionResult.missionId ?? getMissionIdForRun(args.runId);
+      if (missionId) {
+        pauseRunWithIntervention({
+          runId: args.runId,
+          missionId,
+          stepId: args.stepId,
+          stepKey: decisionResult.stepKey,
+          source: "transition_decision",
+          reasonCode: decisionResult.decisionFailure ? "decision_failure" : "ai_decision_failed",
+          title: "AI transition decision failed",
+          body: `Unable to determine the next transition after step completion. Error: ${decisionResult.reason}`,
+          requestedAction: "Review the run state and resume when a transition strategy is confirmed.",
+          metadata: {
+            failure: decisionResult.reason,
+            ...(decisionResult.decisionFailure
+              ? {
+                  decisionName: decisionResult.decisionFailure.decisionName,
+                  decisionContext: decisionResult.decisionFailure.context
+                }
+              : {})
+          }
+        });
+        await syncMissionFromRun(args.runId, "ai_transition_decision_failed", {
+          nextMissionStatus: "intervention_required"
+        });
+      }
+      return;
+    }
+
+    const { graph, missionId, stepKey, decision } = decisionResult;
+    try {
+      applyAIDecisionDirectives({
+        runId: args.runId,
+        graph,
+        completedStepId: args.stepId,
+        decision
+      });
+    } catch (error) {
+      pauseRunWithIntervention({
+        runId: args.runId,
+        missionId,
+        stepId: args.stepId,
+        stepKey,
+        source: "transition_decision",
+        reasonCode: "ai_directive_apply_failed",
+        title: "AI transition directives could not be applied",
+        body: `AI produced a transition decision, but runtime directives failed to apply: ${error instanceof Error ? error.message : String(error)}`,
+        requestedAction: "Inspect step/runtime metadata and resume once directives are corrected."
+      });
+      await syncMissionFromRun(args.runId, "ai_transition_directives_failed", {
+        nextMissionStatus: "intervention_required"
+      });
+      return;
+    }
+
+    if (decision.pauseRun) {
+      const isReplanRequest = decision.actionType === "replan";
+      const replanReason =
+        decision.interventionBody
+        ?? (decision.rationale || "AI requested mission replanning.");
+      const replanAnalysis = isReplanRequest
+        ? await requestMissionReplanAnalysis({
+            missionId,
+            runId: args.runId,
+            stepId: args.stepId,
+            stepKey,
+            reason: replanReason,
+            failureDigest: [
+              `Transition action: ${decision.actionType}`,
+              `Step: ${stepKey ?? args.stepId}`,
+              `Reason: ${replanReason}`,
+              `Latest failure: ${extractRunFailureMessage(graph) ?? "none"}`
+            ].join("\n"),
+            graph
+          })
+        : null;
+      pauseRunWithIntervention({
+        runId: args.runId,
+        missionId,
+        stepId: args.stepId,
+        stepKey,
+        source: "transition_decision",
+        reasonCode: isReplanRequest ? "ai_requested_replan" : "ai_requested_pause",
+        title: isReplanRequest
+          ? "AI requested mission replanning"
+          : (decision.interventionTitle ?? "AI requested operator intervention"),
+        body: isReplanRequest && replanAnalysis
+          ? formatReplanInterventionBody({
+              reason: replanReason,
+              analysis: replanAnalysis
+            })
+          : (decision.interventionBody ?? (decision.rationale || "AI requested a pause for manual intervention.")),
+        requestedAction: isReplanRequest
+          ? "Review the replan summary, update mission steps, then resume execution."
+          : "Review AI rationale and provide guidance before resuming execution.",
+        metadata: {
+          rationale: decision.rationale,
+          ...(replanAnalysis
+            ? {
+                replanShouldReplan: replanAnalysis.shouldReplan,
+                replanSummary: replanAnalysis.summary,
+                replanPlanDelta: replanAnalysis.planDelta,
+                replanConfidence: replanAnalysis.confidence,
+                replanError: replanAnalysis.error
+              }
+            : {})
+        }
+      });
+    }
+
+    void applyAiTimeoutBudgetsForRun({
+      runId: args.runId,
+      reason: "step_completion"
+    }).catch((error) => {
+      logger.debug("ai_orchestrator.timeout_budget_post_transition_failed", {
+        runId: args.runId,
+        stepId: args.stepId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+
+    await syncMissionFromRun(args.runId, "ai_transition_decision_applied", {
+      nextMissionStatus: decision.pauseRun ? "intervention_required" : decision.missionStatus
+    });
+  };
+
   type ParallelMissionStepDescriptor = {
     id: string;
     index: number;
@@ -6185,7 +7527,7 @@ export function createAiOrchestratorService(args: {
       stepKeysByIndex.set(entry.step.index, bucket);
     }
 
-    return keyed.map((entry, position) => {
+    return keyed.map((entry) => {
       const metadata = entry.metadata;
       const explicitDeps = Array.isArray(metadata.dependencyStepKeys)
         ? metadata.dependencyStepKeys
@@ -6193,19 +7535,7 @@ export function createAiOrchestratorService(args: {
             .filter(Boolean)
         : [];
       const indexedDeps = parseNumericDependencyIndices(metadata).flatMap((depIdx) => stepKeysByIndex.get(depIdx) ?? []);
-      // A step has explicit dependency info when the planner provided
-      // dependencyStepKeys or dependencyIndices arrays, OR when the planner
-      // assigned a stepKey (which means the step came from a structured
-      // planner and absent dependency fields means "zero dependencies", not
-      // "unknown — fall back to sequential").
-      const hasExplicitDeps =
-        Array.isArray(metadata.dependencyStepKeys) ||
-        Array.isArray(metadata.dependencyIndices) ||
-        (typeof metadata.stepKey === "string" && metadata.stepKey.trim().length > 0);
       const depSet = new Set([...explicitDeps, ...indexedDeps].filter((dep) => dep !== entry.stepKey));
-      if (!depSet.size && !hasExplicitDeps && position > 0) {
-        depSet.add(keyed[position - 1]!.stepKey);
-      }
       const stepType =
         typeof metadata.stepType === "string" && metadata.stepType.trim().length
           ? metadata.stepType.trim()
@@ -6236,116 +7566,243 @@ export function createAiOrchestratorService(args: {
     const baseLaneId = mission.laneId ?? descriptors.find((step) => step.laneId)?.laneId ?? null;
     if (!baseLaneId) return { createdLaneIds: [], assignedSteps: 0 };
 
-    // ── Identify parallel candidates ──────────────────────────
-    // First, look for "root parallelism": multiple steps with zero
-    // dependencies that can all start immediately.
-    const rootCandidates = descriptors
-      .filter((step) => step.dependencyStepKeys.length === 0 && isParallelCandidateStepType(step.stepType))
-      .sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
-
-    // If fewer than 2 roots, look for "sibling parallelism": groups of
-    // steps that share the exact same set of parent dependencies and can
-    // therefore run concurrently once those parents complete.
-    let parallelCandidates: ParallelMissionStepDescriptor[];
-    if (rootCandidates.length >= 2) {
-      parallelCandidates = rootCandidates;
-    } else {
-      const siblingGroups = new Map<string, ParallelMissionStepDescriptor[]>();
-      for (const step of descriptors) {
-        if (!isParallelCandidateStepType(step.stepType)) continue;
-        if (step.dependencyStepKeys.length === 0) continue; // already checked as root
-        const groupKey = [...step.dependencyStepKeys].sort().join(",");
-        const group = siblingGroups.get(groupKey) ?? [];
-        group.push(step);
-        siblingGroups.set(groupKey, group);
+    const laneStrategySignals = {
+      candidateSteps: descriptors.filter((step) => isParallelCandidateStepType(step.stepType)).length,
+      blockedSteps: descriptors.filter((step) => step.dependencyStepKeys.length > 0).length,
+      dependencyEdges: descriptors.reduce((sum, step) => sum + step.dependencyStepKeys.length, 0),
+      currentParallelLanes: Math.max(1, new Set(descriptors.map((step) => step.laneId).filter(Boolean)).size)
+    };
+    let laneStrategyDecision: {
+      strategy: "single_lane" | "dependency_parallel" | "phase_parallel";
+      maxParallelLanes: number;
+      rationale: string;
+      confidence: number;
+      stepAssignments: Array<{
+        stepKey: string;
+        laneLabel: string;
+        rationale?: string;
+      }>;
+    };
+    try {
+      const decisionService = getAiDecisionServiceForCategory(args.missionId, "lane_strategy");
+      if (!decisionService) {
+        throw new DecisionFailure({
+          decisionName: "decideLaneStrategy",
+          context: {
+            missionId: args.missionId,
+            laneId: baseLaneId
+          },
+          message: "Lane strategy AI decision service unavailable.",
+          input: laneStrategySignals
+        });
       }
-      // Pick the largest sibling group with at least 2 members
-      let bestGroup: ParallelMissionStepDescriptor[] = [];
-      for (const group of siblingGroups.values()) {
-        if (group.length >= 2 && group.length > bestGroup.length) {
-          bestGroup = group;
+      laneStrategyDecision = await decisionService.decideLaneStrategy({
+        context: {
+          missionId: args.missionId,
+          laneId: baseLaneId
+        },
+        missionObjective: mission.prompt ?? mission.title,
+        laneSignals: laneStrategySignals,
+        stepDescriptors: descriptors.map((descriptor) => ({
+          stepKey: descriptor.stepKey,
+          title: descriptor.title,
+          stepType: descriptor.stepType,
+          dependencyStepKeys: descriptor.dependencyStepKeys,
+          laneId: descriptor.laneId
+        })),
+        constraints: {
+          maxParallelLanes: Math.max(1, Math.min(16, descriptors.length))
         }
-      }
-      parallelCandidates = bestGroup.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
-    }
-
-    if (parallelCandidates.length < 2) {
-      logger.debug("ai_orchestrator.parallel_lane_provision_skipped", {
-        missionId: args.missionId,
-        rootCandidateCount: rootCandidates.length,
-        totalSteps: descriptors.length,
-        reason: `Only ${rootCandidates.length} root candidate(s) and no sibling groups with ≥2 members found (need ≥2 parallel candidates).`
       });
-      return { createdLaneIds: [], assignedSteps: 0 };
+    } catch (error) {
+      const failureMessage = error instanceof Error ? error.message : String(error);
+      transitionMissionStatus(args.missionId, "intervention_required", {
+        lastError: failureMessage
+      });
+      try {
+        missionService.addIntervention({
+          missionId: args.missionId,
+          interventionType: "failed_step",
+          title: "AI lane strategy decision failed",
+          body: `Parallel lane provisioning requires an AI lane strategy decision. Error: ${failureMessage}`,
+          requestedAction: "Review mission lanes manually and retry run start."
+        });
+      } catch {
+        // No-op: run start will still fail without deterministic fallback.
+      }
+      throw error;
     }
 
-    const laneByStepKey = new Map<string, string>();
-    const createdLaneIds: string[] = [];
-    laneByStepKey.set(parallelCandidates[0]!.stepKey, parallelCandidates[0]!.laneId ?? baseLaneId);
+    const descriptorByStepKey = new Map(descriptors.map((step) => [step.stepKey, step] as const));
+    const assignmentsByStepKey = new Map<string, string>();
+    for (const assignment of laneStrategyDecision.stepAssignments) {
+      const stepKey = assignment.stepKey.trim();
+      const laneLabel = assignment.laneLabel.trim();
+      if (!stepKey || !laneLabel) continue;
+      assignmentsByStepKey.set(stepKey, laneLabel);
+    }
+    const unknownAssignments = [...assignmentsByStepKey.keys()].filter((stepKey) => !descriptorByStepKey.has(stepKey));
+    if (unknownAssignments.length > 0) {
+      const message = `Lane strategy referenced unknown step keys: ${unknownAssignments.join(", ")}`;
+      transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: "failed_step",
+        title: "AI lane assignments are invalid",
+        body: `${message}.`,
+        requestedAction: "Review lane assignments and retry mission start."
+      });
+      throw new Error(message);
+    }
+    const missingAssignments = descriptors
+      .filter((descriptor) => !assignmentsByStepKey.has(descriptor.stepKey))
+      .map((descriptor) => descriptor.stepKey);
+    if (missingAssignments.length > 0) {
+      const message = `Lane strategy omitted assignments for steps: ${missingAssignments.join(", ")}`;
+      transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: "failed_step",
+        title: "AI lane assignments are incomplete",
+        body: `${message}.`,
+        requestedAction: "Review lane assignments and retry mission start."
+      });
+      throw new Error(message);
+    }
 
-    for (let i = 1; i < parallelCandidates.length; i += 1) {
-      const candidate = parallelCandidates[i]!;
-      if (candidate.laneId && candidate.laneId !== baseLaneId) {
-        laneByStepKey.set(candidate.stepKey, candidate.laneId);
+    const ordered = [...descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
+    const laneLabelToStepKeys = new Map<string, string[]>();
+    for (const descriptor of ordered) {
+      const laneLabel = assignmentsByStepKey.get(descriptor.stepKey)!;
+      const bucket = laneLabelToStepKeys.get(laneLabel) ?? [];
+      bucket.push(descriptor.stepKey);
+      laneLabelToStepKeys.set(laneLabel, bucket);
+    }
+
+    const labels = [...laneLabelToStepKeys.keys()];
+    if (labels.length === 0) {
+      const message = "Lane strategy returned no lane labels.";
+      transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: "failed_step",
+        title: "AI lane assignments are invalid",
+        body: message,
+        requestedAction: "Review lane strategy output and retry mission start."
+      });
+      throw new Error(message);
+    }
+    const BASE_LABEL_ALIASES = new Set(["base", "main", "default", "mission", "primary"]);
+    const baseLabels = labels.filter((label) => BASE_LABEL_ALIASES.has(label.trim().toLowerCase()));
+    if (baseLabels.length !== 1) {
+      const message = `Lane strategy must include exactly one base lane label (${[...BASE_LABEL_ALIASES].join(", ")}); received: ${labels.join(", ")}.`;
+      transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: "failed_step",
+        title: "AI lane assignments are invalid",
+        body: message,
+        requestedAction: "Review lane strategy output and retry mission start."
+      });
+      throw new Error(message);
+    }
+    const baseLabel = baseLabels[0]!;
+    if (laneStrategyDecision.strategy === "single_lane" && labels.length !== 1) {
+      const message = `Lane strategy is single_lane but produced ${labels.length} lane labels.`;
+      transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: "failed_step",
+        title: "AI lane assignments conflict with strategy",
+        body: message,
+        requestedAction: "Review lane strategy output and retry mission start."
+      });
+      throw new Error(message);
+    }
+    if (laneLabelToStepKeys.size > laneStrategyDecision.maxParallelLanes) {
+      const message =
+        `AI lane strategy produced ${laneLabelToStepKeys.size} lane groups, exceeding maxParallelLanes=${laneStrategyDecision.maxParallelLanes}.`;
+      transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+      missionService.addIntervention({
+        missionId: args.missionId,
+        interventionType: "failed_step",
+        title: "AI lane strategy exceeds lane limits",
+        body: message,
+        requestedAction: "Adjust lane strategy constraints and retry mission start."
+      });
+      throw new Error(message);
+    }
+
+    const createdLaneIds: string[] = [];
+    const laneIdByLabel = new Map<string, string>();
+    laneIdByLabel.set(baseLabel, baseLaneId);
+
+    for (const label of labels) {
+      if (laneIdByLabel.has(label)) continue;
+      const assignedStepKeys = laneLabelToStepKeys.get(label) ?? [];
+      const explicitLaneIds = [...new Set(assignedStepKeys
+        .map((stepKey) => descriptorByStepKey.get(stepKey)?.laneId ?? null)
+        .filter((laneId): laneId is string => typeof laneId === "string" && laneId.length > 0 && laneId !== baseLaneId))];
+      if (explicitLaneIds.length > 1) {
+        const message = `Lane assignment group "${label}" maps to multiple existing lanes (${explicitLaneIds.join(", ")}).`;
+        transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+        missionService.addIntervention({
+          missionId: args.missionId,
+          interventionType: "failed_step",
+          title: "AI lane assignments conflict with existing lanes",
+          body: message,
+          requestedAction: "Normalize lane assignments and retry mission start."
+        });
+        throw new Error(message);
+      }
+      if (explicitLaneIds.length === 1) {
+        laneIdByLabel.set(label, explicitLaneIds[0]!);
         continue;
       }
-      let laneId = baseLaneId;
-      const requestedName = `m-${args.missionId.slice(0, 6)}-${slugify(candidate.title || candidate.stepKey)}-${i + 1}`;
+      const firstStepKey = assignedStepKeys[0] ?? label;
+      const firstStep = descriptorByStepKey.get(firstStepKey);
+      const requestedName = `m-${args.missionId.slice(0, 6)}-${slugify(firstStep?.title || label)}-${createdLaneIds.length + 1}`;
       try {
         const child = await laneService.createChild({
           parentLaneId: baseLaneId,
           name: requestedName,
-          description: `Auto-created by orchestrator for mission ${args.missionId} (${candidate.title || candidate.stepKey}).`,
+          description: `AI lane strategy group "${label}" for mission ${args.missionId}.`,
           folder: `Mission: ${mission.title}`
         });
-        laneId = child.id;
+        laneIdByLabel.set(label, child.id);
         createdLaneIds.push(child.id);
       } catch (error) {
-        logger.warn("ai_orchestrator.parallel_lane_create_failed", {
+        const message = error instanceof Error ? error.message : String(error);
+        transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+        missionService.addIntervention({
           missionId: args.missionId,
-          stepKey: candidate.stepKey,
-          requestedName,
-          fallbackLaneId: baseLaneId,
-          error: error instanceof Error ? error.message : String(error)
+          interventionType: "failed_step",
+          title: "Failed to create AI lane assignment",
+          body: `Unable to create lane for assignment group "${label}". ${message}`,
+          requestedAction: "Inspect lane setup and retry mission start."
         });
+        throw error;
       }
-      laneByStepKey.set(candidate.stepKey, laneId);
     }
 
     const laneByStepId = new Map<string, string>();
-    const byStepKey = new Map(descriptors.map((step) => [step.stepKey, step] as const));
-    const ordered = [...descriptors].sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
-
-    // Build a set of step keys that were directly assigned as parallel
-    // candidates so the downstream loop doesn't overwrite their lane
-    // with inheritance from a parent dependency.
-    const parallelCandidateKeys = new Set(parallelCandidates.map((c) => c.stepKey));
-
     for (const step of ordered) {
-      const explicitNonBaseLane = step.laneId && step.laneId !== baseLaneId ? step.laneId : null;
-      if (explicitNonBaseLane) {
-        laneByStepId.set(step.id, explicitNonBaseLane);
-        laneByStepKey.set(step.stepKey, explicitNonBaseLane);
-        continue;
-      }
-      // If this step was a parallel candidate, honour its pre-assigned lane.
-      if (parallelCandidateKeys.has(step.stepKey)) {
-        const preAssigned = laneByStepKey.get(step.stepKey) ?? step.laneId ?? baseLaneId;
-        laneByStepId.set(step.id, preAssigned);
-        // laneByStepKey already set during candidate loop
-        continue;
-      }
-      let laneId = step.laneId ?? baseLaneId;
-      if (step.dependencyStepKeys.length > 1 || step.stepType === "integration" || step.stepType === "merge") {
-        laneId = baseLaneId;
-      } else if (step.dependencyStepKeys.length === 1) {
-        const depKey = step.dependencyStepKeys[0]!;
-        laneId = laneByStepKey.get(depKey) ?? byStepKey.get(depKey)?.laneId ?? baseLaneId;
-      } else {
-        laneId = laneByStepKey.get(step.stepKey) ?? laneId;
+      const laneLabel = assignmentsByStepKey.get(step.stepKey);
+      if (!laneLabel) continue;
+      const laneId = laneIdByLabel.get(laneLabel);
+      if (!laneId) {
+        const message = `AI lane assignment group "${laneLabel}" is unresolved for step ${step.stepKey}.`;
+        transitionMissionStatus(args.missionId, "intervention_required", { lastError: message });
+        missionService.addIntervention({
+          missionId: args.missionId,
+          interventionType: "failed_step",
+          title: "AI lane assignments are invalid",
+          body: message,
+          requestedAction: "Review lane strategy output and retry mission start."
+        });
+        throw new Error(message);
       }
       laneByStepId.set(step.id, laneId);
-      laneByStepKey.set(step.stepKey, laneId);
     }
 
     let assignedSteps = 0;
@@ -6374,54 +7831,55 @@ export function createAiOrchestratorService(args: {
         laneId: nextLaneId,
         decisionType: "validated",
         validatorOutcome: "pass",
-        ruleHits: ["parallel_lane_provisioning", step.dependencyStepKeys.length > 0 ? "dependency_inheritance" : "root_split"],
+        ruleHits: ["parallel_lane_provisioning", "ai_lane_assignment"],
         rationale: `Assigned step ${step.stepKey} to lane ${nextLaneId} (from ${currentLaneId}).`,
         metadata: {
+          strategy: laneStrategyDecision.strategy,
+          laneLabel: assignmentsByStepKey.get(step.stepKey) ?? null,
           previousLaneId: currentLaneId,
           missionStepId: step.id,
-          dependencyStepKeys: step.dependencyStepKeys
+          dependencyStepKeys: step.dependencyStepKeys,
+          assignmentRationale:
+            laneStrategyDecision.stepAssignments.find((assignment) => assignment.stepKey.trim() === step.stepKey)?.rationale
+            ?? null
         }
       });
     }
 
+    updateMissionMetadata(args.missionId, (metadata) => {
+      metadata.parallelLanes = {
+        enabled: true,
+        createdLaneIds,
+        assignedSteps,
+        rootStepCount: descriptors.filter((step) => step.dependencyStepKeys.length === 0).length,
+        parallelCandidateCount: labels.length,
+        strategy: laneStrategyDecision.strategy,
+        maxParallelLanes: laneStrategyDecision.maxParallelLanes,
+        rationale: laneStrategyDecision.rationale,
+        confidence: laneStrategyDecision.confidence,
+        baseLaneId,
+        aiAssignments: laneStrategyDecision.stepAssignments,
+        updatedAt: nowIso()
+      };
+    });
     if (createdLaneIds.length > 0 || assignedSteps > 0) {
-      updateMissionMetadata(args.missionId, (metadata) => {
-        metadata.parallelLanes = {
-          enabled: true,
-          createdLaneIds,
-          assignedSteps,
-          rootStepCount: rootCandidates.length,
-          parallelCandidateCount: parallelCandidates.length,
-          baseLaneId,
-          updatedAt: nowIso()
-        };
-      });
       emitOrchestratorMessage(
         args.missionId,
         `Parallel lane provisioning complete. ${createdLaneIds.length} new lane${createdLaneIds.length === 1 ? "" : "s"} created; ${assignedSteps} step lane assignments updated.`
       );
+    } else {
+      emitOrchestratorMessage(args.missionId, "AI lane strategy validated. Existing lane assignments were already aligned.");
     }
 
     return { createdLaneIds, assignedSteps };
   };
 
   // ── Team Synthesis Helpers ──────────────────────────────────
-  const DOMAIN_FRONTEND_KEYWORDS = /\b(react|vue|angular|css|html|jsx|tsx|component|ui|ux|tailwind|frontend|front[\s-]?end|layout|style|dom|browser)\b/i;
-  const DOMAIN_BACKEND_KEYWORDS = /\b(api|server|database|sql|graphql|rest|endpoint|backend|back[\s-]?end|migration|schema|queue|kafka|redis|postgres|mongo)\b/i;
-  const DOMAIN_INFRA_KEYWORDS = /\b(docker|k8s|kubernetes|terraform|ci[\s/]?cd|deploy|infra|helm|aws|gcp|azure|pipeline|nginx|load[\s-]?balanc)\b/i;
-  const THOROUGHNESS_KEYWORDS = /\b(in[\s-]?depth|end[\s-]?to[\s-]?end|comprehensive|thorough|exhaustive|complete coverage|full[\s-]?audit|deep[\s-]?dive)\b/i;
-  const HIGH_PARALLELISM_KEYWORDS = /\b(highest|maximum|max[\s-]?parallel|all[\s-]?out|full[\s-]?speed)\b/i;
-
-  const inferDomain = (prompt: string): TeamComplexityAssessment["domain"] => {
-    const fe = DOMAIN_FRONTEND_KEYWORDS.test(prompt);
-    const be = DOMAIN_BACKEND_KEYWORDS.test(prompt);
-    const infra = DOMAIN_INFRA_KEYWORDS.test(prompt);
-    if (infra && !fe && !be) return "infra";
-    if (fe && be) return "fullstack";
-    if (fe && !be) return "frontend";
-    if (be && !fe) return "backend";
-    if (fe || be || infra) return "mixed";
-    return "fullstack";
+  const deriveScopeFromStepCount = (stepCount: number): TeamComplexityAssessment["estimatedScope"] => {
+    if (stepCount <= 3) return "small";
+    if (stepCount <= 8) return "medium";
+    if (stepCount <= 20) return "large";
+    return "very_large";
   };
 
   const inferRoleFromStepMetadata = (metadata: Record<string, unknown>, kind: string): OrchestratorWorkerRole => {
@@ -6441,46 +7899,23 @@ export function createAiOrchestratorService(args: {
     missionId: string;
     mission: MissionDetail;
     policy: MissionExecutionPolicy;
-    runtimeProfile: MissionRuntimeProfile;
     userPrompt: string;
+    aiParallelismCap: number;
   }): TeamManifest => {
-    const { missionId, mission, policy, runtimeProfile, userPrompt } = opts;
+    const { missionId, mission, policy, userPrompt, aiParallelismCap } = opts;
     const steps = mission.steps;
     const descriptors = buildParallelDescriptors(steps);
     const decisionLog: TeamDecisionEntry[] = [];
     const now = nowIso();
 
     // ── Complexity assessment ──────────────────────────────────
-    const domain = inferDomain(userPrompt);
-    const thoroughnessRequested = THOROUGHNESS_KEYWORDS.test(userPrompt);
+    void userPrompt;
     const laneIds = new Set(descriptors.map((d) => d.laneId).filter(Boolean));
     const laneCount = Math.max(1, laneIds.size);
     const stepCount = steps.length;
-
-    let estimatedScope: TeamComplexityAssessment["estimatedScope"];
-    if (stepCount <= 3 && laneCount <= 1) estimatedScope = "small";
-    else if (stepCount <= 8 && laneCount <= 2) estimatedScope = "medium";
-    else if (stepCount <= 20 && laneCount <= 4) estimatedScope = "large";
-    else estimatedScope = "very_large";
-
-    // Upgrade scope if thoroughness explicitly requested
-    if (thoroughnessRequested && estimatedScope === "small") estimatedScope = "medium";
-    if (thoroughnessRequested && estimatedScope === "medium") estimatedScope = "large";
-
-    const rootCandidates = descriptors.filter((d) => d.dependencyStepKeys.length === 0);
-    // Parallelizable if 2+ roots, or if any sibling group (shared deps) has 2+ members
-    let parallelizable = rootCandidates.length >= 2;
-    if (!parallelizable) {
-      const sibGroupSizes = new Map<string, number>();
-      for (const d of descriptors) {
-        if (d.dependencyStepKeys.length === 0) continue;
-        const gk = [...d.dependencyStepKeys].sort().join(",");
-        sibGroupSizes.set(gk, (sibGroupSizes.get(gk) ?? 0) + 1);
-      }
-      for (const count of sibGroupSizes.values()) {
-        if (count >= 2) { parallelizable = true; break; }
-      }
-    }
+    const estimatedScope = deriveScopeFromStepCount(stepCount);
+    const domain: TeamComplexityAssessment["domain"] = "mixed";
+    const parallelizable = Number.isFinite(Number(aiParallelismCap)) && Number(aiParallelismCap) > 1;
     const requiresIntegration = policy.integration.mode === "auto" || laneCount > 1;
     const fileZoneCount = laneCount;
 
@@ -6490,13 +7925,13 @@ export function createAiOrchestratorService(args: {
       parallelizable,
       requiresIntegration,
       fileZoneCount,
-      thoroughnessRequested
+      thoroughnessRequested: false
     };
 
     decisionLog.push({
       timestamp: now,
       decision: `Complexity assessed as ${estimatedScope} (${domain})`,
-      reason: `${stepCount} steps, ${laneCount} lanes, parallelizable=${parallelizable}, thoroughness=${thoroughnessRequested}`,
+      reason: `${stepCount} steps, ${laneCount} lanes, parallelizable=${parallelizable}`,
       source: "complexity"
     });
 
@@ -6528,97 +7963,19 @@ export function createAiOrchestratorService(args: {
       source: "dag_shape"
     });
 
-    // ── Compute DAG max width ─────────────────────────────────
-    const stepDepthMap = new Map<string, number>();
-    const depsByKey = new Map<string, string[]>();
-    for (const d of descriptors) {
-      depsByKey.set(d.stepKey, d.dependencyStepKeys);
+    // ── AI-driven parallelism cap ───────────────────────────────
+    const aiParallelismCapRaw = Number(aiParallelismCap);
+    if (!Number.isFinite(aiParallelismCapRaw) || aiParallelismCapRaw <= 0) {
+      throw new Error("AI parallelism cap must be a positive finite number.");
     }
-    const computeDepth = (key: string, visited: Set<string>): number => {
-      if (stepDepthMap.has(key)) return stepDepthMap.get(key)!;
-      if (visited.has(key)) return 0; // cycle guard
-      visited.add(key);
-      const deps = depsByKey.get(key) ?? [];
-      const depth = deps.length === 0 ? 0 : Math.max(...deps.map((d) => computeDepth(d, visited))) + 1;
-      stepDepthMap.set(key, depth);
-      return depth;
-    };
-    for (const d of descriptors) {
-      computeDepth(d.stepKey, new Set());
-    }
-    const depthCounts = new Map<number, number>();
-    for (const depth of stepDepthMap.values()) {
-      depthCounts.set(depth, (depthCounts.get(depth) ?? 0) + 1);
-    }
-    const dagMaxWidth = depthCounts.size > 0 ? Math.max(...depthCounts.values()) : 1;
+    const normalizedAiParallelismCap = Math.floor(aiParallelismCapRaw);
+    const parallelismCap = Math.max(1, Math.min(32, normalizedAiParallelismCap));
 
     decisionLog.push({
       timestamp: now,
-      decision: `DAG max width = ${dagMaxWidth}`,
-      reason: `${stepDepthMap.size} steps across ${depthCounts.size} depth levels`,
-      source: "dag_shape"
-    });
-
-    // ── Dynamic parallelism cap ─────────────────────────────────
-    // Priority: (1) AI planner cap, (2) DAG max width, (3) prompt overrides, (4) safety ceiling
-    let parallelismCap: number;
-
-    const plannerCapResolved = resolveMissionParallelismCap(missionId);
-    const plannerRationale = resolveMissionPlannerRationale(missionId);
-
-    if (plannerCapResolved !== null && plannerCapResolved >= 1 && plannerCapResolved <= 32) {
-      parallelismCap = plannerCapResolved;
-      decisionLog.push({
-        timestamp: now,
-        decision: `Parallelism cap set to ${parallelismCap} from AI planner`,
-        reason: plannerRationale
-          ? plannerRationale.slice(0, 200)
-          : `AI planner recommended ${plannerCapResolved} parallel workstreams`,
-        source: "override"
-      });
-    } else {
-      parallelismCap = dagMaxWidth;
-      decisionLog.push({
-        timestamp: now,
-        decision: `Parallelism cap set to ${parallelismCap} from DAG max width`,
-        reason: `No valid AI planner cap; using structural DAG width as fallback`,
-        source: "dag_shape"
-      });
-    }
-
-    if (HIGH_PARALLELISM_KEYWORDS.test(userPrompt)) {
-      parallelismCap = Math.max(parallelismCap, 16);
-      decisionLog.push({
-        timestamp: now,
-        decision: `Parallelism override to ${parallelismCap}`,
-        reason: "User prompt contains high-parallelism keywords",
-        source: "prompt"
-      });
-    }
-
-    // Also check if user specified a specific number
-    const explicitParallelMatch = userPrompt.match(/(\d+)\s*(?:parallel|workers|lanes)/i);
-    if (explicitParallelMatch) {
-      const requested = Math.max(1, Math.min(32, parseInt(explicitParallelMatch[1]!, 10)));
-      if (Number.isFinite(requested)) {
-        parallelismCap = requested;
-        decisionLog.push({
-          timestamp: now,
-          decision: `Parallelism set to ${parallelismCap} from explicit user request`,
-          reason: `User specified "${explicitParallelMatch[0]}" in prompt`,
-          source: "override"
-        });
-      }
-    }
-
-    // Safety ceiling
-    parallelismCap = Math.min(parallelismCap, 32);
-
-    decisionLog.push({
-      timestamp: now,
-      decision: `Parallelism cap set to ${parallelismCap}`,
-      reason: `DAG max width ${dagMaxWidth}, scope ${estimatedScope}, lane count ${laneCount}`,
-      source: "policy"
+      decision: `Parallelism cap set to ${parallelismCap} from AI decision`,
+      reason: `AI provided mission-start cap ${normalizedAiParallelismCap}. Applied hard safety clamp to range [1, 32].`,
+      source: "override"
     });
 
     // ── Parallel lane groupings ─────────────────────────────────
@@ -6636,7 +7993,6 @@ export function createAiOrchestratorService(args: {
 
     const rationale = `Team of ${workers.length} workers for ${estimatedScope} ${domain} mission. ` +
       `Parallelism cap: ${parallelismCap}. ` +
-      (thoroughnessRequested ? "Thoroughness requested — scope upgraded. " : "") +
       (requiresIntegration ? "Integration phase included. " : "") +
       `${parallelLanes.length} parallel lane group${parallelLanes.length === 1 ? "" : "s"}.`;
 
@@ -6703,11 +8059,54 @@ export function createAiOrchestratorService(args: {
     const runtimeProfile = resolveActiveRuntimeProfile(missionId);
     const config = readConfig(projectConfigService);
 
-    // If an AI planner provider is specified, invoke AI planning first.
-    // Policy controls whether AI planning runs.
+    if (args.plannerProvider && args.plannerProvider !== "claude" && args.plannerProvider !== "codex") {
+      logger.info("ai_orchestrator.planner_provider_unsupported", {
+        missionId,
+        plannerProvider: args.plannerProvider,
+        behavior: "ignored_non_ai_provider"
+      });
+    }
+
+    const pauseMissionStartForPlanning = (planningArgs: {
+      reasonCode: string;
+      title: string;
+      body: string;
+      requestedAction: string;
+    }): MissionRunStartResult => {
+      transitionMissionStatus(missionId, "planning");
+      transitionMissionStatus(missionId, "intervention_required", {
+        lastError: planningArgs.body
+      });
+      try {
+        missionService.addIntervention({
+          missionId,
+          interventionType: "failed_step",
+          title: planningArgs.title,
+          body: planningArgs.body,
+          requestedAction: planningArgs.requestedAction,
+          metadata: {
+            source: "planning_decision",
+            reasonCode: planningArgs.reasonCode
+          }
+        });
+      } catch {
+        // No-op: mission status still reflects intervention_required.
+      }
+      emitOrchestratorMessage(
+        missionId,
+        `${planningArgs.title}. ${planningArgs.body}`
+      );
+      return {
+        blockedByPlanReview: false,
+        started: null,
+        mission: missionService.get(missionId)
+      };
+    };
+
+    // Resolve AI planner provider from explicit input, mission metadata, policy,
+    // config defaults, and current provider availability.
     const provider: "claude" | "codex" | null = (() => {
       if (args.plannerProvider === "claude" || args.plannerProvider === "codex") return args.plannerProvider;
-      if (args.plannerProvider === "deterministic") return null;
       // Check mission metadata for stored model config provider
       // Model config may be at root ($.modelConfig) or nested under launch ($.launch.modelConfig)
       const missionMeta = getMissionMetadata(missionId);
@@ -6728,15 +8127,20 @@ export function createAiOrchestratorService(args: {
       if (provider !== "claude") return undefined;
       return resolveMissionLaunchPlannerModel(missionId) ?? undefined;
     })();
-    const attemptedAiPlanner = runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex");
-    const planningModeLabel = attemptedAiPlanner
-      ? `AI planner${provider ? ` (${provider})` : ""}`
-      : "deterministic planner";
-    emitOrchestratorMessage(
-      missionId,
-      `Mission received. Routing your prompt to the ${planningModeLabel} now.`
-    );
-    if (attemptedAiPlanner) {
+
+    if (runtimeProfile.planning.useAiPlanner) {
+      emitOrchestratorMessage(
+        missionId,
+        `Mission received. Requesting AI planner decision${provider ? ` (${provider})` : ""}.`
+      );
+      if (provider !== "claude" && provider !== "codex") {
+        return pauseMissionStartForPlanning({
+          reasonCode: "planner_unavailable",
+          title: "AI planner unavailable",
+          body: "No AI planner provider is currently available for mission planning.",
+          requestedAction: "Restore AI provider availability and retry mission start."
+        });
+      }
       transitionMissionStatus(missionId, "planning");
 
       // ── Planning with smart retry (max 2 attempts) ────────────────
@@ -6813,20 +8217,24 @@ export function createAiOrchestratorService(args: {
 
       if (!planningSucceeded) {
         const errorMessage = lastPlanError instanceof Error ? lastPlanError.message : String(lastPlanError);
-        transitionMissionStatus(missionId, "planning");
-        transitionMissionStatus(missionId, "failed", { lastError: errorMessage });
-        emitOrchestratorMessage(missionId, `Mission planning failed: ${errorMessage}`);
-        return {
-          blockedByPlanReview: false,
-          started: null,
-          mission: missionService.get(missionId)
-        };
+        return pauseMissionStartForPlanning({
+          reasonCode: "planner_failed",
+          title: "AI mission planning failed",
+          body: `AI planner could not produce a valid plan. ${errorMessage}`,
+          requestedAction: "Review planner failure details and retry mission start."
+        });
       }
-    } else if (!runtimeProfile.planning.useAiPlanner && (provider === "claude" || provider === "codex")) {
-      logger.info("ai_orchestrator.ai_planning_skipped_by_policy", {
+    } else {
+      emitOrchestratorMessage(
         missionId,
-        reason: "planning mode is off"
-      });
+        "Mission received. Planning policy is off, so the existing mission plan will be used."
+      );
+      if (provider === "claude" || provider === "codex") {
+        logger.info("ai_orchestrator.ai_planning_skipped_by_policy", {
+          missionId,
+          reason: "planning mode is off"
+        });
+      }
     }
 
     const bypassPlanReview = args.forcePlanReviewBypass === true;
@@ -6845,30 +8253,98 @@ export function createAiOrchestratorService(args: {
       };
     }
 
-    await provisionParallelMissionLanes({
-      missionId,
-      runMode: args.runMode
-    });
+    try {
+      await provisionParallelMissionLanes({
+        missionId,
+        runMode: args.runMode
+      });
+    } catch (error) {
+      const failureMessage = error instanceof Error ? error.message : String(error);
+      logger.warn("ai_orchestrator.parallel_lane_provision_failed", {
+        missionId,
+        error: failureMessage
+      });
+      emitOrchestratorMessage(
+        missionId,
+        `Mission start paused: lane strategy decision failed. ${failureMessage}`
+      );
+      return {
+        blockedByPlanReview: false,
+        started: null,
+        mission: missionService.get(missionId)
+      };
+    }
 
     // ── Team Synthesis Pass ──────────────────────────────────────
     const refreshedMissionForTeam = missionService.get(missionId) ?? mission;
+    const plannerParallelismCap = resolveMissionParallelismCap(missionId);
+    const laneStrategyParallelismCap = resolveMissionLaneStrategyParallelismCap(missionId);
+
+    const parallelismDecisionService = getAiDecisionServiceForCategory(missionId, "parallelism_decision");
+    if (!parallelismDecisionService) {
+      return pauseMissionStartForPlanning({
+        reasonCode: "parallelism_decision_unavailable",
+        title: "AI parallelism decision unavailable",
+        body: "Mission-start parallelism requires AI decision support, but the decision service is unavailable.",
+        requestedAction: "Restore AI decision availability and retry mission start."
+      });
+    }
+
+    let missionStartAiParallelismCap: number;
+    try {
+      const runModeForDecision: "autopilot" | "manual" = args.runMode ?? "manual";
+      const parallelismDecision = await parallelismDecisionService.decideParallelism({
+        context: { missionId },
+        missionObjective: refreshedMissionForTeam.prompt ?? refreshedMissionForTeam.title,
+        plannerParallelismCap,
+        laneStrategyParallelismCap,
+        runMode: runModeForDecision,
+        stepCount: refreshedMissionForTeam.steps.length,
+        laneCount: new Set(refreshedMissionForTeam.steps.map((step) => step.laneId).filter(Boolean)).size
+      });
+      const aiParallelismCapRaw = Number(parallelismDecision.parallelismCap);
+      if (!Number.isFinite(aiParallelismCapRaw) || aiParallelismCapRaw <= 0) {
+        throw new DecisionFailure({
+          decisionName: "decideParallelism",
+          context: { missionId },
+          message: "AI parallelism decision returned an invalid parallelismCap.",
+          input: {
+            parallelismCap: parallelismDecision.parallelismCap,
+            rationale: parallelismDecision.rationale
+          }
+        });
+      }
+      missionStartAiParallelismCap = Math.max(1, Math.min(32, Math.floor(aiParallelismCapRaw)));
+      updateMissionMetadata(missionId, (metadata) => {
+        metadata.parallelismDecision = {
+          cap: missionStartAiParallelismCap,
+          rationale: parallelismDecision.rationale,
+          confidence: parallelismDecision.confidence,
+          decidedAt: nowIso()
+        };
+      });
+    } catch (error) {
+      return pauseMissionStartForPlanning({
+        reasonCode: error instanceof DecisionFailure ? "decision_failure" : "parallelism_decision_failed",
+        title: "AI parallelism decision failed",
+        body: error instanceof Error ? error.message : String(error),
+        requestedAction: "Review parallelism guidance and retry mission start."
+      });
+    }
+
     const teamManifest = synthesizeTeamManifest({
       missionId,
       mission: refreshedMissionForTeam,
       policy,
-      runtimeProfile,
-      userPrompt: refreshedMissionForTeam.prompt
+      userPrompt: refreshedMissionForTeam.prompt,
+      aiParallelismCap: missionStartAiParallelismCap
     });
 
     // ── PRD / Architecture Doc Injection ────────────────────────
     const projectDocsContext = discoverProjectDocs();
 
     transitionMissionStatus(missionId, "planning");
-    const plannerParallelismCap = resolveMissionParallelismCap(missionId);
-    // Dynamic parallelism: prefer team manifest cap over planner/default
-    const parallelismCap = teamManifest.parallelismCap
-      ?? plannerParallelismCap
-      ?? runtimeProfile.execution.maxParallelWorkers;
+    const parallelismCap = Math.max(1, Math.min(32, Math.floor(teamManifest.parallelismCap)));
     // Resolve default executor kind: explicit arg > model config provider > undefined
     const resolvedExecutorKind: OrchestratorExecutorKind | undefined =
       args.defaultExecutorKind
@@ -6883,7 +8359,6 @@ export function createAiOrchestratorService(args: {
         ...(args.metadata ?? {}),
         plannerParallelismCap: parallelismCap,
         executionPolicy: policy,
-        ...(runtimeProfile.provenance.legacyDepthTier ? { depthTier: runtimeProfile.provenance.legacyDepthTier } : {}),
         ...(projectDocsContext.found ? { projectDocsIncluded: true, projectDocPaths: projectDocsContext.paths } : {}),
         teamManifestSummary: {
           workerCount: teamManifest.workers.length,
@@ -6908,6 +8383,16 @@ export function createAiOrchestratorService(args: {
 
     // Cache runtime profile, team manifest, and policy for this run
     runRuntimeProfiles.set(started.run.id, runtimeProfile);
+    void applyAiTimeoutBudgetsForRun({
+      runId: started.run.id,
+      reason: "run_start"
+    }).catch((error) => {
+      logger.debug("ai_orchestrator.timeout_budget_initialization_failed", {
+        missionId,
+        runId: started.run.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
     // Store team manifest keyed by run ID
     teamManifest.runId = started.run.id;
     runTeamManifests.set(started.run.id, teamManifest);
@@ -6921,9 +8406,9 @@ export function createAiOrchestratorService(args: {
       decisions: teamManifest.decisionLog.length
     });
 
-    const plannerSummary = attemptedAiPlanner
-      ? `Using AI planner (${provider ?? "auto"}).`
-      : "Using deterministic planner.";
+    const plannerSummary = runtimeProfile.planning.useAiPlanner
+      ? `Planner mode: AI${provider ? ` (${provider})` : ""}.`
+      : "Planner mode: policy-off (using existing mission steps).";
 
     emitOrchestratorMessage(
       missionId,
@@ -7075,6 +8560,279 @@ export function createAiOrchestratorService(args: {
       ...args,
       forcePlanReviewBypass: true
     });
+  };
+
+  const getRunGraphSafe = (runId: string): OrchestratorRunGraph | null => {
+    try {
+      return orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    } catch {
+      return null;
+    }
+  };
+
+  const collectGracefulShutdownTargets = (runId: string): Array<{
+    sessionId: string;
+    attemptId: string | null;
+    stepId: string | null;
+    stepKey: string | null;
+    laneId: string | null;
+  }> => {
+    const graph = getRunGraphSafe(runId);
+    const stepById = new Map<string, OrchestratorStep>();
+    const targetsBySession = new Map<string, {
+      sessionId: string;
+      attemptId: string | null;
+      stepId: string | null;
+      stepKey: string | null;
+      laneId: string | null;
+    }>();
+
+    if (graph) {
+      for (const step of graph.steps) {
+        stepById.set(step.id, step);
+      }
+      for (const attempt of graph.attempts) {
+        if (!ACTIVE_ATTEMPT_STATUSES.has(attempt.status)) continue;
+        const sessionId = toOptionalString(attempt.executorSessionId);
+        if (!sessionId || targetsBySession.has(sessionId)) continue;
+        const step = stepById.get(attempt.stepId);
+        targetsBySession.set(sessionId, {
+          sessionId,
+          attemptId: attempt.id,
+          stepId: attempt.stepId,
+          stepKey: step?.stepKey ?? null,
+          laneId: step?.laneId ?? null
+        });
+      }
+    }
+
+    for (const [attemptId, state] of workerStates.entries()) {
+      if (state.runId !== runId) continue;
+      if (state.state === "completed" || state.state === "failed" || state.state === "disposed") continue;
+      const sessionId = toOptionalString(state.sessionId);
+      if (!sessionId || targetsBySession.has(sessionId)) continue;
+      const step = stepById.get(state.stepId);
+      targetsBySession.set(sessionId, {
+        sessionId,
+        attemptId,
+        stepId: state.stepId,
+        stepKey: step?.stepKey ?? null,
+        laneId: step?.laneId ?? null
+      });
+    }
+
+    return [...targetsBySession.values()];
+  };
+
+  const waitForRunAttemptDrain = async (runId: string, timeoutMs = GRACEFUL_CANCEL_DRAIN_WAIT_MS): Promise<boolean> => {
+    const deadline = Date.now() + Math.max(0, Math.floor(timeoutMs));
+    while (Date.now() <= deadline) {
+      const graph = getRunGraphSafe(runId);
+      if (!graph) return true;
+      const hasActiveAttempts = graph.attempts.some((attempt) => ACTIVE_ATTEMPT_STATUSES.has(attempt.status));
+      if (!hasActiveAttempts) return true;
+      await new Promise((resolve) => setTimeout(resolve, GRACEFUL_CANCEL_DRAIN_POLL_MS));
+    }
+    return false;
+  };
+
+  const cancelRunGracefully = async (cancelArgs: CancelOrchestratorRunArgs): Promise<OrchestratorRun> => {
+    const runId = toOptionalString(cancelArgs.runId);
+    if (!runId) throw new Error("runId is required.");
+
+    const reason = toOptionalString(cancelArgs.reason) ?? "Run canceled.";
+    const missionId = getMissionIdForRun(runId);
+    const targets = collectGracefulShutdownTargets(runId);
+
+    logger.info("ai_orchestrator.run_cancel_graceful_start", {
+      runId,
+      missionId,
+      workerCount: targets.length
+    });
+
+    const noticeText = `Run cancellation requested: ${reason}\nStop work and wrap up any in-flight operations.`;
+    let notifiedWorkers = 0;
+    let interruptedSessions = 0;
+    let disposedSessions = 0;
+
+    if (agentChatService) {
+      if (typeof agentChatService.sendMessage === "function") {
+        const outcomes = await Promise.all(
+          targets.map(async (target) => ({
+            sessionId: target.sessionId,
+            outcome: await runBestEffortWithTimeout({
+              timeoutMs: GRACEFUL_CANCEL_NOTIFY_TIMEOUT_MS,
+              work: () => sendWorkerMessageToSession(target.sessionId, noticeText)
+            })
+          }))
+        );
+        for (const entry of outcomes) {
+          if (entry.outcome.ok) {
+            notifiedWorkers += 1;
+          } else {
+            logger.debug("ai_orchestrator.run_cancel_graceful_notify_failed", {
+              runId,
+              sessionId: entry.sessionId,
+              timedOut: entry.outcome.timedOut,
+              error: entry.outcome.error
+            });
+          }
+        }
+      }
+
+      if (typeof agentChatService.interrupt === "function") {
+        const outcomes = await Promise.all(
+          targets.map(async (target) => ({
+            sessionId: target.sessionId,
+            outcome: await runBestEffortWithTimeout({
+              timeoutMs: GRACEFUL_CANCEL_INTERRUPT_TIMEOUT_MS,
+              work: () => agentChatService.interrupt({ sessionId: target.sessionId })
+            })
+          }))
+        );
+        for (const entry of outcomes) {
+          if (entry.outcome.ok) {
+            interruptedSessions += 1;
+          } else {
+            logger.debug("ai_orchestrator.run_cancel_graceful_interrupt_failed", {
+              runId,
+              sessionId: entry.sessionId,
+              timedOut: entry.outcome.timedOut,
+              error: entry.outcome.error
+            });
+          }
+        }
+      }
+
+      if (typeof agentChatService.dispose === "function") {
+        const outcomes = await Promise.all(
+          targets.map(async (target) => ({
+            sessionId: target.sessionId,
+            outcome: await runBestEffortWithTimeout({
+              timeoutMs: GRACEFUL_CANCEL_DISPOSE_TIMEOUT_MS,
+              work: () => agentChatService.dispose({ sessionId: target.sessionId })
+            })
+          }))
+        );
+        for (const entry of outcomes) {
+          if (entry.outcome.ok) {
+            disposedSessions += 1;
+          } else {
+            logger.debug("ai_orchestrator.run_cancel_graceful_dispose_failed", {
+              runId,
+              sessionId: entry.sessionId,
+              timedOut: entry.outcome.timedOut,
+              error: entry.outcome.error
+            });
+          }
+        }
+      }
+    }
+
+    const drained = await waitForRunAttemptDrain(runId, GRACEFUL_CANCEL_DRAIN_WAIT_MS);
+    if (!drained) {
+      logger.debug("ai_orchestrator.run_cancel_graceful_drain_timeout", {
+        runId,
+        timeoutMs: GRACEFUL_CANCEL_DRAIN_WAIT_MS
+      });
+    }
+
+    orchestratorService.cancelRun({ runId, reason });
+    void syncMissionFromRun(runId, "graceful_cancel");
+
+    const run = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === runId);
+    if (!run) throw new Error(`Run not found after cancellation: ${runId}`);
+
+    logger.info("ai_orchestrator.run_cancel_graceful_complete", {
+      runId,
+      missionId,
+      workerCount: targets.length,
+      notifiedWorkers,
+      interruptedSessions,
+      disposedSessions,
+      drainedBeforeForceCancel: drained
+    });
+
+    return run;
+  };
+
+  const cleanupTeamResources = async (
+    cleanupArgs: CleanupOrchestratorTeamResourcesArgs
+  ): Promise<CleanupOrchestratorTeamResourcesResult> => {
+    const missionId = toOptionalString(cleanupArgs.missionId);
+    if (!missionId) throw new Error("missionId is required.");
+    const mission = missionService.get(missionId);
+    if (!mission) throw new Error(`Mission not found: ${missionId}`);
+
+    const requestedRunId = toOptionalString(cleanupArgs.runId);
+    const cleanupLanes = cleanupArgs.cleanupLanes !== false;
+    let resolvedRunId: string | null = requestedRunId ?? null;
+
+    if (requestedRunId) {
+      const runMissionId = getMissionIdForRun(requestedRunId);
+      if (!runMissionId) {
+        throw new Error(`Run not found: ${requestedRunId}`);
+      }
+      if (runMissionId !== missionId) {
+        throw new Error(`Run ${requestedRunId} does not belong to mission ${missionId}.`);
+      }
+    } else {
+      const missionRuns = [...orchestratorService.listRuns({ missionId, limit: 200 })]
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      resolvedRunId = missionRuns[0]?.id ?? null;
+    }
+
+    const graph = resolvedRunId ? getRunGraphSafe(resolvedRunId) : null;
+    const laneIds = graph
+      ? [...new Set(graph.steps.map((step) => toOptionalString(step.laneId)).filter((value): value is string => Boolean(value)))]
+      : [];
+
+    const result: CleanupOrchestratorTeamResourcesResult = {
+      missionId,
+      runId: resolvedRunId,
+      laneIds,
+      lanesArchived: [],
+      lanesSkipped: [],
+      laneErrors: []
+    };
+
+    if (!cleanupLanes || !laneIds.length) {
+      return result;
+    }
+
+    if (!laneService || typeof laneService.archive !== "function") {
+      result.laneErrors = laneIds.map((laneId) => ({ laneId, error: "Lane service unavailable." }));
+      return result;
+    }
+
+    for (const laneId of laneIds) {
+      try {
+        await Promise.resolve(laneService.archive({ laneId }));
+        result.lanesArchived.push(laneId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const normalized = message.toLowerCase();
+        if (
+          (normalized.includes("already") && normalized.includes("archived"))
+          || normalized.includes("not found")
+        ) {
+          result.lanesSkipped.push(laneId);
+        } else {
+          result.laneErrors.push({ laneId, error: message });
+        }
+      }
+    }
+
+    logger.info("ai_orchestrator.team_resources_cleanup_complete", {
+      missionId,
+      runId: resolvedRunId,
+      laneCount: laneIds.length,
+      archivedCount: result.lanesArchived.length,
+      skippedCount: result.lanesSkipped.length,
+      errorCount: result.laneErrors.length
+    });
+
+    return result;
   };
 
   const steerMission = (steerArgs: SteerMissionArgs): SteerMissionResult => {
@@ -9973,53 +11731,62 @@ export function createAiOrchestratorService(args: {
     missionTitle: string;
     missionObjective: string;
     missionId: string;
-  }): Promise<{ passed: boolean; reason: string }> => {
-    if (!aiIntegrationService) {
-      return { passed: true, reason: "No AI integration service available — defaulting to pass" };
-    }
+    runId: string;
+    stepId: string;
+    laneId: string | null;
+    attemptId: string | null;
+  }): Promise<{ passed: boolean; reason: string; decisionFailed: boolean; decisionFailure?: DecisionFailure }> => {
     try {
-      const prompt = `You are a quality gate evaluator. Evaluate whether this step's output meets the mission's quality bar.
-A 'pass' means the output is good enough to build on. Minor imperfections are acceptable if the core deliverable is solid.
-A 'fail' means critical gaps that would cause downstream steps to fail or produce incorrect results.
-In your reason, be specific — cite the exact issue or the exact thing done well.
-
-Step: "${gateEvalArgs.stepTitle}" (type: ${gateEvalArgs.stepType})
-Mission: "${gateEvalArgs.missionTitle}"
-Objective: "${gateEvalArgs.missionObjective}"
-
-Step Output:
-${gateEvalArgs.stepOutput.slice(0, QUALITY_GATE_MAX_OUTPUT_CHARS)}
-
-Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explanation with citations" }`;
-
-      const configQualityGate = resolveOrchestratorModelConfig(gateEvalArgs.missionId, "quality_gate");
-      const result = await aiIntegrationService.executeTask({
-        feature: "orchestrator" as const,
-        taskType: "review" as const,
-        prompt,
-        cwd: projectRoot ?? "",
-        provider: configQualityGate.provider === "codex" ? "codex" : "claude",
-        model: modelConfigToServiceModel(configQualityGate),
-        reasoningEffort: thinkingLevelToReasoningEffort(configQualityGate.thinkingLevel),
-        oneShot: true,
-        timeoutMs: 30_000
-      });
-
-      try {
-        const parsed = JSON.parse(String(result.text ?? ""));
-        return {
-          passed: parsed.verdict === "pass",
-          reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided"
-        };
-      } catch {
-        // If AI returns non-JSON, treat as pass (conservative)
-        return { passed: true, reason: "Could not parse quality gate response — defaulting to pass" };
+      const decisionService = getAiDecisionServiceForCategory(gateEvalArgs.missionId, "quality_gate");
+      if (!decisionService) {
+        throw new DecisionFailure({
+          decisionName: "evaluateQualityGate",
+          context: {
+            missionId: gateEvalArgs.missionId,
+            runId: gateEvalArgs.runId,
+            stepId: gateEvalArgs.stepId,
+            laneId: gateEvalArgs.laneId,
+            attemptId: gateEvalArgs.attemptId
+          },
+          message: "Quality gate AI decision service unavailable.",
+          input: gateEvalArgs
+        });
       }
+      const evaluation = await decisionService.evaluateQualityGate({
+        context: {
+          missionId: gateEvalArgs.missionId,
+          runId: gateEvalArgs.runId,
+          stepId: gateEvalArgs.stepId,
+          laneId: gateEvalArgs.laneId,
+          attemptId: gateEvalArgs.attemptId
+        },
+        missionObjective: gateEvalArgs.missionObjective || gateEvalArgs.missionTitle,
+        stepTitle: gateEvalArgs.stepTitle,
+        stepType: gateEvalArgs.stepType,
+        stepOutput: gateEvalArgs.stepOutput.slice(0, QUALITY_GATE_MAX_OUTPUT_CHARS)
+      });
+      return {
+        passed: evaluation.passed,
+        reason: evaluation.reason,
+        decisionFailed: false
+      };
     } catch (error) {
+      if (error instanceof DecisionFailure) {
+        return {
+          passed: false,
+          reason: error.message,
+          decisionFailed: true,
+          decisionFailure: error
+        };
+      }
       logger.debug("ai_orchestrator.quality_gate_ai_eval_failed", {
         error: error instanceof Error ? error.message : String(error)
       });
-      return { passed: true, reason: "Quality gate evaluation failed — defaulting to pass" };
+      return {
+        passed: false,
+        reason: `Quality gate AI evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
+        decisionFailed: true
+      };
     }
   };
 
@@ -10066,8 +11833,36 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         stepType: phase,
         missionTitle,
         missionObjective,
-        missionId: graph.run.missionId
+        missionId: graph.run.missionId,
+        runId,
+        stepId,
+        laneId: step.laneId ?? null,
+        attemptId: latestAttempt.id
       });
+
+      if (evaluation.decisionFailed) {
+        pauseRunWithIntervention({
+          runId,
+          missionId: graph.run.missionId,
+          stepId,
+          stepKey: step.stepKey,
+          source: "quality_gate_decision",
+          reasonCode: evaluation.decisionFailure ? "decision_failure" : "quality_gate_ai_decision_failed",
+          title: `Quality gate decision failed for "${stepTitleForMessage(step)}"`,
+          body: `AI quality gate could not produce a valid decision. ${evaluation.reason}`,
+          requestedAction: "Review the completed step output and decide whether to continue, retry, or adjust scope.",
+          metadata: evaluation.decisionFailure
+            ? {
+                decisionName: evaluation.decisionFailure.decisionName,
+                decisionContext: evaluation.decisionFailure.context
+              }
+            : undefined
+        });
+        await syncMissionFromRun(runId, "quality_gate_ai_decision_failed", {
+          nextMissionStatus: "intervention_required"
+        });
+        return;
+      }
 
       if (!evaluation.passed) {
         logger.info("ai_orchestrator.quality_gate_failed", {
@@ -10076,7 +11871,14 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
           phase,
           reason: evaluation.reason
         });
-        handleQualityGateFailure({ runId, stepId, phase, reason: evaluation.reason });
+        void handleQualityGateFailure({ runId, stepId, phase, reason: evaluation.reason }).catch((error) => {
+          logger.debug("ai_orchestrator.quality_gate_recovery_handler_failed", {
+            runId,
+            stepId,
+            phase,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
       } else {
         logger.debug("ai_orchestrator.quality_gate_passed", { runId, stepId, phase });
       }
@@ -10090,17 +11892,21 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
   };
 
   // ── Recovery Loop Coordination ────────────────────────────────
-  const handleQualityGateFailure = (gateArgs: {
+  const handleQualityGateFailure = async (gateArgs: {
     runId: string;
     stepId: string;
     phase: string;
     reason: string;
-  }): { triggered: boolean; exhausted: boolean; iteration: number } => {
+  }): Promise<{ triggered: boolean; exhausted: boolean; iteration: number }> => {
     const { runId, stepId, phase, reason: failureReason } = gateArgs;
 
     try {
       const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
       const missionId = graph.run.missionId;
+      const step = graph.steps.find((entry) => entry.id === stepId);
+      if (!step) {
+        return { triggered: false, exhausted: false, iteration: 0 };
+      }
       const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : {};
       const policy = isRecord(runMeta.executionPolicy) ? (runMeta.executionPolicy as MissionExecutionPolicy) : resolveActivePolicy(missionId);
       const recoveryPolicy: RecoveryLoopPolicy = policy.recoveryLoop ?? DEFAULT_RECOVERY_LOOP_POLICY;
@@ -10110,7 +11916,6 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         return { triggered: false, exhausted: false, iteration: 0 };
       }
 
-      // Get or initialize recovery loop state
       let state = runRecoveryLoopStates.get(runId);
       if (!state) {
         state = {
@@ -10128,7 +11933,6 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         return { triggered: false, exhausted: true, iteration: state.currentIteration };
       }
 
-      // Check if max iterations reached
       if (state.currentIteration >= recoveryPolicy.maxIterations) {
         state.exhausted = true;
         state.stopReason = `Max iterations (${recoveryPolicy.maxIterations}) reached`;
@@ -10163,7 +11967,107 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         return { triggered: false, exhausted: true, iteration: state.currentIteration };
       }
 
-      // Start a new recovery iteration
+      const latestAttempt = [...graph.attempts]
+        .filter((entry) => entry.stepId === stepId)
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
+
+      const decisionService = getAiDecisionServiceForCategory(missionId, "recovery_decision");
+      if (!decisionService) {
+        throw new DecisionFailure({
+          decisionName: "decideRecovery",
+          context: {
+            missionId,
+            runId,
+            stepId,
+            laneId: step.laneId ?? null,
+            attemptId: latestAttempt?.id ?? null
+          },
+          message: "Recovery AI decision service unavailable.",
+          input: {
+            runId,
+            stepId,
+            phase,
+            failureReason
+          }
+        });
+      }
+
+      const recoveryDecision = await decisionService.decideRecovery({
+        context: {
+          missionId,
+          runId,
+          stepId,
+          laneId: step.laneId ?? null,
+          attemptId: latestAttempt?.id ?? null
+        },
+        failureClass: "quality_gate",
+        failureMessage: `${phase}: ${failureReason}`,
+        retryCount: state.currentIteration,
+        retryLimit: recoveryPolicy.maxIterations,
+        qualityGateFailed: true
+      });
+
+      if (recoveryDecision.action === "escalate" || recoveryDecision.action === "pause") {
+        const reasonCode = recoveryDecision.action === "escalate" ? "ai_recovery_escalate" : "ai_recovery_pause";
+        pauseRunWithIntervention({
+          runId,
+          missionId,
+          stepId,
+          stepKey: step.stepKey,
+          source: "retry_decision",
+          reasonCode,
+          title: `AI requested ${recoveryDecision.action} for ${phase} gate`,
+          body: recoveryDecision.reason,
+          requestedAction: "Review the recovery decision and provide guidance before resuming.",
+          metadata: {
+            recoveryAction: recoveryDecision.action,
+            confidence: recoveryDecision.confidence
+          }
+        });
+        return { triggered: false, exhausted: false, iteration: state.currentIteration };
+      }
+
+      if (recoveryDecision.action === "replan") {
+        const replanAnalysis = await requestMissionReplanAnalysis({
+          missionId,
+          runId,
+          stepId,
+          stepKey: step.stepKey,
+          reason: recoveryDecision.reason,
+          failureDigest: [
+            `Recovery phase: ${phase}`,
+            `Failure reason: ${failureReason}`,
+            `Recovery rationale: ${recoveryDecision.reason}`
+          ].join("\n"),
+          graph
+        });
+        pauseRunWithIntervention({
+          runId,
+          missionId,
+          stepId,
+          stepKey: step.stepKey,
+          source: "retry_decision",
+          reasonCode: "ai_recovery_replan",
+          title: `AI requested replanning for ${phase} gate`,
+          body: formatReplanInterventionBody({
+            reason: recoveryDecision.reason,
+            analysis: replanAnalysis
+          }),
+          requestedAction: "Review the replan summary, update mission plan, then resume execution.",
+          metadata: {
+            recoveryAction: "replan",
+            confidence: recoveryDecision.confidence,
+            replanShouldReplan: replanAnalysis.shouldReplan,
+            replanSummary: replanAnalysis.summary,
+            replanPlanDelta: replanAnalysis.planDelta,
+            replanConfidence: replanAnalysis.confidence,
+            replanError: replanAnalysis.error
+          }
+        });
+        return { triggered: false, exhausted: false, iteration: state.currentIteration };
+      }
+
+      // retry_with_hint
       state.currentIteration += 1;
       const iteration: RecoveryLoopIteration = {
         iteration: state.currentIteration,
@@ -10179,7 +12083,21 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
       };
       state.iterations.push(iteration);
 
-      // Trigger recovery loop on orchestratorService if available
+      if (recoveryDecision.retryHint) {
+        const stepMeta = isRecord(step.metadata) ? { ...step.metadata } : {};
+        stepMeta.aiRecoveryHint = recoveryDecision.retryHint;
+        stepMeta.aiRecoveryDecision = {
+          action: recoveryDecision.action,
+          reason: recoveryDecision.reason,
+          confidence: recoveryDecision.confidence,
+          decidedAt: nowIso()
+        };
+        db.run(
+          `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ?`,
+          [JSON.stringify(stepMeta), nowIso(), step.id, runId]
+        );
+      }
+
       if (typeof (orchestratorService as Record<string, unknown>).triggerRecoveryLoop === "function") {
         (orchestratorService as unknown as { triggerRecoveryLoop: (args: { runId: string; stepId: string; phase: string; iteration: number }) => void }).triggerRecoveryLoop({
           runId,
@@ -10189,7 +12107,6 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
         });
       }
 
-      // Emit timeline event
       recordRuntimeEvent({
         runId,
         stepId,
@@ -10199,13 +12116,15 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
           phase,
           iteration: state.currentIteration,
           maxIterations: recoveryPolicy.maxIterations,
-          failureReason
+          failureReason,
+          recoveryAction: recoveryDecision.action,
+          recoveryReason: recoveryDecision.reason
         }
       });
 
       emitOrchestratorMessage(
         missionId,
-        `Recovery loop iteration ${state.currentIteration}/${recoveryPolicy.maxIterations} triggered for ${phase} gate failure on step ${stepId}: ${failureReason}`
+        `Recovery loop iteration ${state.currentIteration}/${recoveryPolicy.maxIterations} triggered for ${phase} gate failure on step ${stepId}: ${recoveryDecision.reason}`
       );
 
       logger.info("ai_orchestrator.recovery_loop_triggered", {
@@ -10218,6 +12137,25 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
 
       return { triggered: true, exhausted: false, iteration: state.currentIteration };
     } catch (error) {
+      if (error instanceof DecisionFailure) {
+        const missionId = getMissionIdForRun(runId);
+        if (missionId) {
+          pauseRunWithIntervention({
+            runId,
+            missionId,
+            stepId,
+            source: "retry_decision",
+            reasonCode: "decision_failure",
+            title: `AI recovery decision failed for ${phase} gate`,
+            body: error.message,
+            requestedAction: "Review quality-gate recovery and decide whether to retry or intervene manually.",
+            metadata: {
+              decisionName: error.decisionName,
+              decisionContext: error.context
+            }
+          });
+        }
+      }
       logger.debug("ai_orchestrator.recovery_loop_failed", {
         runId,
         stepId: gateArgs.stepId,
@@ -10384,36 +12322,28 @@ Respond with JSON only: { "verdict": "pass" | "fail", "reason": "specific explan
     };
 
     if (!aiIntegrationService) return defaultDiagnosis;
-    if (diagArgs.tier === "transient") return defaultDiagnosis;
 
     try {
       const peerField = diagArgs.tier === "blocker"
         ? `"peerNotification": "1-sentence alert for sibling agents about this blocker and how it might affect them"`
         : `"peerNotification": null`;
-
-      const prompt = `You are the orchestrator's failure diagnosis engine. An agent working on a mission step has failed. Analyze the failure and provide recovery guidance.
-
-Step: "${diagArgs.stepTitle}" (key: ${diagArgs.stepKey})
-Mission: "${diagArgs.missionTitle}"
-Objective: "${diagArgs.missionObjective}"
-Step Instructions: ${diagArgs.stepInstructions.slice(0, 2000)}
-
-Failure Details:
-- Error class: ${diagArgs.errorClass}
-- Error message: ${diagArgs.errorMessage.slice(0, 1500)}
-- Attempt output: ${diagArgs.attemptSummary.slice(0, 2000)}
-- Retry: ${diagArgs.retryCount}/${diagArgs.retryLimit}
-- Tier: ${diagArgs.tier}
-
-Respond with JSON only:
-{
-  "classification": "1-sentence diagnosis of root cause",
-  "adjustedHint": "specific instruction for the retry agent on what to do differently (be concrete: which file, which approach, what to avoid)",
-  ${peerField},
-  "suggestedModel": null
-}`;
+      const prompt = buildFailureDiagnosisPrompt({
+        stepTitle: diagArgs.stepTitle,
+        stepKey: diagArgs.stepKey,
+        missionTitle: diagArgs.missionTitle,
+        missionObjective: diagArgs.missionObjective,
+        stepInstructions: diagArgs.stepInstructions,
+        errorClass: diagArgs.errorClass,
+        errorMessage: diagArgs.errorMessage,
+        attemptSummary: diagArgs.attemptSummary,
+        retryCount: diagArgs.retryCount,
+        retryLimit: diagArgs.retryLimit,
+        tier: diagArgs.tier,
+        peerField
+      });
 
       const configFailureDiag = resolveOrchestratorModelConfig(diagArgs.missionId, "failure_diagnosis");
+      const timeoutMs = resolveAiDecisionLikeTimeoutMs(diagArgs.missionId);
       const result = await aiIntegrationService.executeTask({
         feature: "orchestrator" as const,
         taskType: "review" as const,
@@ -10423,7 +12353,7 @@ Respond with JSON only:
         model: modelConfigToServiceModel(configFailureDiag),
         reasoningEffort: thinkingLevelToReasoningEffort(configFailureDiag.thinkingLevel),
         oneShot: true,
-        timeoutMs: 20_000
+        ...(timeoutMs != null ? { timeoutMs } : {})
       });
 
       const text = typeof result.text === "string" ? result.text.trim() : "";
@@ -10486,9 +12416,7 @@ Respond with JSON only:
 
       // Classify the failure tier
       const tier = classifyFailureTier({
-        errorClass: attempt.errorClass,
-        retryCount: step.retryCount,
-        errorMessage
+        errorClass: attempt.errorClass
       });
 
       // Tier 1: transient — existing backoff is sufficient
@@ -10591,38 +12519,101 @@ Respond with JSON only:
     startMissionRun,
 
     approveMissionPlan,
+    cancelRunGracefully,
+    cleanupTeamResources,
 
     onOrchestratorRuntimeEvent(event: OrchestratorRuntimeEvent) {
       if (disposed) return;
       if (!event.runId) return;
+      const runId = event.runId;
       updateWorkerStateFromEvent(event);
-      void syncMissionFromRun(event.runId, event.reason);
+      const isStepCompletionEvent = event.stepId && (event.reason === "attempt_completed" || event.reason === "skipped");
+      const isAttemptCompletionShadowEvent =
+        event.type === "orchestrator-attempt-updated" &&
+        event.reason === "completed" &&
+        Boolean(event.stepId) &&
+        Boolean(event.attemptId);
+      if (isStepCompletionEvent && event.stepId) {
+        dispatchOrchestratorHook({
+          event: "TaskCompleted",
+          runId,
+          stepId: event.stepId,
+          attemptId: event.attemptId ?? null,
+          sessionId: null,
+          reason: event.reason,
+          triggerSource: "runtime_event",
+          eventAt: event.at,
+          metadata: {
+            runtimeEventType: event.type
+          }
+        });
+        void handleStepCompletionTransition({
+          runId,
+          stepId: event.stepId
+        }).catch((error) => {
+          const missionId = getMissionIdForRun(runId);
+          if (missionId) {
+            pauseRunWithIntervention({
+              runId,
+              missionId,
+              stepId: event.stepId,
+              source: "transition_decision",
+              reasonCode: "ai_transition_handler_failed",
+              title: "AI transition handler failed",
+              body: `Transition handler crashed while processing step completion: ${error instanceof Error ? error.message : String(error)}`,
+              requestedAction: "Inspect the transition handler failure and resume when ready."
+            });
+          }
+          logger.debug("ai_orchestrator.transition_handler_failed", {
+            runId,
+            stepId: event.stepId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      } else if (!isAttemptCompletionShadowEvent) {
+        // `orchestrator-attempt-updated:completed` is emitted before
+        // `orchestrator-step-updated:attempt_completed`; skip deterministic
+        // sync here so transition routing stays AI-first.
+        void syncMissionFromRun(runId, event.reason);
+      }
       // Quality gate evaluation for completed attempts
       if (event.reason === "attempt_completed" && event.stepId) {
-        void evaluateQualityGateForStep(event.runId, event.stepId).catch((error) => {
+        void evaluateQualityGateForStep(runId, event.stepId).catch((error) => {
           logger.debug("ai_orchestrator.quality_gate_event_handler_failed", {
-            runId: event.runId,
+            runId,
             stepId: event.stepId,
             error: error instanceof Error ? error.message : String(error)
           });
         });
       }
       // Smart recovery diagnosis for failed attempts that will be retried
-      if (event.reason === "completed" && event.attemptId && event.stepId) {
+      if (event.type === "orchestrator-attempt-updated" && event.reason === "completed" && event.attemptId && event.stepId) {
+        void applyAiRetryDecisionForFailedAttempt({
+          runId,
+          stepId: event.stepId,
+          attemptId: event.attemptId
+        }).catch((error) => {
+          logger.debug("ai_orchestrator.retry_decision_event_failed", {
+            runId,
+            stepId: event.stepId,
+            attemptId: event.attemptId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
         void handleFailedAttemptRecovery({
-          runId: event.runId,
+          runId,
           stepId: event.stepId,
           attemptId: event.attemptId
         }).catch((error) => {
           logger.debug("ai_orchestrator.recovery_diagnosis_event_failed", {
-            runId: event.runId,
+            runId,
             stepId: event.stepId,
             attemptId: event.attemptId,
             error: error instanceof Error ? error.message : String(error)
           });
         });
       }
-      const missionId = getMissionIdForRun(event.runId);
+      const missionId = getMissionIdForRun(runId);
       if (!missionId) return;
       void replayQueuedWorkerMessages({
         reason: `runtime_event:${event.reason}`,
@@ -10694,7 +12685,6 @@ Respond with JSON only:
     getWorkerStates,
     planWithAI,
     evaluateWorkerPlan,
-    adjustPlanFromResults,
     handleInterventionWithAI,
     steerMission,
     getDepthConfig,

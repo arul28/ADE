@@ -1013,14 +1013,13 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("applies dynamic autopilot parallel cap reductions from deterministic gate pressure", async () => {
+  it("uses configured autopilot parallel cap when AI cap metadata is absent", async () => {
     const fixture = await createFixture();
     try {
       const now = "2026-02-19T00:00:00.000Z";
       const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
       fs.mkdirSync(transcriptDir, { recursive: true });
       // Pre-insert terminal_sessions rows for sessions the default adapter will create.
-      // With gate_fail + initial_ramp_bypass the effective cap is 2 on the first pass.
       for (let i = 1; i <= 3; i++) {
         const sid = `session-${i}`;
         fixture.db.run(
@@ -1075,28 +1074,194 @@ describe("orchestratorService", () => {
         runId: started.run.id,
         reason: "test_dynamic_cap"
       });
-      // Initial ramp-up bypass raises cap from 1 (gate_fail) to 2 so that the
-      // first batch can produce data for the gate to evaluate meaningfully.
-      expect(startedAttempts).toBe(2);
+      expect(startedAttempts).toBe(3);
 
       const runningAttempts = fixture.service
         .listAttempts({ runId: started.run.id })
         .filter((attempt) => attempt.status === "running");
-      expect(runningAttempts).toHaveLength(2);
+      expect(runningAttempts).toHaveLength(3);
 
       const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
       const capEvents = timeline.filter((entry) => entry.eventType === "autopilot_parallelism_cap_adjusted");
       expect(capEvents.length).toBeGreaterThanOrEqual(1);
-      // Collect all reasons across cap adjustment events (timeline is desc-ordered,
-      // so the initial_ramp_bypass event from the first loop may not be first).
       const allReasons = capEvents.flatMap((evt) => {
         const detail = evt.detail as Record<string, unknown> | null;
         return Array.isArray(detail?.reasons)
           ? (detail!.reasons as unknown[]).map((entry) => String(entry))
           : [];
       });
-      expect(allReasons).toContain("gate_fail");
-      expect(allReasons).toContain("initial_ramp_bypass");
+      expect(allReasons).toContain("configured_cap");
+      expect(allReasons).not.toContain("gate_fail");
+      expect(allReasons).not.toContain("initial_ramp_bypass");
+      expect(allReasons).not.toContain("claim_conflicts");
+      expect(allReasons).not.toContain("context_pressure");
+      expect(allReasons).not.toContain("resource_pressure");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("uses AI cap directives without deterministic gate/context/resource reductions", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      for (let i = 1; i <= 3; i++) {
+        const sid = `session-${i}`;
+        fixture.db.run(
+          `insert or ignore into terminal_sessions(
+            id, lane_id, pty_id, tracked, title, started_at, ended_at,
+            exit_code, transcript_path, head_sha_start, head_sha_end,
+            status, last_output_preview, summary, tool_type, resume_command, last_output_at
+          ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+            'running', null, null, 'codex-orchestrated', null, ?)`,
+          [sid, fixture.laneId, now, path.join(transcriptDir, `${sid}.log`), now]
+        );
+      }
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "autopilot-owner",
+            parallelismCap: 4
+          },
+          aiDecisions: {
+            parallelismCap: 3,
+            disableHeuristicParallelism: false,
+            source: "ai_decision_service",
+            lastDecisionAt: now
+          }
+        },
+        steps: [
+          { stepKey: "s1", title: "S1", stepIndex: 0, laneId: fixture.laneId, executorKind: "codex" },
+          { stepKey: "s2", title: "S2", stepIndex: 1, laneId: fixture.laneId, executorKind: "codex" },
+          { stepKey: "s3", title: "S3", stepIndex: 2, laneId: fixture.laneId, executorKind: "codex" }
+        ]
+      });
+
+      const gateReport = {
+        id: "gate-fail-ai-1",
+        generatedAt: new Date().toISOString(),
+        generatedBy: "deterministic_kernel",
+        overallStatus: "fail",
+        gates: [],
+        notes: ["forced gate fail for AI cap bypass test"]
+      };
+      fixture.db.run(
+        `
+          insert into orchestrator_gate_reports(
+            id,
+            project_id,
+            generated_at,
+            report_json
+          ) values (?, ?, ?, ?)
+        `,
+        [gateReport.id, fixture.projectId, gateReport.generatedAt, JSON.stringify(gateReport)]
+      );
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "test_ai_cap"
+      });
+      expect(startedAttempts).toBe(3);
+
+      const runningAttempts = fixture.service
+        .listAttempts({ runId: started.run.id })
+        .filter((attempt) => attempt.status === "running");
+      expect(runningAttempts).toHaveLength(3);
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      const capEvents = timeline.filter((entry) => entry.eventType === "autopilot_parallelism_cap_adjusted");
+      expect(capEvents.length).toBeGreaterThanOrEqual(1);
+      const allReasons = capEvents.flatMap((evt) => {
+        const detail = evt.detail as Record<string, unknown> | null;
+        return Array.isArray(detail?.reasons)
+          ? (detail!.reasons as unknown[]).map((entry) => String(entry))
+          : [];
+      });
+      expect(allReasons).toContain("ai_decision_cap");
+      expect(allReasons).not.toContain("gate_fail");
+      expect(allReasons).not.toContain("initial_ramp_bypass");
+      expect(allReasons).not.toContain("claim_conflicts");
+      expect(allReasons).not.toContain("context_pressure");
+      expect(allReasons).not.toContain("resource_pressure");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prioritizes aiPriority when selecting ready steps under constrained autopilot cap", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        ["session-1", fixture.laneId, now, path.join(transcriptDir, "session-1.log"), now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "codex",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1
+          }
+        },
+        steps: [
+          {
+            stepKey: "low-priority",
+            title: "Low Priority",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "codex",
+            metadata: { aiPriority: 1 }
+          },
+          {
+            stepKey: "high-priority",
+            title: "High Priority",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            executorKind: "codex",
+            metadata: { aiPriority: 50 }
+          },
+          {
+            stepKey: "no-ai-priority",
+            title: "No AI Priority",
+            stepIndex: 2,
+            laneId: fixture.laneId,
+            executorKind: "codex"
+          }
+        ]
+      });
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "test_ai_priority_ordering"
+      });
+      expect(startedAttempts).toBe(1);
+
+      const runningAttempt = fixture.service
+        .listAttempts({ runId: started.run.id })
+        .find((attempt) => attempt.status === "running");
+      expect(runningAttempt).toBeTruthy();
+      const highPriorityStep = fixture.service
+        .listSteps(started.run.id)
+        .find((step) => step.stepKey === "high-priority");
+      expect(highPriorityStep).toBeTruthy();
+      expect(runningAttempt?.stepId).toBe(highPriorityStep?.id);
     } finally {
       fixture.dispose();
     }
@@ -1232,6 +1397,140 @@ describe("orchestratorService", () => {
       expect(join?.dependencyStepIds.length).toBe(2);
     } finally {
       fixture.dispose();
+    }
+  });
+
+  it("applies teammatePlanMode when deriving per-step plan approval metadata", async () => {
+    const requiredFixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                teammatePlanMode: "required"
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      const now = "2026-02-22T00:00:00.000Z";
+      requiredFixture.db.run(`delete from mission_steps where mission_id = ?`, [requiredFixture.missionId]);
+      requiredFixture.db.run(
+        `
+          insert into mission_steps(
+            id,
+            mission_id,
+            project_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values
+            ('mstep-plan-1', ?, ?, 0, 'Implement feature', null, 'implementation', ?, 'pending', '{"stepKey":"impl-1","stepType":"implementation"}', ?, ?, null, null),
+            ('mstep-plan-2', ?, ?, 1, 'Explicit no-plan', null, 'implementation', ?, 'pending', '{"stepKey":"impl-2","stepType":"implementation","requiresPlanApproval":false}', ?, ?, null, null)
+        `,
+        [
+          requiredFixture.missionId,
+          requiredFixture.projectId,
+          requiredFixture.laneId,
+          now,
+          now,
+          requiredFixture.missionId,
+          requiredFixture.projectId,
+          requiredFixture.laneId,
+          now,
+          now
+        ]
+      );
+
+      const requiredStarted = requiredFixture.service.startRunFromMission({
+        missionId: requiredFixture.missionId,
+        runMode: "autopilot",
+        defaultExecutorKind: "codex"
+      });
+      const requiredSteps = requiredFixture.service.listSteps(requiredStarted.run.id);
+      const inferredStep = requiredSteps.find((step) => step.missionStepId === "mstep-plan-1");
+      const explicitStep = requiredSteps.find((step) => step.missionStepId === "mstep-plan-2");
+      expect(inferredStep?.metadata?.requiresPlanApproval).toBe(true);
+      expect(inferredStep?.metadata?.teammatePlanMode).toBe("required");
+      expect(explicitStep?.metadata?.requiresPlanApproval).toBe(false);
+    } finally {
+      requiredFixture.dispose();
+    }
+
+    const offFixture = await createFixture({
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              orchestrator: {
+                teammatePlanMode: "off"
+              }
+            }
+          }
+        })
+      }
+    });
+    try {
+      const now = "2026-02-22T00:00:00.000Z";
+      offFixture.db.run(`delete from mission_steps where mission_id = ?`, [offFixture.missionId]);
+      offFixture.db.run(
+        `
+          insert into mission_steps(
+            id,
+            mission_id,
+            project_id,
+            step_index,
+            title,
+            detail,
+            kind,
+            lane_id,
+            status,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values
+            ('mstep-plan-3', ?, ?, 0, 'Analyze requirements', null, 'analysis', ?, 'pending', '{"stepKey":"analysis-1","stepType":"analysis"}', ?, ?, null, null),
+            ('mstep-plan-4', ?, ?, 1, 'Explicit plan', null, 'analysis', ?, 'pending', '{"stepKey":"analysis-2","stepType":"analysis","requiresPlanApproval":true}', ?, ?, null, null)
+        `,
+        [
+          offFixture.missionId,
+          offFixture.projectId,
+          offFixture.laneId,
+          now,
+          now,
+          offFixture.missionId,
+          offFixture.projectId,
+          offFixture.laneId,
+          now,
+          now
+        ]
+      );
+
+      const offStarted = offFixture.service.startRunFromMission({
+        missionId: offFixture.missionId,
+        runMode: "autopilot",
+        defaultExecutorKind: "claude"
+      });
+      const offSteps = offFixture.service.listSteps(offStarted.run.id);
+      const inferredAnalysis = offSteps.find((step) => step.missionStepId === "mstep-plan-3");
+      const explicitAnalysis = offSteps.find((step) => step.missionStepId === "mstep-plan-4");
+      expect(inferredAnalysis?.metadata?.requiresPlanApproval).toBe(false);
+      expect(inferredAnalysis?.metadata?.teammatePlanMode).toBe("off");
+      expect(explicitAnalysis?.metadata?.requiresPlanApproval).toBe(true);
+    } finally {
+      offFixture.dispose();
     }
   });
 
@@ -1479,7 +1778,7 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("applies deterministic retry/backoff scheduling before retrying", async () => {
+  it("keeps retry backoff neutral when AI retry metadata is absent", async () => {
     const fixture = await createFixture();
     try {
       const started = fixture.service.startRun({
@@ -1503,27 +1802,8 @@ describe("orchestratorService", () => {
       });
 
       const afterFailure = fixture.service.listSteps(started.run.id)[0];
-      expect(afterFailure?.status).toBe("pending");
-      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? 0)).toBe(15_000);
-
-      fixture.db.run(
-        `
-          update orchestrator_steps
-          set metadata_json = ?,
-              updated_at = ?
-          where id = ?
-            and project_id = ?
-        `,
-        [
-          JSON.stringify({
-            ...(afterFailure?.metadata ?? {}),
-            nextRetryAt: "2000-01-01T00:00:00.000Z"
-          }),
-          new Date().toISOString(),
-          step.id,
-          fixture.projectId
-        ]
-      );
+      expect(["pending", "ready"]).toContain(afterFailure?.status);
+      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? -1)).toBe(0);
       fixture.service.tick({ runId: started.run.id });
       const retryReady = fixture.service.listSteps(started.run.id)[0];
       expect(retryReady?.status).toBe("ready");
@@ -1532,7 +1812,86 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("recovers from retryable failure and succeeds on deterministic retry", async () => {
+  it("uses zero retry backoff when no AI retry metadata is provided", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "retry-default-zero", title: "Retry Default Zero", stepIndex: 0, retryLimit: 1 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorClass: "transient",
+        errorMessage: "transient failure"
+      });
+
+      const afterFailure = fixture.service.listSteps(started.run.id)[0];
+      expect(["pending", "ready"]).toContain(afterFailure?.status);
+      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? -1)).toBe(0);
+
+      fixture.service.tick({ runId: started.run.id });
+      const retryReady = fixture.service.listSteps(started.run.id)[0];
+      expect(retryReady?.status).toBe("ready");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("uses aiRetryBackoffMs metadata for retry scheduling", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "retryable-ai-backoff",
+            title: "Retryable AI Backoff",
+            stepIndex: 0,
+            retryLimit: 2,
+            metadata: {
+              aiRetryBackoffMs: 42_000
+            }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorClass: "transient",
+        errorMessage: "temporary outage",
+        retryBackoffMs: 5_000
+      });
+
+      const afterFailure = fixture.service.listSteps(started.run.id)[0];
+      expect(afterFailure?.status).toBe("pending");
+      expect(Number((afterFailure?.metadata?.lastRetryBackoffMs as number | undefined) ?? 0)).toBe(42_000);
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const recordedAttempt = graph.attempts.find((entry) => entry.id === attempt.id);
+      expect(recordedAttempt?.retryBackoffMs).toBe(42_000);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers from retryable failure and succeeds on retry", async () => {
     const fixture = await createFixture();
     try {
       const started = fixture.service.startRun({

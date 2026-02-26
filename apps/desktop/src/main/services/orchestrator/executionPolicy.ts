@@ -563,8 +563,8 @@ export function contextViewForRole(role: OrchestratorWorkerRole): OrchestratorCo
 // ─────────────────────────────────────────────────────
 
 /**
- * Evaluates whether a recovery loop should continue, escalate,
- * or stop based on the current state and policy.
+ * Applies hard guardrails to recovery-loop progression.
+ * AI decides recovery action; this function only enforces policy bounds.
  */
 export function evaluateRecoveryLoop(
   state: RecoveryLoopState,
@@ -584,7 +584,7 @@ export function evaluateRecoveryLoop(
     };
   }
 
-  // Check max iterations
+  // Hard limit on max iterations
   if (state.currentIteration >= policy.maxIterations) {
     if (policy.onExhaustion === "fail") {
       return {
@@ -608,48 +608,10 @@ export function evaluateRecoveryLoop(
     };
   }
 
-  // Anti-thrash: check stagnation (consecutive failures without progress)
-  if (policy.escalateAfterStagnant !== undefined && state.iterations.length > 0) {
-    const recentIterations = state.iterations.slice(-policy.escalateAfterStagnant);
-    if (recentIterations.length >= policy.escalateAfterStagnant) {
-      const allStillFailing = recentIterations.every(
-        (iter) => iter.outcome === "still_failing"
-      );
-      if (allStillFailing) {
-        return {
-          shouldRetry: false,
-          reason: `Stagnation detected: ${policy.escalateAfterStagnant} consecutive failures with no progress.`,
-          action: "escalate"
-        };
-      }
-    }
-  }
-
-  // Anti-thrash: minimum confidence delta
-  if (
-    policy.minConfidenceDelta !== undefined &&
-    state.iterations.length >= 2
-  ) {
-    const lastTwo = state.iterations.slice(-2);
-    const prevConfidence = lastTwo[0].confidence;
-    const currConfidence = lastTwo[1].confidence;
-    if (
-      prevConfidence !== undefined &&
-      currConfidence !== undefined &&
-      currConfidence - prevConfidence < policy.minConfidenceDelta
-    ) {
-      return {
-        shouldRetry: false,
-        reason: `Confidence delta (${(currConfidence - prevConfidence).toFixed(2)}) below threshold (${policy.minConfidenceDelta}).`,
-        action: "escalate"
-      };
-    }
-  }
-
-  // Otherwise, retry
+  // Guardrails permit another AI-directed recovery attempt.
   return {
     shouldRetry: true,
-    reason: `Iteration ${state.currentIteration + 1} of ${policy.maxIterations} — retrying.`,
+    reason: `Recovery attempt ${state.currentIteration + 1} of ${policy.maxIterations} is within policy bounds.`,
     action: "fix"
   };
 }

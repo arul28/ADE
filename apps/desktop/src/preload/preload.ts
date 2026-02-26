@@ -258,6 +258,8 @@ import type {
   ListOrchestratorTimelineArgs,
   CreateMissionArgs,
   CancelOrchestratorRunArgs,
+  CleanupOrchestratorTeamResourcesArgs,
+  CleanupOrchestratorTeamResourcesResult,
   CompleteOrchestratorAttemptArgs,
   HeartbeatOrchestratorClaimsArgs,
   ResumeOrchestratorRunArgs,
@@ -433,6 +435,9 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.orchestratorResumeRun, args),
     cancelRun: async (args: CancelOrchestratorRunArgs): Promise<OrchestratorRun> =>
       ipcRenderer.invoke(IPC.orchestratorCancelRun, args),
+    cleanupTeamResources: async (
+      args: CleanupOrchestratorTeamResourcesArgs
+    ): Promise<CleanupOrchestratorTeamResourcesResult> => ipcRenderer.invoke(IPC.orchestratorCleanupTeamResources, args),
     heartbeatClaims: async (args: HeartbeatOrchestratorClaimsArgs): Promise<number> =>
       ipcRenderer.invoke(IPC.orchestratorHeartbeatClaims, args),
     listTimeline: async (args: ListOrchestratorTimelineArgs): Promise<OrchestratorTimelineEvent[]> =>

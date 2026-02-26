@@ -539,7 +539,7 @@ describe("evaluateRecoveryLoop", () => {
     const result = evaluateRecoveryLoop(state, enabledPolicy);
     expect(result.shouldRetry).toBe(true);
     expect(result.action).toBe("fix");
-    expect(result.reason).toContain("retrying");
+    expect(result.reason).toContain("within policy bounds");
   });
 
   it("should stop when max iterations reached", () => {
@@ -560,7 +560,7 @@ describe("evaluateRecoveryLoop", () => {
     expect(result.reason).toContain("Max iterations");
   });
 
-  it("should escalate after stagnant failures", () => {
+  it("does not apply deterministic stagnation heuristics", () => {
     const policy: RecoveryLoopPolicy = {
       enabled: true,
       maxIterations: 5,
@@ -578,9 +578,9 @@ describe("evaluateRecoveryLoop", () => {
       stopReason: null
     };
     const result = evaluateRecoveryLoop(state, policy);
-    expect(result.shouldRetry).toBe(false);
-    expect(result.action).toBe("escalate");
-    expect(result.reason).toContain("Stagnation");
+    expect(result.shouldRetry).toBe(true);
+    expect(result.action).toBe("fix");
+    expect(result.reason).toContain("within policy bounds");
   });
 
   it("disabled policy returns shouldRetry: false", () => {

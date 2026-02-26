@@ -43,12 +43,10 @@ export function computeBudgetPressure(
 
   if (maxPct >= 100) {
     level = "exceeded";
-    // Apply all actions in priority order
+    // Budget pressure emits advisories; orchestrator AI decides execution changes.
     actions.push(
       "downgrade_models",
       "inject_conciseness",
-      "skip_optional_phases",
-      "reduce_parallelism",
       "warn_workers",
       "switch_provider"
     );
@@ -110,15 +108,16 @@ export function generateBudgetDirective(pressure: BudgetPressureSnapshot): strin
  * Given budget pressure, determine which optional phases should be skipped.
  */
 export function getSkippablePhases(pressure: BudgetPressureSnapshot): string[] {
-  if (!pressure.activeActions.includes("skip_optional_phases")) return [];
-  // When budget pressure is high, skip optional review/validation phases
-  return ["testReview", "validation"];
+  void pressure;
+  // Optional phase skipping is now AI-directed at runtime via transition/recovery decisions.
+  return [];
 }
 
 /**
- * Given budget pressure, return the max parallelism factor (1.0 = normal, 0.5 = half).
+ * Given budget pressure, return the max parallelism factor.
+ * Parallelism is now AI-directed; this helper keeps a neutral multiplier.
  */
 export function getParallelismFactor(pressure: BudgetPressureSnapshot): number {
-  if (pressure.activeActions.includes("reduce_parallelism")) return 0.5;
+  void pressure;
   return 1.0;
 }

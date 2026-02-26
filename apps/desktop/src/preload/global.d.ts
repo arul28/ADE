@@ -237,6 +237,8 @@ import type {
   ListOrchestratorTimelineArgs,
   CreateMissionArgs,
   CancelOrchestratorRunArgs,
+  CleanupOrchestratorTeamResourcesArgs,
+  CleanupOrchestratorTeamResourcesResult,
   CompleteOrchestratorAttemptArgs,
   HeartbeatOrchestratorClaimsArgs,
   ResumeOrchestratorRunArgs,
@@ -380,6 +382,7 @@ declare global {
         tickRun: (args: TickOrchestratorRunArgs) => Promise<OrchestratorRun>;
         resumeRun: (args: ResumeOrchestratorRunArgs) => Promise<OrchestratorRun>;
         cancelRun: (args: CancelOrchestratorRunArgs) => Promise<OrchestratorRun>;
+        cleanupTeamResources: (args: CleanupOrchestratorTeamResourcesArgs) => Promise<CleanupOrchestratorTeamResourcesResult>;
         heartbeatClaims: (args: HeartbeatOrchestratorClaimsArgs) => Promise<number>;
         listTimeline: (args: ListOrchestratorTimelineArgs) => Promise<OrchestratorTimelineEvent[]>;
         getGateReport: (args?: GetOrchestratorGateReportArgs) => Promise<OrchestratorGateReport>;
